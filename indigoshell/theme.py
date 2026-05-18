@@ -98,6 +98,16 @@ SEPARATOR_FG            = MAGENTA_DIM
 WORKSPACE_CURRENT_FG    = MAGENTA_BRIGHT
 WORKSPACE_OCCUPIED_FG   = YELLOW_DIM
 WORKSPACE_EMPTY_FG      = MAGENTA_DIM
+WORKSPACE_URGENT_FG     = ERROR  # window set _NET_WM_STATE_DEMANDS_ATTENTION
+# Ring pattern: list of (ms, visible) frames. Two short on-pulses with a
+# small gap between, then a longer pause before repeating — like a phone
+# ring. Set to None or [] to disable blinking (steady red instead).
+WORKSPACE_URGENT_RING   = [
+    (150, True),
+    (100, False),
+    (150, True),
+    (700, False),
+]
 WORKSPACE_STACK_FG      = [CYAN_BRIGHT, VIOLET_BRIGHT]  # [middle, innermost]
 
 SYS_ICON_FG             = CYAN_BRIGHT

@@ -40,9 +40,17 @@ class Workspaces(Widget):
         self._refresh_scheduled: bool = False
         self._clients_dirty: bool = True
         self._client_desktop_cache: dict[int, int] = {}
+        self._client_urgent_cache: dict[int, bool] = {}
         self._watched_clients: set[int] = set()
         self._wm_desktop_atom = None
+        self._wm_state_atom = None
+        self._demands_attention_atom = None
         self._last_current: int | None = None
+        # Ring-pattern blink for urgent workspaces.
+        self._ring_idx: int = 0
+        self._ring_visible: bool = True
+        self._ring_timer: int | None = None
+        self._any_urgent: bool = False
 
     def build_widget(self):
         self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=1)
@@ -67,7 +75,13 @@ class Workspaces(Widget):
 
         count = min(state["count"], bars)
         is_current = state["kind"] == "current"
-        if is_current:
+        is_urgent = state.get("urgent", False)
+        urgent_active = is_urgent and self._ring_visible
+
+        if urgent_active:
+            occupied_color = theme.WORKSPACE_URGENT_FG
+            empty_color = theme.WORKSPACE_URGENT_FG
+        elif is_current:
             occupied_color = theme.CYAN_MID
             empty_color = theme.MAGENTA_MID
         else:
@@ -90,6 +104,10 @@ class Workspaces(Widget):
         self._root = self._display.screen().root
         self._root.change_attributes(event_mask=X.PropertyChangeMask)
         self._wm_desktop_atom = self._display.intern_atom("_NET_WM_DESKTOP")
+        self._wm_state_atom = self._display.intern_atom("_NET_WM_STATE")
+        self._demands_attention_atom = self._display.intern_atom(
+            "_NET_WM_STATE_DEMANDS_ATTENTION"
+        )
         self._watch_atoms = {
             self._display.intern_atom("_NET_CURRENT_DESKTOP"),
             self._display.intern_atom("_NET_NUMBER_OF_DESKTOPS"),
@@ -108,6 +126,12 @@ class Workspaces(Widget):
             if event.atom == self._wm_desktop_atom:
                 xid = int(getattr(event.window, "id", 0)) or int(event.window)
                 self._client_desktop_cache.pop(xid, None)
+                self._clients_dirty = True
+                needs_refresh = True
+                continue
+            if event.atom == self._wm_state_atom:
+                xid = int(getattr(event.window, "id", 0)) or int(event.window)
+                self._client_urgent_cache.pop(xid, None)
                 self._clients_dirty = True
                 needs_refresh = True
                 continue
@@ -165,6 +189,17 @@ class Workspaces(Widget):
             pass
         return None
 
+    def _is_window_urgent(self, xid: int) -> bool:
+        """Returns True if the window has _NET_WM_STATE_DEMANDS_ATTENTION."""
+        try:
+            w = self._display.create_resource_object("window", xid)
+            prop = w.get_full_property(self._wm_state_atom, X.AnyPropertyType)
+            if not prop or not prop.value:
+                return False
+            return self._demands_attention_atom in list(prop.value)
+        except Exception:
+            return False
+
     def _refresh(self) -> bool:
         if self.box is None:
             return False
@@ -176,25 +211,32 @@ class Workspaces(Widget):
             self._pending_desktop = None
 
         if self._clients_dirty:
-            new_cache: dict[int, int] = {}
+            new_desktop: dict[int, int] = {}
+            new_urgent: dict[int, bool] = {}
             for xid in clients:
                 self._watch_client(xid)
-                cached = self._client_desktop_cache.get(xid)
-                if cached is not None:
-                    new_cache[xid] = cached
-                else:
+                d = self._client_desktop_cache.get(xid)
+                if d is None:
                     d = self._get_window_int(xid, "_NET_WM_DESKTOP")
-                    if d is not None:
-                        new_cache[xid] = d
-            self._client_desktop_cache = new_cache
+                if d is not None:
+                    new_desktop[xid] = d
+                u = self._client_urgent_cache.get(xid)
+                if u is None:
+                    u = self._is_window_urgent(xid)
+                new_urgent[xid] = u
+            self._client_desktop_cache = new_desktop
+            self._client_urgent_cache = new_urgent
             live = set(clients)
             self._watched_clients &= live
             self._clients_dirty = False
 
         per_desktop = [0] * n
-        for d in self._client_desktop_cache.values():
+        urgent_desktop = [False] * n
+        for xid, d in self._client_desktop_cache.items():
             if 0 <= d < n:
                 per_desktop[d] += 1
+                if self._client_urgent_cache.get(xid):
+                    urgent_desktop[d] = True
 
         size = 22
         while len(self._indicators) < n:
@@ -214,7 +256,7 @@ class Workspaces(Widget):
             ev.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.SCROLL_MASK)
             ev.connect("button-press-event", lambda _w, _e, idx=i: self._switch(idx))
             ev.connect("scroll-event", self._dispatch_scroll)
-            state = {"count": 0, "kind": "empty"}
+            state = {"count": 0, "kind": "empty", "urgent": False}
             ev.connect_after("draw", self._draw_indicator, state)
             ev._indigo_state = state
             ev._indigo_area = ev
@@ -240,9 +282,56 @@ class Workspaces(Widget):
                 kind = "empty"
             ev._indigo_state["count"] = per_desktop[i]
             ev._indigo_state["kind"] = kind
+            ev._indigo_state["urgent"] = urgent_desktop[i]
             ev._indigo_area.queue_draw()
 
+        self._sync_urgent_ring(any(urgent_desktop))
         self.box.show_all()
+        return False
+
+    # ── urgent "ring" blink ──────────────────────────────────────────
+    def _sync_urgent_ring(self, any_urgent: bool) -> None:
+        """Start the ring-pattern timer if a workspace just became
+        urgent; stop it once no urgent workspaces remain."""
+        if any_urgent and not self._any_urgent:
+            self._start_ring()
+        elif not any_urgent and self._any_urgent:
+            self._stop_ring()
+        self._any_urgent = any_urgent
+
+    def _start_ring(self) -> None:
+        pattern = theme.WORKSPACE_URGENT_RING
+        if not pattern:
+            self._ring_visible = True
+            return
+        self._ring_idx = 0
+        ms, visible = pattern[0]
+        self._ring_visible = visible
+        self._ring_timer = GLib.timeout_add(ms, self._ring_tick)
+
+    def _stop_ring(self) -> None:
+        if self._ring_timer is not None:
+            GLib.source_remove(self._ring_timer)
+            self._ring_timer = None
+        self._ring_visible = True
+        # Repaint so any leftover "off" frame clears immediately.
+        for ev in self._indicators:
+            ev._indigo_area.queue_draw()
+
+    def _ring_tick(self) -> bool:
+        pattern = theme.WORKSPACE_URGENT_RING
+        if not pattern:
+            self._ring_timer = None
+            return False
+        self._ring_idx = (self._ring_idx + 1) % len(pattern)
+        ms, visible = pattern[self._ring_idx]
+        self._ring_visible = visible
+        for ev in self._indicators:
+            if ev._indigo_state.get("urgent"):
+                ev._indigo_area.queue_draw()
+        # Re-schedule with the new frame's duration; return False to
+        # cancel the implicit re-run of the current timer.
+        self._ring_timer = GLib.timeout_add(ms, self._ring_tick)
         return False
 
     def _scroll_prev(self, _w):
