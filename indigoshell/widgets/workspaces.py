@@ -115,6 +115,20 @@ class Workspaces(Widget):
         }
         self._refresh()
         GLib.io_add_watch(self._display.fileno(), GLib.IO_IN, self._on_x_ready)
+        # python-xlib buffers events internally during reply roundtrips
+        # (every `_get_root_int` / `_is_window_urgent` call). When that
+        # happens the fd goes quiet even though PropertyNotify events
+        # sit in the Python-side queue, and the io_add_watch above
+        # misses them — causing the widget to "forget" workspace
+        # switches. A low-frequency tick drains anything stranded.
+        GLib.timeout_add(50, self._drain_pending)
+
+    def _drain_pending(self) -> bool:
+        if self._display is None:
+            return False
+        if self._display.pending_events():
+            self._on_x_ready(None, None)
+        return True
 
     def _on_x_ready(self, _fd, _cond):
         client_list_atom = self._display.intern_atom("_NET_CLIENT_LIST")

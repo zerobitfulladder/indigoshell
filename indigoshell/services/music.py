@@ -19,7 +19,8 @@ from . import proc
 
 
 class MusicStatus:
-    def __init__(self) -> None:
+    def __init__(self, player: str | None = None) -> None:
+        self._player = player
         self._listeners: list[Callable[[bool], None]] = []
         self._proc: subprocess.Popen | None = None
         self._watch_id: int | None = None
@@ -62,7 +63,10 @@ class MusicStatus:
                 pass
 
     def _start(self) -> None:
-        self._proc = proc.popen(["playerctl", "--follow", "status"], bufsize=0)
+        cmd = ["playerctl", "--follow", "status"]
+        if self._player:
+            cmd[1:1] = ["--player", self._player]
+        self._proc = proc.popen(cmd, bufsize=0)
         if self._proc is None or self._proc.stdout is None:
             return
         fd = self._proc.stdout.fileno()
@@ -99,11 +103,12 @@ class MusicStatus:
         return True
 
 
-_status: MusicStatus | None = None
+_statuses: dict[str | None, MusicStatus] = {}
 
 
-def get_status() -> MusicStatus:
-    global _status
-    if _status is None:
-        _status = MusicStatus()
-    return _status
+def get_status(player: str | None = None) -> MusicStatus:
+    """Per-player singleton. `player=None` watches every MPRIS source
+    (legacy callers); pass a specific name to filter to one player."""
+    if player not in _statuses:
+        _statuses[player] = MusicStatus(player)
+    return _statuses[player]

@@ -8,14 +8,13 @@ import gi
 
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, Gtk
 
 from .. import theme
 from ..services.notifications import (
     Notification,
     NotificationServer,
     REASON_CLOSED,
-    REASON_EXPIRED,
     URGENCY_CRITICAL,
     URGENCY_LOW,
 )
@@ -25,7 +24,10 @@ from .base import WindowKind
 
 _CSS = f"""
 .notif {{
-    background-color: {theme.NOTIF_BG};
+    /* Background is painted by NotificationToast._draw_background so the
+       fill follows the beveled corners; using CSS background-color here
+       would paint a full rectangle that leaks through the cut corners. */
+    background-color: transparent;
     border-radius: 0;
 }}
 .notif-action {{
@@ -77,8 +79,10 @@ class NotificationStack(Gtk.Window):
         self.add(self._box)
         self._box.show()
 
-        # id → (toast widget, timer source id or None)
-        self._toasts: dict[int, tuple[NotificationToast, int | None]] = {}
+        self._toasts: dict[int, NotificationToast] = {}
+        # Hovering any toast pauses the dismiss timer on ALL of them;
+        # leaving the last one resumes everyone.
+        self._hover_count = 0
 
         self._server = NotificationServer(
             on_notify=self._on_notify,
@@ -103,7 +107,7 @@ class NotificationStack(Gtk.Window):
             self.hide()
 
     def _reposition(self) -> None:
-        """Anchor bottom-left, offset (NOTIF_OFFSET_X, NOTIF_OFFSET_Y)."""
+        """Anchor bottom-right, offset (NOTIF_OFFSET_X, NOTIF_OFFSET_Y)."""
         screen = Gdk.Screen.get_default()
         monitor = screen.get_primary_monitor()
         geo = screen.get_monitor_geometry(monitor)
@@ -111,21 +115,19 @@ class NotificationStack(Gtk.Window):
         _, natural = self.get_preferred_size()
         w = natural.width  if natural.width  > 0 else theme.NOTIF_WIDTH
         h = natural.height if natural.height > 0 else 0
-        x = geo.x + theme.NOTIF_OFFSET_X
+        x = geo.x + geo.width  - theme.NOTIF_OFFSET_X - w
         y = geo.y + geo.height - theme.NOTIF_OFFSET_Y - h
         self.move(x, y)
 
     # ── server callbacks ────────────────────────────────────────────
     def _on_notify(self, notif: Notification) -> None:
+        timeout_ms = self._resolve_timeout(notif)
         existing = self._toasts.get(notif.id)
         if existing is not None:
-            toast, timer_id = existing
-            if timer_id is not None:
-                GLib.source_remove(timer_id)
-            _apply_urgency_class(toast, notif.urgency)
-            toast.update(notif)
-            new_timer = self._schedule_timeout(notif)
-            self._toasts[notif.id] = (toast, new_timer)
+            _apply_urgency_class(existing, notif.urgency)
+            existing.update(notif, timeout_ms)
+            if self._hover_count > 0:
+                existing.set_paused(True)
             self._reposition()
             return
 
@@ -133,13 +135,16 @@ class NotificationStack(Gtk.Window):
             notif,
             on_dismiss=self._on_dismiss,
             on_action=self._on_action,
+            on_hover_change=self._on_hover_change,
+            timeout_ms=timeout_ms,
         )
+        if self._hover_count > 0:
+            toast.set_paused(True)
         _apply_urgency_class(toast, notif.urgency)
         # Newest at the bottom (closest to the bar/screen edge).
         self._box.pack_start(toast, False, False, 0)
         toast.show_all()
-        timer_id = self._schedule_timeout(notif)
-        self._toasts[notif.id] = (toast, timer_id)
+        self._toasts[notif.id] = toast
         self._present()
 
     def _on_close_request(self, nid: int) -> None:
@@ -154,31 +159,38 @@ class NotificationStack(Gtk.Window):
         self._remove(nid, REASON_CLOSED)
 
     # ── lifetime ────────────────────────────────────────────────────
-    def _schedule_timeout(self, notif: Notification) -> int | None:
+    def _resolve_timeout(self, notif: Notification) -> int:
+        """Sender's expire_timeout (ms), falling back to urgency defaults
+        when negative. Returns 0 to mean "never auto-dismiss"."""
         timeout = notif.expire_timeout
         if timeout < 0:
             if notif.urgency == URGENCY_CRITICAL:
-                timeout = theme.NOTIF_TIMEOUT_CRITICAL
-            elif notif.urgency == URGENCY_LOW:
-                timeout = theme.NOTIF_TIMEOUT_LOW_MS
-            else:
-                timeout = theme.NOTIF_TIMEOUT_NORMAL_MS
-        if timeout == 0:
-            return None  # spec: 0 means never
-        nid = notif.id
-        return GLib.timeout_add(timeout, lambda: self._expire(nid))
+                return theme.NOTIF_TIMEOUT_CRITICAL
+            if notif.urgency == URGENCY_LOW:
+                return theme.NOTIF_TIMEOUT_LOW_MS
+            return theme.NOTIF_TIMEOUT_NORMAL_MS
+        return timeout
 
-    def _expire(self, nid: int) -> bool:
-        self._remove(nid, REASON_EXPIRED)
-        return False
+    def _on_hover_change(self, hovered: bool) -> None:
+        if hovered:
+            self._hover_count += 1
+            if self._hover_count == 1:
+                for toast in self._toasts.values():
+                    toast.set_paused(True)
+        else:
+            self._hover_count = max(0, self._hover_count - 1)
+            if self._hover_count == 0:
+                for toast in self._toasts.values():
+                    toast.set_paused(False)
 
     def _remove(self, nid: int, reason: int) -> None:
-        entry = self._toasts.pop(nid, None)
-        if entry is None:
+        toast = self._toasts.pop(nid, None)
+        if toast is None:
             return
-        toast, timer_id = entry
-        if timer_id is not None:
-            GLib.source_remove(timer_id)
+        if toast._hovered:
+            # Toast is being destroyed without a leave-notify; release
+            # its hover credit so the rest don't stay paused forever.
+            self._on_hover_change(False)
         self._box.remove(toast)
         toast.destroy()
         self._server.emit_closed(nid, reason)
@@ -188,9 +200,8 @@ class NotificationStack(Gtk.Window):
             self._hide_if_empty()
 
     def _on_destroy(self, _w):
-        for _toast, timer_id in self._toasts.values():
-            if timer_id is not None:
-                GLib.source_remove(timer_id)
+        for toast in self._toasts.values():
+            toast.stop_timer()
         self._toasts.clear()
         self._server.stop()
 

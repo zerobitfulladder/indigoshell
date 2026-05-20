@@ -5,7 +5,7 @@ import sys
 
 from .paths import socket_path
 
-VERBS = {"ping", "reload", "list", "open", "close", "toggle"}
+VERBS = {"ping", "reload", "kill", "list", "open", "close", "toggle"}
 
 
 def _send(verb: str, **args) -> dict:
@@ -32,6 +32,7 @@ def main(argv: list[str]) -> None:
     sub = parser.add_subparsers(dest="verb", required=True)
     sub.add_parser("ping")
     sub.add_parser("reload")
+    sub.add_parser("kill")
     sub.add_parser("list")
     for v in ("open", "close", "toggle"):
         p = sub.add_parser(v)

@@ -193,6 +193,110 @@ def paint(cr, hex_color: str, alpha: float | None = None) -> None:
     cr.set_source_rgba(rgba.red, rgba.green, rgba.blue, a)
 
 
+def beveled_path(
+    cr,
+    w: float,
+    h: float,
+    *,
+    bevel: int,
+    corners: tuple[str, ...],
+    inset: float = 0.0,
+) -> None:
+    """Add a closed beveled-rectangle subpath to `cr`. Each corner name in
+    `corners` ("top-left" | "top-right" | "bottom-left" | "bottom-right")
+    is sliced at 45° by `bevel` px; remaining corners stay square.
+    `inset` shrinks the rect uniformly — useful so a stroke stays crisp
+    inside the widget's allocation."""
+    x0, y0 = inset, inset
+    x1, y1 = w - inset, h - inset
+    b = min(bevel, int((x1 - x0) // 2), int((y1 - y0) // 2))
+    if b <= 0 or not corners:
+        cr.rectangle(x0, y0, x1 - x0, y1 - y0)
+        return
+    if "top-left" in corners:
+        cr.move_to(x0, y0 + b); cr.line_to(x0 + b, y0)
+    else:
+        cr.move_to(x0, y0)
+    if "top-right" in corners:
+        cr.line_to(x1 - b, y0); cr.line_to(x1, y0 + b)
+    else:
+        cr.line_to(x1, y0)
+    if "bottom-right" in corners:
+        cr.line_to(x1, y1 - b); cr.line_to(x1 - b, y1)
+    else:
+        cr.line_to(x1, y1)
+    if "bottom-left" in corners:
+        cr.line_to(x0 + b, y1); cr.line_to(x0, y1 - b)
+    else:
+        cr.line_to(x0, y1)
+    cr.close_path()
+
+
+def beveled_polyline(
+    w: int,
+    h: int,
+    *,
+    bevel: int,
+    corners: tuple[str, ...],
+    inset: float = 0.0,
+) -> list[tuple[float, float]]:
+    """Closed polyline (first point repeated last) clockwise from top-left,
+    matching `beveled_path`'s corner cuts. Used to walk the perimeter by
+    arc-length for animated traces."""
+    x0, y0 = inset, inset
+    x1, y1 = w - inset, h - inset
+    b = min(bevel, int((x1 - x0) // 2), int((y1 - y0) // 2))
+    pts: list[tuple[float, float]] = []
+    if b <= 0 or not corners:
+        pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        pts.append(pts[0])
+        return pts
+    if "top-left" in corners:
+        pts.append((x0, y0 + b)); pts.append((x0 + b, y0))
+    else:
+        pts.append((x0, y0))
+    if "top-right" in corners:
+        pts.append((x1 - b, y0)); pts.append((x1, y0 + b))
+    else:
+        pts.append((x1, y0))
+    if "bottom-right" in corners:
+        pts.append((x1, y1 - b)); pts.append((x1 - b, y1))
+    else:
+        pts.append((x1, y1))
+    if "bottom-left" in corners:
+        pts.append((x0 + b, y1)); pts.append((x0, y1 - b))
+    else:
+        pts.append((x0, y1))
+    pts.append(pts[0])
+    return pts
+
+
+def stroke_partial(cr, pts: list[tuple[float, float]], length: float) -> None:
+    """Walk `pts` (from `beveled_polyline`) by `length` arc-length px,
+    stroking the partial path. Used to draw a growing perimeter trace."""
+    if length <= 0 or len(pts) < 2:
+        return
+    cr.move_to(*pts[0])
+    remaining = length
+    for i in range(len(pts) - 1):
+        x0, y0 = pts[i]
+        x1, y1 = pts[i + 1]
+        dx, dy = x1 - x0, y1 - y0
+        seg = (dx * dx + dy * dy) ** 0.5
+        if seg <= 0:
+            continue
+        if seg <= remaining:
+            cr.line_to(x1, y1)
+            remaining -= seg
+            if remaining <= 0:
+                break
+        else:
+            t = remaining / seg
+            cr.line_to(x0 + dx * t, y0 + dy * t)
+            break
+    cr.stroke()
+
+
 def make_label(text: str, css_class: str | None = None) -> Gtk.Label:
     label = Gtk.Label(label=text)
     label.set_valign(Gtk.Align.CENTER)

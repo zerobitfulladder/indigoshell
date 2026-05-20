@@ -44,6 +44,7 @@ class StdoutText(Widget):
         pulse_period_ms: int = 500,
         beat_sync: bool = False,
         clear_when_idle: bool = False,
+        idle_player: str | None = None,
         style: Style | None = None,
         **kwargs,
     ):
@@ -61,9 +62,14 @@ class StdoutText(Widget):
         self.pulse_period_ms = pulse_period_ms
         self.beat_sync = beat_sync
         self.clear_when_idle = clear_when_idle
+        self.idle_player = idle_player
         self.label: Gtk.Label | None = None
         self._proc: subprocess.Popen | None = None
         self._status_subscribed: bool = False
+        self._beat_subscribed: bool = False
+        # Assume playing until music status says otherwise — keeps
+        # widgets without idle gating behaving as before.
+        self._music_playing: bool = True
         self._full_text: str = ""
         self._scroll_pos: int = 0
         self._scroll_timer: int | None = None
@@ -97,22 +103,35 @@ class StdoutText(Widget):
             on_exit=lambda rc: GLib.idle_add(self._set_text, f"[exited {rc}]") if rc != 0 else None,
         )
 
-        if self.pulse_colors:
-            if self.beat_sync:
-                from ..services.beat import get_detector
-                get_detector().add_listener(self._on_beat)
-            else:
-                self._pulse_timer = GLib.timeout_add(
-                    self.pulse_period_ms, self._tick_pulse
-                )
+        if self.pulse_colors and not self.beat_sync:
+            self._pulse_timer = GLib.timeout_add(
+                self.pulse_period_ms, self._tick_pulse
+            )
 
-        if self.clear_when_idle:
+        # beat_sync subscribes lazily on Playing so parec/aubio don't run
+        # while idle. clear_when_idle wants the same status stream to
+        # blank stale text. Either feature → one music subscription.
+        if self.clear_when_idle or (self.pulse_colors and self.beat_sync):
             from ..services.music import get_status
-            get_status().add_listener(self._on_music_status)
+            get_status(self.idle_player).add_listener(self._on_music_status)
             self._status_subscribed = True
 
     def _on_music_status(self, playing: bool) -> None:
-        if not playing:
+        self._music_playing = playing
+        if self.pulse_colors and self.beat_sync:
+            from ..services.beat import get_detector
+            detector = get_detector()
+            if playing and not self._beat_subscribed:
+                detector.add_listener(self._on_beat)
+                self._beat_subscribed = True
+            elif not playing and self._beat_subscribed:
+                detector.remove_listener(self._on_beat)
+                self._beat_subscribed = False
+                self._pulse_intensity = 0.0
+                if self._decay_timer is not None:
+                    GLib.source_remove(self._decay_timer)
+                    self._decay_timer = None
+        if not playing and self.clear_when_idle:
             # Clear so a stale lyric doesn't linger past the song.
             self._set_text("")
 
@@ -172,6 +191,11 @@ class StdoutText(Widget):
         self.label.set_markup(f'<span color="{pulse_color}"{weight}>{inner}</span>')
 
     def _on_line(self, line: str) -> None:
+        # While idle, swallow the source's lines so a still-streaming
+        # producer (e.g. sptlrx re-emitting the current lyric) can't
+        # overwrite the cleared placeholder.
+        if self.clear_when_idle and not self._music_playing:
+            return
         line = line.rstrip("\n")
         try:
             text = self.transform(line)
@@ -279,15 +303,16 @@ class StdoutText(Widget):
         if self._pulse_timer is not None:
             GLib.source_remove(self._pulse_timer)
             self._pulse_timer = None
-        if self.beat_sync and self.pulse_colors:
+        if self._beat_subscribed:
             from ..services.beat import get_detector
             get_detector().remove_listener(self._on_beat)
+            self._beat_subscribed = False
         if self._decay_timer is not None:
             GLib.source_remove(self._decay_timer)
             self._decay_timer = None
         if self._status_subscribed:
             from ..services.music import get_status
-            get_status().remove_listener(self._on_music_status)
+            get_status(self.idle_player).remove_listener(self._on_music_status)
             self._status_subscribed = False
         if self._proc is not None:
             try:

@@ -5,10 +5,19 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
-from gi.repository import Vte, GLib
+gi.require_version("Pango", "1.0")
+from gi.repository import Gdk, GLib, Pango, Vte
 
+from .. import theme
 from ..style import Style
 from .base import Widget
+
+
+def _rgba(hex_str: str, alpha: float = 1.0) -> Gdk.RGBA:
+    rgba = Gdk.RGBA()
+    rgba.parse(hex_str)
+    rgba.alpha = alpha
+    return rgba
 
 
 class Terminal(Widget):
@@ -25,6 +34,7 @@ class Terminal(Widget):
         rows: int = 20,
         transparent: bool = False,
         respawn: bool = False,
+        env: dict[str, str] | None = None,
         style: Style | None = None,
         **kwargs,
     ):
@@ -34,6 +44,10 @@ class Terminal(Widget):
         self.rows = rows
         self.transparent = transparent
         self.respawn = respawn
+        # Extra environment variables merged on top of the daemon's env
+        # before spawning the child. Use for tools whose themes are
+        # controlled by env (NEWT_COLORS, LESS, GREP_COLORS, …).
+        self.env = env or {}
         self._term: Vte.Terminal | None = None
         self._pid: int | None = None
         self._stopping = False
@@ -43,6 +57,14 @@ class Terminal(Widget):
         term.set_size(self.cols, self.rows)
         if self.transparent:
             term.set_clear_background(False)
+            bg = _rgba(theme.TERMINAL_BG, alpha=0.0)
+        else:
+            bg = _rgba(theme.TERMINAL_BG)
+        fg = _rgba(theme.TERMINAL_FG)
+        palette = [_rgba(c) for c in theme.TERMINAL_PALETTE]
+        term.set_colors(fg, bg, palette)
+        term.set_color_cursor(_rgba(theme.TERMINAL_CURSOR))
+        term.set_font(Pango.FontDescription(theme.TERMINAL_FONT))
         term.connect("child-exited", self._on_child_exited)
         self._term = term
         return term
@@ -55,11 +77,20 @@ class Terminal(Widget):
     def start(self):
         if self._term is None or self._pid is not None:
             return
+        # VTE's envv replaces the child env wholesale when non-None, so
+        # merge with the daemon's env first; otherwise the child loses
+        # PATH/HOME/SHELL/etc.
+        envv: list[str] | None
+        if self.env:
+            merged = {**os.environ, **self.env}
+            envv = [f"{k}={v}" for k, v in merged.items()]
+        else:
+            envv = None
         self._term.spawn_async(
             Vte.PtyFlags.DEFAULT,
             None,
             self.command,
-            None,
+            envv,
             GLib.SpawnFlags.SEARCH_PATH,
             None,
             None,

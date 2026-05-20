@@ -11,6 +11,7 @@ A single click can be wired via `on_left_click=...` like other widgets.
 """
 
 import math
+import os
 
 import gi
 import psutil
@@ -21,6 +22,31 @@ from gi.repository import GLib, Gtk
 from .. import theme
 from .base import Widget, paint
 from .stdout_text import _lerp_hex
+
+
+def _ac_online_from_sysfs() -> bool | None:
+    """Fallback for psutil reporting power_plugged=None (some laptops).
+    Returns True/False if any Mains-type supply reports online, else None.
+    """
+    root = "/sys/class/power_supply"
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return None
+    found = False
+    for name in names:
+        try:
+            with open(f"{root}/{name}/type") as f:
+                if f.read().strip() != "Mains":
+                    continue
+            with open(f"{root}/{name}/online") as f:
+                online = f.read().strip()
+        except OSError:
+            continue
+        found = True
+        if online == "1":
+            return True
+    return False if found else None
 
 
 class BatteryMeter(Widget):
@@ -83,7 +109,10 @@ class BatteryMeter(Widget):
             else:
                 self._present = True
                 self._percent = float(b.percent)
-                self._charging = bool(b.power_plugged)
+                plugged = b.power_plugged
+                if plugged is None:
+                    plugged = _ac_online_from_sysfs()
+                self._charging = bool(plugged)
         self._reconfigure_anim()
         if self._area is not None:
             self._area.queue_draw()

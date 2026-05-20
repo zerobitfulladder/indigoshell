@@ -39,3 +39,12 @@ def close_window(name: str):
         get_daemon().close(name)
     handler._indigo_popup_name = name
     return handler
+
+
+def toast(command: list[str], *, cols: int = 80, rows: int = 20, linger_ms: int | None = None):
+    """Click/menu handler that spawns a top-right Toast popup running
+    `command`; auto-closes after the command exits via a perimeter-trace
+    animation. Use in `MenuItem(..., toast([...]))` or widget on_* slots."""
+    def handler(_source=None):
+        get_daemon().toast(command, cols=cols, rows=rows, linger_ms=linger_ms)
+    return handler

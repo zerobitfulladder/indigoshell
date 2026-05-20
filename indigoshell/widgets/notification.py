@@ -10,8 +10,10 @@ Layout (body wraps under the heading row):
     │ [Action 1]  [Action 2]                     │
     └────────────────────────────────────────────┘
 
-A 4px frame in the urgency color wraps the whole thing. Click anywhere
-dismisses (matches dunst `mouse_left_click = close_current`).
+A thin beveled frame in the urgency color wraps the whole thing (bevel
+corners + thickness in theme.NOTIF_BEVEL/_BORDER_THICK; matches the
+chord-menu rows). Click anywhere dismisses (matches dunst
+`mouse_left_click = close_current`).
 """
 
 import html
@@ -19,18 +21,20 @@ from typing import Callable
 
 import gi
 
+gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import GdkPixbuf, GLib, Gtk
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
 from .. import theme
 from ..services.notifications import (
     Notification,
     REASON_DISMISSED,
+    REASON_EXPIRED,
     URGENCY_CRITICAL,
     URGENCY_LOW,
 )
-from .base import paint
+from .base import beveled_path, beveled_polyline, paint, stroke_partial
 
 
 _FRAME_BY_URGENCY = {
@@ -59,29 +63,60 @@ class NotificationToast(Gtk.EventBox):
         notif: Notification,
         on_dismiss: Callable[[int, int], None],
         on_action: Callable[[int, str], None],
+        on_hover_change: Callable[[bool], None] | None = None,
+        timeout_ms: int = 0,
         show_icon: bool = False,
     ) -> None:
         super().__init__()
         self.notif = notif
         self.on_dismiss = on_dismiss
         self.on_action = on_action
+        self.on_hover_change = on_hover_change
         self.show_icon = show_icon
+        self._hovered = False
+        self._timeout_ms = 0
+        self._elapsed_ms = 0
+        self._tick_source: int | None = None
+        self._last_tick_ms: int | None = None
+        self._paused = False
         self.set_visible_window(True)
-        self.set_size_request(theme.NOTIF_WIDTH, -1)
+        # We paint the background ourselves so the fill follows the
+        # bevel; tell GTK not to draw its theme/CSS background under us.
+        self.set_app_paintable(True)
         self.get_style_context().add_class("notif")
 
         self._build_ui()
+        self.add_events(
+            Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK
+        )
         self.connect("button-press-event", self._on_click)
-        # Bar-style decoration: corner brackets + bottom underline accent.
+        self.connect("enter-notify-event", self._on_enter)
+        self.connect("leave-notify-event", self._on_leave)
+        self.connect("destroy", self._on_destroy)
+        # Two-stage draw: clear-to-transparent + beveled fill BEFORE
+        # children render (so labels paint on top); border + meter
+        # AFTER, so they sit on top of everything.
+        self.connect("draw", self._draw_background)
         self.connect_after("draw", self._draw_decoration)
+        self.start_timer(timeout_ms)
 
-    def update(self, notif: Notification) -> None:
+    def update(self, notif: Notification, timeout_ms: int) -> None:
         """Mutate this toast in place when an app reuses the id."""
         self.notif = notif
         for child in list(self.get_children()):
             self.remove(child)
         self._build_ui()
         self.show_all()
+        self.start_timer(timeout_ms)
+
+    # Lock width at NOTIF_WIDTH — set_size_request is only a MIN, and
+    # labels' natural widths would otherwise grow the toast for long
+    # unbroken summaries/bodies. Returning the same value for min and
+    # natural forces GTK to allocate exactly this; labels inside
+    # ellipsize (head) and wrap (body) into the remaining space.
+    def do_get_preferred_width(self):
+        w = theme.NOTIF_WIDTH
+        return (w, w)
 
     # ── build ───────────────────────────────────────────────────────
     def _build_ui(self) -> None:
@@ -92,8 +127,11 @@ class NotificationToast(Gtk.EventBox):
         col.set_margin_start(theme.NOTIF_PADDING_X)
         col.set_margin_end(theme.NOTIF_PADDING_X)
         col.set_margin_top(theme.NOTIF_PADDING_Y)
-        # Reserve extra room only when we'll paint the progress meter.
-        extra = (theme.NOTIF_METER_THICK + 6) if self.notif.value is not None else 0
+        # Reserve room below the body so it doesn't collide with the meter.
+        extra = (
+            theme.NOTIF_METER_THICK + theme.NOTIF_METER_INSET_Y
+            if self.notif.value is not None else 0
+        )
         col.set_margin_bottom(theme.NOTIF_PADDING_Y + extra)
 
         head_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -105,6 +143,7 @@ class NotificationToast(Gtk.EventBox):
         head = Gtk.Label()
         head.set_xalign(0.0)
         head.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
+        head.set_max_width_chars(1)  # natural width = ~1 char; fills via allocation
         head.set_markup(self._heading_markup())
         head_row.pack_start(head, True, True, 0)
         col.pack_start(head_row, False, False, 0)
@@ -114,6 +153,7 @@ class NotificationToast(Gtk.EventBox):
             body.set_xalign(0.0)
             body.set_line_wrap(True)
             body.set_line_wrap_mode(2)  # PANGO_WRAP_WORD_CHAR
+            body.set_max_width_chars(1)  # wrap to allocation, not to natural text width
             body_markup = (
                 f"<span foreground='{_body_fg(self.notif.urgency)}'>"
                 f"{self._body_markup()}</span>"
@@ -183,35 +223,70 @@ class NotificationToast(Gtk.EventBox):
         return img
 
     # ── bar-style decoration (cairo) ────────────────────────────────
+    def _draw_background(self, w, cr) -> bool:
+        """Fill the beveled path with the toast bg color. Runs BEFORE
+        children draw so labels render on top. With app_paintable=True
+        on an RGBA-visual toplevel, the surface starts transparent —
+        no OPERATOR_CLEAR needed, and using it here actually scrubs
+        the toasts above us when they share an offscreen surface."""
+        alloc = w.get_allocation()
+        width, height = alloc.width, alloc.height
+        beveled_path(
+            cr, width, height,
+            bevel=theme.NOTIF_BEVEL,
+            corners=theme.NOTIF_BEVEL_CORNERS,
+        )
+        paint(cr, theme.NOTIF_BG)
+        cr.fill()
+        return False
+
     def _draw_decoration(self, w, cr) -> bool:
-        """Corner brackets in urgency color, plus a CPU-style segmented
+        """Beveled frame in urgency color, plus a CPU-style segmented
         progress meter at the bottom when a `value` hint is set."""
         alloc = w.get_allocation()
         width, height = alloc.width, alloc.height
         accent = _frame_color(self.notif.urgency)
 
-        # ── corner brackets ──
-        arm = theme.NOTIF_CORNER_ARM
-        t = theme.NOTIF_CORNER_THICK
+        # ── beveled border (matches Menu rows) ──
+        line_w = theme.NOTIF_BORDER_THICK
+        beveled_path(
+            cr, width, height,
+            bevel=theme.NOTIF_BEVEL,
+            corners=theme.NOTIF_BEVEL_CORNERS,
+            inset=line_w / 2,
+        )
         paint(cr, accent)
-        # top-left
-        cr.rectangle(0, 0, arm, t)
-        cr.rectangle(0, 0, t, arm)
-        # top-right
-        cr.rectangle(width - arm, 0, arm, t)
-        cr.rectangle(width - t, 0, t, arm)
-        # bottom-left
-        cr.rectangle(0, height - t, arm, t)
-        cr.rectangle(0, height - arm, t, arm)
-        # bottom-right
-        cr.rectangle(width - arm, height - t, arm, t)
-        cr.rectangle(width - t, height - arm, t, arm)
-        cr.fill()
+        cr.set_line_width(line_w)
+        cr.stroke()
+
+        # ── timer trace overdraws the urgency border clockwise from
+        # top-left as time elapses; full perimeter → expire. ──
+        if self._timeout_ms > 0:
+            self._draw_timer_trace(cr, width, height, line_w)
 
         # ── segmented progress meter (only when value is set) ──
         if self.notif.value is not None:
             self._draw_meter(cr, width, height, accent)
         return False
+
+    def _draw_timer_trace(self, cr, width: int, height: int, line_w: float) -> None:
+        progress = min(1.0, self._elapsed_ms / self._timeout_ms)
+        if progress <= 0:
+            return
+        pts = beveled_polyline(
+            width, height,
+            bevel=theme.NOTIF_BEVEL,
+            corners=theme.NOTIF_BEVEL_CORNERS,
+            inset=line_w / 2,
+        )
+        total = 0.0
+        for i in range(len(pts) - 1):
+            dx = pts[i + 1][0] - pts[i][0]
+            dy = pts[i + 1][1] - pts[i][1]
+            total += (dx * dx + dy * dy) ** 0.5
+        paint(cr, theme.NOTIF_TIMER_BORDER_FG)
+        cr.set_line_width(line_w)
+        stroke_partial(cr, pts, total * progress)
 
     def _draw_meter(self, cr, width: int, height: int, accent: str) -> None:
         n   = theme.NOTIF_METER_SEGMENTS
@@ -224,13 +299,75 @@ class NotificationToast(Gtk.EventBox):
         ratio = max(0.0, min(1.0, self.notif.value / 100.0))
         fill_end_x = ratio * usable_w
         # Sit a few px above the bottom corner brackets.
-        y = height - theme.NOTIF_CORNER_THICK - h - 3
+        y = height - int(theme.NOTIF_BORDER_THICK) - h - theme.NOTIF_METER_INSET_Y
         for i in range(n):
             x = i * (tick_w + gap)
             mid = x + tick_w / 2
             paint(cr, accent if mid <= fill_end_x else theme.NOTIF_METER_DIM)
             cr.rectangle(side + x, y, tick_w, h)
             cr.fill()
+
+    # ── timer / hover ───────────────────────────────────────────────
+    def start_timer(self, timeout_ms: int) -> None:
+        """(Re)start the dismiss timer. 0 = persistent (no animation)."""
+        self.stop_timer()
+        self._timeout_ms = max(0, int(timeout_ms))
+        self._elapsed_ms = 0
+        if self._timeout_ms > 0:
+            self._last_tick_ms = GLib.get_monotonic_time() // 1000
+            self._paused = self._hovered  # respect current hover state
+            self._tick_source = GLib.timeout_add(
+                theme.NOTIF_TIMER_TICK_MS, self._tick
+            )
+        self.queue_draw()
+
+    def stop_timer(self) -> None:
+        if self._tick_source is not None:
+            GLib.source_remove(self._tick_source)
+            self._tick_source = None
+        self._last_tick_ms = None
+
+    def set_paused(self, paused: bool) -> None:
+        if paused == self._paused:
+            return
+        self._paused = paused
+        if not paused:
+            # Reset the baseline so we don't credit the paused interval.
+            self._last_tick_ms = GLib.get_monotonic_time() // 1000
+
+    def _tick(self) -> bool:
+        now = GLib.get_monotonic_time() // 1000
+        if self._last_tick_ms is not None and not self._paused:
+            self._elapsed_ms += now - self._last_tick_ms
+        self._last_tick_ms = now
+        self.queue_draw()
+        if self._elapsed_ms >= self._timeout_ms:
+            self._tick_source = None
+            self.on_dismiss(self.notif.id, REASON_EXPIRED)
+            return False
+        return True
+
+    def _on_enter(self, _w, ev) -> bool:
+        # Crossings into child widgets (action buttons) report INFERIOR.
+        if ev.detail == Gdk.NotifyType.INFERIOR:
+            return False
+        if not self._hovered:
+            self._hovered = True
+            if self.on_hover_change is not None:
+                self.on_hover_change(True)
+        return False
+
+    def _on_leave(self, _w, ev) -> bool:
+        if ev.detail == Gdk.NotifyType.INFERIOR:
+            return False
+        if self._hovered:
+            self._hovered = False
+            if self.on_hover_change is not None:
+                self.on_hover_change(False)
+        return False
+
+    def _on_destroy(self, _w) -> None:
+        self.stop_timer()
 
     # ── click handlers ──────────────────────────────────────────────
     def _on_click(self, _w, _ev):

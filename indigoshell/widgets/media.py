@@ -60,6 +60,7 @@ class Media(StdoutText):
         kwargs.setdefault("on_right_click", lambda _w: _playerctl("play-pause", player=player))
         kwargs.setdefault("on_scroll_up", lambda _w: _playerctl("next", player=player))
         kwargs.setdefault("on_scroll_down", lambda _w: _playerctl("previous", player=player))
+        self._player = player
 
         if style is None:
             style = Style(italic=True)
@@ -119,6 +120,10 @@ class Media(StdoutText):
         self._cava_bands: tuple[int, ...] | None = None
         self._beat_intensity: float = 0.0
         self._beat_decay_timer: int | None = None
+        # Activation state — cava, beat listener and anim timer only run
+        # while a player reports Playing. Driven by services.music.
+        self._active: bool = False
+        self._music_status = None
 
     # ── widget build ─────────────────────────────────────────────────
     def build_widget(self):
@@ -153,32 +158,68 @@ class Media(StdoutText):
         super().start()
         if self.gtk_widget is None:
             return
+        # Cava bg draws even when inactive — handler short-circuits on
+        # bands=None — so it's safe to wire the draw signal here once.
+        if self.show_cava_bg:
+            self.gtk_widget.connect("draw", self._draw_cava_bg)
+        from ..services.music import get_status
+        self._music_status = get_status(self._player)
+        # add_listener replays the current state immediately, so this
+        # call is what wakes the visualizer if a player is already
+        # Playing at startup.
+        self._music_status.add_listener(self._on_playing_changed)
+
+    def stop(self):
+        if self._music_status is not None:
+            self._music_status.remove_listener(self._on_playing_changed)
+            self._music_status = None
+        self._deactivate()
+        super_stop = getattr(super(), "stop", None)
+        if super_stop:
+            super_stop()
+
+    # ── activation gating ────────────────────────────────────────────
+    def _on_playing_changed(self, playing: bool) -> None:
+        if playing:
+            self._activate()
+        else:
+            self._deactivate()
+
+    def _activate(self) -> None:
+        if self._active or self.gtk_widget is None:
+            return
+        self._active = True
         from ..services.beat import get_detector
         detector = get_detector()
         if self.show_cava_bg:
-            self.gtk_widget.connect("draw", self._draw_cava_bg)
             detector.add_bands_listener(self._on_bands)
         if self.beat_pulse:
             detector.add_listener(self._on_beat)
-        # Single 60fps timer drives scroll + glitch.
         self._anim_timer = GLib.timeout_add(self.tick_ms, self._tick_anim)
 
-    def stop(self):
+    def _deactivate(self) -> None:
+        if not self._active:
+            return
+        self._active = False
         if self._anim_timer is not None:
             GLib.source_remove(self._anim_timer)
             self._anim_timer = None
+        if self._beat_decay_timer is not None:
+            GLib.source_remove(self._beat_decay_timer)
+            self._beat_decay_timer = None
         from ..services.beat import get_detector
         detector = get_detector()
         if self.show_cava_bg:
             detector.remove_bands_listener(self._on_bands)
         if self.beat_pulse:
             detector.remove_listener(self._on_beat)
-        if self._beat_decay_timer is not None:
-            GLib.source_remove(self._beat_decay_timer)
-            self._beat_decay_timer = None
-        super_stop = getattr(super(), "stop", None)
-        if super_stop:
-            super_stop()
+        # Drop visual state so the next activation starts clean and the
+        # cava draw handler renders nothing in the meantime.
+        self._cava_bands = None
+        self._cava_peak = float(self.cava_floor)
+        self._beat_intensity = 0.0
+        if self.gtk_widget is not None:
+            self.gtk_widget.queue_draw()
 
     # ── text plumbing ────────────────────────────────────────────────
     def _set_text(self, text: str) -> bool:

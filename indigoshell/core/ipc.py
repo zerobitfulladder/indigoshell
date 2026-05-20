@@ -108,6 +108,9 @@ class IPCServer:
         if verb == "reload":
             GLib.idle_add(d.reload)
             return {"ok": True}
+        if verb == "kill":
+            GLib.idle_add(d.quit)
+            return {"ok": True}
         if verb == "list":
             return {"ok": True, "data": {"instances": d.list_instances(), "kinds": d.list_kinds()}}
         if verb == "open":
