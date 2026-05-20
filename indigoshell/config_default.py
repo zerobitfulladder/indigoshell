@@ -40,6 +40,7 @@ from .widgets import (
     Volume,
     Workspaces,
 )
+from .windows.color_picker import ColorPickerKind
 from .windows.notification import NotificationKind
 from .windows.popup import PopupKind
 
@@ -273,6 +274,7 @@ WINDOWS = {
         type_hint=Gdk.WindowTypeHint.UTILITY,
     ),
     "notifications": NotificationKind(),
+    "color-picker": ColorPickerKind(),
 }
 
 
