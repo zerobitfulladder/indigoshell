@@ -85,6 +85,8 @@ class BatteryMeter(Widget):
         self._anim_timer: int | None = None
         self._blink_on: bool = True
         self._breath_phase: float = 0.0
+        self._collide_pos: int = 0
+        self._collide_dir: int = 1
 
     def build_widget(self):
         cells_w = self.cells * self.cell_thick + (self.cells - 1) * self.gap
@@ -132,9 +134,9 @@ class BatteryMeter(Widget):
             )
         if self._charging and self._percent >= 99:
             return dict(
-                mode="breathe", sweep=theme.CYAN_BRIGHT, lit=theme.CYAN_MID,
-                empty=theme.CYAN_DIM, bracket=theme.CYAN_DIM,
-                dir=0, ms=33,  # ~30fps; under 0.1% CPU
+                mode="shimmer", sweep=theme.LIME_BRIGHT, lit=theme.LIME_DIM,
+                empty=theme.LIME_DIM, bracket=theme.LIME_DIM,
+                dir=0, ms=33,
             )
         if self._charging:
             return dict(
@@ -173,6 +175,9 @@ class BatteryMeter(Widget):
         ):
             lit_count = max(1, int(self._percent / 100.0 * self.cells))
             self._sweep_pos = 0 if self._sweep_dir > 0 else lit_count
+        if self._mode == "collide" and prev_mode != "collide":
+            self._collide_pos = 0
+            self._collide_dir = 1
         if self._mode == "static":
             self._kill_anim()
             return
@@ -201,6 +206,20 @@ class BatteryMeter(Widget):
         elif self._mode == "breathe":
             # ~2.5 s full cycle: 0.08 rad/frame at 30fps.
             self._breath_phase = (self._breath_phase + 0.08) % (2 * math.pi)
+        elif self._mode == "shimmer":
+            # Same advance as breathe; per-cell phase offset is applied in _draw.
+            self._breath_phase = (self._breath_phase + 0.08) % (2 * math.pi)
+        elif self._mode == "collide":
+            lit_count = max(1, int(self._percent / 100.0 * self.cells))
+            half = lit_count // 2
+            nxt = self._collide_pos + self._collide_dir
+            if nxt > half:
+                nxt = half - 1 if half > 0 else 0
+                self._collide_dir = -1
+            elif nxt < 0:
+                nxt = 1 if half > 0 else 0
+                self._collide_dir = 1
+            self._collide_pos = nxt
         else:
             self._anim_timer = None
             return False
@@ -253,6 +272,16 @@ class BatteryMeter(Widget):
             elif self._mode == "breathe":
                 t = (math.sin(self._breath_phase) + 1) / 2
                 color = _lerp_hex(cfg["lit"], cfg["sweep"], t)
+            elif self._mode == "shimmer":
+                # Per-cell phase offset → a wave of brightness rolls across.
+                t = (math.sin(self._breath_phase + i * 0.45) + 1) / 2
+                color = _lerp_hex(cfg["lit"], cfg["sweep"], t)
+            elif self._mode == "collide":
+                # Two bright fronts converging from both ends.
+                if i < self._collide_pos or i >= lit_count - self._collide_pos:
+                    color = cfg["sweep"]
+                else:
+                    color = cfg["lit"]
             else:
                 color = cfg["lit"]
             paint(cr, color)

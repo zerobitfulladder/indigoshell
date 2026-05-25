@@ -13,10 +13,11 @@ from gi.repository import Gdk
 
 from . import theme
 from .helpers.flows import display as flow_display
-from .api import toast, toggle
+from .api import open_window, toast, toggle
 from .helpers import layout, power, profile
 from .services import proc, sysinfo
 from .services.text_effects import Scramble
+from .helpers import command_panel
 from .widgets import (
     BatteryMeter,
     Box,
@@ -74,7 +75,7 @@ def _menu_popup(name: str, items: list[MenuItem]) -> PopupKind:
 
 # ── Identity ──────────────────────────────────────────────────────────
 widget_systag = SystagBlock(
-    on_left_click=toggle("fastfetch"),
+    on_left_click=open_window("fastfetch"),
 )
 
 widget_workspaces = Workspaces(
@@ -104,7 +105,8 @@ widget_lyrics = StdoutText(
     style=Style(fg=theme.MUSIC_FG, italic=True),
     hover_style=hover,
     active_style=active,
-    on_left_click=toggle("sptlrx"),
+    vfill=True,
+    on_left_click=open_window("sptlrx"),
 )
 
 widget_media = Media(
@@ -118,16 +120,16 @@ widget_media = Media(
 
 # ── System readouts ───────────────────────────────────────────────────
 widget_cpu_stat    = StatMeter(label="CPU", source=sysinfo.cpu_percent,
-                               on_left_click=toggle("hardware"), **theme.STAT_CPU)
+                               on_left_click=open_window("hardware"), **theme.STAT_CPU)
 widget_memory_stat = StatMeter(label="RAM", source=sysinfo.memory_percent,
-                               on_left_click=toggle("hardware"), **theme.STAT_RAM)
+                               on_left_click=open_window("hardware"), **theme.STAT_RAM)
 widget_temp_stat   = StatMeter(label="TMP", source=sysinfo.temperature_package,
                                **theme.STAT_TEMP)
 
 # ── Hardware ──────────────────────────────────────────────────────────
 widget_network = Network(
     style=Style(fg=theme.HARDWARE_FG),
-    on_left_click=toggle("network"),
+    on_left_click=open_window("network"),
     on_middle_click=spawn("nm-connection-editor"),
     on_right_click=toggle("nmtui"),
 )
@@ -148,7 +150,7 @@ widget_clock_battery = BatteryMeter(
     height=4,
 )
 widget_clock = Clock(
-    on_left_click=toggle("calendar"),
+    on_left_click=open_window("calendar"),
     extra_widget=widget_clock_battery,
 )
 
@@ -180,12 +182,14 @@ WINDOWS = {
         name="fastfetch",
         content=Terminal(["fastfetch"], cols=110, rows=28, transparent=True),
         padding=14,
+        close_on_outside_click=True,
     ),
     "sptlrx": PopupKind(
         name="sptlrx",
         content=Terminal(["sptlrx"], cols=50, rows=30, transparent=True, respawn=True),
         persistent=True,
         padding=14,
+        close_on_outside_click=True,
     ),
     "spotify-player": PopupKind(
         name="spotify-player",
@@ -210,6 +214,7 @@ WINDOWS = {
         content=NetworkPanel(),
         align="left",
         padding=12,
+        close_on_outside_click=True,
     ),
     "hardware": PopupKind(
         name="hardware",
@@ -219,10 +224,12 @@ WINDOWS = {
         # History accumulates in services.sysinfo, so the panel itself
         # can be torn down on close — no work happens while hidden.
         persistent=False,
+        close_on_outside_click=True,
     ),
     "calendar": PopupKind(
         name="calendar",
         content=Calendar(),
+        close_on_outside_click=True,
     ),
     "systray-panel": PopupKind(
         name="systray-panel",
@@ -276,6 +283,9 @@ WINDOWS = {
     "notifications": NotificationKind(),
     "color-picker": ColorPickerKind(),
 }
+
+
+WINDOWS[command_panel.POPUP_NAME] = command_panel.WINDOW
 
 
 # ── Dialog flows ──────────────────────────────────────────────────────

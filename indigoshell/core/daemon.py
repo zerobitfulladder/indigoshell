@@ -100,6 +100,11 @@ class Daemon:
         kind = self.kinds[name]
         if kind.singleton and name in self.instances:
             return name
+        # Mutual exclusion: clicking a bar widget that opens a panel should
+        # dismiss any other dismiss-on-click panel already up. Without this,
+        # the pointer grab's owner_events=True dispatches the bar click to
+        # the widget directly, so the old panel never sees an "outside" press.
+        self.close_outside_click_popups(except_name=name)
         if anchor is None:
             anchor = self.anchors.get(name)
         win = kind.build(self.store, params or {}, anchor=anchor, config=self.config)
@@ -128,6 +133,21 @@ class Daemon:
             anchor = self.anchors.get(name)
         self.open(name, params, anchor)
         return "opened"
+
+    def close_outside_click_popups(self, except_name: str | None = None) -> None:
+        """Close every currently-open popup whose kind has
+        `close_on_outside_click=True`, optionally skipping one by name.
+
+        Used by `open()` for mutual exclusion, and by the bar window to
+        dismiss panels on a bar click that the pointer grab couldn't
+        catch (clicks on same-client windows bypass the grab thanks to
+        owner_events=True)."""
+        for n in list(self.instances):
+            if n == except_name:
+                continue
+            kind = self.kinds.get(n)
+            if getattr(kind, "close_on_outside_click", False):
+                self.close(n)
 
     def list_instances(self) -> list[str]:
         return list(self.instances.keys())

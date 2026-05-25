@@ -40,10 +40,15 @@ class Widget:
         hover_style: Style | None = None,
         active_style: Style | None = None,
         child_styles: dict[str, Style] | None = None,
+        # If True, the widget (and its event-box wrapper) fills the bar's
+        # full height instead of hugging its content. Lets hover/active
+        # backgrounds paint as a full-height block, not just behind text.
+        vfill: bool = False,
     ):
         self.style = style
         self.hover_style = hover_style
         self.active_style = active_style
+        self.vfill = vfill
         self.child_styles = child_styles or {}
         self.name = f"iw{next(_id_gen)}"
         self.gtk_widget: Gtk.Widget | None = None
@@ -60,13 +65,14 @@ class Widget:
     def build(self) -> Gtk.Widget:
         w = self.build_widget()
         w.set_name(self.name)
-        w.set_valign(Gtk.Align.CENTER)
-        w.set_vexpand(False)
+        valign = Gtk.Align.FILL if self.vfill else Gtk.Align.CENTER
+        w.set_valign(valign)
+        w.set_vexpand(self.vfill)
         self._named_widget = w
         if self._needs_event_box():
             w = self._wrap_events(w)
-            w.set_valign(Gtk.Align.CENTER)
-            w.set_vexpand(False)
+            w.set_valign(valign)
+            w.set_vexpand(self.vfill)
         self.gtk_widget = w
         return w
 

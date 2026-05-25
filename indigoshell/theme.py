@@ -85,7 +85,7 @@ BAR_TRANSPARENT = True
 BAR_BG          = BASE_BLACK            # solid — matches kitty bg w/o a wallpaper
 
 # ── Popup window ────────────────────────────────────────────────────────
-POPUP_BG        = "#17062022"           # tinted violet-black, ~28% alpha
+POPUP_BG        = "#170620CC"           # tinted violet-black, ~80% alpha
 POPUP_BORDER    = HIGHLIGHT              # cyan-bright beveled stroke
 POPUP_BEVEL     = 16
 POPUP_BEVEL_CORNERS = ("top-right", "bottom-left")

@@ -54,10 +54,22 @@ class Bar(Gtk.Window):
         self.set_default_size(self.screen_width, self.height)
 
         self.connect("realize", self._set_strut)
+        # Catch bar-level button presses so clicks on empty bar space (or on
+        # widgets that don't consume the press) dismiss any open
+        # dismiss-on-click panel. Same-client clicks bypass the popup's
+        # pointer grab (owner_events=True), so the panel itself wouldn't
+        # see these — the bar has to do it.
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        self.connect("button-press-event", self._on_bar_click)
 
         self._widgets: list[Widget] = []
         self._build_layout()
         self._apply_css()
+
+    def _on_bar_click(self, _w, _event) -> bool:
+        from ..core.daemon import get_daemon
+        get_daemon().close_outside_click_popups()
+        return False
 
     def _build_layout(self):
         from ..core.daemon import get_daemon

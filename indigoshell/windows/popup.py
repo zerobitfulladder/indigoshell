@@ -59,6 +59,13 @@ class PopupKind(WindowKind):
         glow_period: float = 2.4,
         glow_min_alpha: float = 0.45,
         grab: bool = False,
+        # Close the popup when the user clicks outside its window. Uses a
+        # pointer-only seat grab so the keyboard stays free for other apps,
+        # but the popup intercepts every button-press until released. As a
+        # side effect, mouse motion doesn't generate enter events on other
+        # windows, so focus-follow-mouse setups don't accidentally close the
+        # popup just because the cursor drifted away.
+        close_on_outside_click: bool = False,
         padding: int = 0,
         wm_class: str = "indigoshell-popup",
         # WM type hint. DIALOG is friendly to keep_above on most WMs;
@@ -88,6 +95,7 @@ class PopupKind(WindowKind):
         self._glow_started_at: float = 0.0
         self._glow_timer_id: int | None = None
         self.grab = grab
+        self.close_on_outside_click = close_on_outside_click
         self._seat: Any = None
         self.padding = padding
         self.wm_class = wm_class
@@ -132,7 +140,12 @@ class PopupKind(WindowKind):
         )
         if status == Gdk.GrabStatus.SUCCESS:
             self._seat = seat
-        win.present()
+        # present_with_time + explicit raise: qtile ignores keep_above for
+        # inter-floating stacking, but does honor _NET_ACTIVE_WINDOW with a
+        # valid timestamp. Without this, a new popup can map *under* an
+        # already-open floating window until that window's state changes.
+        win.present_with_time(Gdk.CURRENT_TIME)
+        gdk_window.raise_()
         return False
 
     def _release_grab(self) -> None:
@@ -146,6 +159,43 @@ class PopupKind(WindowKind):
         if self._daemon is not None:
             self._daemon.close(self.name)
         return True
+
+    def _on_outside_click_geom(self, win: Gtk.Window, event) -> bool:
+        # Under a pointer-only seat grab with owner_events=True, presses on
+        # other windows arrive here with coordinates relative to `win`. Inside
+        # the popup, presses on a child widget would normally be consumed
+        # before bubbling up — but presses on empty padding/gaps also reach
+        # here, and we don't want those to close the panel. So only close
+        # when the coordinates fall outside the popup's allocated rect.
+        alloc = win.get_allocation()
+        if 0 <= event.x < alloc.width and 0 <= event.y < alloc.height:
+            return False
+        if self._daemon is not None:
+            self._daemon.close(self.name)
+        return True
+
+    def _on_map_grab_pointer(self, win: Gtk.Window, _event) -> bool:
+        # Pointer-only seat grab: catches clicks outside the popup so we can
+        # close it, but leaves the keyboard alone so the user can keep typing
+        # in whatever app they had focused. With owner_events=True, clicks
+        # inside the popup dispatch to its children normally; clicks outside
+        # arrive at the popup's button-press-event → _on_outside_click.
+        gdk_window = win.get_window()
+        display = Gdk.Display.get_default()
+        if gdk_window is None or display is None:
+            return False
+        seat = display.get_default_seat()
+        status = seat.grab(
+            gdk_window,
+            Gdk.SeatCapabilities.ALL_POINTING,
+            True,
+            None, None, None,
+        )
+        if status == Gdk.GrabStatus.SUCCESS:
+            self._seat = seat
+        win.present_with_time(Gdk.CURRENT_TIME)
+        gdk_window.raise_()
+        return False
 
     # ── construction ─────────────────────────────────────────────────────
     def _construct(self, anchor: Gtk.Widget | None) -> Gtk.Window:
@@ -194,6 +244,9 @@ class PopupKind(WindowKind):
         if self.grab:
             win.connect("map-event", self._on_map_grab)
             win.connect("button-press-event", self._on_outside_click)
+        if self.close_on_outside_click and not self.grab:
+            win.connect("map-event", self._on_map_grab_pointer)
+            win.connect("button-press-event", self._on_outside_click_geom)
 
         gtk_child = self.content.build()
         self._install_content_css()
@@ -240,6 +293,13 @@ class PopupKind(WindowKind):
         win.show_all()
         pw, ph = win.get_size()
         self._place(win, anchor, pw, ph)
+        # Raise above any other floating windows. See _on_map_grab for why
+        # keep_above alone isn't enough on qtile. Non-grab popups don't run
+        # the map handler, so the same fix has to live here too.
+        win.present_with_time(Gdk.CURRENT_TIME)
+        gdk_win = win.get_window()
+        if gdk_win is not None:
+            gdk_win.raise_()
 
     def refit(self, win: Gtk.Window, anchor: Gtk.Widget | None) -> None:
         """Resize an already-mapped (or hidden cached) window to its
