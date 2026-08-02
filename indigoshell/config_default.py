@@ -13,7 +13,7 @@ from gi.repository import Gdk
 
 from . import theme
 from .helpers.flows import display as flow_display
-from .api import open_window, toast, toggle
+from .api import toast, toggle
 from .helpers import layout, power, profile
 from .services import proc, sysinfo
 from .services.text_effects import Scramble
@@ -75,7 +75,7 @@ def _menu_popup(name: str, items: list[MenuItem]) -> PopupKind:
 
 # ── Identity ──────────────────────────────────────────────────────────
 widget_systag = SystagBlock(
-    on_left_click=open_window("fastfetch"),
+    on_left_click=toggle("fastfetch"),
 )
 
 widget_workspaces = Workspaces(
@@ -106,7 +106,7 @@ widget_lyrics = StdoutText(
     hover_style=hover,
     active_style=active,
     vfill=True,
-    on_left_click=open_window("sptlrx"),
+    on_left_click=toggle("sptlrx"),
 )
 
 widget_media = Media(
@@ -120,16 +120,16 @@ widget_media = Media(
 
 # ── System readouts ───────────────────────────────────────────────────
 widget_cpu_stat    = StatMeter(label="CPU", source=sysinfo.cpu_percent,
-                               on_left_click=open_window("hardware"), **theme.STAT_CPU)
+                               on_left_click=toggle("hardware"), **theme.STAT_CPU)
 widget_memory_stat = StatMeter(label="RAM", source=sysinfo.memory_percent,
-                               on_left_click=open_window("hardware"), **theme.STAT_RAM)
+                               on_left_click=toggle("hardware"), **theme.STAT_RAM)
 widget_temp_stat   = StatMeter(label="TMP", source=sysinfo.temperature_package,
                                **theme.STAT_TEMP)
 
 # ── Hardware ──────────────────────────────────────────────────────────
 widget_network = Network(
     style=Style(fg=theme.HARDWARE_FG),
-    on_left_click=open_window("network"),
+    on_left_click=toggle("network"),
     on_middle_click=spawn("nm-connection-editor"),
     on_right_click=toggle("nmtui"),
 )
@@ -150,7 +150,7 @@ widget_clock_battery = BatteryMeter(
     height=4,
 )
 widget_clock = Clock(
-    on_left_click=open_window("calendar"),
+    on_left_click=toggle("calendar"),
     extra_widget=widget_clock_battery,
 )
 
