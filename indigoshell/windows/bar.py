@@ -43,15 +43,21 @@ class Bar(Gtk.Window):
         self.set_keep_above(True)
         self.stick()
 
+        self.screen_width = 0
+        self.screen_geo = None
+        self._apply_geometry()
+
+        # The display can change under us — resolution switches emit
+        # "size-changed", plug/unplug and monitor reconfiguration emit
+        # "monitors-changed". The bar caches the primary monitor's
+        # geometry, so without these it keeps a stale width/position and
+        # reserves the wrong strut. Recompute on either.
         screen = Gdk.Screen.get_default()
-        monitor = screen.get_primary_monitor()
-        geo = screen.get_monitor_geometry(monitor)
-        self.screen_width = geo.width
-        self.screen_geo = geo
-        y = geo.y if self.position == "top" else geo.y + geo.height - self.height
-        self.move(geo.x, y)
-        self.set_size_request(self.screen_width, self.height)
-        self.set_default_size(self.screen_width, self.height)
+        self._screen_handlers = [
+            screen.connect("size-changed", self._on_display_changed),
+            screen.connect("monitors-changed", self._on_display_changed),
+        ]
+        self.connect("destroy", self._disconnect_screen)
 
         self.connect("realize", self._set_strut)
         # Catch bar-level button presses so clicks on empty bar space (or on
@@ -65,6 +71,38 @@ class Bar(Gtk.Window):
         self._widgets: list[Widget] = []
         self._build_layout()
         self._apply_css()
+
+    def _apply_geometry(self):
+        """Size and place the bar against the current primary monitor.
+
+        Safe to call repeatedly: used at construction and whenever the
+        display geometry changes.
+        """
+        screen = Gdk.Screen.get_default()
+        monitor = screen.get_primary_monitor()
+        geo = screen.get_monitor_geometry(monitor)
+        self.screen_width = geo.width
+        self.screen_geo = geo
+        y = geo.y if self.position == "top" else geo.y + geo.height - self.height
+        self.set_size_request(self.screen_width, self.height)
+        self.set_default_size(self.screen_width, self.height)
+        # resize() matters once realized — set_size_request only sets the
+        # minimum, the WM won't shrink a DOCK back down on its own.
+        if self.get_realized():
+            self.resize(self.screen_width, self.height)
+        self.move(geo.x, y)
+
+    def _on_display_changed(self, _screen):
+        self._apply_geometry()
+        # Strut is keyed to the new width/height; re-stamp it. The window
+        # is already realized here, so _set_strut has a live X window.
+        self._set_strut(self)
+
+    def _disconnect_screen(self, _w):
+        screen = Gdk.Screen.get_default()
+        for hid in getattr(self, "_screen_handlers", []):
+            screen.disconnect(hid)
+        self._screen_handlers = []
 
     def _on_bar_click(self, _w, _event) -> bool:
         from ..core.daemon import get_daemon
