@@ -12,7 +12,7 @@ import subprocess
 import skia
 
 from common import C, fill_rect, txt
-from indigoshell2 import theme
+from indigoshell import theme
 from render_panels import EFFECTS, desktop_bg, run_effect, snapshot_panel
 
 FPS = 30

@@ -26,4 +26,4 @@ Regenerate from this folder:
     PYTHONPATH=../.. ../../.venv/bin/python render_gifs.py    # needs ffmpeg
 
 The panel effects are prototype SkSL inside `render_panels.py`; a chosen
-one moves into `indigoshell2/effects.py` as a proper `Effect` class.
+one moves into `indigoshell/effects.py` as a proper `Effect` class.

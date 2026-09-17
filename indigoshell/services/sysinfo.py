@@ -1,47 +1,94 @@
-"""Shared system readouts with background sampling.
+"""Shared system readouts.
 
-A single 1 Hz GLib timer polls psutil once per second, caches the latest
-CPU/RAM percent, and keeps a rolling 60-sample (1 min) history deque
-for each. StatMeter and HardwarePanel both read from this — no more
-multiple callers racing `psutil.cpu_percent(interval=None)`'s global
-"since last call" semantics. The sampler starts lazily on first read
-and runs for the life of the process.
+One 1 Hz sampler polls psutil and caches CPU/RAM, keeping a rolling
+60-sample (1 minute) history. Every reader shares it — `cpu_percent()`
+has "since the last call" semantics in psutil, so two independent callers
+would each get a different, wrong answer.
+
+The sampler is an asyncio task on the shell's one loop, started on first
+use and shared by every caller.
 """
 
+import asyncio
+import logging
+import os
 from collections import deque
 
-import gi
 import psutil
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import GLib
+log = logging.getLogger(__name__)
 
-_SAMPLE_INTERVAL_MS = 1000
-_HISTORY_SAMPLES    = 60   # 1 minute at 1 Hz
+_SAMPLE_INTERVAL = 1.0
+_HISTORY_SAMPLES = 60
 
 _cpu_history: deque[float] = deque(maxlen=_HISTORY_SAMPLES)
 _ram_history: deque[float] = deque(maxlen=_HISTORY_SAMPLES)
-_cpu_latest: float = 0.0
-_ram_latest: float = 0.0
-_timer_id: int | None = None
+_cpu_latest = 0.0
+_ram_latest = 0.0
+_task: asyncio.Task | None = None
 
 
-def _sample() -> bool:
+_subscribers: list = []
+
+
+def subscribe(callback) -> None:
+    """Called after every sample.
+
+    Consumers that draw the history must redraw on this rather than on a
+    timer of their own. Two 1Hz clocks are not one clock: a widget
+    polling at its own 1Hz drifts against the sampler and ends up
+    appending the same latest value twice, so its graph scrolls without
+    the number changing.
+    """
+    if callback not in _subscribers:
+        _subscribers.append(callback)
+
+
+def unsubscribe(callback) -> None:
+    if callback in _subscribers:
+        _subscribers.remove(callback)
+
+
+def _sample() -> None:
     global _cpu_latest, _ram_latest
     _cpu_latest = psutil.cpu_percent(interval=None)
     _ram_latest = psutil.virtual_memory().percent
     _cpu_history.append(_cpu_latest)
     _ram_history.append(_ram_latest)
-    return True
+
+
+def _notify() -> None:
+    # Deliberately not called from `_sample()`. The priming sample runs
+    # inside `_ensure_started()` *before* `_task` is set, and a subscriber
+    # that reads `cpu_percent()` would re-enter `_ensure_started()`, find
+    # `_task` still None, and sample again — recursing until the stack
+    # blew. Only the loop notifies.
+    for callback in list(_subscribers):
+        try:
+            callback()
+        except Exception:
+            log.exception("sysinfo subscriber failed")
+
+
+async def _loop() -> None:
+    while True:
+        await asyncio.sleep(_SAMPLE_INTERVAL)
+        try:
+            _sample()
+            _notify()
+        except Exception:
+            log.exception("sysinfo sample failed")
 
 
 def _ensure_started() -> None:
-    global _timer_id
-    if _timer_id is not None:
+    global _task
+    if _task is not None:
         return
-    # Prime once so first read isn't 0%.
-    _sample()
-    _timer_id = GLib.timeout_add(_SAMPLE_INTERVAL_MS, _sample)
+    _sample()          # prime, so the first read isn't 0%
+    try:
+        _task = asyncio.get_running_loop().create_task(_loop())
+    except RuntimeError:
+        pass           # no loop yet (e.g. imported by a config check)
 
 
 def cpu_percent() -> float:
@@ -64,16 +111,18 @@ def memory_history() -> list[float]:
     return list(_ram_history)
 
 
+# ── CPU package temperature ─────────────────────────────────────────────
 _temp_path: str | None = None
-_temp_path_resolved: bool = False
+_temp_resolved = False
 
 
 def _resolve_temp_path() -> str | None:
-    """Locate the sysfs file for the CPU package die temperature once.
-    psutil.sensors_temperatures() reads every hwmon sensor (~18 files
-    on a typical laptop) on each call; we only need one. Caching the
-    path lets the hot poll path do a single open()+read()."""
-    import os
+    """Locate the CPU package die temperature sysfs file, once.
+
+    psutil.sensors_temperatures() reads every hwmon sensor (~18 files) on
+    each call; we need one. Caching the path makes the hot path a single
+    open()+read().
+    """
     base = "/sys/class/hwmon"
     if not os.path.isdir(base):
         return None
@@ -82,24 +131,25 @@ def _resolve_temp_path() -> str | None:
         dev = os.path.join(base, entry)
         try:
             with open(os.path.join(dev, "name")) as f:
-                name = f.read().strip()
+                candidates.append((f.read().strip(), dev))
         except OSError:
             continue
-        candidates.append((name, dev))
-    # Prefer Intel coretemp's "Package id 0", then AMD k10temp, then
-    # anything else with a Package-labelled input, then any temp input.
-    name_priority = ("coretemp", "k10temp", "zenpower")
-    candidates.sort(key=lambda c: name_priority.index(c[0]) if c[0] in name_priority else len(name_priority))
+    priority = ("coretemp", "k10temp", "zenpower")
+    candidates.sort(key=lambda c: priority.index(c[0])
+                    if c[0] in priority else len(priority))
     for _name, dev in candidates:
-        for label_file in sorted(f for f in os.listdir(dev) if f.endswith("_label")):
+        try:
+            labels = sorted(f for f in os.listdir(dev) if f.endswith("_label"))
+        except OSError:
+            continue
+        for label_file in labels:
             try:
                 with open(os.path.join(dev, label_file)) as f:
                     label = f.read().strip()
             except OSError:
                 continue
-            if label.startswith("Package") or label.startswith("Tctl") or label.startswith("Tdie"):
+            if label.startswith(("Package", "Tctl", "Tdie")):
                 return os.path.join(dev, label_file.replace("_label", "_input"))
-    # Last resort: any temp1_input from the first hwmon device.
     for _name, dev in candidates:
         path = os.path.join(dev, "temp1_input")
         if os.path.exists(path):
@@ -108,12 +158,11 @@ def _resolve_temp_path() -> str | None:
 
 
 def temperature_package() -> float:
-    """CPU package die temperature in °C. Reads a single sysfs file
-    after a one-time scan to find the right one."""
-    global _temp_path, _temp_path_resolved
-    if not _temp_path_resolved:
+    global _temp_path, _temp_resolved
+    if not _temp_resolved:
         _temp_path = _resolve_temp_path()
-        _temp_path_resolved = True
+        _temp_resolved = True
+        log.debug("cpu temperature source: %s", _temp_path)
     if _temp_path is None:
         return 0.0
     try:

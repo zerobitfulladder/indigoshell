@@ -1,94 +1,69 @@
-"""HUD-style clock: date on the left, time on the right, with an
-optional `extra_widget` (e.g. a BatteryMeter) packed underneath."""
+"""HUD-style clock: date on the left, time on the right, with an optional
+extra widget (e.g. a BatteryMeter) stacked underneath.
+
+The two labels align on their text baselines, not their boxes — they are
+different sizes, so box-aligning them would leave the date floating.
+"""
 
 import datetime
 
-import gi
+import skia
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
-
-from .. import theme
-from .base import Widget, make_label
+from .. import text, theme
+from .base import Size, Widget
+from .label import Label
+from .layout import Align, Box, Column, Row, Spacer
 
 
 class Clock(Widget):
-    interval_ms = 1000
+    animation_fps = 1
 
-    def __init__(
-        self,
-        date_format: str = "%a %d %b",
-        time_format: str = "%H:%M",
-        time_size_pt: int = 18,
-        date_size_pt: int = 11,
-        width: int = 170,
-        time_color: str | None = None,
-        date_color: str | None = None,
-        extra_widget: Widget | None = None,
-        **kwargs,
-    ):
+    def __init__(self, *, date_format: str = "%a %d %b",
+                 time_format: str = "%H:%M",
+                 time_size: float = 18, date_size: float = 11,   # points
+                 gap: int = 10,
+                 time_color: str | None = None,
+                 date_color: str | None = None,
+                 extra: Widget | None = None,
+                 **kwargs) -> None:
         super().__init__(**kwargs)
         self.date_format = date_format
         self.time_format = time_format
-        self.time_size_pt = time_size_pt
-        self.date_size_pt = date_size_pt
-        self.width = width
-        self.time_color = time_color or theme.CYAN_BRIGHT
-        self.date_color = date_color or theme.BASE_MUTED
-        self.extra_widget = extra_widget
-        self._date_label: Gtk.Label | None = None
-        self._time_label: Gtk.Label | None = None
+        self.extra = extra
 
-    def build_widget(self):
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-        vbox.set_valign(Gtk.Align.CENTER)
+        self._date = Label("", size=text.pt(date_size),
+                           color=date_color or theme.BASE_MUTED)
+        self._time = Label("", size=text.pt(time_size), bold=True,
+                           align="right",
+                           color=time_color or theme.CYAN_BRIGHT)
+        # A fixed gap rather than a Spacer inside a fixed width: the font
+        # is monospace and both formats are constant-width, so the cluster
+        # never jitters, and it hugs its content instead of leaving a
+        # dead stretch between date and time.
+        row = Row([self._date, Spacer(size=gap), self._time],
+                  align=Align.BASELINE)
+        kids = [row] + ([extra] if extra is not None else [])
+        # STRETCH so a fill=True extra widget spans the date/time row.
+        self._column = Column(kids, spacing=1, align=Align.STRETCH)
+        self._refresh()
 
-        # Date (left) + time (right)
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.set_size_request(self.width, -1)
+    def children(self):
+        return (self._column,)
 
-        self._date_label = make_label("", "date")
-        self._date_label.set_xalign(0.0)
-        self._date_label.set_valign(Gtk.Align.BASELINE)
-        row.pack_start(self._date_label, False, False, 0)
-
-        self._time_label = make_label("", "time")
-        self._time_label.set_xalign(1.0)
-        self._time_label.set_valign(Gtk.Align.BASELINE)
-        row.pack_end(self._time_label, False, False, 0)
-        vbox.pack_start(row, False, False, 0)
-
-        if self.extra_widget is not None:
-            child = self.extra_widget.build()
-            vbox.pack_start(child, False, False, 0)
-
-        return vbox
-
-    def start(self) -> None:
-        super().start()
-        if self.extra_widget is not None:
-            self.extra_widget.start()
-
-    def stop(self) -> None:
-        if self.extra_widget is not None:
-            self.extra_widget.stop()
-        super().stop()
-
-    def walk(self):
-        yield self
-        if self.extra_widget is not None:
-            yield from self.extra_widget.walk()
-
-    def tick(self) -> bool:
+    def _refresh(self) -> None:
         now = datetime.datetime.now()
-        if self._date_label is not None:
-            self._date_label.set_markup(
-                f"<span size='{self.date_size_pt * 1000}' "
-                f"foreground='{self.date_color}'>{now.strftime(self.date_format)}</span>"
-            )
-        if self._time_label is not None:
-            self._time_label.set_markup(
-                f"<span weight='bold' size='{self.time_size_pt * 1000}' "
-                f"foreground='{self.time_color}'>{now.strftime(self.time_format)}</span>"
-            )
-        return True
+        self._date.set_value(now.strftime(self.date_format))
+        self._time.set_value(now.strftime(self.time_format))
+
+    def animate(self, t: float) -> None:
+        self._refresh()
+
+    def measure(self, avail: Size) -> Size:
+        return self._column.measure(avail)
+
+    def arrange(self, rect: skia.Rect) -> None:
+        self.rect = rect
+        self._column.arrange(rect)
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        self._column.paint(canvas)

@@ -6,17 +6,26 @@ emits the spec signals (NotificationClosed, ActionInvoked) when the UI
 layer says a toast was dismissed or an action was clicked.
 
 The UI is decoupled — this module is "just" a D-Bus adapter. The
-notification stack window owns one instance and supplies the callbacks.
+notification manager owns one instance and supplies the
+callbacks. Unlike the systray watcher this uses dbus-fast's high-level
+`ServiceInterface`: nothing here needs the caller's identity, so the
+declarative form is the tidier fit and buys introspection for free.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import gi
+from dbus_fast import NameFlag, RequestNameReply, unpack_variants
+from dbus_fast.service import ServiceInterface, method
+from dbus_fast.service import signal as dbus_signal
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gio, GLib
+from .bus import session_bus
 
+log = logging.getLogger(__name__)
+
+BUS_NAME = "org.freedesktop.Notifications"
+OBJECT_PATH = "/org/freedesktop/Notifications"
 
 # Reasons emitted by NotificationClosed signal (spec values).
 REASON_EXPIRED   = 1
@@ -30,45 +39,6 @@ URGENCY_NORMAL   = 1
 URGENCY_CRITICAL = 2
 
 
-_INTERFACE_XML = """
-<node>
-  <interface name='org.freedesktop.Notifications'>
-    <method name='Notify'>
-      <arg type='s' name='app_name'        direction='in'/>
-      <arg type='u' name='replaces_id'     direction='in'/>
-      <arg type='s' name='app_icon'        direction='in'/>
-      <arg type='s' name='summary'         direction='in'/>
-      <arg type='s' name='body'            direction='in'/>
-      <arg type='as' name='actions'        direction='in'/>
-      <arg type='a{sv}' name='hints'       direction='in'/>
-      <arg type='i' name='expire_timeout'  direction='in'/>
-      <arg type='u' name='id'              direction='out'/>
-    </method>
-    <method name='CloseNotification'>
-      <arg type='u' name='id' direction='in'/>
-    </method>
-    <method name='GetCapabilities'>
-      <arg type='as' name='capabilities' direction='out'/>
-    </method>
-    <method name='GetServerInformation'>
-      <arg type='s' name='name'         direction='out'/>
-      <arg type='s' name='vendor'       direction='out'/>
-      <arg type='s' name='version'      direction='out'/>
-      <arg type='s' name='spec_version' direction='out'/>
-    </method>
-    <signal name='NotificationClosed'>
-      <arg type='u' name='id'/>
-      <arg type='u' name='reason'/>
-    </signal>
-    <signal name='ActionInvoked'>
-      <arg type='u' name='id'/>
-      <arg type='s' name='action_key'/>
-    </signal>
-  </interface>
-</node>
-"""
-
-
 @dataclass
 class Notification:
     """Parsed Notify call. The UI builds a toast from this."""
@@ -80,20 +50,60 @@ class Notification:
     actions: list[tuple[str, str]]  # [(key, label), ...]
     expire_timeout: int             # ms; -1 = server default, 0 = never
     urgency: int                    # 0/1/2
-    image_data: Any = None          # raw GVariant tuple (w,h,rowstride,alpha,bps,channels,bytes) or None
+    image_data: Any = None          # (w,h,rowstride,alpha,bps,channels,bytes) or None
     image_path: str | None = None   # file path or file:// URI or None
     value: int | None = None        # progress 0-100, from "value" hint; None if absent
     raw_hints: dict[str, Any] = field(default_factory=dict)
 
 
+class _Interface(ServiceInterface):
+    def __init__(self, server: "NotificationServer") -> None:
+        super().__init__(BUS_NAME)
+        self._server = server
+
+    @method()
+    def Notify(self, app_name: 's', replaces_id: 'u', app_icon: 's',
+               summary: 's', body: 's', actions: 'as', hints: 'a{sv}',
+               expire_timeout: 'i') -> 'u':
+        return self._server._handle_notify(
+            app_name, replaces_id, app_icon, summary, body, actions,
+            unpack_variants(hints), expire_timeout)
+
+    @method()
+    def CloseNotification(self, id: 'u') -> None:
+        try:
+            self._server.on_close_request(int(id))
+        except Exception:
+            log.exception("close-request handler failed")
+
+    @method()
+    def GetCapabilities(self) -> 'as':
+        return list(NotificationServer.CAPABILITIES)
+
+    @method()
+    def GetServerInformation(self) -> 'ssss':
+        s = NotificationServer
+        return [s.SERVER_NAME, s.SERVER_VENDOR, s.SERVER_VERSION,
+                s.SPEC_VERSION]
+
+    @dbus_signal()
+    def NotificationClosed(self, id: 'u', reason: 'u') -> 'uu':
+        return [id, reason]
+
+    @dbus_signal()
+    def ActionInvoked(self, id: 'u', action_key: 's') -> 'us':
+        return [id, action_key]
+
+
 class NotificationServer:
     """D-Bus side. Calls `on_notify(notif)` for each arrival and
-    `on_close(id, reason)` for CloseNotification calls (reason=CLOSED)."""
+    `on_close_request(id)` for CloseNotification calls."""
 
-    CAPABILITIES = ["body", "body-markup", "actions", "icon-static", "persistence"]
+    CAPABILITIES = ["body", "body-markup", "actions", "icon-static",
+                    "persistence"]
     SERVER_NAME    = "indigoshell"
     SERVER_VENDOR  = "indigo"
-    SERVER_VERSION = "0.1.0"
+    SERVER_VERSION = "0.2.0"
     SPEC_VERSION   = "1.2"
 
     def __init__(
@@ -104,79 +114,32 @@ class NotificationServer:
         self.on_notify = on_notify
         self.on_close_request = on_close_request
         self._next_id = 1
-        self._node = Gio.DBusNodeInfo.new_for_xml(_INTERFACE_XML)
-        self._owner_id: int | None = None
-        self._registration_id: int | None = None
-        self._connection: Gio.DBusConnection | None = None
+        self._iface = _Interface(self)
+        self._started = False
+        self.active = False
 
-    def start(self) -> None:
-        if self._owner_id is not None:
+    async def start(self) -> None:
+        """Export the interface and claim the well-known name. If another
+        daemon (dunst, say) owns it we stay exported but inert — `active`
+        says whether notifications will actually reach us."""
+        if self._started:
             return
-        self._owner_id = Gio.bus_own_name(
-            Gio.BusType.SESSION,
-            "org.freedesktop.Notifications",
-            Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT,
-            self._on_bus_acquired,
-            self._on_name_acquired,
-            self._on_name_lost,
-        )
-
-    def stop(self) -> None:
-        if self._connection is not None and self._registration_id is not None:
-            self._connection.unregister_object(self._registration_id)
-        self._registration_id = None
-        if self._owner_id is not None:
-            Gio.bus_unown_name(self._owner_id)
-        self._owner_id = None
-        self._connection = None
-
-    # ── name ownership callbacks ────────────────────────────────────
-    def _on_bus_acquired(self, connection, _name):
-        self._connection = connection
-        self._registration_id = connection.register_object(
-            "/org/freedesktop/Notifications",
-            self._node.interfaces[0],
-            self._method_call,
-            None,
-            None,
-        )
-
-    def _on_name_acquired(self, _connection, name):
-        # Useful for logs; quiet by default.
-        pass
-
-    def _on_name_lost(self, _connection, name):
-        # Another daemon took the name. We could re-attempt or log.
-        # For now, leave silent; daemon reload will retry.
-        pass
-
-    # ── method dispatch ─────────────────────────────────────────────
-    def _method_call(
-        self, _connection, _sender, _path, _interface, method, params, invocation
-    ):
-        if method == "Notify":
-            self._handle_notify(params, invocation)
-        elif method == "CloseNotification":
-            (nid,) = params.unpack()
-            self.on_close_request(int(nid))
-            invocation.return_value(None)
-        elif method == "GetCapabilities":
-            invocation.return_value(GLib.Variant("(as)", (self.CAPABILITIES,)))
-        elif method == "GetServerInformation":
-            invocation.return_value(GLib.Variant(
-                "(ssss)",
-                (self.SERVER_NAME, self.SERVER_VENDOR, self.SERVER_VERSION, self.SPEC_VERSION),
-            ))
+        self._started = True
+        bus = await session_bus()
+        bus.export(OBJECT_PATH, self._iface)
+        reply = await bus.request_name(
+            BUS_NAME, NameFlag.ALLOW_REPLACEMENT | NameFlag.DO_NOT_QUEUE)
+        self.active = reply in (RequestNameReply.PRIMARY_OWNER,
+                                RequestNameReply.ALREADY_OWNER)
+        if self.active:
+            log.info("notification daemon up")
         else:
-            invocation.return_error_literal(
-                Gio.dbus_error_quark(),
-                Gio.DBusError.UNKNOWN_METHOD,
-                f"Unknown method {method}",
-            )
+            log.warning("%s is owned by another daemon; "
+                        "notifications are theirs", BUS_NAME)
 
-    def _handle_notify(self, params, invocation):
-        app_name, replaces_id, app_icon, summary, body, actions, hints, expire_timeout = params.unpack()
-
+    # ── decode ───────────────────────────────────────────────────────
+    def _handle_notify(self, app_name, replaces_id, app_icon, summary,
+                       body, actions, hints, expire_timeout) -> int:
         nid = int(replaces_id) if int(replaces_id) != 0 else self._next_id
         if int(replaces_id) == 0:
             self._next_id += 1
@@ -188,17 +151,13 @@ class NotificationServer:
             label = next(it, key)
             action_pairs.append((str(key), str(label)))
 
-        # hints come back unpacked as native dict already (a{sv} → dict[str, Any])
         urgency = int(hints.get("urgency", URGENCY_NORMAL))
 
-        # Image priority: image-data > image_data > image-path > image_path > app_icon
+        # Image priority: image-data > image_data > image-path > image_path.
         # Spec uses kebab-case; older clients used snake_case.
-        image_data = (
-            hints.get("image-data") or hints.get("image_data") or hints.get("icon_data")
-        )
-        image_path = (
-            hints.get("image-path") or hints.get("image_path") or None
-        )
+        image_data = (hints.get("image-data") or hints.get("image_data")
+                      or hints.get("icon_data"))
+        image_path = hints.get("image-path") or hints.get("image_path") or None
 
         # "value" hint (int 0-100) — apps use this for progress bars.
         value_hint = hints.get("value")
@@ -218,34 +177,18 @@ class NotificationServer:
             value=value,
             raw_hints=dict(hints),
         )
-
         try:
             self.on_notify(notif)
         except Exception:
             # Don't let UI exceptions break the D-Bus return.
-            import traceback
-            traceback.print_exc()
-        invocation.return_value(GLib.Variant("(u)", (nid,)))
+            log.exception("notify handler failed")
+        return nid
 
-    # ── signals (called by the UI) ──────────────────────────────────
+    # ── signals (called by the UI) ───────────────────────────────────
     def emit_closed(self, nid: int, reason: int) -> None:
-        if self._connection is None:
-            return
-        self._connection.emit_signal(
-            None,
-            "/org/freedesktop/Notifications",
-            "org.freedesktop.Notifications",
-            "NotificationClosed",
-            GLib.Variant("(uu)", (int(nid), int(reason))),
-        )
+        if self._started:
+            self._iface.NotificationClosed(int(nid), int(reason))
 
     def emit_action(self, nid: int, action_key: str) -> None:
-        if self._connection is None:
-            return
-        self._connection.emit_signal(
-            None,
-            "/org/freedesktop/Notifications",
-            "org.freedesktop.Notifications",
-            "ActionInvoked",
-            GLib.Variant("(us)", (int(nid), str(action_key))),
-        )
+        if self._started:
+            self._iface.ActionInvoked(int(nid), str(action_key))

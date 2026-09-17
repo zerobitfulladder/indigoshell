@@ -1,128 +1,127 @@
-"""Volume widget — bars + pactl plumbing flattened into one class.
+"""Volume — a vertical stack of cells lit bottom-up.
 
-Subscribes to `pactl subscribe` and only re-queries sink state when
-something changes. Renders as a vertical stack of cells that light up
-proportional to the level; bars flip red when muted.
+Event-driven: `pactl subscribe` reports changes and only then do we
+re-query the sink, so there is no polling. Click toggles mute, scroll
+adjusts. Bars flip red when muted.
 """
 
+import logging
 import re
-import subprocess
-import threading
 
-import gi
-
-gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk
+import skia
 
 from .. import theme
 from ..services import proc
-from ..style import Style
-from .base import Widget, paint
+from .base import Size, Widget
+
+log = logging.getLogger(__name__)
 
 SINK = "@DEFAULT_SINK@"
 
 
 class Volume(Widget):
-    """Volume rendered as a stack of N cells lit proportional to the
-    level. Click to toggle mute, scroll to change. Event-driven via
-    `pactl subscribe`."""
-
-    def __init__(
-        self,
-        step: int = 5,
-        cells: int = 8,
-        cell_thick: int = 3,
-        gap: int = 1,
-        width: int = 18,
-        style: Style | None = None,
-        **kwargs,
-    ):
+    def __init__(self, *, step: int = 5, cells: int = 8, cell_thick: int = 3,
+                 gap: int = 1, width: int = 18, cap: bool = False,
+                 cap_color: str = theme.CYAN_BRIGHT, cap_overhang: int = 2,
+                 **kwargs) -> None:
         kwargs.setdefault("on_left_click", self._toggle_mute)
         kwargs.setdefault("on_scroll_up", self._scroll_up)
         kwargs.setdefault("on_scroll_down", self._scroll_down)
-        super().__init__(style, **kwargs)
+        super().__init__(**kwargs)
         self.step = step
         self.cells = max(1, cells)
         self.cell_thick = max(1, cell_thick)
         self.gap = max(0, gap)
         self.w = max(4, width)
-        self._sub_proc: subprocess.Popen | None = None
-        self._last_volume: int = 0
-        self._last_muted: bool = False
-        self._ev: Gtk.EventBox | None = None
-        self._percent: float = 0.0
-        self._muted: bool = False
+        # A 1px line one row above the topmost lit cell, reaching
+        # `cap_overhang` past the cells on both sides — the cells are
+        # inset by that much so the widget's width is unchanged.
+        self.cap = cap
+        self.cap_color = cap_color
+        self.cap_overhang = max(0, cap_overhang)
+        self._percent = 0.0
+        self._muted = False
+        self._sub: proc.Subscription | None = None
 
-    def build_widget(self):
-        cells_h = self.cells * self.cell_thick + (self.cells - 1) * self.gap
-        filler = Gtk.Box()
-        filler.set_size_request(self.w, cells_h)
-        return filler
+    def attach(self, window) -> None:
+        super().attach(window)
+        if self._sub is None:
+            self._sub = proc.subscribe(
+                ["pactl", "subscribe"], self._on_line)
+            self._schedule_refresh()
 
-    def build(self):
-        w = super().build()
-        w.connect_after("draw", self._draw)
-        self._ev = w
-        return w
-
-    def start(self):
-        threading.Thread(target=self._refresh, daemon=True).start()
-        self._sub_proc = proc.subscribe(["pactl", "subscribe"], self._on_line)
-
-    def stop(self):
-        if self._sub_proc and self._sub_proc.poll() is None:
-            self._sub_proc.terminate()
-        self._sub_proc = None
+    def detach(self) -> None:
+        if self._sub is not None:
+            self._sub.cancel()
+            self._sub = None
 
     def _on_line(self, line: str) -> None:
         if "sink" in line or "server" in line:
-            self._refresh()
+            self._schedule_refresh()
 
-    def _refresh(self):
-        muted = "yes" in proc.run(["pactl", "get-sink-mute", SINK]).lower()
-        m = re.search(r"(\d+)%", proc.run(["pactl", "get-sink-volume", SINK]))
-        vol = int(m.group(1)) if m else 0
-        self._last_muted = muted
-        self._last_volume = vol
-        GLib.idle_add(self._apply_state, vol, muted)
+    def _schedule_refresh(self) -> None:
+        import asyncio
+        try:
+            asyncio.get_running_loop().create_task(self._refresh())
+        except RuntimeError:
+            pass
 
-    def _apply_state(self, vol: int, muted: bool) -> bool:
-        self._muted = muted
-        self._percent = float(vol)
-        if self._ev is not None:
-            self._ev.queue_draw()
-        return False
+    async def _refresh(self) -> None:
+        muted = "yes" in (await proc.run(
+            ["pactl", "get-sink-mute", SINK])).lower()
+        m = re.search(r"(\d+)%",
+                      await proc.run(["pactl", "get-sink-volume", SINK]))
+        vol = float(m.group(1)) if m else 0.0
+        if (vol, muted) != (self._percent, self._muted):
+            self._percent, self._muted = vol, muted
+            self.invalidate()
 
-    def _draw(self, w, cr) -> bool:
-        alloc = w.get_allocation()
-        width, height = alloc.width, alloc.height
+    # ── layout / paint ──────────────────────────────────────────────────
+    def measure(self, avail: Size) -> Size:
+        h = self.cells * self.cell_thick + (self.cells - 1) * self.gap
+        return Size(self.w, h)
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        r = self.rect
         n = self.cells
-        cell_h = max(1.0, (height - self.gap * (n - 1)) / n)
-        lit_color = theme.ERROR if self._muted else theme.VIOLET_BRIGHT
-        dim_color = theme.MAGENTA_DIM if self._muted else theme.VIOLET_DIM
+        # Integral cell height, same reason as the horizontal meters: a
+        # fractional height lands as alternating 3px/4px cells.
+        stride = self.cell_thick + self.gap
+        bottom = round(r.bottom())
+        lit = theme.ERROR if self._muted else theme.VIOLET_BRIGHT
+        dim = theme.MAGENTA_DIM if self._muted else theme.VIOLET_DIM
+        # Muted lights every cell red rather than showing the level.
         lit_count = n if self._muted else int(self._percent / 100.0 * n)
+        inset = self.cap_overhang if self.cap else 0
+        cx, cw = round(r.left()) + inset, round(r.width()) - 2 * inset
+        paint = skia.Paint(AntiAlias=False)
         for i in range(n):
-            # i=0 is the bottom-most cell; lit fills bottom-up.
-            y = height - (i + 1) * cell_h - i * self.gap
-            color = lit_color if i < lit_count else dim_color
-            paint(cr, color)
-            cr.rectangle(0, y, width, cell_h)
-            cr.fill()
-        return False
+            # i=0 is the bottom-most cell; the stack fills upward.
+            y = bottom - (i + 1) * stride + self.gap
+            paint.setColor(theme.color(lit if i < lit_count else dim))
+            canvas.drawRect(
+                skia.Rect.MakeXYWH(cx, y, cw, self.cell_thick), paint)
+        if self.cap and not self._muted:
+            y = max(round(r.top()), bottom - (lit_count + 1) * stride + self.gap)
+            paint.setColor(theme.color(self.cap_color))
+            canvas.drawRect(
+                skia.Rect.MakeXYWH(round(r.left()), y, round(r.width()), 1),
+                paint)
 
-    def _toggle_mute(self, _w):
+    # ── input ───────────────────────────────────────────────────────────
+    def _toggle_mute(self, _w=None) -> None:
         proc.fire(["pactl", "set-sink-mute", SINK, "toggle"])
 
-    def _scroll_up(self, _w):
-        if self._last_muted:
+    def _scroll_up(self, _w=None) -> None:
+        if self._muted:
             proc.fire(["pactl", "set-sink-mute", SINK, "0"])
             return
-        new = min(100, self._last_volume + self.step)
-        proc.fire(["pactl", "set-sink-volume", SINK, f"{new}%"])
+        proc.fire(["pactl", "set-sink-volume", SINK,
+                   f"{min(100, int(self._percent) + self.step)}%"])
 
-    def _scroll_down(self, _w):
-        if self._last_muted:
+    def _scroll_down(self, _w=None) -> None:
+        if self._muted:
             proc.fire(["pactl", "set-sink-mute", SINK, "0"])
             return
-        new = max(0, self._last_volume - self.step)
-        proc.fire(["pactl", "set-sink-volume", SINK, f"{new}%"])
+        proc.fire(["pactl", "set-sink-volume", SINK,
+                   f"{max(0, int(self._percent) - self.step)}%"])

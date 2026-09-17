@@ -1,296 +1,272 @@
 # indigoshell
 
-A widget-engine desktop shell. A configurable bottom bar, popup windows,
-toast command-runners with dialog-tree pipelines, an interactive floating
-terminal, a StatusNotifierItem system tray, and a built-in
-`org.freedesktop.Notifications` daemon — all driven by one Python
-process on top of GTK 3 + PyGObject.
+A widget-engine desktop shell for X11. One Python process draws a bar,
+its panels, its chord menus, its notification toasts and its system tray
+on a single asyncio loop — no toolkit, no second main loop, no worker
+threads.
+
+```
+xcffib      windows, input, seat grabs, struts, ARGB visuals, RandR
+skia        all rendering; SkSL shaders for the post-process effects
+dbus-fast   notification daemon, StatusNotifierItem tray, MPRIS, dbusmenu
+asyncio     X events, IPC, D-Bus, subprocesses and frame clocks, one loop
+```
 
 Styled out of the box with the INDIGO Cyberpunk palette: hot magenta,
 electric cyan, neon yellow, violet accent, deep blue-violet base.
 
-## Features
+## What it does
 
-- **Bar** — a transparent dock-strut at the screen edge with declarative
-  widget composition (`Box([…])`, `Spacer()`).
-- **Widgets** — workspaces (urgent ring blink), system stat meters
-  (CPU / RAM / temp), volume, network, media (cava equalizer background +
-  beat-pulse), clock with battery underline, scrambling/beat-syncing
-  lyrics, identity tag with pulsing corner brackets, SNI system tray.
-- **Popups** — terminal-hosted popups (`fastfetch`, `sptlrx`,
-  `spotify-player`, `nmtui`), a network panel, hardware panel
-  (CPU/RAM history, GPU live readouts), calendar, systray panel.
-- **Interactive terminal** — `indigoshell open terminal` opens a
-  top-right floating `$SHELL` popup with the bar's theme; close it
-  with `exit` / Ctrl-D / mod+q. Single keybind to summon a
-  full terminal that's *always-on-top* and tracks you across workspaces.
-- **Chord menus** — modal, seat-grabbed popups bound to keyboard chords
-  (`power-menu`, `display-menu`, `layout-menu`, `profile-menu`,
-  `envy-menu`). Press-to-arm, release-to-fire; unmapped keys flash red.
-- **Toasts** — `Daemon.toast(argv)` spawns a one-shot top-right TermToast
-  that runs `argv`, auto-grows its VTE to fit the output, then runs a
-  perimeter-trace countdown animation and auto-closes (paused on hover).
-  Used from menu actions (`from .api import toast`) for visible feedback
-  on system changes (`envycontrol -s …`, etc).
-- **Dialog pipelines** — multi-stage cascades stacked top-right. Each
-  stage is a registered script that prints output (visible in a
-  TermToast) and writes a JSON manifest declaring the next-stage
-  options. The orchestrator routes 0-options → leaf-with-linger,
-  1-option → auto-advance, N-options → chord menu. Picked rows stay
-  lit as visual history; escape pulls a cancel branch if the script
-  declared one. See `helpers/flows/display/` for the included example.
-- **Notifications** — full D-Bus notification daemon. Replaces dunst.
-  Renders toasts in the bar's visual language (corner brackets,
-  segmented progress meters when `value` hints arrive), supports
-  actions, images, urgency styling, replace-by-id.
-- **Theme** — every color, spacing, font size, and per-widget preset
-  lives in one [`theme.py`](indigoshell/theme.py). Includes 16-color
-  ANSI palettes for the embedded VTE terminals and a `NEWT_COLORS`
-  block for `nmtui` so they all match the bar.
-- **Hot reload** — `--watch` re-execs the process on `.py` change; or
-  call `indigoshell reload` over IPC.
+- **Bar** — a dock window that reserves its own strut, with a
+  declarative widget tree (`Row([...])`, `Box`, `Spacer`, `Brackets`).
+- **Widgets** — workspaces, identity tag, now-playing lyrics piped from
+  `sptlrx`, CPU/RAM/temperature meters, network, media title over a cava
+  visualiser, volume, clock with a battery underline, system tray.
+- **Panels** — `system` (fastfetch), `hardware` (CPU/RAM history, live
+  GPU readouts), `network` (interfaces, wifi, firewall, a streamed
+  `speedtest-cli` run). Anchored to a screen edge, dismissed by clicking
+  outside — and by Escape where the window takes a keyboard grab — and
+  kept alive between opens, so a keybind shows one in the time a close
+  would take.
+- **Chord menus** — a keybind opens a stack of chips at the bottom
+  right; a digit picks, Escape backs out. Shipped: power, display,
+  layout, profile, audio, graphics. An action that returns another
+  `Menu` becomes the next stage in the same window, so multi-step flows
+  are just functions returning menus.
+- **Notifications** — a full `org.freedesktop.Notifications` daemon,
+  replacing dunst. One window per toast, so the spawn and despawn
+  animations play per notification; urgency styling, images, actions,
+  replace-by-id, and a segmented meter when a `value` hint arrives.
+- **System tray** — registers as `org.kde.StatusNotifierWatcher` and
+  Host. Compatible with `nm-applet --indicator`, `blueman-applet`,
+  `udiskie --tray`, Discord, Steam. Right-click opens the app's own
+  menu, walked over `com.canonical.dbusmenu` and drawn as our own rows.
+- **GPU effects** — every window can run a chain of SkSL post-process
+  passes over its finished frame. Panels open with `ScanLock`, a
+  scan-lock reveal where bands snap in out of order with a sideways tear
+  and an RGB split. Rendering goes through an EGL/GL surface when one
+  can be created and falls back to CPU raster when it can't.
+- **Damage-driven repaint** — a window only paints the rectangles that
+  changed, and only wakes at the highest `animation_fps` any visible
+  widget asks for. A still bar costs nothing.
+- **Hot reload** — `--watch` re-execs on `.py` change, or
+  `indigoshell reload` over the control socket.
 
 ## Architecture
 
 ```text
 indigoshell/
-  app.py                  ─ entry point (daemon vs client mode)
-  api.py                  ─ public helpers used in user config
-                            (toggle, open_window, close_window, toast)
-  theme.py                ─ palette, semantic tokens, per-widget presets,
-                            terminal + newt + toast tokens
-  style.py                ─ Style dataclass, CSS builder, hex helpers
-  config_default.py       ─ default bar+windows+scripts+pipelines config
+  app.py            ─ entry point: client mode vs daemon mode, config load
+  api.py            ─ open/close/toggle handlers for config files
+  window.py         ─ WindowSpec + the live window: layers, anchors,
+                      struts, grabs, frame clock, damage, effect chain
+  theme.py          ─ palette, semantic tokens, per-widget presets
+  shapes.py         ─ the beveled rectangle, as a skia.Path
+  text.py           ─ font cache, measurement, tracked drawing
+  effects.py        ─ Effect base + ScanLock, Decode, GlitchWipe,
+                      Aberration, ColorSplit (SkSL)
+  plugin.py         ─ plugin contract: Menu, Item
+  config_default.py ─ the shipped bar, panels, menus and services
+  backend/
+    x11.py          ─ the process's single xcffib connection + event pump
+    gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback
   core/
-    daemon.py             ─ GTK main loop, window registry, store, IPC,
-                            toast(), start_pipeline(), pipelines routing
-    pipeline.py           ─ dialog-tree orchestrator (cascade lifecycle,
-                            manifest parsing, auto-grow reflow)
-    ipc.py                ─ unix-socket command server
-    registry.py           ─ merges built-in + user WindowKinds
-    client.py             ─ CLI side of IPC
-    paths.py, store.py, singleton.py
-  helpers/
-    layout.py, profile.py, power.py
-    flows/                ─ dialog-tree pipeline definitions
-      display/            ─ pick-one-monitor pipeline
-        __init__.py       ─ exports SCRIPTS + PIPELINES
-        query.py          ─ list connected outputs
-        set.py            ─ apply xrandr (or "cancel")
-  services/
-    proc.py               ─ unified subprocess (run/fire/popen/subscribe)
-    sysinfo.py            ─ 1Hz CPU/RAM sampler + rolling history,
-                            direct-sysfs temperature
-    beat.py               ─ aubio beat detector + cava bands broker
-                            (lazy: only spawns when subscribed)
-    music.py              ─ per-player playerctl status broker
-    notifications.py      ─ org.freedesktop.Notifications D-Bus server
-    systray.py            ─ org.kde.StatusNotifierWatcher + Host
-    dbusmenu.py           ─ com.canonical.dbusmenu client
-    text_effects.py       ─ scramble + other arrival animations
-  widgets/                ─ bar widgets
-    base.py               ─ Widget + paint() / beveled_path() /
-                            beveled_polyline() / stroke_partial()
-    layout.py             ─ Box, Spacer
-    workspaces.py, systag.py, clock.py, volume.py, network.py, media.py,
-    stat_meter.py, battery_meter.py, stdout_text.py, network_panel.py,
-    hardware_panel.py, calendar.py, terminal.py, notification.py,
-    menu.py, systray.py, hud.py, line_graph.py, bar_meter.py,
-    term_toast.py         ─ Toast / interactive shell (auto-grow VTE)
-  windows/                ─ top-level window kinds
-    base.py               ─ WindowKind abstract class
-    bar.py                ─ the bar itself
-    popup.py              ─ click-anchored transient popups + PopupKind
-                            (grab, glow, blur, bevel, type_hint)
-    notification.py       ─ floating notification stack (bottom-right)
+    daemon.py       ─ the loop: windows, services, IPC, signals, reload
+    ipc.py          ─ control socket (line-delimited JSON over AF_UNIX)
+    client.py       ─ the CLI side of that socket
+    registry.py     ─ plugin discovery, shipped then user, later winning
+    naming.py       ─ APP / CLI / env prefix, derived from the package
+    paths.py        ─ socket, lock, config, state and log locations
+    state.py        ─ small JSON file for choices that outlive a run
+    singleton.py    ─ the lock that keeps one daemon per session
+    log.py          ─ colored stderr, optional rotating file
+  plugins/          ─ shipped chord menus
+    system.py       ─ power, keyboard layout, tuned profile, GPU mode
+    audio.py        ─ default sink / source, two stages
+    display.py      ─ pick an output; remembers and restores it
+  services/         ─ non-drawing, subscribe-based brokers
+    bus.py          ─ the one shared D-Bus session connection
+    notifications.py─ org.freedesktop.Notifications server
+    systray.py      ─ StatusNotifierWatcher + Host
+    dbusmenu.py     ─ com.canonical.dbusmenu client
+    music.py        ─ playerctl --follow status broker
+    beat.py         ─ cava bands + aubio beat detection, both lazy
+    sysinfo.py      ─ 1Hz CPU/RAM sampler, direct-sysfs temperature
+    proc.py         ─ run / fire / subscribe, all coroutines
+    text_effects.py ─ scramble and other arrival animations
+  widgets/          ─ measure / arrange / paint / hit, and nothing else
+    base.py           layout.py    label.py     panel.py    tabs.py
+    workspaces.py     systag.py    clock.py     volume.py   network.py
+    media.py          meters.py    hud.py       menu.py     systray.py
+    notification.py   line_graph.py stdout_text.py
+    hardware_panel.py network_panel.py fastfetch.py
 ```
 
-### Key conventions
+### Conventions
 
-- All Cairo color painting goes through `paint(cr, hex_color, alpha=None)`
-  ([widgets/base.py](indigoshell/widgets/base.py)).
-- Perimeter geometry helpers `beveled_path`, `beveled_polyline`,
-  `stroke_partial` are shared by notifications, toasts, and menus.
-- All subprocess work goes through
-  [`services/proc.py`](indigoshell/services/proc.py):
-  - `proc.run(cmd)` — capture stdout, swallow missing-binary / timeout
-  - `proc.fire(cmd, *, detach=False)` — fire-and-forget
-  - `proc.popen(cmd, *, text=False, bufsize=-1)` — raw spawn
-  - `proc.subscribe(cmd, on_line, ...)` — line-streaming with reader
-- Widgets center vertically by default in the bar; override
-  `valign`/`vexpand` if a draw widget should fill bar height (Media
-  does this for its cava background).
-- Widget styling: every widget accepts `style=`, `hover_style=`,
-  `active_style=`, and `child_styles={}` — overrides are CSS rules
-  scoped to the widget's generated id. The theme file ships defaults.
-
-## Configuration
-
-`indigoshell` looks for a user config in:
-
-1. `~/.config/indigoshell/config.py`
-2. `./config.py` (cwd)
-
-A user config exports `BAR = {...}` with these keys:
-
-```python
-BAR = {
-    "widgets":   [...],            # bar layout
-    "windows":   WINDOWS,          # name → WindowKind (PopupKind etc.)
-    "scripts":   SCRIPTS,          # name → script path (dialog flows)
-    "pipelines": PIPELINES,        # name → initial command argv
-}
-```
-
-See [`indigoshell/config_default.py`](indigoshell/config_default.py)
-for the shape and the available widgets.
-
-### Dialog flows
-
-A *flow* is a directory under `helpers/flows/` with an `__init__.py`
-that exports two dicts:
-
-```python
-# helpers/flows/myflow/__init__.py
-from pathlib import Path
-_HERE = Path(__file__).parent
-
-SCRIPTS = {
-    "myflow_step_a": str(_HERE / "step_a.py"),
-    "myflow_step_b": str(_HERE / "step_b.py"),
-}
-PIPELINES = {
-    "myflow-menu": ["myflow_step_a"],   # entry-point
-}
-```
-
-In `config_default.py`, add the flow to `_FLOWS`. Then bind your WM to
-`indigoshell open myflow-menu` and the first script runs.
-
-#### Script protocol
-
-Every dialog script:
-
-1. **Prints** anything to stdout — visible in its TermToast.
-2. **Writes** a JSON manifest to `$INDIGOSHELL_MANIFEST`:
-
-   ```json
-   {
-     "options": [
-       {"label": "First choice",  "command": ["myflow_step_b", "arg1"]},
-       {"label": "Second choice", "command": ["myflow_step_b", "arg2"]}
-     ],
-     "cancel": {"command": ["myflow_step_b", "cancel"]}
-   }
-   ```
-
-3. Exits.
-
-The orchestrator reads the manifest on child-exit and:
-
-- **0 options** → leaf node, linger trace fires, cascade closes
-- **1 option**  → auto-advance, no menu, new toast stacked below
-- **N options** → chord Menu below the cascade; user picks → next stage
-- **escape on menu** → runs the `cancel.command` as the next stage if
-  declared, otherwise the keypress is swallowed (flow menus never
-  silently dismiss themselves)
-
-Scripts can be any executable. `SCRIPTS` values may be a `str` path
-(run under the daemon's Python) or a `list[str]` argv prefix (treated
-as-is); the orchestrator appends the rest of the manifest `command`
-list as argv.
+- **The widget contract is four methods** — `measure`, `arrange`,
+  `paint`, `hit` ([widgets/base.py](indigoshell/widgets/base.py)).
+  Containers are widgets, so a bar, a panel and a toast hold the same
+  type. Nothing in the contract mentions X11 or the host window.
+- **A window is a `WindowSpec`, not a subclass.** A bar is a spec whose
+  layer is `DOCK` and which reserves space; a toast is the same type at
+  `OVERLAY` with no reservation; a chord menu is the same type with
+  override-redirect and a seat grab. The vocabulary (anchor, layer,
+  exclusive zone) is borrowed from Wayland's layer-shell.
+- **Names derive from the package.** `core/naming.py` reads `APP` from
+  `__package__`, and the daemon name, socket, config dir, state file,
+  log file and `INDIGOSHELL_*` env vars all follow it.
+- **All subprocess work goes through
+  [`services/proc.py`](indigoshell/services/proc.py)** — `run`, `fire`,
+  `popen`, `subscribe`, every one a coroutine.
+- **Services are brokers, widgets render.** A service owns the D-Bus or
+  subprocess side and publishes to subscribers; it never draws. Backends
+  that cost something (cava, aubio) are reference-counted and only exist
+  while a widget is subscribed.
 
 ## Running
 
 ```bash
-# Install as a uv tool (editable)
-uv tool install -e .
-
-# Run the daemon
-indigoshell                  # foreground
-indigoshell --watch          # re-exec on .py change
-
-# Client commands
-indigoshell open <window-name>     # also triggers a pipeline if `name`
-                                   # is a registered pipeline entry
-indigoshell close <window-name>
-indigoshell toggle <window-name>
-indigoshell list                   # registered kinds + open instances
-indigoshell ping                   # health check
-indigoshell reload                 # re-exec daemon in place
-indigoshell kill                   # tear down + exit the daemon
+uv sync
+.venv/bin/python main.py                     # foreground
+.venv/bin/python main.py --watch             # re-exec on .py change
+.venv/bin/python main.py --log-level debug --log-file
 ```
 
-## Notifications
+`uv sync` also installs an `indigoshell` console script into
+`.venv/bin`. Running `main.py` by absolute path works from any
+directory — the file's own directory lands on `sys.path` — which is what
+lets a window manager spawn it without a PATH entry.
 
-`indigoshell` claims `org.freedesktop.Notifications` on the session bus
-on startup. To use it, stop and mask any existing notification daemon:
+Client verbs (same binary; the first argument decides):
 
 ```bash
-systemctl --user stop dunst.service
-systemctl --user mask dunst.service
+indigoshell open <window>       indigoshell list
+indigoshell close <window>      indigoshell ping
+indigoshell toggle <window>     indigoshell reload
+indigoshell menu <menu>         indigoshell kill
 ```
 
-Test:
+### Window manager integration
 
-```bash
-notify-send "Hello" "from indigoshell"
-notify-send -u critical "Critical" "stays until clicked"
-notify-send -h int:value:65 "Download" "stable.iso — 65%"
-notify-send --action="reply=Reply" --action="archive=Archive" "Message"
-```
-
-## Toasts (programmatic command popups)
+The shell asks for nothing from the WM except that it leave its windows
+alone. With qtile:
 
 ```python
-from indigoshell.api import toast
+INDIGOSHELL = ["/path/to/.venv/bin/python", "/path/to/main.py"]
 
-# Use as a menu/click handler:
-MenuItem("1", "PERF", toast(["pkexec", "envycontrol", "-s", "nvidia"]))
-
-# Or imperatively from anywhere with a daemon handle:
-get_daemon().toast(["ping", "-c", "10", "1.1.1.1"], cols=80, rows=4,
-                   linger_ms=5000)
+Key([MOD], "Escape",        lazy.spawn(INDIGOSHELL + ["menu", "power"])),
+Key([MOD, SHIFT], "s",      lazy.spawn(INDIGOSHELL + ["menu", "display"])),
 ```
 
-The TermToast starts compact and grows its VTE rows as output writes
-past the visible area (capped at `max_rows`). When the child exits, a
-cyan perimeter trace runs around the popup border (paused on hover);
-trace completion closes the popup.
+Every window sets `WM_CLASS` to `(instance=window name, class="indigoshell")`,
+so one float rule covers all of them:
 
-## System tray
+```python
+Match(wm_class="indigoshell")
+```
 
-`indigoshell` registers as `org.kde.StatusNotifierWatcher` + Host on
-startup. Compatible with `nm-applet --indicator`, `blueman-applet`,
-`udiskie --tray`, Discord/Spotify/Steam, etc. Pair the bar `Systray`
-widget for the tray icon row; the `systray-panel` popup expands into
-a per-item list with hover tooltips and right-click context menus
-(via `com.canonical.dbusmenu`).
+## Configuration
+
+A user config at `~/.config/indigoshell/config.py` replaces the shipped
+one. It exports `WINDOWS` and, optionally, `SERVICES`, `MENUS`,
+`STARTUP` and `SCREEN`:
+
+```python
+from indigoshell.widgets.layout import Row
+from indigoshell.widgets.clock import Clock
+from indigoshell.window import Anchor, Layer, WindowSpec
+
+WINDOWS = [
+    WindowSpec(
+        name="bar",
+        layer=Layer.DOCK,
+        anchor=Anchor.BOTTOM,
+        size=(None, 34),
+        exclusive=True,        # reserve the strut
+        focusable=False,
+        autostart=True,
+        content=Row([Clock()]),
+    ),
+]
+```
+
+[`config_default.py`](indigoshell/config_default.py) is the worked
+example: five windows, the widget set, and the reasoning behind the
+numbers.
+
+### Plugins
+
+A plugin is a Python module under `~/.config/indigoshell/plugins/`
+exporting any of `MENUS`, `STARTUP` or `SCREEN`. A user file whose name
+matches a shipped one replaces it, so overriding `audio.py` means
+copying it and editing, not patching around it.
+
+```python
+from indigoshell.plugin import Item, Menu
+
+MENUS = [Menu("power", "POWER", [
+    Item("SUSPEND",  ["systemctl", "suspend"]),
+    Item("REBOOT",   ["systemctl", "reboot"]),
+    Item("POWEROFF", ["systemctl", "poweroff"]),
+])]
+```
+
+An item's action may be an argv list (run it, close the menu), a
+callable (sync or async), or a callable returning another `Menu` — which
+the shell shows as the next stage in the same window. `items` may itself
+be a callable, resolved when the stage is about to appear, for lists
+that only exist once a tool has been asked (the outputs `xrandr` knows
+about, the sinks `pactl` reports).
+
+`STARTUP` hooks are awaited before any window is created; `SCREEN` hooks
+after the screen or an output's connection changes. The display plugin
+uses both to restore the output you chose last.
+
+### Environment
+
+| Variable | Effect |
+|---|---|
+| `INDIGOSHELL_LOG_LEVEL` | default log level (`info`) |
+| `INDIGOSHELL_GPU=0` | force the CPU raster path |
+| `INDIGOSHELL_DPI` | point-to-pixel scaling (default 96) |
+| `INDIGOSHELL_FORCE_COLOR` | keep ANSI colors when stderr isn't a tty |
+
+Runtime files: `$XDG_RUNTIME_DIR/indigoshell-$UID.{sock,lock}`, state in
+`$XDG_STATE_HOME/indigoshell/state.json`.
 
 ## Dependencies
 
-System:
+Python (declared in `pyproject.toml`, needs 3.14+): `xcffib`,
+`skia-python`, `dbus-fast`, `psutil`, `watchdog`.
 
-- GTK 3, PyGObject (3.56+)
-- VTE 2.91 (embedded terminals)
-- `pactl`, `pulseaudio` (volume)
-- `nmcli` (network)
-- `cava` (visualizer background)
-- `parec` + Python `aubio` (beat detection)
-- `playerctl` (media status)
-- `psutil`, `python-xlib`, `watchdog` (Python deps; declared in
-  `pyproject.toml`)
+On `PATH`, each optional — the widget or menu that needs one degrades
+rather than failing:
 
-Optional:
+| Tool | Used by |
+|---|---|
+| `cava` | media visualiser |
+| `parec` + Python `aubio` | beat detection |
+| `playerctl` | media status and controls |
+| `sptlrx` | synced lyrics |
+| `fastfetch` | system panel |
+| `nmcli`, `iw`, `speedtest-cli` | network widget and panel |
+| `pactl` | volume widget, audio menu |
+| `xrandr`, `setxkbmap` | display and layout menus |
+| `tuned-adm`, `optimus-manager` | profile and graphics menus |
 
-- `sptlrx` (synced lyrics)
-- `spotify_player` (terminal music player)
-- `fastfetch` (system info popup)
-- `nmtui`, `envycontrol`, `pkexec` (display / GPU flows)
-- A Nerd Font for the glyphs (`FiraCode Nerd Font Mono` ships in the
-  default theme).
+A Nerd Font is expected for the glyphs; `FiraCode Nerd Font Mono` is the
+theme default.
+
+**aubio** has no wheel for this interpreter and exists only as a distro
+package (Arch: `python-aubio`), so the venv has to see the system's
+site-packages: `include-system-site-packages = true` in
+`.venv/pyvenv.cfg`, which `uv venv --system-site-packages` sets. `uv
+sync` resets that flag again, so `services/beat.py` falls back to
+probing `sys.base_prefix` directly — a venv rebuild costs the flag, not
+the feature.
 
 ## Status
 
-Personal project, single-author. Stable for daily-driver use; the API
-may still change.
+Personal project, single-author, and shaped around one machine's
+hardware. Stable as a daily driver; the API still moves.

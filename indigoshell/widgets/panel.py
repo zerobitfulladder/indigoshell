@@ -1,33 +1,36 @@
-"""Declarative panel widget.
+"""Declarative panel.
 
-A `Panel` interprets a tree of frozen dataclasses (Label, Divider, Action,
-Toggle, Submenu, Value, Meter, Row, Card, Embed) into Gtk widgets. Each
-`Screen` is a list of items; selecting a `Submenu` pushes its target onto
-an internal stack, Backspace/Left/h pops, Esc closes the popup. The same
-key bindings, plus mouse clicks, drive activation of Action / Toggle rows.
+A `Panel` interprets a tree of frozen dataclasses — Label, Divider,
+Action, Toggle, Submenu, Value, Meter, Row, Card, Embed — into widgets.
+Selecting a `Submenu` pushes its target onto a stack; Backspace/Left/h
+pops; Escape closes. The same bindings plus mouse clicks activate Action
+and Toggle rows.
+
+The split is two-layer on purpose: the DSL items are immutable
+*descriptions*, and widgets are the live objects they're interpreted
+into. Config authors write descriptions; only the
+interpreter knows about layout and painting.
 
 Live items (Value, Meter, and any Embed'd Widget) refresh on the panel's
 own tick — pull-based, no observable machinery.
-
-Pair with `PopupKind(name=<n>, content=Panel(popup_name=<n>, root=<s>))`
-with `grab=True` to make the panel fully modal.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, Union
 
-import gi
+import skia
 
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk
+from .. import shapes, theme
+from .base import Insets, Size, Widget
+from .label import Label as TextLabel
+from .layout import Align, Box, Column, Divider as Rule, Row as HRow, Spacer
+from .meters import BarMeter
 
-from .. import theme
-from .base import Widget, beveled_path
+log = logging.getLogger(__name__)
 
 
 # ── DSL ─────────────────────────────────────────────────────────────────
-
 
 @dataclass(frozen=True)
 class Label:
@@ -82,7 +85,7 @@ class Meter:
 
 @dataclass(frozen=True)
 class Row:
-    cells: list                     # of any item
+    cells: list
     spacing: int = 12
 
 
@@ -103,631 +106,314 @@ class Screen:
     items: list
 
 
-Item = Union[Label, Divider, Action, Toggle, Submenu, Value, Meter, Row, Card, Embed]
+Item = Union[Label, Divider, Action, Toggle, Submenu, Value, Meter,
+             Row, Card, Embed]
 
 
-# ── row palette (matches Menu) ──────────────────────────────────────────
+# ── row palette (matches the chord menu) ────────────────────────────────
+ROW_IDLE = "#170620"
+ROW_IDLE_ALPHA = 0.65
+ROW_ARMED_ALPHA = 0.22
+ROW_BORDER_ALPHA = 0.85
 
-_RGBA_ROW_IDLE   = (23 / 255,  6 / 255,  32 / 255, 0.65)
-_RGBA_ROW_ARMED  = ( 5 / 255, 217 / 255, 232 / 255, 0.22)
-_RGBA_ROW_BORDER = ( 5 / 255, 217 / 255, 232 / 255, 0.85)
+ROW_HEIGHT = 38
+ROW_BEVEL = 8
+ROW_BEVEL_CORNERS = ("top-right", "bottom-left")
 
-_ROW_HEIGHT = 38
-_ROW_BEVEL = 8
-_ROW_BEVEL_CORNERS = ("top-right", "bottom-left")
+SCREEN_SPACING = 8
+ROW_SPACING = 4
+
+# Keysyms
+_ESC, _RETURN, _BACKSPACE = 0xFF1B, 0xFF0D, 0xFF08
+_LEFT, _UP, _RIGHT, _DOWN = 0xFF51, 0xFF52, 0xFF53, 0xFF54
 
 
-# ── Panel widget ────────────────────────────────────────────────────────
+def _iter_items(items):
+    for item in items:
+        if isinstance(item, Card):
+            yield item
+            yield from _iter_items(item.items)
+        elif isinstance(item, Row):
+            yield item
+            yield from _iter_items(item.cells)
+        else:
+            yield item
+
+
+def _selectable(item) -> bool:
+    return isinstance(item, (Action, Toggle, Submenu))
+
+
+class _RowBox(Box):
+    """One selectable row: beveled plate that lights when armed."""
+
+    def __init__(self, child: Widget, panel: "Panel", index: int) -> None:
+        super().__init__(child,
+                         padding=Insets.xy(14, 8),
+                         background=ROW_IDLE,
+                         bevel=ROW_BEVEL,
+                         bevel_corners=ROW_BEVEL_CORNERS,
+                         min_size=Size(0, ROW_HEIGHT))
+        self._panel = panel
+        self._index = index
+        self.on_left_click = lambda _w: panel.activate(index)
+
+    @property
+    def armed(self) -> bool:
+        return self._panel.selection == self._index
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        path = shapes.beveled(self.rect.left(), self.rect.top(),
+                              self.rect.width(), self.rect.height(),
+                              bevel=self.bevel, corners=self.bevel_corners)
+        fill = skia.Paint(AntiAlias=True)
+        if self.armed:
+            fill.setColor(theme.color(theme.CYAN_BRIGHT, ROW_ARMED_ALPHA))
+        else:
+            fill.setColor(theme.color(ROW_IDLE, ROW_IDLE_ALPHA))
+        canvas.drawPath(path, fill)
+        if self.armed:
+            stroke = skia.Paint(AntiAlias=True)
+            stroke.setColor(theme.color(theme.CYAN_BRIGHT, ROW_BORDER_ALPHA))
+            stroke.setStyle(skia.Paint.kStroke_Style)
+            stroke.setStrokeWidth(1.0)
+            canvas.drawPath(shapes.beveled(
+                self.rect.left(), self.rect.top(),
+                self.rect.width(), self.rect.height(),
+                bevel=self.bevel, corners=self.bevel_corners, inset=0.5),
+                stroke)
+        if self.child is not None:
+            self.child.paint(canvas)
 
 
 class Panel(Widget):
-    interval_ms = 250
-    SCREEN_SPACING = 8
-    ROW_SPACING = 4
+    animation_fps = 4          # live items refresh every 250ms
 
-    def __init__(
-        self,
-        popup_name: str,
-        root: Screen,
-        *,
-        width: int = 380,
-        **kwargs,
-    ):
+    def __init__(self, popup_name: str, root: Screen, *,
+                 width: int = 380, **kwargs) -> None:
         super().__init__(**kwargs)
         self.popup_name = popup_name
         self.root = root
         self.width = width
 
-        # Navigation stack of (screen, selected_index) pairs.
-        self._stack: list[tuple[Screen, int]] = [(root, 0)]
+        self._stack: list[list] = [[root, 0]]
+        self._live: list[Callable[[], None]] = []
+        self._rows: list[tuple] = []       # (item, index) per selectable
+        self._column: Column | None = None
+        self._embeds: list[Widget] = []
+        self._build()
 
-        # Per-screen state, rebuilt on each push/pop/rebuild:
-        self._outer: Gtk.Box | None = None
-        self._title_label: Gtk.Label | None = None
-        self._content_box: Gtk.Box | None = None
-        self._selectables: list[tuple[Item, Gtk.Widget]] = []
-        self._live_refresh: list[Callable[[], None]] = []
-        self._active_embeds: list[Widget] = []
-
-        # All embedded widgets reachable from the tree (collected once, used
-        # by PopupKind to install CSS up front).
-        self._all_embeds: list[Widget] = []
-        self._collect_embeds(root, seen=set())
-
-        # Toplevel key wiring (set in start/stop).
-        self._toplevel: Gtk.Window | None = None
-        self._press_id: int | None = None
-
-    # ── walk for popup CSS install ──────────────────────────────────────
-    def walk(self):
-        yield self
-        for w in self._all_embeds:
-            yield from w.walk()
-
-    def _collect_embeds(self, screen: Screen, seen: set[int]) -> None:
-        if id(screen) in seen:
-            return
-        seen.add(id(screen))
-        for item in _iter_items(screen.items):
-            if isinstance(item, Embed):
-                self._all_embeds.append(item.widget)
-            elif isinstance(item, Submenu):
-                self._collect_embeds(item.target, seen)
-
-    # ── build ───────────────────────────────────────────────────────────
-    def build_widget(self) -> Gtk.Widget:
-        # Reset nav state on every (re)build so reopening always lands on root.
-        self._stack = [(self.root, 0)]
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=self.SCREEN_SPACING)
-        outer.set_size_request(self.width, -1)
-        title = Gtk.Label()
-        title.get_style_context().add_class("panel-title")
-        title.set_xalign(0.0)
-        title.set_margin_start(2)
-        title.set_margin_end(2)
-        title.set_margin_bottom(4)
-        outer.pack_start(title, False, False, 0)
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=self.ROW_SPACING)
-        outer.pack_start(body, True, True, 0)
-        self._outer = outer
-        self._title_label = title
-        self._content_box = body
-        self._render_current()
-        return outer
-
-    def default_css(self) -> str:
-        sel = f"#{self.name}"
-        return (
-            f"{sel} {{ background: transparent; }}"
-            f"{sel} .panel-title {{"
-            f" color: {theme.HIGHLIGHT};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE_LG}px;"
-            f" font-weight: bold;"
-            f" letter-spacing: 2px;"
-            f" }}"
-            f"{sel} .panel-row-label {{"
-            f" color: {theme.FG_STRONG};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE}px;"
-            f" letter-spacing: 1px;"
-            f" }}"
-            f"{sel} .panel-row-hint {{"
-            f" color: {theme.HIGHLIGHT};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE}px;"
-            f" font-weight: bold;"
-            f" }}"
-            f"{sel} .armed .panel-row-label,"
-            f"{sel} .armed .panel-row-hint {{ color: {theme.FG_ACCENT}; }}"
-            f"{sel} .panel-label-heading {{"
-            f" color: {theme.HIGHLIGHT};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE}px;"
-            f" font-weight: bold;"
-            f" letter-spacing: 1px;"
-            f" }}"
-            f"{sel} .panel-label-body {{"
-            f" color: {theme.FG_STRONG};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE}px;"
-            f" }}"
-            f"{sel} .panel-label-muted {{"
-            f" color: {theme.FG_MUTED};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE}px;"
-            f" }}"
-            f"{sel} .panel-value {{"
-            f" color: {theme.MAGENTA_BRIGHT};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE}px;"
-            f" }}"
-            f"{sel} .panel-card-title {{"
-            f" color: {theme.HIGHLIGHT};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE}px;"
-            f" font-weight: bold;"
-            f" letter-spacing: 2px;"
-            f" }}"
-            f"{sel} .panel-divider {{"
-            f" background-color: {theme.CYAN_DIM};"
-            f" min-height: 1px;"
-            f" }}"
-        )
-
-    # ── lifecycle ───────────────────────────────────────────────────────
-    def start(self) -> None:
-        super().start()
-        if self.gtk_widget is None:
-            return
-        top = self.gtk_widget.get_toplevel()
-        if isinstance(top, Gtk.Window):
-            self._toplevel = top
-            self._press_id = top.connect("key-press-event", self._on_key)
-        self._start_active_embeds()
-
-    def stop(self) -> None:
-        if self._toplevel is not None and self._press_id is not None:
-            self._toplevel.disconnect(self._press_id)
-        self._toplevel = None
-        self._press_id = None
-        self._stop_active_embeds()
-        super().stop()
-
-    def tick(self) -> bool:
-        for fn in self._live_refresh:
-            try:
-                fn()
-            except Exception:
-                pass
-        for w in self._active_embeds:
-            try:
-                w.tick()
-            except Exception:
-                pass
-        return True
-
-    # ── navigation ──────────────────────────────────────────────────────
-    def _push(self, screen: Screen) -> None:
-        self._stack.append((screen, 0))
-        self._render_current()
-
-    def _pop(self) -> bool:
-        if len(self._stack) <= 1:
-            return False
-        self._stack.pop()
-        self._render_current()
-        return True
-
-    def _current(self) -> Screen:
+    # ── navigation state ────────────────────────────────────────────────
+    @property
+    def screen(self) -> Screen:
         return self._stack[-1][0]
 
-    def _sel(self) -> int:
+    @property
+    def selection(self) -> int:
         return self._stack[-1][1]
 
-    def _set_sel(self, idx: int) -> None:
-        screen, _ = self._stack[-1]
-        self._stack[-1] = (screen, idx)
-        self._apply_armed()
+    @selection.setter
+    def selection(self, value: int) -> None:
+        self._stack[-1][1] = value
 
-    # ── render ──────────────────────────────────────────────────────────
-    def _render_current(self) -> None:
-        if self._content_box is None or self._title_label is None:
-            return
-        # Tear down the previous screen's embeds and live refreshers.
-        self._stop_active_embeds()
-        self._active_embeds = []
-        self._live_refresh = []
-        self._selectables = []
-        for child in self._content_box.get_children():
-            self._content_box.remove(child)
+    def children(self):
+        return (self._column,) if self._column is not None else ()
 
-        screen = self._current()
-        crumb = " › ".join(s.title for s, _ in self._stack)
-        self._title_label.set_text(crumb)
+    # ── build ───────────────────────────────────────────────────────────
+    def _build(self) -> None:
+        self._live = []
+        self._rows = []
+        self._embeds = []
+        kids: list[Widget] = [
+            TextLabel(self.screen.title, size=theme.FONT_SIZE_LG, bold=True,
+                      color=theme.HIGHLIGHT),
+            Spacer(size=4),
+        ]
+        for item in self.screen.items:
+            widget = self._interpret(item)
+            if widget is not None:
+                kids.append(widget)
+        kids.append(Spacer())
+        self._column = Column(kids, spacing=ROW_SPACING, align=Align.STRETCH)
+        if self.window is not None:
+            self._column.attach(self.window)
 
-        for item in screen.items:
-            w = self._render_item(item)
-            if w is not None:
-                self._content_box.pack_start(w, False, False, 0)
-
-        # Clamp / default selection.
-        sel = self._sel()
-        if not self._selectables:
-            sel = -1
-        elif sel < 0 or sel >= len(self._selectables):
-            sel = 0
-        screen, _ = self._stack[-1]
-        self._stack[-1] = (screen, sel)
-
-        self._content_box.show_all()
-        self._apply_armed()
-        # Start the embeds belonging to this screen.
-        if self._toplevel is not None:
-            self._start_active_embeds()
-
-    def _render_item(self, item: Item) -> Gtk.Widget | None:
-        if isinstance(item, Label):
-            return self._render_label(item)
+    def _interpret(self, item) -> Widget | None:
         if isinstance(item, Divider):
-            return self._render_divider()
-        if isinstance(item, Action):
-            return self._render_action(item)
-        if isinstance(item, Toggle):
-            return self._render_toggle(item)
-        if isinstance(item, Submenu):
-            return self._render_submenu(item)
+            return Rule(theme.CYAN_DIM)
+
+        if isinstance(item, Label):
+            color = {"heading": theme.HIGHLIGHT,
+                     "body": theme.FG_STRONG,
+                     "muted": theme.FG_MUTED}.get(item.style, theme.FG_STRONG)
+            return TextLabel(item.text, size=theme.FONT_SIZE,
+                             bold=item.style == "heading", color=color)
+
         if isinstance(item, Value):
-            return self._render_value(item)
+            getter = item.get
+            label = TextLabel(getter(), size=theme.FONT_SIZE,
+                              color=item.color or theme.MAGENTA_BRIGHT,
+                              align="right" if item.xalign > 0.5 else "left")
+            self._live.append(lambda l=label, g=getter: l.set_value(g()))
+            return label
+
         if isinstance(item, Meter):
-            return self._render_meter(item)
+            meter = BarMeter(color=(item.color if not callable(item.color)
+                                    else theme.CYAN_BRIGHT),
+                             thick=item.height, min_width=item.width)
+            getter, top = item.get, item.max or 100.0
+            self._live.append(
+                lambda m=meter, g=getter, mx=top: m.set_value(g() / mx * 100.0))
+            return meter
+
         if isinstance(item, Row):
-            return self._render_row(item)
+            cells = [self._interpret(c) for c in item.cells]
+            return HRow([c for c in cells if c is not None],
+                        spacing=item.spacing, align=Align.CENTER)
+
         if isinstance(item, Card):
-            return self._render_card(item)
+            kids: list[Widget] = [
+                TextLabel(item.title, size=theme.FONT_SIZE, bold=True,
+                          color=theme.HIGHLIGHT),
+                Spacer(size=4),
+            ]
+            for sub in item.items:
+                widget = self._interpret(sub)
+                if widget is not None:
+                    kids.append(widget)
+            return Box(Column(kids, spacing=ROW_SPACING, align=Align.STRETCH),
+                       padding=Insets.all(10),
+                       background=theme.BASE_SHADOW,
+                       bevel=ROW_BEVEL, bevel_corners=ROW_BEVEL_CORNERS)
+
         if isinstance(item, Embed):
-            return self._render_embed(item)
+            self._embeds.append(item.widget)
+            return item.widget
+
+        if _selectable(item):
+            return self._build_row(item)
         return None
 
-    def _render_label(self, item: Label) -> Gtk.Widget:
-        lbl = Gtk.Label(label=item.text)
-        lbl.set_xalign(0.0)
-        lbl.get_style_context().add_class(f"panel-label-{item.style}")
-        return lbl
+    def _build_row(self, item) -> Widget:
+        index = len(self._rows)
+        self._rows.append((item, index))
 
-    def _render_divider(self) -> Gtk.Widget:
-        sep = Gtk.Box()
-        sep.get_style_context().add_class("panel-divider")
-        sep.set_size_request(-1, 1)
-        sep.set_margin_top(2)
-        sep.set_margin_bottom(2)
-        return sep
+        cells: list[Widget] = [
+            TextLabel(item.label, size=theme.FONT_SIZE,
+                      color=lambda i=index: self._row_color(i)),
+            Spacer(),
+        ]
+        if isinstance(item, Toggle):
+            getter = item.get
+            state = TextLabel(lambda g=getter: "ON" if g() else "OFF",
+                              size=theme.FONT_SIZE, bold=True, align="right",
+                              color=lambda g=getter: (theme.LIME_BRIGHT if g()
+                                                      else theme.BASE_MUTED))
+            self._live.append(lambda s=state: s.invalidate())
+            cells.append(state)
+        elif isinstance(item, Submenu):
+            cells.append(TextLabel("›", size=theme.FONT_SIZE, bold=True,
+                                   color=lambda i=index: self._row_color(i)))
+        elif isinstance(item, Action) and item.hint:
+            cells.append(TextLabel(item.hint, size=theme.FONT_SIZE, bold=True,
+                                   align="right", color=theme.HIGHLIGHT))
+        if getattr(item, "key", None):
+            cells.append(TextLabel(f"[{item.key}]", size=theme.FONT_SIZE,
+                                   color=theme.BASE_MUTED))
 
-    # ── button-style rows (Action / Toggle / Submenu) ───────────────────
-    def _make_row(self, label: str, hint: str | None, item: Item,
-                  hint_color: str | None = None) -> Gtk.Widget:
-        ev = Gtk.EventBox()
-        ev.set_visible_window(False)
-        ev.set_size_request(-1, _ROW_HEIGHT)
-        ev.add_events(
-            Gdk.EventMask.ENTER_NOTIFY_MASK
-            | Gdk.EventMask.LEAVE_NOTIFY_MASK
-            | Gdk.EventMask.BUTTON_RELEASE_MASK
-        )
+        return _RowBox(HRow(cells, spacing=8, align=Align.CENTER), self, index)
 
-        inner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        inner.set_margin_start(16)
-        inner.set_margin_end(16)
-        inner.set_valign(Gtk.Align.CENTER)
+    def _row_color(self, index: int) -> str:
+        return theme.FG_ACCENT if self.selection == index else theme.FG_STRONG
 
-        text = Gtk.Label(label=label)
-        text.set_single_line_mode(True)
-        text.set_valign(Gtk.Align.CENTER)
-        text.set_xalign(0.0)
-        text.get_style_context().add_class("panel-row-label")
-        inner.pack_start(text, True, True, 0)
-
-        hint_label: Gtk.Label | None = None
-        if hint is not None:
-            hl = Gtk.Label()
-            color = hint_color or theme.HIGHLIGHT
-            hl.set_markup(f"<span color='{color}'>{_pango_escape(hint)}</span>")
-            hl.get_style_context().add_class("panel-row-hint")
-            hl.set_single_line_mode(True)
-            hl.set_valign(Gtk.Align.CENTER)
-            inner.pack_end(hl, False, False, 0)
-            hint_label = hl
-
-        # Optional single-char key hint after the right-side text.
-        key = getattr(item, "key", None)
-        if key:
-            key_lbl = Gtk.Label()
-            key_lbl.set_markup(
-                f"<span color='{theme.YELLOW_MID}'>//</span> "
-                f"<span color='{theme.HIGHLIGHT}'>{_pango_escape(key)}</span>"
-            )
-            key_lbl.get_style_context().add_class("panel-row-hint")
-            key_lbl.set_single_line_mode(True)
-            key_lbl.set_valign(Gtk.Align.CENTER)
-            inner.pack_end(key_lbl, False, False, 0)
-
-        ev.add(inner)
-        ev.connect("draw", self._draw_row, ev)
-        ev.connect("enter-notify-event", self._on_row_enter, item)
-        ev.connect("button-release-event", self._on_row_click, item)
-
-        # Stash the hint label so Toggle can re-render on/off state.
-        ev._panel_hint_label = hint_label  # type: ignore[attr-defined]
-
-        self._selectables.append((item, ev))
-        return ev
-
-    def _render_action(self, item: Action) -> Gtk.Widget:
-        return self._make_row(item.label, item.hint, item)
-
-    def _render_toggle(self, item: Toggle) -> Gtk.Widget:
-        on = bool(_safe_call(item.get, False))
-        row = self._make_row(
-            item.label,
-            "[ON]" if on else "[OFF]",
-            item,
-            hint_color=theme.CYAN_BRIGHT if on else theme.FG_MUTED,
-        )
-
-        def refresh():
-            new_on = bool(_safe_call(item.get, False))
-            hint = row._panel_hint_label  # type: ignore[attr-defined]
-            if hint is None:
-                return
-            color = theme.CYAN_BRIGHT if new_on else theme.FG_MUTED
-            text = "[ON]" if new_on else "[OFF]"
-            hint.set_markup(f"<span color='{color}'>{text}</span>")
-
-        self._live_refresh.append(refresh)
-        return row
-
-    def _render_submenu(self, item: Submenu) -> Gtk.Widget:
-        return self._make_row(item.label, "›", item)
-
-    # ── live items ──────────────────────────────────────────────────────
-    def _render_value(self, item: Value) -> Gtk.Widget:
-        lbl = Gtk.Label()
-        lbl.set_xalign(item.xalign)
-        lbl.get_style_context().add_class("panel-value")
-        lbl.set_single_line_mode(True)
-
-        def refresh():
-            text = str(_safe_call(item.get, ""))
-            color = item.color() if callable(item.color) else item.color
-            if color:
-                lbl.set_markup(f"<span color='{color}'>{_pango_escape(text)}</span>")
-            else:
-                lbl.set_text(text)
-
-        refresh()
-        self._live_refresh.append(refresh)
-        return lbl
-
-    def _render_meter(self, item: Meter) -> Gtk.Widget:
-        area = Gtk.DrawingArea()
-        area.set_size_request(item.width, item.height)
-        area.set_valign(Gtk.Align.CENTER)
-
-        state = {"value": float(_safe_call(item.get, 0.0))}
-
-        def on_draw(_w, cr):
-            alloc = area.get_allocation()
-            w, h = alloc.width, alloc.height
-            pct = max(0.0, min(1.0, state["value"] / max(0.001, item.max)))
-            # Background channel.
-            cr.set_source_rgba(*_RGBA_ROW_IDLE)
-            cr.rectangle(0, 0, w, h)
-            cr.fill()
-            # Filled bar.
-            color = item.color() if callable(item.color) else item.color
-            rgba = Gdk.RGBA()
-            rgba.parse(color)
-            cr.set_source_rgba(rgba.red, rgba.green, rgba.blue, rgba.alpha)
-            cr.rectangle(0, 0, w * pct, h)
-            cr.fill()
-            # Border.
-            cr.set_source_rgba(*_RGBA_ROW_BORDER)
-            cr.set_line_width(1.0)
-            cr.rectangle(0.5, 0.5, w - 1, h - 1)
-            cr.stroke()
-            return False
-
-        area.connect("draw", on_draw)
-
-        def refresh():
-            state["value"] = float(_safe_call(item.get, 0.0))
-            area.queue_draw()
-
-        self._live_refresh.append(refresh)
-        return area
-
-    # ── layout ──────────────────────────────────────────────────────────
-    def _render_row(self, item: Row) -> Gtk.Widget:
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=item.spacing)
-        for cell in item.cells:
-            w = self._render_item(cell)
-            if w is not None:
-                expand = isinstance(cell, (Meter, Label))
-                box.pack_start(w, expand, expand, 0)
-        return box
-
-    def _render_card(self, item: Card) -> Gtk.Widget:
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        outer.set_margin_top(4)
-        outer.set_margin_bottom(4)
-        title = Gtk.Label(label=item.title)
-        title.set_xalign(0.0)
-        title.get_style_context().add_class("panel-card-title")
-        outer.pack_start(title, False, False, 0)
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=self.ROW_SPACING)
-        body.set_margin_start(8)
-        for sub in item.items:
-            w = self._render_item(sub)
-            if w is not None:
-                body.pack_start(w, False, False, 0)
-        outer.pack_start(body, False, False, 0)
-
-        # Card chrome: beveled border drawn via a wrapper EventBox.
-        wrap = Gtk.EventBox()
-        wrap.set_visible_window(False)
-        wrap.add(outer)
-        outer.set_margin_start(10)
-        outer.set_margin_end(10)
-        outer.set_margin_top(8)
-        outer.set_margin_bottom(8)
-        wrap.connect("draw", self._draw_card)
-        return wrap
-
-    def _render_embed(self, item: Embed) -> Gtk.Widget:
-        w = item.widget.build()
-        self._active_embeds.append(item.widget)
-        return w
-
-    # ── selection / activation ──────────────────────────────────────────
-    def _apply_armed(self) -> None:
-        sel = self._sel()
-        for idx, (_, row) in enumerate(self._selectables):
-            ctx = row.get_style_context()
-            if idx == sel:
-                ctx.add_class("armed")
-            else:
-                ctx.remove_class("armed")
-            row.queue_draw()
-
-    def _activate(self, item: Item) -> None:
+    # ── activation ──────────────────────────────────────────────────────
+    def activate(self, index: int) -> None:
+        if not (0 <= index < len(self._rows)):
+            return
+        self.selection = index
+        item, _ = self._rows[index]
         if isinstance(item, Submenu):
-            self._push(item.target)
+            self._stack.append([item.target, 0])
+            self._build()
+            self._relayout()
             return
         if isinstance(item, Toggle):
-            try:
-                item.set(not bool(_safe_call(item.get, False)))
-            except Exception:
-                pass
-            # Refresh hint in place.
-            for it, row in self._selectables:
-                if it is item:
-                    self._refresh_toggle_hint(item, row)
-                    break
+            item.set(not item.get())
+            self.invalidate()
             return
         if isinstance(item, Action):
             try:
                 item.on_activate()
             except Exception:
-                pass
+                log.exception("action %r failed", item.label)
             if item.close_on_activate:
-                from ..core.daemon import get_daemon
-                get_daemon().close(self.popup_name)
+                self._close()
 
-    def _refresh_toggle_hint(self, item: "Toggle", row: Gtk.Widget) -> None:
-        on = bool(_safe_call(item.get, False))
-        hint = row._panel_hint_label  # type: ignore[attr-defined]
-        if hint is None:
-            return
-        color = theme.CYAN_BRIGHT if on else theme.FG_MUTED
-        text = "[ON]" if on else "[OFF]"
-        hint.set_markup(f"<span color='{color}'>{text}</span>")
+    def _pop(self) -> bool:
+        if len(self._stack) <= 1:
+            return False
+        self._stack.pop()
+        self._build()
+        self._relayout()
+        return True
 
-    # ── input ───────────────────────────────────────────────────────────
-    def _on_key(self, _w, event) -> bool:
-        name = Gdk.keyval_name(event.keyval) or ""
-        if name in ("Down", "j", "Tab"):
-            self._move_sel(+1)
+    def _close(self) -> None:
+        from ..core.daemon import get_daemon
+        get_daemon().close(self.popup_name)
+
+    def _relayout(self) -> None:
+        if self.window is not None:
+            self._column.attach(self.window)
+            self.invalidate(layout=True)
+
+    # ── keyboard ────────────────────────────────────────────────────────
+    def key(self, keysym: int, shift: bool = False) -> bool:
+        count = len(self._rows)
+        if keysym == _ESC:
+            self._close()
             return True
-        if name in ("Up", "k", "ISO_Left_Tab"):
-            self._move_sel(-1)
+        if keysym in (_BACKSPACE, _LEFT) or keysym == ord("h"):
+            return self._pop()
+        if keysym == _DOWN or keysym == ord("j"):
+            if count:
+                self.selection = (self.selection + 1) % count
+                self.invalidate()
             return True
-        if name in ("Return", "KP_Enter", "Right", "l"):
-            sel = self._sel()
-            if 0 <= sel < len(self._selectables):
-                self._activate(self._selectables[sel][0])
+        if keysym == _UP or keysym == ord("k"):
+            if count:
+                self.selection = (self.selection - 1) % count
+                self.invalidate()
             return True
-        if name in ("BackSpace", "Left", "h"):
-            if self._pop():
-                return True
-            return False  # at root — let Escape-style close happen via Esc
-        # Direct single-key activation.
-        if len(name) == 1:
-            for item, _row in self._selectables:
-                key = getattr(item, "key", None)
-                if key == name:
-                    self._activate(item)
+        if keysym in (_RETURN, _RIGHT) or keysym == ord("l"):
+            self.activate(self.selection)
+            return True
+        # Single-character hotkeys declared on the items themselves.
+        if 0x20 <= keysym <= 0x7E:
+            char = chr(keysym)
+            for item, index in self._rows:
+                if getattr(item, "key", None) == char:
+                    self.activate(index)
                     return True
         return False
 
-    def _move_sel(self, delta: int) -> None:
-        n = len(self._selectables)
-        if n == 0:
-            return
-        self._set_sel((self._sel() + delta) % n)
-
-    def _on_row_enter(self, _w, _e, item: Item) -> bool:
-        for idx, (it, _) in enumerate(self._selectables):
-            if it is item:
-                self._set_sel(idx)
-                break
-        return False
-
-    def _on_row_click(self, _w, event, item: Item) -> bool:
-        if event.button != 1:
-            return False
-        self._activate(item)
-        return True
-
-    # ── drawing ─────────────────────────────────────────────────────────
-    def _draw_row(self, widget: Gtk.Widget, cr, row: Gtk.Widget) -> bool:
-        alloc = widget.get_allocation()
-        w, h = alloc.width, alloc.height
-        line_w = 1.2
-        inset = line_w / 2
-        beveled_path(cr, w, h, bevel=_ROW_BEVEL, corners=_ROW_BEVEL_CORNERS, inset=inset)
-        armed = "armed" in row.get_style_context().list_classes()
-        if armed:
-            cr.set_source_rgba(*_RGBA_ROW_ARMED)
-        else:
-            cr.set_source_rgba(*_RGBA_ROW_IDLE)
-        cr.fill_preserve()
-        cr.set_source_rgba(*_RGBA_ROW_BORDER)
-        cr.set_line_width(line_w)
-        cr.stroke()
-        return False
-
-    def _draw_card(self, widget: Gtk.Widget, cr) -> bool:
-        alloc = widget.get_allocation()
-        w, h = alloc.width, alloc.height
-        line_w = 1.0
-        inset = line_w / 2
-        beveled_path(cr, w, h, bevel=10, corners=("top-left", "bottom-right"), inset=inset)
-        cr.set_source_rgba(*_RGBA_ROW_IDLE)
-        cr.fill_preserve()
-        cr.set_source_rgba(*_RGBA_ROW_BORDER)
-        cr.set_line_width(line_w)
-        cr.stroke()
-        return False
-
-    # ── embed lifecycle ─────────────────────────────────────────────────
-    def _start_active_embeds(self) -> None:
-        for w in self._active_embeds:
+    # ── live refresh ────────────────────────────────────────────────────
+    def animate(self, t: float) -> None:
+        for refresh in self._live:
             try:
-                w.start()
+                refresh()
             except Exception:
-                pass
+                log.exception("panel live refresh failed")
 
-    def _stop_active_embeds(self) -> None:
-        for w in self._active_embeds:
-            try:
-                w.stop()
-            except Exception:
-                pass
+    # ── layout / paint ──────────────────────────────────────────────────
+    def measure(self, avail: Size) -> Size:
+        return Size(avail.width, avail.height)
 
+    def arrange(self, rect: skia.Rect) -> None:
+        self.rect = rect
+        if self._column is not None:
+            self._column.measure(Size(rect.width(), rect.height()))
+            self._column.arrange(rect)
 
-# ── helpers ─────────────────────────────────────────────────────────────
-
-
-def _iter_items(items):
-    """Recurse into Row/Card so collectors see all leaf items."""
-    for it in items:
-        yield it
-        if isinstance(it, Row):
-            yield from _iter_items(it.cells)
-        elif isinstance(it, Card):
-            yield from _iter_items(it.items)
-
-
-def _safe_call(fn, fallback):
-    try:
-        return fn()
-    except Exception:
-        return fallback
-
-
-def _pango_escape(s: str) -> str:
-    return (
-        s.replace("&", "&amp;")
-         .replace("<", "&lt;")
-         .replace(">", "&gt;")
-    )
+    def paint(self, canvas: skia.Canvas) -> None:
+        if self._column is not None:
+            self._column.paint(canvas)

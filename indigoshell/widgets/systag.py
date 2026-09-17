@@ -1,114 +1,87 @@
-"""Cyberpunk-style identity tag: bold word framed by four small corner
-brackets, with the word color slowly pulsing between two shades."""
+"""Identity tag — the INDIGO button.
+
+The word is framed by four small corner brackets: an L of arms at each
+corner rather than a closed border, so the frame reads as a targeting
+reticle. (A full beveled box was tried instead and lost the look.) The
+slow colour pulse is a sine over `cycle_s` seconds lerping between two
+magentas.
+
+The pulse is driven by the host window's frame clock rather than a timer
+of its own — the widget declares `animation_fps` and the window
+schedules it, so N animated widgets still cost one repaint per frame
+instead of N.
+"""
 
 import math
 
-import gi
+import skia
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk
-
-from .. import theme
-from .base import Widget, make_label, paint
-from .stdout_text import _lerp_hex
+from .. import text, theme
+from .base import Insets, Widget
+from .label import Label
+from .layout import Box
 
 
-class SystagBlock(Widget):
-    interval_ms: int | None = None
+def _lerp_hex(a: str, b: str, t: float) -> str:
+    t = max(0.0, min(1.0, t))
+    ar, ag, ab = int(a[1:3], 16), int(a[3:5], 16), int(a[5:7], 16)
+    br, bg, bb = int(b[1:3], 16), int(b[3:5], 16), int(b[5:7], 16)
+    return (f"#{int(ar + (br - ar) * t):02x}"
+            f"{int(ag + (bg - ag) * t):02x}"
+            f"{int(ab + (bb - ab) * t):02x}")
 
-    def __init__(
-        self,
-        text: str = "INDIGO",
-        size_pt: int = 13,
-        padding: int = 4,
-        corner_arm: int = 4,
-        corner_thick: int = 1,
-        bracket_color: str | None = None,
-        pulse_colors: tuple[str, str] | None = None,
-        pulse_period_ms: int = 33,  # ~30 fps
-        cycle_s: float = 2.6,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.text = text
-        self.size_pt = size_pt
-        self.padding = padding
+
+class Systag(Box):
+    # A colour ramp over `cycle_s` seconds, not a motion — the eye cannot
+    # resolve a step of 1/12th of 2.6s, and at 30 it was the single
+    # biggest reason the bar never stopped repainting (27.5 changed
+    # frames a second, all of them this). Raise `fps` if you disagree.
+    animation_fps = 12
+
+    def __init__(self, value: str = "INDIGO", *,
+                 size: float = 13,        # points
+                 pulse_colors: tuple[str, str] | None = None,
+                 cycle_s: float = 2.6,
+                 bracket_color: str | None = None,
+                 corner_arm: float = 4.0,
+                 corner_thick: float = 1.0,
+                 padding: Insets | None = None,
+                 **kwargs) -> None:
+        self._phase = 0.0
+        self.cycle_s = cycle_s
+        self.pulse_colors = pulse_colors or (theme.MAGENTA_MID, theme.MAGENTA_BLOOM)
+        self.bracket_color = bracket_color or theme.MAGENTA_DIM
         self.corner_arm = corner_arm
         self.corner_thick = corner_thick
-        self.bracket_color = bracket_color or theme.MAGENTA_DIM
-        self.pulse_colors = pulse_colors or (theme.MAGENTA_MID, theme.MAGENTA_BLOOM)
-        self.pulse_period_ms = pulse_period_ms
-        self.cycle_s = cycle_s
-        self._label: Gtk.Label | None = None
-        self._frame: Gtk.Box | None = None
-        self._phase: float = 0.0
-        self._timer: int | None = None
-
-    def build_widget(self):
-        # Frame: a horizontal Box that contains the label, padded; we
-        # paint the corner brackets in a connect_after draw on this box.
-        frame = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        frame.set_margin_top(0)
-        frame.set_margin_bottom(0)
-
-        self._label = make_label("", "tag")
-        self._label.set_margin_top(self.padding)
-        self._label.set_margin_bottom(self.padding)
-        self._label.set_margin_start(self.padding)
-        self._label.set_margin_end(self.padding)
-        frame.pack_start(self._label, False, False, 0)
-
-        frame.connect_after("draw", self._draw_corners)
-        self._frame = frame
-        self._render_label()
-        return frame
-
-    def start(self) -> None:
-        super().start()
-        if self._timer is None:
-            self._timer = GLib.timeout_add(self.pulse_period_ms, self._tick_pulse)
-
-    def stop(self) -> None:
-        if self._timer is not None:
-            GLib.source_remove(self._timer)
-            self._timer = None
-        super().stop()
-
-    # ── pulse ────────────────────────────────────────────────────────
-    def _tick_pulse(self) -> bool:
-        step = (self.pulse_period_ms / 1000.0) / self.cycle_s * 2 * math.pi
-        self._phase = (self._phase + step) % (2 * math.pi)
-        self._render_label()
-        return True
-
-    def _render_label(self) -> None:
-        if self._label is None:
-            return
-        t = (math.sin(self._phase) + 1) / 2
-        color = _lerp_hex(self.pulse_colors[0], self.pulse_colors[1], t)
-        self._label.set_markup(
-            f"<span weight='bold' size='{self.size_pt * 1000}' "
-            f"foreground='{color}'>{self.text}</span>"
+        self.label = Label(value, size=text.pt(size), bold=True,
+                           color=self._pulse_color)
+        super().__init__(
+            self.label,
+            padding=padding or Insets.all(4),
+            hover_background=theme.BASE_SURFACE,
+            **kwargs,
         )
 
-    # ── corner brackets ──────────────────────────────────────────────
-    def _draw_corners(self, w, cr) -> bool:
-        alloc = w.get_allocation()
-        width, height = alloc.width, alloc.height
-        arm = self.corner_arm
-        t = self.corner_thick
-        paint(cr, self.bracket_color)
-        # top-left
-        cr.rectangle(0, 0, arm, t)
-        cr.rectangle(0, 0, t, arm)
-        # top-right
-        cr.rectangle(width - arm, 0, arm, t)
-        cr.rectangle(width - t, 0, t, arm)
-        # bottom-left
-        cr.rectangle(0, height - t, arm, t)
-        cr.rectangle(0, height - arm, t, arm)
-        # bottom-right
-        cr.rectangle(width - arm, height - t, arm, t)
-        cr.rectangle(width - t, height - arm, t, arm)
-        cr.fill()
-        return False
+    def _pulse_color(self) -> str:
+        t = (math.sin(self._phase) + 1) / 2
+        return _lerp_hex(self.pulse_colors[0], self.pulse_colors[1], t)
+
+    def animate(self, t: float) -> None:
+        self._phase = (t / self.cycle_s) * 2 * math.pi
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        super().paint(canvas)      # hover fill, then the label
+        r = self.rect
+        x, y, w, h = r.left(), r.top(), r.width(), r.height()
+        arm, t = self.corner_arm, self.corner_thick
+        brackets = skia.Paint(AntiAlias=False)
+        brackets.setColor(theme.color(self.bracket_color))
+        for rect in (
+            # top-left, top-right, bottom-left, bottom-right — each an
+            # L of one horizontal and one vertical arm.
+            (x, y, arm, t), (x, y, t, arm),
+            (x + w - arm, y, arm, t), (x + w - t, y, t, arm),
+            (x, y + h - t, arm, t), (x, y + h - arm, t, arm),
+            (x + w - arm, y + h - t, arm, t), (x + w - t, y + h - arm, t, arm),
+        ):
+            canvas.drawRect(skia.Rect.MakeXYWH(*rect), brackets)

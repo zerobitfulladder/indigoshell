@@ -1,381 +1,303 @@
-import gi
+"""Workspace indicators driven by EWMH root-window properties.
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk, GLib
+Each workspace is a stack of four bars; the bottom N light up for N
+windows on that desktop (capped at four). The current desktop uses a
+different pair of colours, and a workspace holding a window with
+_NET_WM_STATE_DEMANDS_ATTENTION blinks in a ring pattern.
 
-from Xlib import X, display
-from Xlib.protocol import event as xevent
+Event-driven, no polling: PropertyNotify on the root covers
+_NET_CURRENT_DESKTOP / _NET_NUMBER_OF_DESKTOPS / _NET_CLIENT_LIST, and
+each client is watched for _NET_WM_DESKTOP and _NET_WM_STATE.
 
-from .. import theme
-from ..style import Style
-from .base import Widget, paint
+This shares the daemon's one xcffib connection rather than opening its
+own, so there is no second event queue that could buffer events during a
+reply round-trip, and no polling tick to drain it.
+"""
+
+import logging
+
+import skia
+
+from .. import text as textmod, theme
+from .base import Size, Widget
+
+log = logging.getLogger(__name__)
+
+BARS = 4
+GAP_RATIO = 0.35
+# The hex style: `01 02 [03] 04`, a rail underneath with a cursor segment
+# under the current desktop, and a pip per window above an occupied one.
+# Everything is laid out from `hex_size`: pips at the top, digits on a
+# baseline one px below their size, the rail 5px under that.
 
 
 class Workspaces(Widget):
-    """Workspace indicators driven by EWMH root-window properties.
+    @property
+    def animation_fps(self) -> int:
+        """Only while a workspace is urgent, for the ring blink —
+        everything else here is event-driven. This is what the flat 30
+        was always documented as meaning; now it is what it does.
 
-    Listens to PropertyNotify on the root window for _NET_CURRENT_DESKTOP,
-    _NET_NUMBER_OF_DESKTOPS, and _NET_CLIENT_LIST, so updates are event-driven
-    (no polling). Each indicator is clickable and switches via _NET_CURRENT_DESKTOP.
+        The transition into urgency goes through `_apply`, whose
+        `invalidate` restarts the window's clock.
+        """
+        return 30 if self._any_urgent else 0
 
-    CSS classes added per-indicator: `.current`, `.occupied`, `.empty`.
-    """
+    def __init__(self, *, size: int = 22, spacing: int = 1,
+                 style: str = "bars", hex_size: float = 12,
+                 hex_gap: int = 10, **kwargs) -> None:
+        kwargs.setdefault("on_scroll_up", lambda _w: self._step(-1))
+        kwargs.setdefault("on_scroll_down", lambda _w: self._step(1))
+        super().__init__(**kwargs)
+        self.size = size
+        self.spacing = spacing
+        # "bars": the four-bar stack per desktop. "hex": a numbered
+        # readout — see HEX_H.
+        self.style = style
+        self.hex_size = hex_size
+        self.hex_gap = hex_gap
 
-    def __init__(
-        self,
-        label: str = "",
-        style: Style | None = None,
-        **kwargs,
-    ):
-        kwargs.setdefault("on_scroll_up", self._scroll_prev)
-        kwargs.setdefault("on_scroll_down", self._scroll_next)
-        super().__init__(style, **kwargs)
-        self.label = label
-        self.box: Gtk.Box | None = None
-        self._display = None
-        self._root = None
-        self._watch_atoms: set = set()
-        self._pending_desktop: int | None = None
-        self._indicators: list[Gtk.EventBox] = []
-        self._refresh_scheduled: bool = False
-        self._clients_dirty: bool = True
-        self._client_desktop_cache: dict[int, int] = {}
-        self._client_urgent_cache: dict[int, bool] = {}
-        self._watched_clients: set[int] = set()
-        self._wm_desktop_atom = None
-        self._wm_state_atom = None
-        self._demands_attention_atom = None
-        self._last_current: int | None = None
-        # Ring-pattern blink for urgent workspaces.
-        self._ring_idx: int = 0
-        self._ring_visible: bool = True
-        self._ring_timer: int | None = None
-        self._any_urgent: bool = False
+        self._count = 0
+        self._current = 0
+        self._per_desktop: list[int] = []
+        self._urgent: list[bool] = []
+        self._pending: int | None = None
 
-    def build_widget(self):
-        self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=1)
-        return self.box
+        self._clients_dirty = True
+        self._desktop_cache: dict[int, int] = {}
+        self._urgent_cache: dict[int, bool] = {}
+        self._watched: set[int] = set()
 
-    def default_css(self):
-        return ""
+        self._ring_idx = 0
+        self._ring_visible = True
+        self._ring_acc = 0.0
+        self._any_urgent = False
 
-    def _draw_indicator(self, area, cr, state) -> bool:
-        alloc = area.get_allocation()
-        w, h = alloc.width, alloc.height
-
-        bars = 4
-        gap_ratio = 0.35
-        # Total drawn = bars * bar_h + (bars - 1) * gap = bar_h * (bars + (bars-1) * gap_ratio).
-        bar_h = max(2.0, h / (bars + (bars - 1) * gap_ratio))
-        gap = max(1.0, bar_h * gap_ratio)
-        bar_w = w * 0.75
-        x = (w - bar_w) / 2
-        total = bar_h * bars + gap * (bars - 1)
-        y0 = (h - total) / 2
-
-        count = min(state["count"], bars)
-        is_current = state["kind"] == "current"
-        is_urgent = state.get("urgent", False)
-        urgent_active = is_urgent and self._ring_visible
-
-        if urgent_active:
-            occupied_color = theme.WORKSPACE_URGENT_FG
-            empty_color = theme.WORKSPACE_URGENT_FG
-        elif is_current:
-            occupied_color = theme.CYAN_MID
-            empty_color = theme.MAGENTA_MID
-        else:
-            occupied_color = theme.WORKSPACE_OCCUPIED_FG
-            empty_color = theme.WORKSPACE_EMPTY_FG
-
-        for i in range(bars):
-            y = y0 + (bars - 1 - i) * (bar_h + gap)
-            color = occupied_color if i < count else empty_color
-            self._fill_bar(cr, x, y, bar_w, bar_h, color)
-        return False
-
-    def _fill_bar(self, cr, x: float, y: float, w: float, h: float, hex_color: str) -> None:
-        paint(cr, hex_color)
-        cr.rectangle(x, y, w, h)
-        cr.fill()
-
-    def start(self):
-        self._display = display.Display()
-        self._root = self._display.screen().root
-        self._root.change_attributes(event_mask=X.PropertyChangeMask)
-        self._wm_desktop_atom = self._display.intern_atom("_NET_WM_DESKTOP")
-        self._wm_state_atom = self._display.intern_atom("_NET_WM_STATE")
-        self._demands_attention_atom = self._display.intern_atom(
-            "_NET_WM_STATE_DEMANDS_ATTENTION"
-        )
-        self._watch_atoms = {
-            self._display.intern_atom("_NET_CURRENT_DESKTOP"),
-            self._display.intern_atom("_NET_NUMBER_OF_DESKTOPS"),
-            self._display.intern_atom("_NET_CLIENT_LIST"),
-        }
+    # ── lifecycle ───────────────────────────────────────────────────────
+    def attach(self, window) -> None:
+        super().attach(window)
+        display = window.display
+        display.add_root_listener(self._on_root_property)
         self._refresh()
-        GLib.io_add_watch(self._display.fileno(), GLib.IO_IN, self._on_x_ready)
-        # python-xlib buffers events internally during reply roundtrips
-        # (every `_get_root_int` / `_is_window_urgent` call). When that
-        # happens the fd goes quiet even though PropertyNotify events
-        # sit in the Python-side queue, and the io_add_watch above
-        # misses them — causing the widget to "forget" workspace
-        # switches. A low-frequency tick drains anything stranded.
-        GLib.timeout_add(50, self._drain_pending)
 
-    def _drain_pending(self) -> bool:
-        if self._display is None:
-            return False
-        if self._display.pending_events():
-            self._on_x_ready(None, None)
-        return True
-
-    def _on_x_ready(self, _fd, _cond):
-        client_list_atom = self._display.intern_atom("_NET_CLIENT_LIST")
-        needs_refresh = False
-        while self._display.pending_events():
-            event = self._display.next_event()
-            if event.type != X.PropertyNotify:
-                continue
-            if event.atom == self._wm_desktop_atom:
-                xid = int(getattr(event.window, "id", 0)) or int(event.window)
-                self._client_desktop_cache.pop(xid, None)
-                self._clients_dirty = True
-                needs_refresh = True
-                continue
-            if event.atom == self._wm_state_atom:
-                xid = int(getattr(event.window, "id", 0)) or int(event.window)
-                self._client_urgent_cache.pop(xid, None)
-                self._clients_dirty = True
-                needs_refresh = True
-                continue
-            if event.atom in self._watch_atoms:
-                if event.atom == client_list_atom:
-                    self._clients_dirty = True
-                needs_refresh = True
-        if needs_refresh:
-            self._schedule_refresh()
-        return True  # keep watching
-
-    def _watch_client(self, xid: int) -> None:
-        if xid in self._watched_clients:
-            return
+    def _on_root_property(self, ev) -> None:
+        display = self.window.display
+        name = None
         try:
-            w = self._display.create_resource_object("window", xid)
-            w.change_attributes(event_mask=X.PropertyChangeMask)
-            self._watched_clients.add(xid)
+            name = display.conn.core.GetAtomName(ev.atom).reply().name.to_string()
         except Exception:
-            pass
-
-    def _schedule_refresh(self):
-        if self._refresh_scheduled:
             return
-        self._refresh_scheduled = True
-        GLib.idle_add(self._run_refresh)
+        if name in ("_NET_CURRENT_DESKTOP", "_NET_NUMBER_OF_DESKTOPS"):
+            self._refresh()
+        elif name == "_NET_CLIENT_LIST":
+            self._clients_dirty = True
+            self._refresh()
 
-    def _run_refresh(self):
-        self._refresh_scheduled = False
+    def _on_client_property(self, ev) -> None:
+        """A watched client changed desktop or urgency."""
+        self._desktop_cache.pop(ev.window, None)
+        self._urgent_cache.pop(ev.window, None)
+        self._clients_dirty = True
         self._refresh()
-        return False
 
-    def _get_root_int(self, atom_name: str) -> int | None:
-        atom = self._display.intern_atom(atom_name)
-        prop = self._root.get_full_property(atom, X.AnyPropertyType)
-        if prop and prop.value:
-            return int(prop.value[0])
-        return None
+    # ── state ───────────────────────────────────────────────────────────
+    def _refresh(self) -> None:
+        if self.window is None:
+            return
+        d = self.window.display
+        root = d.root
+        count = d.get_int(root, "_NET_NUMBER_OF_DESKTOPS") or 0
+        current = d.get_int(root, "_NET_CURRENT_DESKTOP") or 0
+        clients = d.get_ints(root, "_NET_CLIENT_LIST", 512)
 
-    def _get_root_xids(self, atom_name: str) -> list[int]:
-        atom = self._display.intern_atom(atom_name)
-        prop = self._root.get_full_property(atom, X.AnyPropertyType)
-        if prop and prop.value:
-            return list(prop.value)
-        return []
-
-    def _get_window_int(self, xid: int, atom_name: str) -> int | None:
-        try:
-            w = self._display.create_resource_object("window", xid)
-            atom = self._display.intern_atom(atom_name)
-            prop = w.get_full_property(atom, X.AnyPropertyType)
-            if prop and prop.value:
-                return int(prop.value[0])
-        except Exception:
-            pass
-        return None
-
-    def _is_window_urgent(self, xid: int) -> bool:
-        """Returns True if the window has _NET_WM_STATE_DEMANDS_ATTENTION."""
-        try:
-            w = self._display.create_resource_object("window", xid)
-            prop = w.get_full_property(self._wm_state_atom, X.AnyPropertyType)
-            if not prop or not prop.value:
-                return False
-            return self._demands_attention_atom in list(prop.value)
-        except Exception:
-            return False
-
-    def _refresh(self) -> bool:
-        if self.box is None:
-            return False
-        n = self._get_root_int("_NET_NUMBER_OF_DESKTOPS") or 0
-        current = self._get_root_int("_NET_CURRENT_DESKTOP")
-        clients = self._get_root_xids("_NET_CLIENT_LIST")
-
-        if current is not None and current == self._pending_desktop:
-            self._pending_desktop = None
+        if current == self._pending:
+            self._pending = None
 
         if self._clients_dirty:
-            new_desktop: dict[int, int] = {}
-            new_urgent: dict[int, bool] = {}
+            desktops: dict[int, int] = {}
+            urgents: dict[int, bool] = {}
+            demands = d.atom("_NET_WM_STATE_DEMANDS_ATTENTION")
             for xid in clients:
-                self._watch_client(xid)
-                d = self._client_desktop_cache.get(xid)
-                if d is None:
-                    d = self._get_window_int(xid, "_NET_WM_DESKTOP")
-                if d is not None:
-                    new_desktop[xid] = d
-                u = self._client_urgent_cache.get(xid)
-                if u is None:
-                    u = self._is_window_urgent(xid)
-                new_urgent[xid] = u
-            self._client_desktop_cache = new_desktop
-            self._client_urgent_cache = new_urgent
-            live = set(clients)
-            self._watched_clients &= live
+                if xid not in self._watched:
+                    d.watch_window_properties(xid)
+                    d.on(xid, self._on_client_property)
+                    self._watched.add(xid)
+                desk = self._desktop_cache.get(xid)
+                if desk is None:
+                    desk = d.get_int(xid, "_NET_WM_DESKTOP")
+                if desk is not None:
+                    desktops[xid] = desk
+                urgent = self._urgent_cache.get(xid)
+                if urgent is None:
+                    urgent = demands in d.get_ints(xid, "_NET_WM_STATE", 32)
+                urgents[xid] = urgent
+            self._desktop_cache, self._urgent_cache = desktops, urgents
+            for stale in self._watched - set(clients):
+                d.off(stale)
+            self._watched &= set(clients)
             self._clients_dirty = False
 
-        per_desktop = [0] * n
-        urgent_desktop = [False] * n
-        for xid, d in self._client_desktop_cache.items():
-            if 0 <= d < n:
-                per_desktop[d] += 1
-                if self._client_urgent_cache.get(xid):
-                    urgent_desktop[d] = True
+        per = [0] * count
+        urgent = [False] * count
+        for xid, desk in self._desktop_cache.items():
+            if 0 <= desk < count:
+                per[desk] += 1
+                if self._urgent_cache.get(xid):
+                    urgent[desk] = True
 
-        size = 22
-        while len(self._indicators) < n:
-            i = len(self._indicators)
-            # Empty Box provides allocation without grabbing pointer
-            # events (Gtk.DrawingArea would, via its own GdkWindow) and
-            # without font-metric height inflation (a Label would).
-            filler = Gtk.Box()
-            filler.set_size_request(size, size)
-            filler.set_valign(Gtk.Align.CENTER)
-            filler.set_halign(Gtk.Align.CENTER)
-            ev = Gtk.EventBox()
-            ev.add(filler)
-            ev.set_visible_window(False)
-            ev.set_valign(Gtk.Align.CENTER)
-            ev.set_halign(Gtk.Align.CENTER)
-            ev.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.SCROLL_MASK)
-            ev.connect("button-press-event", lambda _w, _e, idx=i: self._switch(idx))
-            ev.connect("scroll-event", self._dispatch_scroll)
-            state = {"count": 0, "kind": "empty", "urgent": False}
-            ev.connect_after("draw", self._draw_indicator, state)
-            ev._indigo_state = state
-            ev._indigo_area = ev
-            self.box.pack_start(ev, False, False, 0)
-            self._indicators.append(ev)
+        changed = (count, current, per, urgent) != (
+            self._count, self._current, self._per_desktop, self._urgent)
+        self._count, self._current = count, current
+        self._per_desktop, self._urgent = per, urgent
 
-        while len(self._indicators) > n:
-            ev = self._indicators.pop()
-            self.box.remove(ev)
-
-        if current != self._last_current:
-            # On switch, start bright. Beats will keep flipping it if
-            # music is playing; otherwise it stays bright.
-            self._pulse_on = True
-            self._last_current = current
-
-        for i, ev in enumerate(self._indicators):
-            if i == current:
-                kind = "current"
-            elif per_desktop[i] > 0:
-                kind = "occupied"
-            else:
-                kind = "empty"
-            ev._indigo_state["count"] = per_desktop[i]
-            ev._indigo_state["kind"] = kind
-            ev._indigo_state["urgent"] = urgent_desktop[i]
-            ev._indigo_area.queue_draw()
-
-        self._sync_urgent_ring(any(urgent_desktop))
-        self.box.show_all()
-        return False
-
-    # ── urgent "ring" blink ──────────────────────────────────────────
-    def _sync_urgent_ring(self, any_urgent: bool) -> None:
-        """Start the ring-pattern timer if a workspace just became
-        urgent; stop it once no urgent workspaces remain."""
+        any_urgent = any(urgent)
         if any_urgent and not self._any_urgent:
-            self._start_ring()
+            self._ring_idx, self._ring_acc = 0, 0.0
+            pattern = theme.WORKSPACE_URGENT_RING
+            self._ring_visible = pattern[0][1] if pattern else True
         elif not any_urgent and self._any_urgent:
-            self._stop_ring()
+            self._ring_visible = True
         self._any_urgent = any_urgent
 
-    def _start_ring(self) -> None:
+        if changed:
+            self.invalidate(layout=True)
+
+    # ── urgent ring blink ───────────────────────────────────────────────
+    def animate(self, t: float) -> None:
+        dt_ms = self.tick_dt(t) * 1000.0
         pattern = theme.WORKSPACE_URGENT_RING
-        if not pattern:
-            self._ring_visible = True
+        if not self._any_urgent or not pattern:
             return
-        self._ring_idx = 0
-        ms, visible = pattern[0]
-        self._ring_visible = visible
-        self._ring_timer = GLib.timeout_add(ms, self._ring_tick)
+        self._ring_acc += dt_ms
+        ms, _visible = pattern[self._ring_idx]
+        while self._ring_acc >= ms:
+            self._ring_acc -= ms
+            self._ring_idx = (self._ring_idx + 1) % len(pattern)
+            ms, self._ring_visible = pattern[self._ring_idx]
 
-    def _stop_ring(self) -> None:
-        if self._ring_timer is not None:
-            GLib.source_remove(self._ring_timer)
-            self._ring_timer = None
-        self._ring_visible = True
-        # Repaint so any leftover "off" frame clears immediately.
-        for ev in self._indicators:
-            ev._indigo_area.queue_draw()
+    # ── layout / paint ──────────────────────────────────────────────────
+    def _hex_cell(self) -> tuple[float, float]:
+        """(digits width, bracket width) at the hex style's size."""
+        return (textmod.measure("00", self.hex_size, True),
+                textmod.measure("[", self.hex_size))
 
-    def _ring_tick(self) -> bool:
-        pattern = theme.WORKSPACE_URGENT_RING
-        if not pattern:
-            self._ring_timer = None
-            return False
-        self._ring_idx = (self._ring_idx + 1) % len(pattern)
-        ms, visible = pattern[self._ring_idx]
-        self._ring_visible = visible
-        for ev in self._indicators:
-            if ev._indigo_state.get("urgent"):
-                ev._indigo_area.queue_draw()
-        # Re-schedule with the new frame's duration; return False to
-        # cancel the implicit re-run of the current timer.
-        self._ring_timer = GLib.timeout_add(ms, self._ring_tick)
+    def _stride(self) -> float:
+        """Advance from one desktop's cell to the next, in px."""
+        if self.style == "hex":
+            cellw, bw = self._hex_cell()
+            return cellw + 2 * bw + self.hex_gap
+        return self.size + self.spacing
+
+    def measure(self, avail: Size) -> Size:
+        n = max(0, self._count)
+        if n == 0:
+            return Size(0, self.size)
+        if self.style == "hex":
+            cellw, bw = self._hex_cell()
+            return Size(n * (cellw + 2 * bw) + (n - 1) * self.hex_gap,
+                        self.hex_size + 9)
+        return Size(n * self.size + (n - 1) * self.spacing, self.size)
+
+    def _colors(self, index: int) -> tuple[str, str]:
+        if self._urgent[index] and self._ring_visible:
+            return theme.WORKSPACE_URGENT_FG, theme.WORKSPACE_URGENT_FG
+        if index == self._current:
+            return theme.CYAN_MID, theme.MAGENTA_MID
+        return theme.WORKSPACE_OCCUPIED_FG, theme.WORKSPACE_EMPTY_FG
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        if self.style == "hex":
+            self._paint_hex(canvas)
+        else:
+            self._paint_bars(canvas)
+
+    def _paint_hex(self, canvas: skia.Canvas) -> None:
+        r = self.rect
+        size = self.hex_size
+        cellw, bw = self._hex_cell()
+        x0, y = r.left(), r.top()
+        base = y + size + 1
+        rail = y + size + 6
+        stride = self._stride()
+        paint = skia.Paint(AntiAlias=False)
+        cyan = theme.color(theme.CYAN_BRIGHT)
+        for i in range(self._count):
+            cx = x0 + i * stride
+            cur = i == self._current
+            occ = self._per_desktop[i] > 0
+            if self._urgent[i] and self._ring_visible:
+                number, bold = theme.WORKSPACE_URGENT_FG, True
+            elif cur:
+                number, bold = theme.WORKSPACE_CURRENT_FG, True
+            elif occ:
+                number, bold = theme.WORKSPACE_OCCUPIED_FG, True
+            else:
+                number, bold = theme.WORKSPACE_EMPTY_FG, False
+            if cur:
+                textmod.draw(canvas, "[", cx, base, size, cyan)
+                textmod.draw(canvas, "]", cx + bw + cellw, base, size, cyan)
+            textmod.draw(canvas, f"{i + 1:02d}", cx + bw, base, size,
+                         theme.color(number), bold)
+            if occ and not cur:
+                paint.setColor(theme.color(theme.WORKSPACE_OCCUPIED_FG))
+                for k in range(min(self._per_desktop[i], BARS)):
+                    canvas.drawRect(
+                        skia.Rect.MakeXYWH(cx + bw + k * 4, y, 2, 2), paint)
+        total = self._count * (cellw + 2 * bw) + (self._count - 1) * self.hex_gap
+        paint.setColor(theme.color(theme.WORKSPACE_EMPTY_FG))
+        canvas.drawRect(skia.Rect.MakeXYWH(x0, rail, total, 1), paint)
+        if 0 <= self._current < self._count:
+            paint.setColor(cyan)
+            canvas.drawRect(skia.Rect.MakeXYWH(
+                x0 + self._current * stride, rail - 1, cellw + 2 * bw, 3), paint)
+
+    def _paint_bars(self, canvas: skia.Canvas) -> None:
+        r = self.rect
+        h = r.height()
+        # Four bars plus three gaps, sized as a fraction of the cell so the
+        # stack scales with the bar height.
+        bar_h = max(2.0, h / (BARS + (BARS - 1) * GAP_RATIO))
+        gap = max(1.0, bar_h * GAP_RATIO)
+        total = bar_h * BARS + gap * (BARS - 1)
+        bar_w = self.size * 0.75
+        paint = skia.Paint(AntiAlias=False)
+
+        for i in range(self._count):
+            cell_x = r.left() + i * (self.size + self.spacing)
+            x = cell_x + (self.size - bar_w) / 2
+            y0 = r.top() + (h - total) / 2
+            occupied, empty = self._colors(i)
+            lit = min(self._per_desktop[i], BARS)
+            for b in range(BARS):
+                # b=0 is the bottom bar; the stack fills upward.
+                y = y0 + (BARS - 1 - b) * (bar_h + gap)
+                paint.setColor(theme.color(occupied if b < lit else empty))
+                canvas.drawRect(skia.Rect.MakeXYWH(x, y, bar_w, bar_h), paint)
+
+    # ── input ───────────────────────────────────────────────────────────
+    def hit(self, x: float, y: float) -> "Widget | None":
+        return self if self.rect.contains(x, y) else None
+
+    def click(self, button: int, x: float = 0.0, y: float = 0.0) -> bool:
+        if button in (4, 5):
+            return super().click(button, x, y)
+        if button == 1:
+            index = int((x - self.rect.left()) // self._stride())
+            if 0 <= index < self._count:
+                self._switch(index)
+                return True
         return False
 
-    def _scroll_prev(self, _w):
-        self._step(-1)
-
-    def _scroll_next(self, _w):
-        self._step(1)
-
-    def _step(self, delta: int):
-        n = self._get_root_int("_NET_NUMBER_OF_DESKTOPS") or 0
-        if n <= 0:
+    def _step(self, delta: int) -> None:
+        if self._count <= 0:
             return
-        base = self._pending_desktop
-        if base is None:
-            base = self._get_root_int("_NET_CURRENT_DESKTOP") or 0
-        target = (base + delta) % n
-        self._pending_desktop = target
+        base = self._pending if self._pending is not None else self._current
+        target = (base + delta) % self._count
+        self._pending = target
         self._switch(target)
 
-    def _switch(self, idx: int):
-        if not self._display or not self._root:
+    def _switch(self, index: int) -> None:
+        if self.window is None:
             return
-        atom = self._display.intern_atom("_NET_CURRENT_DESKTOP")
-        ev = xevent.ClientMessage(
-            window=self._root,
-            client_type=atom,
-            data=(32, [idx, 0, 0, 0, 0]),
-        )
-        mask = X.SubstructureRedirectMask | X.SubstructureNotifyMask
-        self._root.send_event(ev, event_mask=mask)
-        self._display.flush()
-
-
+        self.window.display.send_client_message(
+            self.window.display.root, "_NET_CURRENT_DESKTOP", [index])

@@ -1,56 +1,144 @@
-import html
-import subprocess
-from typing import Callable
+"""Text driven by a subprocess's stdout.
 
-import gi
+Runs a long-lived command and shows its latest line, with optional
+horizontal scrolling for lines wider than the widget, a per-frame text
+effect (scramble/typewriter), and a colour pulse that can be driven by
+music playback state.
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, GLib
+The rendered frame is a list of `(text, colour)` runs — `RichLabel`
+draws them directly.
+"""
 
+import logging
+import random
+
+import skia
+
+from .. import effects, text as textmod, theme
 from ..services import proc
-from ..style import Style
-from .base import Widget, make_label
 from ..services.text_effects import TextEffect
+from .base import Size, Widget
+
+log = logging.getLogger(__name__)
+
+# Beat flash decay, expressed per 30ms.
+BEAT_DECAY = 0.82
+BEAT_DECAY_MS = 30.0
+# Above this the flash also goes bold. Colour alone is a
+# modest signal on small italic text; the weight change is what makes the
+# beat legible across a room. Safe to flip per frame only because the
+# shell font is monospace — advance *and* line height are identical
+# between the two weights, so nothing reflows. Check that before reusing
+# this trick with a proportional font.
+BEAT_BOLD_AT = 0.2
 
 
-def _lerp_hex(a: str, b: str, t: float) -> str:
-    t = max(0.0, min(1.0, t))
-    ar, ag, ab = int(a[1:3], 16), int(a[3:5], 16), int(a[5:7], 16)
-    br, bg, bb = int(b[1:3], 16), int(b[3:5], 16), int(b[5:7], 16)
-    r = int(ar + (br - ar) * t)
-    g = int(ag + (bg - ag) * t)
-    bl = int(ab + (bb - ab) * t)
-    return f"#{r:02x}{g:02x}{bl:02x}"
+class RichLabel(Widget):
+    """Draws a list of (text, colour) runs on one line.
+
+    Runs are laid out by advancing x by each run's measured width, which
+    is exact for the monospace shell font and keeps per-character colour
+    (the scramble effect) cheap.
+    """
+
+    def __init__(self, *, size: float | None = None, bold: bool = False,
+                 italic: bool = False, color: str = theme.FG,
+                 **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.size = size or theme.FONT_SIZE
+        self.bold = bold
+        self.italic = italic
+        self.color = color
+        self.runs: list[tuple[str, str | None]] = []
+
+    def set_runs(self, runs) -> None:
+        before = self.plain
+        self.runs = list(runs)
+        after = self.plain
+        # A line of a different width is a different *size*, and only a
+        # relayout re-measures it. Repainting alone drew each new lyric
+        # into the slot the previous one had: a longer line was clipped
+        # at that pixel boundary — mid-word — until something else in
+        # the bar (a stat changing digits, the clock's minute) forced a
+        # layout and the rest of it appeared. Measured, not compared as
+        # strings: the reveal re-sets the same runs every frame, and a
+        # scramble tick swaps glyphs of equal advance, and neither should
+        # cost a whole-window repaint.
+        relayout = (before != after
+                    and textmod.measure(after, self.size, self.bold)
+                    != textmod.measure(before, self.size, self.bold))
+        self.invalidate(layout=relayout)
+
+    @property
+    def plain(self) -> str:
+        return "".join(t for t, _ in self.runs)
+
+    def measure(self, avail: Size) -> Size:
+        return Size(textmod.measure(self.plain, self.size, self.bold),
+                    textmod.line_height(self.size, self.bold))
+
+    def baseline(self, size: Size) -> float:
+        return -textmod.font(self.size, self.bold).getMetrics().fAscent
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        baseline = textmod.baseline_in(self.rect, self.size, self.bold)
+        x = self.rect.left()
+        canvas.save()
+        canvas.clipRect(self.rect)
+        for run, color in self.runs:
+            if run:
+                textmod.draw(canvas, run, x, baseline, self.size,
+                             theme.color(color or self.color), self.bold)
+                x += textmod.measure(run, self.size, self.bold)
+        canvas.restore()
 
 
 class StdoutText(Widget):
-    """Runs a subprocess and shows each stdout line as text.
+    @property
+    def animation_fps(self) -> int:
+        """Frames only while something is actually moving.
 
-    `transform` runs on every line before display; default is identity.
-    """
+        A lyric line sits unchanged for seconds at a time; asking for 30
+        throughout meant the bar repainted for it 30 times a second to
+        show the same pixels. Each of these wakes the clock again through
+        `invalidate()` when it starts.
+        """
+        if self.effect is not None and not self._effect_done:
+            return 30
+        if self.reveal_effect is not None and self._reveal < 1.0:
+            return 30
+        if self._beat > 0.0:
+            return 30
+        if self.pulse_colors and not self.beat_sync:
+            return 30
+        if (self.max_width_chars
+                and len(self._full) > self.max_width_chars):
+            return 30
+        return 0
 
-    def __init__(
-        self,
-        command: list[str],
-        transform: Callable[[str], str] | None = None,
-        placeholder: str = "",
-        min_width_chars: int | None = None,
-        max_width_chars: int | None = None,
-        scroll_interval_ms: int = 220,
-        scroll_gap: str = "   •   ",
-        loop_scroll: bool = True,
-        effect: TextEffect | None = None,
-        pulse_colors: tuple[str, ...] | None = None,
-        pulse_period_ms: int = 500,
-        beat_sync: bool = False,
-        clear_when_idle: bool = False,
-        idle_player: str | None = None,
-        style: Style | None = None,
-        **kwargs,
-    ):
-        super().__init__(style, **kwargs)
-        self.command = command
-        self.transform = transform or (lambda s: s)
+    def __init__(self, command: list[str], *,
+                 transform=None,
+                 placeholder: str = "",
+                 min_width_chars: int | None = None,
+                 max_width_chars: int | None = None,
+                 scroll_interval_ms: int = 220,
+                 scroll_gap: str = "   •   ",
+                 loop_scroll: bool = True,
+                 effect: TextEffect | None = None,
+                 reveal_effect=None,
+                 pulse_colors: tuple[str, ...] | None = None,
+                 pulse_period_ms: int = 500,
+                 beat_sync: bool = False,
+                 clear_when_idle: bool = False,
+                 idle_player: str | None = None,
+                 size: float | None = None,
+                 color: str | None = None,
+                 bold: bool = False,
+                 italic: bool = False,
+                 **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.command = list(command)
+        self.transform = transform or (lambda line: line)
         self.placeholder = placeholder
         self.min_width_chars = min_width_chars
         self.max_width_chars = max_width_chars
@@ -58,267 +146,260 @@ class StdoutText(Widget):
         self.scroll_gap = scroll_gap
         self.loop_scroll = loop_scroll
         self.effect = effect
+        # A post-process pass replayed on every new line, at widget scale
+        # — the pixel-level counterpart to `effect`, which works on
+        # characters. Both can run at once; the shader sees whatever the
+        # character effect has produced this frame.
+        self.reveal_effect = reveal_effect
+        # The reveal pass draws outside the label's rect, so damage from
+        # the label alone would leave its fringes stale under a partial
+        # repaint — see Widget.absorbs_damage / paint_bounds.
+        self.absorbs_damage = reveal_effect is not None
         self.pulse_colors = pulse_colors
         self.pulse_period_ms = pulse_period_ms
         self.beat_sync = beat_sync
         self.clear_when_idle = clear_when_idle
         self.idle_player = idle_player
-        self.label: Gtk.Label | None = None
-        self._proc: subprocess.Popen | None = None
-        self._status_subscribed: bool = False
-        self._beat_subscribed: bool = False
-        # Assume playing until music status says otherwise — keeps
-        # widgets without idle gating behaving as before.
-        self._music_playing: bool = True
-        self._full_text: str = ""
-        self._scroll_pos: int = 0
-        self._scroll_timer: int | None = None
-        self._effect_timer: int | None = None
-        self._pulse_timer: int | None = None
-        self._pulse_phase: int = 0
-        # Beat-sync flash decay: 0.0 (base) … 1.0 (peak just hit).
-        self._pulse_intensity: float = 0.0
-        self._decay_timer: int | None = None
-        # What's currently shown — either plain text (is_markup=False) or
-        # markup (is_markup=True). The pulse re-renders this on each tick.
-        self._last_payload: str = ""
-        self._last_is_markup: bool = False
 
-    def build_widget(self):
-        label = make_label(self.placeholder)
-        if self.min_width_chars is not None:
-            label.set_width_chars(self.min_width_chars)
-        if self.max_width_chars is not None:
-            label.set_max_width_chars(self.max_width_chars)
-            label.set_single_line_mode(True)
-            label.set_xalign(0.0)
-        self.label = label
-        return label
+        self._base_color = color or theme.MUSIC_FG
+        self._base_bold = bold
+        self._label = RichLabel(size=size, bold=bold, italic=italic,
+                                color=self._base_color)
+        self._full = placeholder
+        self._offset = 0
+        self._scroll_acc = 0.0
+        self._effect_acc = 0.0
+        self._pulse_acc = 0.0
+        self._pulse_idx = 0
+        self._effect_done = True
+        self._t = 0.0
+        self._sub: proc.Subscription | None = None
+        self._music = None
+        self._playing = True
+        # Beat flash: 1.0 the frame a beat lands, decaying to 0.
+        self._beat = 0.0
+        self._beat_subscribed = False
+        # Reveal progress for `reveal_effect`: 0 at a new line, 1 when
+        # the pass has finished and painting goes back to the direct path.
+        self._reveal = 1.0
+        self._reveal_seed = 0.0
+        self._render()
 
-    def start(self):
-        self._proc = proc.subscribe(
-            self.command,
-            self._on_line,
-            on_missing=lambda: self._set_text(f"[{self.command[0]} not found]"),
-            on_exit=lambda rc: GLib.idle_add(self._set_text, f"[exited {rc}]") if rc != 0 else None,
-        )
+    def children(self):
+        return (self._label,)
 
-        if self.pulse_colors and not self.beat_sync:
-            self._pulse_timer = GLib.timeout_add(
-                self.pulse_period_ms, self._tick_pulse
-            )
-
-        # beat_sync subscribes lazily on Playing so parec/aubio don't run
-        # while idle. clear_when_idle wants the same status stream to
-        # blank stale text. Either feature → one music subscription.
-        if self.clear_when_idle or (self.pulse_colors and self.beat_sync):
+    # ── lifecycle ───────────────────────────────────────────────────────
+    def attach(self, window) -> None:
+        super().attach(window)
+        if self._sub is None:
+            self._sub = proc.subscribe(self.command, self._on_line)
+        # beat_sync subscribes to the detector lazily on Playing so
+        # parec and aubio don't run while idle; clear_when_idle wants the
+        # same status stream to blank a stale lyric. Either feature — one
+        # music subscription.
+        if (self.clear_when_idle or (self.pulse_colors and self.beat_sync)) \
+                and self._music is None:
             from ..services.music import get_status
-            get_status(self.idle_player).add_listener(self._on_music_status)
-            self._status_subscribed = True
+            self._music = get_status(self.idle_player)
+            self._music.add_listener(self._on_playing)
 
-    def _on_music_status(self, playing: bool) -> None:
-        self._music_playing = playing
+    def detach(self) -> None:
+        if self._sub is not None:
+            self._sub.cancel()
+            self._sub = None
+        if self._music is not None:
+            self._music.remove_listener(self._on_playing)
+            self._music = None
+        self._unsubscribe_beats()
+
+    def _on_playing(self, playing: bool) -> None:
+        self._playing = playing
         if self.pulse_colors and self.beat_sync:
-            from ..services.beat import get_detector
-            detector = get_detector()
-            if playing and not self._beat_subscribed:
-                detector.add_listener(self._on_beat)
-                self._beat_subscribed = True
-            elif not playing and self._beat_subscribed:
-                detector.remove_listener(self._on_beat)
-                self._beat_subscribed = False
-                self._pulse_intensity = 0.0
-                if self._decay_timer is not None:
-                    GLib.source_remove(self._decay_timer)
-                    self._decay_timer = None
+            if playing:
+                self._subscribe_beats()
+            else:
+                self._unsubscribe_beats()
         if not playing and self.clear_when_idle:
-            # Clear so a stale lyric doesn't linger past the song.
             self._set_text("")
+        self.invalidate(layout=True)
 
-    def _tick_pulse(self) -> bool:
-        self._pulse_phase += 1
-        self._render_last()
-        return True
+    # ── beat pulse ──────────────────────────────────────────────────────
+    def _subscribe_beats(self) -> None:
+        if self._beat_subscribed:
+            return
+        from ..services.beat import get_detector
+        get_detector().add_listener(self._on_beat)
+        self._beat_subscribed = True
+
+    def _unsubscribe_beats(self) -> None:
+        if not self._beat_subscribed:
+            return
+        from ..services.beat import get_detector
+        get_detector().remove_listener(self._on_beat)
+        self._beat_subscribed = False
+        self._beat = 0.0
+        self._apply_pulse()
 
     def _on_beat(self) -> None:
-        self._pulse_intensity = 1.0
-        if self._decay_timer is None:
-            self._decay_timer = GLib.timeout_add(30, self._tick_decay)
-        self._render_last()
+        self._beat = 1.0
+        self._apply_pulse()
 
-    def _tick_decay(self) -> bool:
-        self._pulse_intensity *= 0.82
-        if self._pulse_intensity < 0.02:
-            self._pulse_intensity = 0.0
-            self._decay_timer = None
-            self._render_last()
-            return False
-        self._render_last()
-        return True
+    def _apply_pulse(self) -> None:
+        """Restyle without re-rendering.
 
-    def _current_pulse_color(self) -> str | None:
-        if not self.pulse_colors:
-            return None
-        if self.beat_sync and len(self.pulse_colors) >= 2:
-            return _lerp_hex(
-                self.pulse_colors[0], self.pulse_colors[1], self._pulse_intensity
-            )
-        return self.pulse_colors[self._pulse_phase % len(self.pulse_colors)]
-
-    def _render_last(self) -> None:
-        if not self.label:
-            return
-        self._render(self._last_payload, self._last_is_markup)
-
-    def _render(self, payload: str, is_markup: bool) -> None:
-        """Single funnel for all label updates. Stashes the payload so
-        the pulse timer can re-render with the next color."""
-        if not self.label:
-            return
-        self._last_payload = payload
-        self._last_is_markup = is_markup
-        pulse_color = self._current_pulse_color()
-        if pulse_color is None:
-            if is_markup:
-                self.label.set_markup(payload)
-            else:
-                self.label.set_text(payload)
-            return
-        # Pulse: wrap as markup. Pango span attributes nest — inner
-        # color spans (e.g. scramble glyphs) win over our outer wrap.
-        inner = payload if is_markup else html.escape(payload)
-        weight = ' weight="bold"' if self.beat_sync and self._pulse_intensity > 0.2 else ""
-        self.label.set_markup(f'<span color="{pulse_color}"{weight}>{inner}</span>')
+        The pulse only ever changes the label's colour and weight, and
+        going back through `_render` would tick the text effect a second
+        time per frame — the scramble would run at double speed for as
+        long as a track was playing.
+        """
+        color = self._pulse_color() or self._base_color
+        bold = self._base_bold or (self.beat_sync and self._beat > BEAT_BOLD_AT)
+        if color != self._label.color or bold != self._label.bold:
+            self._label.color = color
+            self._label.bold = bold
+            self._label.invalidate()
 
     def _on_line(self, line: str) -> None:
-        # While idle, swallow the source's lines so a still-streaming
-        # producer (e.g. sptlrx re-emitting the current lyric) can't
-        # overwrite the cleared placeholder.
-        if self.clear_when_idle and not self._music_playing:
-            return
-        line = line.rstrip("\n")
         try:
-            text = self.transform(line)
-        except Exception as e:
-            text = f"[transform error: {e}]"
-        GLib.idle_add(self._set_text, text)
+            self._set_text(self.transform(line.rstrip("\n")))
+        except Exception:
+            log.exception("transform failed for %s", self.command[0])
 
-    def _set_text(self, text: str) -> bool:
-        if not self.label:
-            return False
-        if not text.strip():
-            self._stop_effect()
-            self._stop_scroll()
-            self._full_text = ""
-            self._render(self.placeholder, False)
-            return False
-        if self.effect is not None:
-            # Cancel any in-flight effect/scroll, then animate to the
-            # new line; settling triggers scroll if needed.
-            self._stop_effect()
-            self._stop_scroll()
-            self._full_text = text
-            self.effect.start(text)
-            self._effect_timer = GLib.timeout_add(
-                self.effect.interval_ms, self._tick_effect
-            )
-            return False
-        self._settle_text(text)
-        return False
-
-    def _settle_text(self, text: str) -> None:
-        """Apply text without any effect — start scroll if it overflows."""
-        if not self.label:
+    def _set_text(self, value: str) -> None:
+        if value == self._full:
             return
-        if self.max_width_chars is None or len(text) <= self.max_width_chars:
-            self._stop_scroll()
-            self._full_text = text
-            self._render(text, False)
-            return
-        if text == self._full_text and self._scroll_timer is not None:
-            return
-        self._full_text = text
-        self._scroll_pos = 0
-        self._stop_scroll()
-        self._render_scroll()
-        self._scroll_timer = GLib.timeout_add(self.scroll_interval_ms, self._tick_scroll)
+        self._full = value
+        self._offset = 0
+        self._scroll_acc = 0.0
+        if self.reveal_effect is not None and value:
+            self._reveal = 0.0
+            # Re-rolled per line, or every reveal replays the same hash
+            # sequence and the "random" slices land identically each time.
+            self._reveal_seed = random.random() * 997.0
+        if self.effect is not None and value:
+            self.effect.start(self._visible_source())
+            self._effect_done = False
+            self._effect_acc = 0.0
+        self._render()
 
-    def _tick_effect(self) -> bool:
-        if not self.label or self.effect is None:
-            self._effect_timer = None
-            return False
-        frame, done = self.effect.tick()
-        if self.effect.produces_markup:
-            self._render(frame, True)
-        else:
-            # Clip to label width while animating to avoid layout jitter.
-            if self.max_width_chars is not None and len(frame) > self.max_width_chars:
-                frame = frame[: self.max_width_chars]
-            self._render(frame, False)
-        if done:
-            self._effect_timer = None
-            self._settle_text(self._full_text)
-            return False
-        return True
-
-    def _stop_effect(self) -> None:
-        if self._effect_timer is not None:
-            GLib.source_remove(self._effect_timer)
-            self._effect_timer = None
-
-    def _tick_scroll(self) -> bool:
-        if self.max_width_chars is None:
-            return False
+    # ── text windowing ──────────────────────────────────────────────────
+    def _visible_source(self) -> str:
+        value = self._full or self.placeholder
+        limit = self.max_width_chars
+        if limit is None or len(value) <= limit:
+            return self._pad(value)
         if self.loop_scroll:
-            loop = self._full_text + self.scroll_gap
-            self._scroll_pos = (self._scroll_pos + 1) % len(loop)
-            self._render_scroll()
-            return True
-        if self._scroll_pos + self.max_width_chars >= len(self._full_text):
-            self._scroll_timer = None
-            return False
-        self._scroll_pos += 1
-        self._render_scroll()
-        return True
-
-    def _render_scroll(self):
-        if not self.label or self.max_width_chars is None:
-            return
-        if self.loop_scroll:
-            loop = self._full_text + self.scroll_gap
-            doubled = loop + loop
-            window = doubled[self._scroll_pos : self._scroll_pos + self.max_width_chars]
+            ring = value + self.scroll_gap
+            start = self._offset % len(ring)
+            window = (ring + ring)[start:start + limit]
         else:
-            window = self._full_text[self._scroll_pos : self._scroll_pos + self.max_width_chars]
-        self._render(window, False)
+            start = min(self._offset, max(0, len(value) - limit))
+            window = value[start:start + limit]
+        return self._pad(window)
 
-    def _stop_scroll(self):
-        if self._scroll_timer is not None:
-            GLib.source_remove(self._scroll_timer)
-            self._scroll_timer = None
+    def _pad(self, value: str) -> str:
+        if self.min_width_chars and len(value) < self.min_width_chars:
+            return value.ljust(self.min_width_chars)
+        return value
 
-    def stop(self) -> None:
-        self._stop_effect()
-        self._stop_scroll()
-        if self._pulse_timer is not None:
-            GLib.source_remove(self._pulse_timer)
-            self._pulse_timer = None
-        if self._beat_subscribed:
-            from ..services.beat import get_detector
-            get_detector().remove_listener(self._on_beat)
-            self._beat_subscribed = False
-        if self._decay_timer is not None:
-            GLib.source_remove(self._decay_timer)
-            self._decay_timer = None
-        if self._status_subscribed:
-            from ..services.music import get_status
-            get_status(self.idle_player).remove_listener(self._on_music_status)
-            self._status_subscribed = False
-        if self._proc is not None:
-            try:
-                self._proc.terminate()
-                self._proc.wait(timeout=1.0)
-            except Exception:
-                pass
-            self._proc = None
-        super().stop()
+    def _render(self) -> None:
+        # Set on the label rather than baked into the runs: the scramble
+        # emits its own colours for the glyphs it is still resolving and
+        # None for the settled ones, and None falls through to this — so
+        # a line pulses while it is still being revealed.
+        self._label.color = self._pulse_color() or self._base_color
+        source = self._visible_source()
+        if self.effect is not None and not self._effect_done:
+            runs, done = self.effect.tick()
+            self._effect_done = done
+            self._label.set_runs(runs)
+        else:
+            self._label.set_runs([(source, None)])
+
+    def _pulse_color(self) -> str | None:
+        if not self.pulse_colors:
+            return None
+        if self.beat_sync:
+            if len(self.pulse_colors) < 2:
+                return self.pulse_colors[0]
+            # Base colour at rest, accent at the instant of the beat.
+            return theme.lerp(self.pulse_colors[0], self.pulse_colors[1],
+                              self._beat)
+        return self.pulse_colors[self._pulse_idx % len(self.pulse_colors)]
+
+    # ── frame clock ─────────────────────────────────────────────────────
+    def animate(self, t: float) -> None:
+        dt = self.tick_dt(t) * 1000.0
+        self._t = t
+        dirty = False
+
+        if self.reveal_effect is not None and self._reveal < 1.0:
+            duration = max(1e-3, self.reveal_effect.duration)
+            # Damage the current bounds *before* advancing: on the frame
+            # the reveal completes `paint_bounds` shrinks back to the
+            # rect, and whatever the previous frame threw into the bleed
+            # margin would otherwise never be painted over.
+            self.invalidate()
+            self._reveal = min(1.0, self._reveal + (dt / 1000.0) / duration)
+            dirty = True
+
+        if self.effect is not None and not self._effect_done:
+            self._effect_acc += dt
+            while self._effect_acc >= self.effect.interval_ms:
+                self._effect_acc -= self.effect.interval_ms
+                runs, done = self.effect.tick()
+                self._effect_done = done
+                self._label.set_runs(runs)
+                dirty = True
+
+        if (self.max_width_chars
+                and len(self._full) > self.max_width_chars
+                and self._effect_done):
+            self._scroll_acc += dt
+            while self._scroll_acc >= self.scroll_interval_ms:
+                self._scroll_acc -= self.scroll_interval_ms
+                self._offset += 1
+                dirty = True
+
+        # The phase pulse and the beat pulse are alternatives, not
+        # layers: with beat_sync on, the colour is a function of how long
+        # ago the last beat was, and a free-running phase would fight it.
+        if self.pulse_colors and not self.beat_sync:
+            self._pulse_acc += dt
+            while self._pulse_acc >= self.pulse_period_ms:
+                self._pulse_acc -= self.pulse_period_ms
+                self._pulse_idx += 1
+                dirty = True
+        elif self._beat:
+            # Framed as a rate rather than a fixed per-tick factor, the
+            # fade takes the same wall-clock time whatever the window's
+            # frame rate happens to be.
+            self._beat *= BEAT_DECAY ** (dt / BEAT_DECAY_MS)
+            if self._beat < 0.02:
+                self._beat = 0.0
+            self._apply_pulse()
+
+        if dirty and self._effect_done:
+            self._render()
+
+    # ── layout / paint ──────────────────────────────────────────────────
+    def measure(self, avail: Size) -> Size:
+        return self._label.measure(avail)
+
+    def arrange(self, rect: skia.Rect) -> None:
+        self.rect = rect
+        self._label.arrange(rect)
+
+    def paint_bounds(self) -> skia.Rect:
+        if self.reveal_effect is None or self._reveal >= 1.0:
+            return self.rect
+        bleed = self.reveal_effect.bleed(self.rect.width(), self.rect.height())
+        return self.rect.makeOutset(bleed, bleed)
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        if self.reveal_effect is None or self._reveal >= 1.0:
+            self._label.paint(canvas)
+            return
+        effects.paint_through(
+            canvas, self.rect, self._label.paint, (self.reveal_effect,),
+            t=self._t, appear=self._reveal, seed=self._reveal_seed)
