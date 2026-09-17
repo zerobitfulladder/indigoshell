@@ -246,12 +246,13 @@ WINDOWS = {
     # `display-menu` is registered below as a dialog pipeline (not a
     # static popup kind) — see SCRIPTS + PIPELINES.
     "envy-menu": _menu_popup("envy-menu", [
-        # pkexec triggers polkit's GUI auth dialog so the toast popup
-        # doesn't need keyboard focus to type a sudo password — works
-        # cleanly with the NOTIFICATION-typed (non-focusable) toast.
-        MenuItem("1", "NVIDIA",     toast(["pkexec", "envycontrol", "-s", "nvidia"])),
-        MenuItem("2", "INTEGRATED", toast(["pkexec", "envycontrol", "-s", "integrated"])),
-        MenuItem("3", "HYBRID",     toast(["pkexec", "envycontrol", "-s", "hybrid"])),
+        # optimus-manager talks to its root daemon over a socket, so no
+        # pkexec/polkit auth is needed from the toast. With no display
+        # manager the switch is staged until the next X restart (logout
+        # → startx), which the toast output announces.
+        MenuItem("1", "NVIDIA",     toast(["optimus-manager", "--switch", "nvidia", "--no-confirm"])),
+        MenuItem("2", "INTEGRATED", toast(["optimus-manager", "--switch", "integrated", "--no-confirm"])),
+        MenuItem("3", "HYBRID",     toast(["optimus-manager", "--switch", "hybrid", "--no-confirm"])),
     ]),
     "layout-menu": _menu_popup("layout-menu", [
         MenuItem("1", "US", layout.us),
