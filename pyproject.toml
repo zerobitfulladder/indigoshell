@@ -6,10 +6,28 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "psutil>=7.2.2",
+    "watchdog>=6.0.0",
+    # v1 (GTK3). Dropped at cutover, when indigoshell/ is deleted.
     "pygobject>=3.56.3",
     "python-xlib>=0.33",
-    "watchdog>=6.0.0",
+    # v2 (xcffib + skia + dbus-fast).
+    "xcffib>=1.12",
+    "skia-python>=144.0",
+    "dbus-fast>=5.0",
 ]
+
+# Not installable from here. The beat pulse needs `aubio`, which has no
+# wheel for this interpreter and only exists as a distro package (Arch:
+# `python-aubio`, which pulls numpy). The venv therefore has to be able
+# to see the system's site-packages:
+#
+#     include-system-site-packages = true    # in .venv/pyvenv.cfg
+#
+# `uv venv --system-site-packages` sets that, and `uv sync` resets it —
+# `services/beat.py` probes `sys.base_prefix` as a fallback so a rebuild
+# only costs the flag, not the feature. cava (visualiser), playerctl,
+# parec, speedtest-cli, iw and nmcli are likewise expected on PATH.
 
 [project.scripts]
 indigoshell = "indigoshell.app:main"
+indigoshell2 = "indigoshell2.app:main"
