@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Offline render output — regenerate with prototypes/visuals/render_*.py
+prototypes/visuals/*.png
+prototypes/visuals/gif/
