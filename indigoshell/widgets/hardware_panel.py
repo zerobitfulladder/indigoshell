@@ -429,7 +429,7 @@ class HardwarePanel(Widget):
         return HudCard(body, accent=theme.YELLOW_BRIGHT)
 
     def _refresh_state_oneshot(self) -> None:
-        """Kick off envycontrol + tuned-adm queries on a worker thread.
+        """Kick off optimus-manager + tuned-adm queries on a worker thread.
         Their results are marshalled back via GLib.idle_add — running
         them on the GTK main thread would freeze the whole bar for
         100–500ms on each popup open."""
@@ -438,7 +438,10 @@ class HardwarePanel(Widget):
         self._state_pending = True
 
         def worker() -> None:
-            mode = self._run_oneshot(["envycontrol", "-q"])
+            mode = self._run_oneshot(["optimus-manager", "--print-mode"])
+            # "Current GPU mode : nvidia" → keep just the mode word.
+            if mode and ":" in mode:
+                mode = mode.split(":", 1)[1].strip()
             prof = self._read_profile()
             GLib.idle_add(self._apply_state, mode, prof)
 
