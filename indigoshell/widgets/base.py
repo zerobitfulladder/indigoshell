@@ -1,313 +1,300 @@
-import itertools
-from typing import Callable
+"""The widget contract.
 
-import gi
+Four methods, and everything else is built from them:
 
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-from gi.repository import Gtk, Gdk, GLib
+    measure(avail) -> Size    what I'd like to be
+    arrange(rect)             where I actually am; containers recurse
+    paint(canvas)             draw myself
+    hit(x, y) -> Widget|None  who owns this point
 
-from ..style import Style
+Containers are widgets too, so a bar, a panel and a notification all hold
+the same type. This is also the plugin API, which is why it stays this
+small and why nothing in it mentions X11 or the window that hosts it.
+"""
 
-_id_gen = itertools.count()
+from dataclasses import dataclass
+from typing import Callable, Iterable
+
+import skia
+
+# Ceiling on one frame's elapsed time. Long enough that a widget dropping
+# a frame or two still advances smoothly, short enough that resuming
+# after an idle spell does not jump.
+MAX_TICK_DT = 0.25
+
+
+@dataclass(frozen=True)
+class Size:
+    width: float
+    height: float
+
+
+@dataclass(frozen=True)
+class Insets:
+    top: int = 0
+    right: int = 0
+    bottom: int = 0
+    left: int = 0
+
+    @staticmethod
+    def all(v: int) -> "Insets":
+        return Insets(v, v, v, v)
+
+    @staticmethod
+    def xy(h: int, v: int) -> "Insets":
+        return Insets(v, h, v, h)
+
+    @property
+    def horizontal(self) -> int:
+        return self.left + self.right
+
+    @property
+    def vertical(self) -> int:
+        return self.top + self.bottom
+
+    def deflate(self, rect: skia.Rect) -> skia.Rect:
+        return skia.Rect.MakeLTRB(
+            rect.left() + self.left, rect.top() + self.top,
+            rect.right() - self.right, rect.bottom() - self.bottom,
+        )
 
 
 class Widget:
-    """Base class for bar widgets.
+    # >0 asks the host window for a frame clock at this rate. Widgets that
+    # only change on input stay at 0 and cost nothing when idle.
+    #
+    # Read every frame, so it may be a property: a widget that only
+    # animates sometimes should return 0 the rest of the time and the
+    # window will slow down or stop its clock. A widget that *raises* it
+    # must also `invalidate()`, which is what wakes a stopped clock.
+    animation_fps: int = 0
 
-    Subclasses implement `build_widget()` to return a Gtk widget, and optionally
-    `tick()` plus `interval_ms` to schedule periodic updates.
+    # Damage from this widget's subtree is reported as damage to *this*
+    # widget instead. Set it on a widget that draws outside its own
+    # allocation — a post-process pass with bleed, a glow, a shadow —
+    # because a child's rect does not cover the fringe drawn beyond it,
+    # and a partial repaint clipped to the child would leave that stale.
+    absorbs_damage: bool = False
 
-    Event handlers (`on_left_click`, etc.) receive the source `Widget` as their
-    sole argument; if any are set, `build()` wraps the widget in a transparent
-    `Gtk.EventBox`.
-    """
-
-    interval_ms: int | None = None
-    expand: bool = False
+    # Owned by the host window's frame clock: when this widget is next
+    # due an `animate()` call. Kept on the widget rather than in a map
+    # keyed by id() so a replaced subtree takes its schedule with it and
+    # leaves nothing behind to leak.
+    _next_animate_at: float = 0.0
+    _last_animate_t: float | None = None
 
     def __init__(
         self,
-        style: Style | None = None,
         *,
+        flex: int = 0,
         on_left_click: Callable | None = None,
         on_right_click: Callable | None = None,
         on_middle_click: Callable | None = None,
         on_scroll_up: Callable | None = None,
         on_scroll_down: Callable | None = None,
-        on_hover_enter: Callable | None = None,
-        on_hover_leave: Callable | None = None,
-        hover_style: Style | None = None,
-        active_style: Style | None = None,
-        child_styles: dict[str, Style] | None = None,
-        # If True, the widget (and its event-box wrapper) fills the bar's
-        # full height instead of hugging its content. Lets hover/active
-        # backgrounds paint as a full-height block, not just behind text.
-        vfill: bool = False,
-    ):
-        self.style = style
-        self.hover_style = hover_style
-        self.active_style = active_style
-        self.vfill = vfill
-        self.child_styles = child_styles or {}
-        self.name = f"iw{next(_id_gen)}"
-        self.gtk_widget: Gtk.Widget | None = None
-        self._named_widget: Gtk.Widget | None = None
-        self._timer_id: int | None = None
+        on_drag: Callable | None = None,
+    ) -> None:
+        self.rect = skia.Rect.MakeEmpty()
+        self.window = None          # set by attach()
+        self._parent: "Widget | None" = None
+        self.flex = flex            # share of leftover space along the main axis
+        self.hovered = False
+        self.pressed = False
         self.on_left_click = on_left_click
         self.on_right_click = on_right_click
         self.on_middle_click = on_middle_click
         self.on_scroll_up = on_scroll_up
         self.on_scroll_down = on_scroll_down
-        self.on_hover_enter = on_hover_enter
-        self.on_hover_leave = on_hover_leave
+        # Called with (widget, x, y) on press and on every motion while
+        # the button is held, then once more on release with commit=True.
+        # A widget that sets this captures the pointer for the drag, so a
+        # slider keeps tracking after the cursor leaves its own rect.
+        self.on_drag = on_drag
 
-    def build(self) -> Gtk.Widget:
-        w = self.build_widget()
-        w.set_name(self.name)
-        valign = Gtk.Align.FILL if self.vfill else Gtk.Align.CENTER
-        w.set_valign(valign)
-        w.set_vexpand(self.vfill)
-        self._named_widget = w
-        if self._needs_event_box():
-            w = self._wrap_events(w)
-            w.set_valign(valign)
-            w.set_vexpand(self.vfill)
-        self.gtk_widget = w
-        return w
-
-    def _has_events(self) -> bool:
-        return any(
-            (
-                self.on_left_click,
-                self.on_right_click,
-                self.on_middle_click,
-                self.on_scroll_up,
-                self.on_scroll_down,
-                self.on_hover_enter,
-                self.on_hover_leave,
-            )
-        )
-
-    def _needs_event_box(self) -> bool:
-        return (
-            self._has_events()
-            or self.hover_style is not None
-            or self.active_style is not None
-        )
-
-    def _wrap_events(self, inner: Gtk.Widget) -> Gtk.Widget:
-        ev = Gtk.EventBox()
-        ev.add(inner)
-        ev.set_visible_window(False)
-        ev.add_events(
-            Gdk.EventMask.BUTTON_PRESS_MASK
-            | Gdk.EventMask.BUTTON_RELEASE_MASK
-            | Gdk.EventMask.SCROLL_MASK
-            | Gdk.EventMask.ENTER_NOTIFY_MASK
-            | Gdk.EventMask.LEAVE_NOTIFY_MASK
-        )
-        ev.connect("button-press-event", self._dispatch_button)
-        ev.connect("button-release-event", self._on_button_release)
-        ev.connect("scroll-event", self._dispatch_scroll)
-        ev.connect("enter-notify-event", self._dispatch_hover_enter)
-        ev.connect("leave-notify-event", self._dispatch_hover_leave)
-        return ev
-
-    def _class_ctx(self):
-        return self._named_widget.get_style_context() if self._named_widget else None
-
-    def _dispatch_hover_enter(self, _w, _event) -> bool:
-        ctx = self._class_ctx()
-        if ctx:
-            ctx.add_class("hover")
-        if self.on_hover_enter:
-            self.on_hover_enter(self)
-        return False
-
-    def _dispatch_hover_leave(self, _w, _event) -> bool:
-        ctx = self._class_ctx()
-        if ctx:
-            ctx.remove_class("hover")
-            ctx.remove_class("active")
-        if self.on_hover_leave:
-            self.on_hover_leave(self)
-        return False
-
-    def _dispatch_button(self, _w, event) -> bool:
-        if event.type != Gdk.EventType.BUTTON_PRESS:
-            return False
-        ctx = self._class_ctx()
-        if ctx:
-            ctx.add_class("active")
-        if event.button == 1 and self.on_left_click:
-            self.on_left_click(self)
-            return True
-        if event.button == 2 and self.on_middle_click:
-            self.on_middle_click(self)
-            return True
-        if event.button == 3 and self.on_right_click:
-            self.on_right_click(self)
-            return True
-        return False
-
-    def _on_button_release(self, _w, _event) -> bool:
-        ctx = self._class_ctx()
-        if ctx:
-            ctx.remove_class("active")
-        return False
-
-    def _dispatch_scroll(self, _w, event) -> bool:
-        if event.direction == Gdk.ScrollDirection.UP and self.on_scroll_up:
-            self.on_scroll_up(self)
-            return True
-        if event.direction == Gdk.ScrollDirection.DOWN and self.on_scroll_down:
-            self.on_scroll_down(self)
-            return True
-        return False
-
-    def build_widget(self) -> Gtk.Widget:
-        raise NotImplementedError
-
-    def default_css(self) -> str:
-        """CSS owned by this widget. Must be scoped to `#self.name`."""
-        return ""
-
-    def tick(self) -> bool:
-        return True
-
-    def start(self) -> None:
-        if self.interval_ms and self._timer_id is None:
-            self.tick()
-            self._timer_id = GLib.timeout_add(self.interval_ms, self.tick)
-
-    def stop(self) -> None:
-        if self._timer_id is not None:
-            GLib.source_remove(self._timer_id)
-            self._timer_id = None
+    # ── tree ────────────────────────────────────────────────────────────
+    def children(self) -> Iterable["Widget"]:
+        return ()
 
     def walk(self):
         yield self
+        for child in self.children():
+            yield from child.walk()
 
+    def attach(self, window) -> None:
+        self.window = window
+        for child in self.children():
+            child._parent = self
+            child.attach(window)
 
-def paint(cr, hex_color: str, alpha: float | None = None) -> None:
-    """Set Cairo source from a hex color. `alpha` overrides the hex alpha
-    channel when provided; otherwise we use whatever Gdk.RGBA parsed."""
-    rgba = Gdk.RGBA()
-    rgba.parse(hex_color)
-    a = rgba.alpha if alpha is None else alpha
-    cr.set_source_rgba(rgba.red, rgba.green, rgba.blue, a)
+    def on_shown(self) -> None:
+        """Called once the window is mapped and its spawn animation has
+        finished.
 
+        Anything that costs the event loop — spawning subprocesses,
+        starting subscriptions — belongs here rather than in `attach()`.
+        The transition runs off a frozen snapshot, so a value that
+        arrives during it cannot be seen anyway, while the work needed to
+        fetch it blocks the loop that is trying to render the animation.
+        A panel that launched twenty subprocesses from `attach()` simply
+        never showed its spawn: `_appear` is driven by wall clock, so the
+        frames the loop missed were frames the animation skipped.
+        """
+        for child in self.children():
+            child.on_shown()
 
-def beveled_path(
-    cr,
-    w: float,
-    h: float,
-    *,
-    bevel: int,
-    corners: tuple[str, ...],
-    inset: float = 0.0,
-) -> None:
-    """Add a closed beveled-rectangle subpath to `cr`. Each corner name in
-    `corners` ("top-left" | "top-right" | "bottom-left" | "bottom-right")
-    is sliced at 45° by `bevel` px; remaining corners stay square.
-    `inset` shrinks the rect uniformly — useful so a stroke stays crisp
-    inside the widget's allocation."""
-    x0, y0 = inset, inset
-    x1, y1 = w - inset, h - inset
-    b = min(bevel, int((x1 - x0) // 2), int((y1 - y0) // 2))
-    if b <= 0 or not corners:
-        cr.rectangle(x0, y0, x1 - x0, y1 - y0)
-        return
-    if "top-left" in corners:
-        cr.move_to(x0, y0 + b); cr.line_to(x0 + b, y0)
-    else:
-        cr.move_to(x0, y0)
-    if "top-right" in corners:
-        cr.line_to(x1 - b, y0); cr.line_to(x1, y0 + b)
-    else:
-        cr.line_to(x1, y0)
-    if "bottom-right" in corners:
-        cr.line_to(x1, y1 - b); cr.line_to(x1 - b, y1)
-    else:
-        cr.line_to(x1, y1)
-    if "bottom-left" in corners:
-        cr.line_to(x0 + b, y1); cr.line_to(x0, y1 - b)
-    else:
-        cr.line_to(x0, y1)
-    cr.close_path()
+    def detach(self) -> None:
+        """Release anything started in attach() — subscriptions, tasks.
+        Called when the host window is destroyed."""
+        for child in self.children():
+            child.detach()
 
+    # ── layout ──────────────────────────────────────────────────────────
+    def measure(self, avail: Size) -> Size:
+        raise NotImplementedError
 
-def beveled_polyline(
-    w: int,
-    h: int,
-    *,
-    bevel: int,
-    corners: tuple[str, ...],
-    inset: float = 0.0,
-) -> list[tuple[float, float]]:
-    """Closed polyline (first point repeated last) clockwise from top-left,
-    matching `beveled_path`'s corner cuts. Used to walk the perimeter by
-    arc-length for animated traces."""
-    x0, y0 = inset, inset
-    x1, y1 = w - inset, h - inset
-    b = min(bevel, int((x1 - x0) // 2), int((y1 - y0) // 2))
-    pts: list[tuple[float, float]] = []
-    if b <= 0 or not corners:
-        pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-        pts.append(pts[0])
-        return pts
-    if "top-left" in corners:
-        pts.append((x0, y0 + b)); pts.append((x0 + b, y0))
-    else:
-        pts.append((x0, y0))
-    if "top-right" in corners:
-        pts.append((x1 - b, y0)); pts.append((x1, y0 + b))
-    else:
-        pts.append((x1, y0))
-    if "bottom-right" in corners:
-        pts.append((x1, y1 - b)); pts.append((x1 - b, y1))
-    else:
-        pts.append((x1, y1))
-    if "bottom-left" in corners:
-        pts.append((x0 + b, y1)); pts.append((x0, y1 - b))
-    else:
-        pts.append((x0, y1))
-    pts.append(pts[0])
-    return pts
+    def arrange(self, rect: skia.Rect) -> None:
+        self.rect = rect
 
+    def baseline(self, size: Size) -> float | None:
+        """Text baseline offset from the top of the measured box, if this
+        widget has one. Used by Align.BASELINE."""
+        return None
 
-def stroke_partial(cr, pts: list[tuple[float, float]], length: float) -> None:
-    """Walk `pts` (from `beveled_polyline`) by `length` arc-length px,
-    stroking the partial path. Used to draw a growing perimeter trace."""
-    if length <= 0 or len(pts) < 2:
-        return
-    cr.move_to(*pts[0])
-    remaining = length
-    for i in range(len(pts) - 1):
-        x0, y0 = pts[i]
-        x1, y1 = pts[i + 1]
-        dx, dy = x1 - x0, y1 - y0
-        seg = (dx * dx + dy * dy) ** 0.5
-        if seg <= 0:
-            continue
-        if seg <= remaining:
-            cr.line_to(x1, y1)
-            remaining -= seg
-            if remaining <= 0:
-                break
-        else:
-            t = remaining / seg
-            cr.line_to(x0 + dx * t, y0 + dy * t)
-            break
-    cr.stroke()
+    # ── paint ───────────────────────────────────────────────────────────
+    def paint(self, canvas: skia.Canvas) -> None:
+        raise NotImplementedError
 
+    def paint_bounds(self) -> skia.Rect:
+        """Every pixel this widget may touch when it paints.
 
-def make_label(text: str, css_class: str | None = None) -> Gtk.Label:
-    label = Gtk.Label(label=text)
-    label.set_valign(Gtk.Align.CENTER)
-    label.set_xalign(0.5)
-    label.set_yalign(0.5)
-    if css_class:
-        label.get_style_context().add_class(css_class)
-    return label
+        A partial repaint clips to the union of these, so a widget whose
+        paint reaches past its allocation has to widen this or its
+        fringes are left behind by the clip. Defaults to the allocation,
+        which is right for anything that draws inside its own box.
+        """
+        return self.rect
+
+    def invalidate(self, layout: bool = False) -> None:
+        """Ask for a repaint of this widget, and optionally a re-measure.
+
+        Text that changes width (a clock ticking to a wider minute, a
+        stat going from 9% to 100%) changes the widget's *size*, so the
+        container has to re-run measure/arrange — repainting alone would
+        draw the new string into the old slot. A relayout can move
+        anything, so it damages the whole window rather than one rect.
+
+        Damage is attributed to the outermost ancestor that claims it —
+        see `absorbs_damage`.
+        """
+        if self.window is None:
+            return
+        target, node = self, self._parent
+        while node is not None:
+            if node.absorbs_damage:
+                target = node
+            node = node._parent
+        self.window.damage(target, layout=layout)
+
+    def animate(self, t: float) -> None:
+        """Called at `animation_fps` while it is > 0. `t` is seconds since
+        the window opened.
+
+        Anything advancing by elapsed time should take it from
+        `tick_dt(t)` rather than differencing `t` itself.
+        """
+
+    def tick_dt(self, t: float) -> float:
+        """Seconds since this widget's previous animated frame.
+
+        Zero on the first frame after a pause (the window clears
+        `_last_animate_t` for a widget while it is idle), and never more
+        than one `MAX_TICK_DT` after a stalled frame. A widget that drops to `animation_fps` 0 stops
+        being called at all, so the raw gap since its last frame is
+        however long it was idle — differencing `t` by hand hands a
+        scroll offset or a decay several seconds of "elapsed" time the
+        moment it resumes, and the animation completes instantly instead
+        of starting. That is what made the lyrics reveal jump straight to
+        finished: it was idle 6s, so its first frame advanced the reveal
+        by 6s of a 0.55s animation.
+        """
+        last = self._last_animate_t
+        self._last_animate_t = t
+        if last is None:
+            return 0.0
+        return min(max(0.0, t - last), MAX_TICK_DT)
+
+    # ── input ───────────────────────────────────────────────────────────
+    @property
+    def interactive(self) -> bool:
+        return any((
+            self.on_left_click, self.on_right_click, self.on_middle_click,
+            self.on_scroll_up, self.on_scroll_down, self.on_drag,
+        ))
+
+    def hit(self, x: float, y: float) -> "Widget | None":
+        """Topmost interactive widget at this point.
+
+        Uses the widget's own rect, so a shape with cut corners can
+        override this and hit-test its actual `skia.Path` — the clickable
+        area then matches the drawn area exactly, which a rectangular
+        event box can never do.
+        """
+        if not self.rect.contains(x, y):
+            return None
+        for child in reversed(list(self.children())):
+            found = child.hit(x, y)
+            if found is not None:
+                return found
+        return self if self.interactive else None
+
+    def key(self, keysym: int, shift: bool = False) -> bool:
+        """Handle a key press; return True if consumed.
+
+        Forwarded down the tree until something consumes it, so a panel
+        deep inside a window still gets its arrow keys without the window
+        knowing anything about focus.
+        """
+        for child in self.children():
+            if child.key(keysym, shift):
+                return True
+        return False
+
+    def key_release(self, keysym: int, shift: bool = False) -> bool:
+        """Handle a key release; return True if consumed. Forwarded like
+        `key`. Only a grabbing window receives releases — X reports both
+        press and release to a keyboard grab regardless of event mask —
+        and only press-to-arm / release-to-fire widgets care."""
+        for child in self.children():
+            if child.key_release(keysym, shift):
+                return True
+        return False
+
+    def set_hovered(self, value: bool) -> None:
+        if self.hovered != value:
+            self.hovered = value
+            if not value:
+                self.pressed = False
+            self.invalidate()
+
+    def click(self, button: int, x: float = 0.0, y: float = 0.0) -> bool:
+        """Dispatch a press to the `on_*` handlers, which receive only the
+        widget.
+
+        A widget that draws several regions (workspace indicators, a chip
+        row, a tab strip) wants the position instead, and gets it by
+        overriding this rather than by setting a handler — `x`/`y` are
+        window-local. Such a widget must override `hit()` too, since with
+        no handler set it is not `interactive` and the default `hit()`
+        would skip it.
+        """
+        handler = {
+            1: self.on_left_click,
+            2: self.on_middle_click,
+            3: self.on_right_click,
+            4: self.on_scroll_up,
+            5: self.on_scroll_down,
+        }.get(button)
+        if handler is None:
+            return False
+        handler(self)
+        return True

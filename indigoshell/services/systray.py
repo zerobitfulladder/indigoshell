@@ -1,6 +1,7 @@
 """StatusNotifierItem broker — Watcher + Host for D-Bus tray icons.
 
-What this module does (in plain English):
+Built on dbus-fast, on the daemon's own asyncio loop. What this module
+does (in plain English):
 
 1. **Watcher role** — claims the well-known session-bus name
    `org.kde.StatusNotifierWatcher`. SNI-aware apps look for this name to
@@ -11,37 +12,40 @@ What this module does (in plain English):
 
 2. **Host role** — registers as a `StatusNotifierHost-<pid>` on the bus
    and subscribes to the watcher's add/remove signals. When a new item
-   appears we connect to its bus name, fetch its current properties
-   (icon, tooltip, status, menu path, ...), subscribe to its `New*`
-   change signals, and store it in `self._items`.
+   appears we fetch its current properties (icon, tooltip, status, menu
+   path, ...), subscribe to its `New*` change signals, and store it in
+   `self._items`.
 
-3. **Pub/sub** — bar widgets subscribe via `.subscribe(...)` to be
-   notified when items are added, removed, or change. The widget owns
-   rendering; this module is a pure data broker — same pattern as
-   `services/music.py` and `services/beat.py`.
+3. **Pub/sub** — widgets subscribe via `.subscribe(...)` to be notified
+   when items are added, removed, or change. The widget owns rendering;
+   this module is a pure data broker — same pattern as `services/music`.
+   Everything runs on the one loop, so listeners are called directly —
+   with no marshalling hop in between.
 
 4. **Click dispatch** — exposes `activate`, `secondary_activate`,
    `context_menu`, and `scroll` so the renderer can forward user input
-   to the item's D-Bus methods.
+   to the item's D-Bus methods, plus `fetch_menu`/`menu_event` for the
+   DBusMenu walker in `services/dbusmenu.py`.
 
-What v1 does NOT do yet:
-  - DBusMenu (right-click menus). For now we call `ContextMenu(x,y)` on
-    the item, which works for apps that still implement the legacy
-    fallback (most still do). Apps that only export DBusMenu will get
-    no menu until we add a DBusMenu walker.
-  - NewAttentionIcon / NeedsAttention pulsing. Status is tracked but
-    the renderer treats Active and NeedsAttention identically.
-  - IconThemePath honoring (apps shipping non-standard icon dirs).
+The watcher interface is implemented at the raw message level rather
+than through `ServiceInterface` because `RegisterStatusNotifierItem`
+needs the caller's bus name — apps may register a bare object path,
+meaning "use my unique name" — and the high-level API hides the sender.
 """
 
+import asyncio
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import gi
+from dbus_fast import (Message, MessageType, NameFlag,
+                       RequestNameReply, Variant, unpack_variants)
+from dbus_fast.aio import MessageBus
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gio, GLib
+from .bus import session_bus
+
+log = logging.getLogger(__name__)
 
 
 # ── D-Bus constants ──────────────────────────────────────────────────
@@ -50,13 +54,15 @@ WATCHER_PATH     = "/StatusNotifierWatcher"
 ITEM_IFACE       = "org.kde.StatusNotifierItem"
 ITEM_PATH        = "/StatusNotifierItem"
 PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
+INTROSPECT_IFACE = "org.freedesktop.DBus.Introspectable"
 DBUS_BUS         = "org.freedesktop.DBus"
 DBUS_PATH        = "/org/freedesktop/DBus"
 DBUS_IFACE       = "org.freedesktop.DBus"
 
+_CALL_TIMEOUT = 2.0
 
-# Watcher interface XML — only consulted when we run the watcher
-# ourselves (i.e. the bus name was free when we started).
+# Watcher interface XML — served to Introspect callers when we run the
+# watcher ourselves (i.e. the bus name was free when we started).
 _WATCHER_XML = """
 <node>
   <interface name='org.kde.StatusNotifierWatcher'>
@@ -107,72 +113,32 @@ class TrayItem:
 class TrayBroker:
     """Singleton — see `get_broker()`. Lifecycle:
 
-        broker.start()                # claim watcher, register host, subscribe
+        broker.start()                # connect, claim watcher, register host
         broker.subscribe(on_add, on_remove, on_change)
         broker.activate(bus_name, x, y)      # forward clicks
-        broker.stop()                 # release names, unsubscribe
     """
 
     def __init__(self) -> None:
         self._items: dict[str, TrayItem] = {}
         self._listeners: list[tuple[Callable, Callable, Callable]] = []
-        self._conn: Gio.DBusConnection | None = None
-        self._watcher_owner_id: int | None = None
-        self._host_owner_id: int | None = None
-        self._watcher_reg_id: int | None = None
-        self._is_watcher_owner: bool = False
-        self._sub_ids: list[int] = []
-        self._host_name: str = f"org.kde.StatusNotifierHost-{os.getpid()}"
-        # Per-item signal subscription ids so we can detach on unregister.
-        self._item_sub_ids: dict[str, list[int]] = {}
-        # Tracked items when WE run the watcher.
+        self._bus: MessageBus | None = None
+        self._starting = False
+        self._is_watcher_owner = False
+        self._host_name = f"org.kde.StatusNotifierHost-{os.getpid()}"
+        # Tracked registrations when WE run the watcher.
         self._watcher_items: list[str] = []
         self._watcher_hosts: list[str] = []
+        # Fire-and-forget tasks, held so the event loop doesn't GC them.
+        self._tasks: set[asyncio.Task] = set()
 
     # ── public API ───────────────────────────────────────────────────
     def start(self) -> None:
-        if self._conn is not None:
+        """Idempotent; connects on the running loop, in the background."""
+        if self._bus is not None or self._starting:
             return
-        self._conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        # Try to acquire the watcher name. If we get it we serve the
-        # watcher interface; if it's taken we just continue as a host.
-        self._watcher_owner_id = Gio.bus_own_name_on_connection(
-            self._conn,
-            WATCHER_BUS,
-            Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT,
-            self._on_watcher_acquired,
-            self._on_watcher_lost,
-        )
-        # Always become a host on a unique bus name.
-        self._host_owner_id = Gio.bus_own_name_on_connection(
-            self._conn,
-            self._host_name,
-            Gio.BusNameOwnerFlags.NONE,
-            None,
-            None,
-        )
-
-    def stop(self) -> None:
-        if self._conn is None:
-            return
-        for sid in self._sub_ids:
-            self._conn.signal_unsubscribe(sid)
-        self._sub_ids.clear()
-        for sids in self._item_sub_ids.values():
-            for sid in sids:
-                self._conn.signal_unsubscribe(sid)
-        self._item_sub_ids.clear()
-        if self._watcher_reg_id is not None:
-            self._conn.unregister_object(self._watcher_reg_id)
-            self._watcher_reg_id = None
-        if self._watcher_owner_id is not None:
-            Gio.bus_unown_name(self._watcher_owner_id)
-            self._watcher_owner_id = None
-        if self._host_owner_id is not None:
-            Gio.bus_unown_name(self._host_owner_id)
-            self._host_owner_id = None
-        self._items.clear()
-        self._conn = None
+        self._starting = True
+        if not self._spawn(self._connect()):
+            self._starting = False
 
     def items(self) -> list[TrayItem]:
         return list(self._items.values())
@@ -193,167 +159,233 @@ class TrayBroker:
 
     # ── click forwarding ─────────────────────────────────────────────
     def activate(self, bus_name: str, x: int, y: int) -> None:
-        self._call_item(bus_name, "Activate", GLib.Variant("(ii)", (x, y)))
+        self._call_item(bus_name, "Activate", "ii", [x, y])
 
     def secondary_activate(self, bus_name: str, x: int, y: int) -> None:
-        self._call_item(bus_name, "SecondaryActivate", GLib.Variant("(ii)", (x, y)))
+        self._call_item(bus_name, "SecondaryActivate", "ii", [x, y])
 
     def context_menu(self, bus_name: str, x: int, y: int) -> None:
-        self._call_item(bus_name, "ContextMenu", GLib.Variant("(ii)", (x, y)))
+        self._call_item(bus_name, "ContextMenu", "ii", [x, y])
 
-    def scroll(self, bus_name: str, delta: int, orientation: str = "vertical") -> None:
-        self._call_item(bus_name, "Scroll", GLib.Variant("(is)", (delta, orientation)))
+    def scroll(self, bus_name: str, delta: int,
+               orientation: str = "vertical") -> None:
+        self._call_item(bus_name, "Scroll", "is", [delta, orientation])
 
-    def build_menu(self, bus_name: str):
-        """Pop the item's DBusMenu (if any) as a Gtk.Menu. Returns None
-        if the item didn't advertise a menu path or the layout fetch
-        failed (e.g. the item just died)."""
-        from .dbusmenu import build_menu as _build_menu  # lazy import to avoid cycle on tests
+    # ── menu ─────────────────────────────────────────────────────────
+    async def fetch_menu(self, bus_name: str):
+        """The item's DBusMenu layout as `MenuNode`s, or None if the item
+        didn't advertise a menu path or the fetch failed (item died)."""
+        from .dbusmenu import fetch_layout  # lazy: avoid cycle in tests
         item = self._items.get(bus_name)
-        if item is None or self._conn is None or not item.menu_path:
+        if item is None or self._bus is None or not item.menu_path:
             return None
-        return _build_menu(self._conn, bus_name, item.menu_path)
+        return await fetch_layout(self._bus, bus_name, item.menu_path)
 
-    def _call_item(self, bus_name: str, method: str, params: GLib.Variant) -> None:
+    def menu_event(self, bus_name: str, item_id: int,
+                   event_id: str = "clicked") -> None:
+        from .dbusmenu import send_event
         item = self._items.get(bus_name)
-        if self._conn is None or item is None:
+        if item is None or self._bus is None or not item.menu_path:
             return
-        # Fire-and-forget; ignore errors (apps that don't implement the
-        # method respond with a DBus error which we don't surface).
-        self._conn.call(
-            bus_name, item.path, ITEM_IFACE, method, params, None,
-            Gio.DBusCallFlags.NONE, 2000, None, None,
-        )
+        self._spawn(send_event(self._bus, bus_name, item.menu_path,
+                               item_id, event_id))
 
-    # ── watcher role (only active if we own the bus name) ────────────
-    def _on_watcher_acquired(self, conn, _name):
-        self._is_watcher_owner = True
-        node = Gio.DBusNodeInfo.new_for_xml(_WATCHER_XML)
-        self._watcher_reg_id = conn.register_object(
-            WATCHER_PATH,
-            node.interfaces[0],
-            self._watcher_method_call,
-            self._watcher_get_property,
-            None,  # no settable properties
-        )
-        self._become_host()
-
-    def _on_watcher_lost(self, _conn, _name):
-        # Someone else owns the watcher (e.g. plasmashell). Just be a host.
-        self._is_watcher_owner = False
-        self._become_host()
-
-    def _watcher_method_call(self, _conn, sender, _path, _iface, method, params, invocation):
-        if method == "RegisterStatusNotifierItem":
-            service = params.unpack()[0]
-            # Apps pass either a bus name ("org.kde.SNItem-1234-1") or
-            # an object path ("/StatusNotifierItem") meaning "use sender
-            # as bus name." Normalize.
-            if service.startswith("/"):
-                bus_name, path = sender, service
-            else:
-                bus_name, path = service, ITEM_PATH
-            if bus_name not in self._watcher_items:
-                self._watcher_items.append(bus_name)
-                self._emit_watcher_signal("StatusNotifierItemRegistered", bus_name)
-            # Track this item from our host side too:
-            self._track_item(bus_name, path)
-            invocation.return_value(None)
-            return
-        if method == "RegisterStatusNotifierHost":
-            host = params.unpack()[0]
-            if host not in self._watcher_hosts:
-                self._watcher_hosts.append(host)
-                self._emit_watcher_signal("StatusNotifierHostRegistered", None)
-            invocation.return_value(None)
-            return
-        invocation.return_dbus_error(
-            "org.freedesktop.DBus.Error.UnknownMethod", f"Unknown method: {method}",
-        )
-
-    def _watcher_get_property(self, _conn, _sender, _path, _iface, prop):
-        if prop == "RegisteredStatusNotifierItems":
-            return GLib.Variant("as", self._watcher_items)
-        if prop == "IsStatusNotifierHostRegistered":
-            return GLib.Variant("b", bool(self._watcher_hosts))
-        if prop == "ProtocolVersion":
-            return GLib.Variant("i", 0)
-        return None
-
-    def _emit_watcher_signal(self, name: str, service: str | None) -> None:
-        if self._conn is None:
-            return
-        params = GLib.Variant("(s)", (service,)) if service is not None else None
-        self._conn.emit_signal(
-            None, WATCHER_PATH, WATCHER_BUS, name, params,
-        )
-
-    # ── host role (always active) ────────────────────────────────────
-    def _become_host(self) -> None:
-        if self._conn is None:
-            return
-        # Subscribe to watcher signals.
-        self._sub_ids.append(self._conn.signal_subscribe(
-            WATCHER_BUS, WATCHER_BUS, "StatusNotifierItemRegistered",
-            WATCHER_PATH, None, Gio.DBusSignalFlags.NONE,
-            self._on_external_item_registered,
-        ))
-        self._sub_ids.append(self._conn.signal_subscribe(
-            WATCHER_BUS, WATCHER_BUS, "StatusNotifierItemUnregistered",
-            WATCHER_PATH, None, Gio.DBusSignalFlags.NONE,
-            self._on_external_item_unregistered,
-        ))
-        # Track app deaths so we can drop their items even if the app
-        # never sent Unregister (the common case — apps just exit).
-        self._sub_ids.append(self._conn.signal_subscribe(
-            DBUS_BUS, DBUS_IFACE, "NameOwnerChanged",
-            DBUS_PATH, None, Gio.DBusSignalFlags.NONE,
-            self._on_name_owner_changed,
-        ))
-        # Tell the watcher we exist (whoever it is).
-        self._conn.call(
-            WATCHER_BUS, WATCHER_PATH, WATCHER_BUS,
-            "RegisterStatusNotifierHost",
-            GLib.Variant("(s)", (self._host_name,)),
-            None, Gio.DBusCallFlags.NONE, -1, None, None,
-        )
-        # Snapshot existing items.
-        self._conn.call(
-            WATCHER_BUS, WATCHER_PATH, PROPERTIES_IFACE, "Get",
-            GLib.Variant("(ss)", (WATCHER_BUS, "RegisteredStatusNotifierItems")),
-            None, Gio.DBusCallFlags.NONE, -1, None,
-            self._on_initial_items,
-        )
-
-    def _on_initial_items(self, conn, result):
+    # ── connection ───────────────────────────────────────────────────
+    async def _connect(self) -> None:
         try:
-            reply = conn.call_finish(result)
-        except GLib.Error:
+            bus = await session_bus()
+        except Exception:
+            log.exception("session bus connect failed; no tray")
+            self._starting = False
             return
-        # Get returns a variant wrapping the property value.
-        wrapped = reply.unpack()[0]  # the variant's content (as)
-        for service in wrapped:
+        self._bus = bus
+        bus.add_message_handler(self._on_message)
+
+        try:
+            await bus.request_name(self._host_name)
+        except Exception:
+            log.debug("host name request failed", exc_info=True)
+        await self._try_acquire_watcher()
+
+        for rule in (
+            f"type='signal',sender='{WATCHER_BUS}',path='{WATCHER_PATH}',"
+            f"interface='{WATCHER_BUS}'",
+            f"type='signal',sender='{DBUS_BUS}',path='{DBUS_PATH}',"
+            f"interface='{DBUS_IFACE}',member='NameOwnerChanged'",
+        ):
+            await self._add_match(rule)
+        await self._register_with_watcher()
+        log.info("tray broker up (%s)",
+                 "watcher+host" if self._is_watcher_owner else "host only")
+
+    async def _try_acquire_watcher(self) -> None:
+        assert self._bus is not None
+        try:
+            reply = await self._bus.request_name(
+                WATCHER_BUS, NameFlag.ALLOW_REPLACEMENT | NameFlag.DO_NOT_QUEUE)
+        except Exception:
+            log.debug("watcher name request failed", exc_info=True)
+            return
+        self._is_watcher_owner = reply in (
+            RequestNameReply.PRIMARY_OWNER, RequestNameReply.ALREADY_OWNER)
+
+    async def _register_with_watcher(self) -> None:
+        """Tell the watcher we exist (whoever it is), then snapshot the
+        items it already tracks. Works unchanged when the watcher is us:
+        the daemon routes both messages straight back."""
+        if self._bus is None:
+            return
+        try:
+            await asyncio.wait_for(self._bus.call(Message(
+                destination=WATCHER_BUS, path=WATCHER_PATH,
+                interface=WATCHER_BUS, member="RegisterStatusNotifierHost",
+                signature="s", body=[self._host_name])), _CALL_TIMEOUT)
+        except Exception:
+            log.debug("no watcher to register with", exc_info=True)
+        try:
+            reply = await asyncio.wait_for(self._bus.call(Message(
+                destination=WATCHER_BUS, path=WATCHER_PATH,
+                interface=PROPERTIES_IFACE, member="Get", signature="ss",
+                body=[WATCHER_BUS, "RegisteredStatusNotifierItems"])),
+                _CALL_TIMEOUT)
+        except Exception:
+            return
+        if reply.message_type != MessageType.METHOD_RETURN or not reply.body:
+            return
+        value = reply.body[0]
+        for service in unpack_variants(value) or []:
             if service.startswith("/"):
                 continue  # malformed; skip
             self._track_item(service, ITEM_PATH)
 
-    def _on_external_item_registered(self, _c, _s, _p, _i, _sig, params):
-        (service,) = params.unpack()
-        if service.startswith("/"):
+    # ── message dispatch ─────────────────────────────────────────────
+    def _on_message(self, msg: Message):
+        if msg.message_type == MessageType.METHOD_CALL:
+            return self._on_method_call(msg)
+        if msg.message_type == MessageType.SIGNAL:
+            self._on_signal(msg)
+        return None
+
+    # ── watcher role (only active if we own the bus name) ────────────
+    def _on_method_call(self, msg: Message):
+        if msg.path != WATCHER_PATH or not self._is_watcher_owner:
+            return None
+        if msg.interface == WATCHER_BUS:
+            if msg.member == "RegisterStatusNotifierItem":
+                service = msg.body[0]
+                # Apps pass either a bus name ("org.kde.SNItem-1234-1") or
+                # an object path ("/StatusNotifierItem") meaning "use
+                # sender as bus name." Normalize.
+                if service.startswith("/"):
+                    bus_name, path = msg.sender, service
+                else:
+                    bus_name, path = service, ITEM_PATH
+                if bus_name not in self._watcher_items:
+                    self._watcher_items.append(bus_name)
+                    self._emit_watcher_signal(
+                        "StatusNotifierItemRegistered", bus_name)
+                # Track this item from our host side too:
+                self._track_item(bus_name, path)
+                return Message.new_method_return(msg)
+            if msg.member == "RegisterStatusNotifierHost":
+                host = msg.body[0]
+                if host not in self._watcher_hosts:
+                    self._watcher_hosts.append(host)
+                    self._emit_watcher_signal(
+                        "StatusNotifierHostRegistered", None)
+                return Message.new_method_return(msg)
+        if msg.interface == PROPERTIES_IFACE:
+            return self._watcher_property_call(msg)
+        if msg.interface == INTROSPECT_IFACE and msg.member == "Introspect":
+            return Message.new_method_return(msg, "s", [_WATCHER_XML])
+        return None
+
+    def _watcher_property_call(self, msg: Message):
+        props = {
+            "RegisteredStatusNotifierItems": Variant("as", self._watcher_items),
+            "IsStatusNotifierHostRegistered": Variant("b", bool(self._watcher_hosts)),
+            "ProtocolVersion": Variant("i", 0),
+        }
+        if msg.member == "Get":
+            _iface, name = msg.body
+            value = props.get(name)
+            if value is None:
+                return Message.new_error(
+                    msg, "org.freedesktop.DBus.Error.UnknownProperty",
+                    f"Unknown property: {name}")
+            return Message.new_method_return(msg, "v", [value])
+        if msg.member == "GetAll":
+            return Message.new_method_return(msg, "a{sv}", [props])
+        return None
+
+    def _emit_watcher_signal(self, name: str, service: str | None) -> None:
+        if self._bus is None:
             return
-        self._track_item(service, ITEM_PATH)
+        sig, body = ("s", [service]) if service is not None else ("", [])
+        self._bus.send(Message.new_signal(
+            WATCHER_PATH, WATCHER_BUS, name, sig, body))
 
-    def _on_external_item_unregistered(self, _c, _s, _p, _i, _sig, params):
-        (service,) = params.unpack()
-        self._drop_item(service)
+    # ── host role (always active) ────────────────────────────────────
+    def _on_signal(self, msg: Message) -> None:
+        if msg.interface == WATCHER_BUS and msg.path == WATCHER_PATH:
+            if msg.member == "StatusNotifierItemRegistered":
+                service = msg.body[0]
+                if not service.startswith("/"):
+                    self._track_item(service, ITEM_PATH)
+            elif msg.member == "StatusNotifierItemUnregistered":
+                self._drop_item(msg.body[0])
+            return
+        if (msg.interface == DBUS_IFACE and msg.member == "NameOwnerChanged"
+                and msg.sender == DBUS_BUS):
+            self._on_name_owner_changed(*msg.body)
+            return
+        if msg.interface == ITEM_IFACE and msg.member.startswith("New"):
+            self._on_item_changed(msg)
 
-    def _on_name_owner_changed(self, _c, _s, _p, _i, _sig, params):
-        name, _old, new = params.unpack()
+    def _on_name_owner_changed(self, name: str, _old: str, new: str) -> None:
+        # Apps just exit rather than sending Unregister — deaths are the
+        # common removal path.
         if not new and name in self._items:
             self._drop_item(name)
         if not new and name in self._watcher_items:
             self._watcher_items.remove(name)
             self._emit_watcher_signal("StatusNotifierItemUnregistered", name)
+        if name == WATCHER_BUS and self._bus is not None:
+            if not new:
+                # The external watcher died; take over if we can.
+                self._spawn(self._watcher_handover())
+            elif new != self._bus.unique_name:
+                # Someone else took the watcher role; be a pure host and
+                # introduce ourselves to the new owner.
+                self._is_watcher_owner = False
+                self._spawn(self._register_with_watcher())
+
+    async def _watcher_handover(self) -> None:
+        await self._try_acquire_watcher()
+        if self._is_watcher_owner:
+            log.info("took over the StatusNotifierWatcher role")
+
+    def _on_item_changed(self, msg: Message) -> None:
+        # Change signals come from the app's *unique* name; items that
+        # registered under a well-known name won't match — a known
+        # limitation, and rare in practice.
+        item = self._items.get(msg.sender)
+        if item is None:
+            return
+        if msg.member == "NewStatus" and msg.body:
+            item.status = msg.body[0]
+            self._emit_changed(item)
+            return
+        # All other "New*" signals just mean "re-read your properties".
+        self._spawn(self._refresh_item(item))
+
+    async def _refresh_item(self, item: TrayItem) -> None:
+        if await self._fetch_all_props(item):
+            self._emit_changed(item)
+
+    def _emit_changed(self, item: TrayItem) -> None:
+        for _add, _rm, on_change in list(self._listeners):
+            on_change(item)
 
     # ── per-item tracking ────────────────────────────────────────────
     def _track_item(self, bus_name: str, path: str) -> None:
@@ -361,82 +393,47 @@ class TrayBroker:
             return
         item = TrayItem(bus_name=bus_name, path=path)
         self._items[bus_name] = item
-        self._fetch_all_props(item)
-        self._subscribe_item_signals(item)
+        self._spawn(self._init_item(item))
+
+    async def _init_item(self, item: TrayItem) -> None:
+        await self._add_match(self._item_rule(item))
+        if not await self._fetch_all_props(item):
+            # Item disappeared between register and our GetAll.
+            self._items.pop(item.bus_name, None)
+            self._spawn(self._remove_match(self._item_rule(item)))
+            return
+        for on_add, _rm, _change in list(self._listeners):
+            on_add(item)
 
     def _drop_item(self, bus_name: str) -> None:
-        if bus_name not in self._items:
-            return
-        for sid in self._item_sub_ids.pop(bus_name, []):
-            if self._conn is not None:
-                self._conn.signal_unsubscribe(sid)
-        self._items.pop(bus_name, None)
-        for _add, on_remove, _change in self._listeners:
-            on_remove(bus_name)
-
-    def _subscribe_item_signals(self, item: TrayItem) -> None:
-        if self._conn is None:
-            return
-        sids: list[int] = []
-        for sig in ("NewTitle", "NewIcon", "NewAttentionIcon",
-                    "NewOverlayIcon", "NewToolTip", "NewStatus"):
-            sids.append(self._conn.signal_subscribe(
-                item.bus_name, ITEM_IFACE, sig, item.path, None,
-                Gio.DBusSignalFlags.NONE,
-                self._on_item_changed,
-            ))
-        self._item_sub_ids[item.bus_name] = sids
-
-    def _on_item_changed(self, _c, sender, _p, _i, signal, params):
-        item = self._items.get(sender)
+        item = self._items.pop(bus_name, None)
         if item is None:
             return
-        if signal == "NewStatus":
-            # Carries new value directly: signal(s).
-            try:
-                (new,) = params.unpack()
-                item.status = new
-                self._emit_changed(item)
-                return
-            except Exception:
-                pass
-        # All other "New*" signals just mean "re-read your properties".
-        self._fetch_all_props(item, on_done=self._emit_changed)
+        self._spawn(self._remove_match(self._item_rule(item)))
+        for _add, on_remove, _change in list(self._listeners):
+            on_remove(bus_name)
 
-    def _emit_changed(self, item: TrayItem) -> None:
-        for _add, _rm, on_change in self._listeners:
-            on_change(item)
+    @staticmethod
+    def _item_rule(item: TrayItem) -> str:
+        return (f"type='signal',sender='{item.bus_name}',"
+                f"interface='{ITEM_IFACE}'")
 
     # ── property fetch ───────────────────────────────────────────────
-    def _fetch_all_props(
-        self,
-        item: TrayItem,
-        on_done: Callable[[TrayItem], None] | None = None,
-    ) -> None:
-        if self._conn is None:
-            return
-
-        def _done(conn, result):
-            try:
-                reply = conn.call_finish(result)
-            except GLib.Error:
-                # Item disappeared between register and our GetAll.
-                return
-            props = reply.unpack()[0]  # a{sv} → plain dict
-            self._apply_props(item, props)
-            if on_done is not None:
-                on_done(item)
-            else:
-                # First-time fetch — announce as added.
-                for on_add, _rm, _change in self._listeners:
-                    on_add(item)
-
-        self._conn.call(
-            item.bus_name, item.path, PROPERTIES_IFACE, "GetAll",
-            GLib.Variant("(s)", (ITEM_IFACE,)),
-            None, Gio.DBusCallFlags.NONE, -1, None,
-            _done,
-        )
+    async def _fetch_all_props(self, item: TrayItem) -> bool:
+        if self._bus is None:
+            return False
+        try:
+            reply = await asyncio.wait_for(self._bus.call(Message(
+                destination=item.bus_name, path=item.path,
+                interface=PROPERTIES_IFACE, member="GetAll", signature="s",
+                body=[ITEM_IFACE])), _CALL_TIMEOUT)
+        except Exception:
+            return False
+        if (reply is None or reply.message_type != MessageType.METHOD_RETURN
+                or not reply.body):
+            return False
+        self._apply_props(item, unpack_variants(reply.body[0]))
+        return True
 
     @staticmethod
     def _apply_props(item: TrayItem, props: dict[str, Any]) -> None:
@@ -459,6 +456,51 @@ class TrayBroker:
         item.menu_path        = props.get("Menu", "") or ""
         item.icon_theme_path  = props.get("IconThemePath", "") or ""
         item.item_is_menu     = bool(props.get("ItemIsMenu", False))
+
+    # ── plumbing ─────────────────────────────────────────────────────
+    def _call_item(self, bus_name: str, method: str,
+                   signature: str, body: list) -> None:
+        item = self._items.get(bus_name)
+        if self._bus is None or item is None:
+            return
+        # Fire-and-forget; ignore errors (apps that don't implement the
+        # method respond with a DBus error which we don't surface).
+        self._spawn(self._call_quietly(Message(
+            destination=bus_name, path=item.path, interface=ITEM_IFACE,
+            member=method, signature=signature, body=body)))
+
+    async def _call_quietly(self, msg: Message) -> None:
+        assert self._bus is not None
+        try:
+            await asyncio.wait_for(self._bus.call(msg), _CALL_TIMEOUT)
+        except Exception:
+            pass
+
+    async def _add_match(self, rule: str) -> None:
+        await self._bus_admin("AddMatch", rule)
+
+    async def _remove_match(self, rule: str) -> None:
+        await self._bus_admin("RemoveMatch", rule)
+
+    async def _bus_admin(self, member: str, rule: str) -> None:
+        if self._bus is None:
+            return
+        try:
+            await asyncio.wait_for(self._bus.call(Message(
+                destination=DBUS_BUS, path=DBUS_PATH, interface=DBUS_IFACE,
+                member=member, signature="s", body=[rule])), _CALL_TIMEOUT)
+        except Exception:
+            log.debug("%s failed: %s", member, rule, exc_info=True)
+
+    def _spawn(self, coro) -> bool:
+        try:
+            task = asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            coro.close()
+            return False
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return True
 
 
 def _normalize_pixmaps(raw) -> list[tuple[int, int, bytes]]:

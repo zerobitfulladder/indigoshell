@@ -1,19 +1,15 @@
 [project]
 name = "indigoshell"
-version = "0.1.0"
+version = "0.2.0"
 description = "A widget-engine desktop shell"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "psutil>=7.2.2",
-    "watchdog>=6.0.0",
-    # v1 (GTK3). Dropped at cutover, when indigoshell/ is deleted.
-    "pygobject>=3.56.3",
-    "python-xlib>=0.33",
-    # v2 (xcffib + skia + dbus-fast).
     "xcffib>=1.12",
     "skia-python>=144.0",
     "dbus-fast>=5.0",
+    "psutil>=7.2.2",
+    "watchdog>=6.0.0",
 ]
 
 # Not installable from here. The beat pulse needs `aubio`, which has no
@@ -30,4 +26,3 @@ dependencies = [
 
 [project.scripts]
 indigoshell = "indigoshell.app:main"
-indigoshell2 = "indigoshell2.app:main"

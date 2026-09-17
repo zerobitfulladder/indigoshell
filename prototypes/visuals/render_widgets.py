@@ -11,12 +11,12 @@ from common import (BAR_H, C, Proto, arc, ascent, bar_strip, brackets,
                     cap_center_baseline, fill_path, fill_rect, glow_rect,
                     render_proto, render_widget, sheet, stroke_path, ticks_h,
                     tw, txt)
-from indigoshell2 import shapes, text as T, theme
-from indigoshell2.widgets.media import Media
-from indigoshell2.widgets.meters import StatMeter
-from indigoshell2.widgets.network import Network
-from indigoshell2.widgets.volume import Volume
-from indigoshell2.widgets.workspaces import Workspaces
+from indigoshell import shapes, text as T, theme
+from indigoshell.widgets.media import Media
+from indigoshell.widgets.meters import StatMeter
+from indigoshell.widgets.network import Network
+from indigoshell.widgets.volume import Volume
+from indigoshell.widgets.workspaces import Workspaces
 
 rng = random.Random(7)
 
@@ -180,7 +180,7 @@ def g_current():
                      to_pct=lambda t: (t - 30) * (100 / 60),
                      gradient=((0.0, theme.CYAN_BRIGHT), (0.5, theme.YELLOW_BRIGHT),
                                (0.8, theme.ERROR)))
-    from indigoshell2.widgets.base import Size
+    from indigoshell.widgets.base import Size
     protos = []
     for w in (cpu, ram, temp):
         s = w.measure(Size(1000, BAR_H))
@@ -304,7 +304,7 @@ def m_current():
               baseline_shift=1.0, show_cava_bg=True, beat_pulse=True)
     m._title, m._title_w = TITLE, tw(TITLE, theme.FONT_SIZE_LG, True)
     m._bands, m._peak, m._active = BANDS, float(max(BANDS)), True
-    from indigoshell2.widgets.base import Size
+    from indigoshell.widgets.base import Size
     M_W = m.measure(Size(1000, BAR_H)).width
     return render_widget(m)
 

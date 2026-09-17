@@ -1,97 +1,120 @@
-"""Unified subprocess utilities.
+"""Subprocess helpers on asyncio.
+
+Everything is a coroutine on the one loop, so there is no thread and
+nothing to marshal — a callback fires directly on the loop that owns the
+widget tree.
 
 Three shapes:
-
-- `run(cmd)` — capture stdout, return string. Swallows missing-binary
-  and timeout errors and returns "".
-- `fire(cmd)` — fire-and-forget. `detach=True` runs in a new session so
-  the child outlives the parent (for spawning desktop apps).
-- `subscribe(cmd, on_line)` — spawn a long-running command and call
-  `on_line(line)` for every stdout line. Returns the `Popen` handle so
-  the caller can `terminate()` it during shutdown. `on_line` runs on a
-  worker thread — use `GLib.idle_add` to touch UI.
+  run(cmd)               -> stdout as a string ("" on missing binary)
+  fire(cmd)              -> fire-and-forget
+  subscribe(cmd, on_line)-> long-running; on_line per stdout line
 """
 
-import subprocess
-import threading
+import asyncio
+import logging
+import shutil
 from typing import Callable, Sequence
 
+log = logging.getLogger(__name__)
 
-def run(cmd: Sequence[str], timeout: float = 5.0) -> str:
-    try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True, check=False, timeout=timeout,
-        )
-        return r.stdout
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+
+async def run(cmd: Sequence[str], timeout: float = 5.0) -> str:
+    if shutil.which(cmd[0]) is None:
         return ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL)
+    except OSError:
+        return ""
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return ""
+    return out.decode(errors="replace")
 
 
 def fire(cmd: Sequence[str], *, detach: bool = False) -> None:
+    """Run and forget. Deliberately not awaited — callers are click
+    handlers, which must not block the loop waiting on pactl."""
+    async def _go():
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=detach)
+        except (OSError, FileNotFoundError):
+            log.debug("cannot run %s", cmd, exc_info=True)
+            return
+        # Reaped so it doesn't linger as a zombie.
+        await proc.wait()
+
     try:
-        subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=detach,
-        )
-    except FileNotFoundError:
-        pass
+        asyncio.get_running_loop().create_task(_go())
+    except RuntimeError:
+        log.debug("no running loop; dropped %s", cmd)
 
 
-def popen(
-    cmd: Sequence[str],
-    *,
-    text: bool = False,
-    bufsize: int = -1,
-) -> subprocess.Popen | None:
-    """Bare spawn with stdout=PIPE, stderr=DEVNULL. Returns the handle
-    so the caller can read stdout / fd directly. Use this when you need
-    raw byte access or a custom reader loop (cava bands, parec PCM,
-    GLib.io_add_watch). For line-based text, use `subscribe` instead.
+class Subscription:
+    """A long-running command whose stdout lines drive a callback."""
 
-    `bufsize=-1` (Python default) gives a BufferedReader — `read(n)`
-    blocks until exactly n bytes arrive. Pass `bufsize=0` for raw
-    unbuffered IO (only useful if you're reading the fd directly,
-    bypassing Python's buffer)."""
-    try:
-        return subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=text,
-            bufsize=bufsize,
-        )
-    except FileNotFoundError:
-        return None
+    def __init__(self, cmd: Sequence[str], on_line: Callable[[str], None],
+                 *, on_missing: Callable[[], None] | None = None) -> None:
+        self.cmd = list(cmd)
+        self.on_line = on_line
+        self.on_missing = on_missing
+        self._task: asyncio.Task | None = None
+        self._proc: asyncio.subprocess.Process | None = None
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.get_running_loop().create_task(self._run())
+
+    async def _run(self) -> None:
+        if shutil.which(self.cmd[0]) is None:
+            log.warning("%s not found", self.cmd[0])
+            if self.on_missing:
+                self.on_missing()
+            return
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                *self.cmd, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL)
+        except OSError:
+            if self.on_missing:
+                self.on_missing()
+            return
+        assert self._proc.stdout is not None
+        try:
+            async for raw in self._proc.stdout:
+                try:
+                    self.on_line(raw.decode(errors="replace").rstrip("\n"))
+                except Exception:
+                    log.exception("subscriber for %s raised", self.cmd[0])
+        except asyncio.CancelledError:
+            raise
+        finally:
+            await self.stop()
+
+    async def stop(self) -> None:
+        if self._proc is not None and self._proc.returncode is None:
+            try:
+                self._proc.terminate()
+                await self._proc.wait()
+            except (ProcessLookupError, OSError):
+                pass
+        self._proc = None
+
+    def cancel(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
 
 
-def subscribe(
-    cmd: Sequence[str],
-    on_line: Callable[[str], None],
-    *,
-    on_missing: Callable[[], None] | None = None,
-    on_exit: Callable[[int], None] | None = None,
-) -> subprocess.Popen | None:
-    try:
-        p = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
-    except FileNotFoundError:
-        if on_missing:
-            on_missing()
-        return None
-
-    def _read():
-        assert p.stdout
-        for line in p.stdout:
-            on_line(line)
-        if on_exit:
-            on_exit(p.wait())
-
-    threading.Thread(target=_read, daemon=True).start()
-    return p
+def subscribe(cmd: Sequence[str], on_line: Callable[[str], None],
+              *, on_missing: Callable[[], None] | None = None) -> Subscription:
+    sub = Subscription(cmd, on_line, on_missing=on_missing)
+    sub.start()
+    return sub

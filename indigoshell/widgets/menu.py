@@ -1,417 +1,379 @@
-"""Modal chord menu with press-to-arm / release-to-fire semantics.
+"""Chord menus.
 
-Interaction:
-  • key-DOWN on a registered key (or hover on a row) arms it,
-    highlights it, and starts a rapid pulse.
-  • key-UP on the same key (or click on the row) fires the action
-    and closes the popup.
-  • Escape (handled by PopupKind) destroys the window — pressing it
-    while a row is armed cancels because release-after-destroy can't
-    reach a torn-down handler.
-  • Mouse-leave on an armed row also disarms.
+A keybinding opens a stack of chips at the bottom right; each chip is
+one `Item` with its digit as the hotkey. The interaction:
 
-Each row paints its own beveled background via Cairo; the host popup
-should be fully transparent (no bg) so only the rows are visible.
+  * key-down on a digit (or hovering a row) arms that row: it lights
+    and pulses cyan/yellow;
+  * key-up on the same digit (or a click) fires the action;
+  * an unmapped key flashes every row magenta;
+  * Escape disarms an armed row, otherwise backs out a stage, and from
+    the first stage lets the window close.
 
-Pair with PopupKind(name=<n>, content=Menu(popup_name=<n>, items=...)).
-Daemon close is deferred-imported inside the commit paths to avoid a
-widgets ← core.daemon ← registry ← windows ← widgets cycle.
+An action that returns a `Menu` swaps the rows for that stage in the
+same window. There is no title: the rows are the whole picture. Each row
+paints its own bevelled slab, so the window is transparent around
+them.
 """
 
-from dataclasses import dataclass
-from typing import Callable
+import asyncio
+import inspect
+import logging
+import math
 
-import gi
+import skia
 
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk
+from .. import shapes, text, theme
+from ..plugin import Item, Menu
+from ..services import proc
+from .base import Size, Widget
+from .layout import Align, Column
 
-from .. import theme
-from .base import Widget, beveled_path
+log = logging.getLogger(__name__)
 
+MENU_WINDOW = "menu"
 
-@dataclass(frozen=True)
-class MenuItem:
-    key: str
-    label: str
-    action: Callable[[], None]
+_UNBOUNDED = Size(10_000.0, 10_000.0)
+ROW_H = 38
+ROW_GAP = 4
+BEVEL = 8
+CORNERS = ("top-right", "bottom-left")
+PAD_X = 18
+GAP = 10              # between the label and the `// N` marker
+MIN_WIDTH = 160
+TRACKING = 1.0
+LINE_W = 1.2
+MARK = "//"
+DIGITS = "123456789"
 
+PULSE_S = 0.080       # armed row alternates cyan/yellow at this rate
+REJECT_S = 0.070      # unmapped key: magenta on/off/on/off
+REJECT_TOGGLES = 4
+CLOCK_FPS = 25
 
-# Row background colors (r, g, b, a) — pre-resolved from the cyberpunk
-# palette so the cairo draw path stays allocation-free.
-_RGBA_IDLE   = (23 / 255,  6 / 255,  32 / 255, 0.65)   # violet-black slab
-_RGBA_ARMED  = ( 5 / 255, 217 / 255, 232 / 255, 0.22)  # cyan-bright
-_RGBA_PULSE  = (252 / 255, 238 / 255,  12 / 255, 0.40) # yellow-bright
-_RGBA_PICKED = (255 / 255, 42 / 255, 109 / 255, 0.32)  # magenta-bright steady
-_RGBA_REJECT = (255 / 255, 42 / 255, 109 / 255, 0.75)  # magenta-bright "no"
-_RGBA_BORDER = ( 5 / 255, 217 / 255, 232 / 255, 0.85)  # cyan-bright frame
-
-_MODIFIER_KEYS = frozenset({
-    "Shift_L", "Shift_R", "Control_L", "Control_R",
-    "Alt_L", "Alt_R", "Super_L", "Super_R", "Meta_L", "Meta_R",
-    "Caps_Lock", "Num_Lock", "ISO_Level3_Shift",
+KEY_ESCAPE = 0xFF1B
+_MODIFIERS = frozenset({
+    0xFFE1, 0xFFE2,            # Shift
+    0xFFE3, 0xFFE4,            # Control
+    0xFFE9, 0xFFEA,            # Alt
+    0xFFEB, 0xFFEC,            # Super
+    0xFFE7, 0xFFE8,            # Meta
+    0xFFE5, 0xFF7F, 0xFE03,    # Caps Lock, Num Lock, ISO_Level3_Shift
 })
 
+# The slab is the panels' plate (POPUP_BG, ~95% violet-black), so the
+# chips read as the same material as the panels; the state colours are
+# laid over it rather than replacing it.
+_IDLE = (theme.POPUP_BG, None)
+_ARMED = (theme.CYAN_BRIGHT, 0.22)
+_PULSE = (theme.YELLOW_BRIGHT, 0.40)
+_ACTIVE = (theme.MAGENTA_BRIGHT, 0.32)   # "picked" — the choice in effect
+_REJECT = (theme.MAGENTA_BRIGHT, 0.75)
+_BORDER = (theme.CYAN_BRIGHT, 0.85)
 
-class Menu(Widget):
-    PULSE_MS = 80
-    ROW_SPACING = 4
-    ROW_HEIGHT = 38   # pin uniform height so per-menu Pango variance doesn't bleed through
-    REJECT_FLASH_MS = 70
-    REJECT_TOGGLES = 4  # on/off/on/off → ~280ms total
 
-    def __init__(
-        self,
-        popup_name: str,
-        items: list[MenuItem],
-        *,
-        bevel: int = 8,
-        bevel_corners: tuple[str, ...] = ("top-right", "bottom-left"),
-        auto_close: bool = True,
-        on_cancel: Callable[[], None] | None = None,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.popup_name = popup_name
-        self.items = list(items)
-        self.bevel = max(0, bevel)
-        self.bevel_corners = tuple(bevel_corners)
-        # When False, _commit runs the item action but leaves the popup
-        # open. Used by PipelineKind so the menu stays visible while a
-        # follow-up toast renders below it.
-        self.auto_close = auto_close
-        # Optional Escape handler. When set, Escape is consumed by the
-        # menu (does NOT propagate to PopupKind's close handler) and
-        # fires on_cancel — used by Pipeline to treat Escape as
-        # "pick the cancel option" instead of dismissing the cascade.
-        self.on_cancel = on_cancel
-        # Becomes False after the first commit when auto_close=False
-        # (pipeline mode): the menu stays visible as history but stops
-        # accepting input — you can't pick a second option once the
-        # flow has moved on to the next stage.
-        self._active: bool = True
-        # Pipeline mode: the key of the picked item stays "lit" with
-        # the steady picked-row color so the user can see (in the
-        # frozen menu) which option moved the flow forward.
-        self._picked: str | None = None
-        self._rows: dict[str, Gtk.Widget] = {}
-        self._toplevel: Gtk.Window | None = None
-        self._press_id: int | None = None
-        self._release_id: int | None = None
-        self._armed: str | None = None
-        self._pulse_id: int | None = None
-        self._pulse_on: bool = False
-        self._reject_id: int | None = None
-        self._reject_on: bool = False
-        self._reject_remaining: int = 0
+def _natural(widget: Widget) -> tuple[int, int]:
+    size = widget.measure(_UNBOUNDED)
+    return math.ceil(size.width), math.ceil(size.height)
 
-    # ── construction ─────────────────────────────────────────────────────
-    def build_widget(self) -> Gtk.Widget:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=self.ROW_SPACING)
-        for item in self.items:
-            box.pack_start(self._build_row(item), False, False, 0)
-        return box
 
-    @staticmethod
-    def _row_label(text: str, css_class: str) -> Gtk.Label:
-        """Label with single-line-mode and zero padding so its allocated
-        height is purely the font's line height — kills the per-menu Pango
-        variance that otherwise leaks through to the row's natural size."""
-        lbl = Gtk.Label(label=text)
-        lbl.get_style_context().add_class(css_class)
-        lbl.set_single_line_mode(True)
-        lbl.set_valign(Gtk.Align.CENTER)
-        return lbl
+async def _resolve(source) -> list[Item]:
+    if callable(source):
+        got = source()
+        if inspect.isawaitable(got):
+            got = await got
+    else:
+        got = source
+    return list(got)
 
-    def _build_row(self, item: MenuItem) -> Gtk.Widget:
-        ev = Gtk.EventBox()
-        ev.set_visible_window(False)
-        ev.set_size_request(-1, self.ROW_HEIGHT)
-        ev.add_events(
-            Gdk.EventMask.ENTER_NOTIFY_MASK
-            | Gdk.EventMask.LEAVE_NOTIFY_MASK
-            | Gdk.EventMask.BUTTON_RELEASE_MASK
-        )
 
-        inner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        inner.set_margin_start(18)
-        inner.set_margin_end(18)
-        inner.set_valign(Gtk.Align.CENTER)
+class MenuHost(Column):
+    @property
+    def animation_fps(self) -> int:
+        return CLOCK_FPS if (self._armed is not None or self._reject_left) else 0
 
-        text_lbl = self._row_label(item.label, "menu-label")
-        text_lbl.set_xalign(1.0)
+    def __init__(self) -> None:
+        super().__init__([], spacing=ROW_GAP, align=Align.STRETCH)
+        self._stack: list[tuple[Menu, list[Item]]] = []
+        self._rows: list["_ChipRow"] = []
+        self._task: asyncio.Task | None = None
+        self._armed: int | None = None
+        self._pulse_on = False
+        self._pulse_acc = 0.0
+        self._reject_on = False
+        self._reject_left = 0
+        self._reject_acc = 0.0
 
-        key_lbl = Gtk.Label()
-        key_lbl.set_markup(
-            f"<span color='{theme.YELLOW_MID}'>//</span> "
-            f"<span color='{theme.HIGHLIGHT}'>{item.key}</span>"
-        )
-        key_lbl.get_style_context().add_class("menu-key")
-        key_lbl.set_single_line_mode(True)
-        key_lbl.set_valign(Gtk.Align.CENTER)
+    # ── stages ──────────────────────────────────────────────────────────
+    async def start(self, menu: Menu) -> None:
+        self._stack = []
+        await self.push(menu)
 
-        inner.pack_start(text_lbl, True, True, 0)  # expand: pushes [N] to the right
-        inner.pack_end(key_lbl, False, False, 0)
-        ev.add(inner)
+    async def push(self, menu: Menu) -> None:
+        items = await _resolve(menu.items)
+        self._stack.append((menu, items))
+        self._rebuild()
 
-        # Paint our beveled bg *before* children render.
-        ev.connect("draw", self._draw_row, item.key)
-        ev.connect("enter-notify-event", self._on_row_enter, item.key)
-        ev.connect("leave-notify-event", self._on_row_leave, item.key)
-        ev.connect("button-release-event", self._on_row_click, item.key)
-
-        self._rows[item.key] = ev
-        return ev
-
-    # ── styling ──────────────────────────────────────────────────────────
-    def default_css(self) -> str:
-        sel = f"#{self.name}"
-        return (
-            f"{sel} {{ background: transparent; }}"
-            f"{sel} .menu-key {{"
-            f" color: {theme.HIGHLIGHT};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE}px;"
-            f" font-weight: bold;"
-            f" }}"
-            f"{sel} .menu-label {{"
-            f" color: {theme.FG_STRONG};"
-            f" font-family: {theme.FONT};"
-            f" font-size: {theme.FONT_SIZE}px;"
-            f" letter-spacing: 1px;"
-            f" }}"
-            f"{sel} .armed .menu-key,"
-            f"{sel} .armed .menu-label {{ color: {theme.FG_ACCENT}; }}"
-        )
-
-    # ── row drawing ──────────────────────────────────────────────────────
-    def _draw_row(self, widget: Gtk.Widget, cr, key: str) -> bool:
-        alloc = widget.get_allocation()
-        w, h = alloc.width, alloc.height
-        # Inset by half the stroke width so the border stays crisp
-        # inside the row's allocation instead of bleeding outside.
-        line_w = 1.2
-        inset = line_w / 2
-        beveled_path(cr, w, h, bevel=self.bevel, corners=self.bevel_corners, inset=inset)
-        r, g, b, a = self._row_rgba(key)
-        cr.set_source_rgba(r, g, b, a)
-        cr.fill_preserve()
-        cr.set_source_rgba(*_RGBA_BORDER)
-        cr.set_line_width(line_w)
-        cr.stroke()
-        return False  # let children render on top
-
-    def _row_rgba(self, key: str) -> tuple[float, float, float, float]:
-        if self._reject_on:
-            return _RGBA_REJECT
-        if self._picked == key:
-            return _RGBA_PICKED
-        if self._armed != key:
-            return _RGBA_IDLE
-        return _RGBA_PULSE if self._pulse_on else _RGBA_ARMED
-
-    # ── lifecycle ────────────────────────────────────────────────────────
-    def start(self) -> None:
-        super().start()
-        if self.gtk_widget is None:
-            return
-        top = self.gtk_widget.get_toplevel()
-        if not isinstance(top, Gtk.Window):
-            return
-        self._toplevel = top
-        self._press_id = top.connect("key-press-event", self._on_press)
-        self._release_id = top.connect("key-release-event", self._on_release)
-
-    def stop(self) -> None:
-        self._disarm()
-        if self._reject_id is not None:
-            GLib.source_remove(self._reject_id)
-            self._reject_id = None
-        if self._toplevel is not None:
-            if self._press_id is not None:
-                self._toplevel.disconnect(self._press_id)
-            if self._release_id is not None:
-                self._toplevel.disconnect(self._release_id)
-        self._press_id = None
-        self._release_id = None
-        self._toplevel = None
-        super().stop()
-
-    # ── keyboard handling ────────────────────────────────────────────────
-    def _on_press(self, _w, event) -> bool:
-        # Pipeline mode: the menu locks itself after the first commit so
-        # the user can't fire another action while a downstream stage
-        # is running. Eating every key here also prevents Escape from
-        # closing the cascade once it has progressed.
-        if not self._active:
-            return True
-        key = self._normalize(event.keyval)
-        if key in self._rows:
-            if self._armed != key:
-                self._arm(key)
-            return True
-        if key == "Escape":
-            if self.on_cancel is not None:
-                # Pipeline mode with declared cancel: Escape is "pick the
-                # cancel option" — consume the event so PopupKind doesn't
-                # close, then let the orchestrator run the cancel command.
-                try:
-                    self.on_cancel()
-                except Exception:
-                    pass
-                return True
-            if not self.auto_close:
-                # Flow menu without a cancel command — swallow Escape.
-                # Flow menus stay visible until the cascade finishes; a
-                # bare Escape mustn't quietly close just this one popup
-                # and orphan the rest of the cascade behind it.
-                return True
-            # Non-flow menu (e.g. power / layout / profile): let
-            # PopupKind close on Escape, original behavior.
+    def back(self) -> bool:
+        if len(self._stack) <= 1:
             return False
-        # Lone modifier presses: ignore silently — they're rarely a mistake.
-        if key in _MODIFIER_KEYS:
+        self._stack.pop()
+        self._rebuild()
+        return True
+
+    @property
+    def path(self) -> str:
+        return " // ".join(menu.title for menu, _ in self._stack)
+
+    def _rebuild(self) -> None:
+        self.disarm()
+        self._reject_left, self._reject_on = 0, False
+        items = self._stack[-1][1] if self._stack else []
+        self._rows = [_ChipRow(self, i, item) for i, item in enumerate(items)]
+        self.replace(list(self._rows))
+        win = self.window
+        if win is not None and win.wid is not None:
+            win.resize_content(*_natural(self))
+
+    # ── lifecycle ───────────────────────────────────────────────────────
+    def attach(self, window) -> None:
+        super().attach(window)
+        window.resize_content(*_natural(self))
+
+    def detach(self) -> None:
+        self.disarm()
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        super().detach()
+
+    # ── arm / pulse / reject ────────────────────────────────────────────
+    def arm(self, index: int) -> None:
+        if self._armed == index or not 0 <= index < len(self._rows):
+            return
+        prev = self._armed
+        self._armed = index
+        self._pulse_on = False
+        self._pulse_acc = 0.0
+        if prev is not None and prev < len(self._rows):
+            self._rows[prev].invalidate()
+        self._rows[index].invalidate()      # also wakes the clock
+
+    def disarm(self) -> None:
+        if self._armed is None:
+            return
+        prev, self._armed = self._armed, None
+        self._pulse_on = False
+        if prev < len(self._rows):
+            self._rows[prev].invalidate()
+
+    def _flash_reject(self) -> None:
+        self._reject_left = REJECT_TOGGLES
+        self._reject_on = True
+        self._reject_acc = 0.0
+        self._redraw_rows()
+
+    def _redraw_rows(self) -> None:
+        for row in self._rows:
+            row.invalidate()
+
+    def animate(self, t: float) -> None:
+        dt = self.tick_dt(t)
+        if self._armed is not None:
+            self._pulse_acc += dt
+            while self._pulse_acc >= PULSE_S:
+                self._pulse_acc -= PULSE_S
+                self._pulse_on = not self._pulse_on
+                self._rows[self._armed].invalidate()
+        if self._reject_left:
+            self._reject_acc += dt
+            while self._reject_acc >= REJECT_S and self._reject_left:
+                self._reject_acc -= REJECT_S
+                self._reject_left -= 1
+                self._reject_on = bool(self._reject_left) and not self._reject_on
+                self._redraw_rows()
+
+    # ── input ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _index(keysym: int) -> int | None:
+        return keysym - 0x31 if 0x31 <= keysym <= 0x39 else None
+
+    def key(self, keysym: int, shift: bool = False) -> bool:
+        if self._task is not None:
+            return True                     # an action is in flight
+        index = self._index(keysym)
+        if index is not None and index < len(self._rows):
+            self.arm(index)                 # repeats of a held key are no-ops
+            return True
+        if keysym == KEY_ESCAPE:
+            if self._armed is not None:
+                self.disarm()               # cancel the armed row
+                return True
+            return self.back()              # False from the first stage: close
+        if keysym in _MODIFIERS:
             return False
         self._flash_reject()
         return True
 
-    def _on_release(self, _w, event) -> bool:
-        if not self._active:
-            return True
-        key = self._normalize(event.keyval)
-        if self._armed is None or key != self._armed:
+    def key_release(self, keysym: int, shift: bool = False) -> bool:
+        index = self._index(keysym)
+        if index is None or self._armed != index:
             return False
-        self._commit(key)
+        self.commit(index)
         return True
 
-    # ── mouse handling ───────────────────────────────────────────────────
-    def _on_row_enter(self, _w, _e, key: str) -> bool:
-        if not self._active:
-            return False
-        self._arm(key)
-        return False
-
-    def _on_row_leave(self, _w, _e, key: str) -> bool:
-        if not self._active:
-            return False
-        if self._armed == key:
-            self._disarm()
-        return False
-
-    def _on_row_click(self, _w, event, key: str) -> bool:
-        if not self._active or event.button != 1:
-            return False
-        self._commit(key)
-        return True
-
-    # ── arm / pulse / commit ─────────────────────────────────────────────
-    def _arm(self, key: str) -> None:
-        if self._armed == key:
+    def commit(self, index: int) -> None:
+        self.disarm()
+        if self._task is not None or not self._stack:
             return
-        if self._armed is not None:
-            prev = self._rows.get(self._armed)
-            if prev is not None:
-                prev.get_style_context().remove_class("armed")
-                prev.queue_draw()
-        self._armed = key
-        row = self._rows.get(key)
-        if row is not None:
-            row.get_style_context().add_class("armed")
-            row.queue_draw()
-        self._pulse_on = False
-        if self._pulse_id is None:
-            self._pulse_id = GLib.timeout_add(self.PULSE_MS, self._tick_pulse)
-
-    def _disarm(self) -> None:
-        if self._pulse_id is not None:
-            GLib.source_remove(self._pulse_id)
-            self._pulse_id = None
-        if self._armed is not None:
-            row = self._rows.get(self._armed)
-            if row is not None:
-                row.get_style_context().remove_class("armed")
-                row.queue_draw()
-        self._armed = None
-        self._pulse_on = False
-
-    def _tick_pulse(self) -> bool:
-        if self._armed is None:
-            self._pulse_id = None
-            return False
-        row = self._rows.get(self._armed)
-        if row is None:
-            self._pulse_id = None
-            return False
-        self._pulse_on = not self._pulse_on
-        row.queue_draw()
-        return True
-
-    # ── reject flash ─────────────────────────────────────────────────────
-    def _flash_reject(self) -> None:
-        if self._reject_id is not None:
-            GLib.source_remove(self._reject_id)
-            self._reject_id = None
-        self._reject_remaining = self.REJECT_TOGGLES
-        self._reject_on = True
-        self._redraw_all()
-        self._reject_id = GLib.timeout_add(self.REJECT_FLASH_MS, self._tick_reject)
-
-    def _tick_reject(self) -> bool:
-        self._reject_remaining -= 1
-        if self._reject_remaining <= 0:
-            self._reject_on = False
-            self._reject_id = None
-            self._redraw_all()
-            return False
-        self._reject_on = not self._reject_on
-        self._redraw_all()
-        return True
-
-    def _redraw_all(self) -> None:
-        for row in self._rows.values():
-            row.queue_draw()
-
-    def _commit(self, key: str) -> None:
-        item = next((i for i in self.items if i.key == key), None)
-        self._disarm()
-        if item is None:
+        items = self._stack[-1][1]
+        if not 0 <= index < len(items):
             return
+        self._task = asyncio.get_running_loop().create_task(
+            self._run(index, items[index]))
+
+    async def _run(self, index: int, item: Item) -> None:
         try:
-            item.action()
+            result = item.run
+            if callable(result):
+                result = result()
+                if inspect.isawaitable(result):
+                    result = await result
+            if isinstance(result, Menu):
+                await self.push(result)
+                return
+            if result is not None:
+                proc.fire([str(a) for a in result])
+            _close()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("menu item %r failed", item.label)
+            self._flash_reject()
         finally:
-            if self.auto_close:
-                from ..core.daemon import get_daemon  # deferred (import cycle)
-                get_daemon().close(self.popup_name)
-            else:
-                # Pipeline mode: lock the menu so further keys/clicks
-                # are ignored — the flow has progressed past this stage.
-                # Mark the picked row so it stays lit as visual history.
-                # Release the popup's seat grab so the newly-opened
-                # next-stage popup can claim keyboard focus normally.
-                self._active = False
-                self._picked = key
-                row = self._rows.get(key)
-                if row is not None:
-                    row.queue_draw()
-                self._release_grab()
+            self._task = None
 
-    def _release_grab(self) -> None:
-        """Ask the hosting PopupKind to drop its seat grab. Used when
-        the menu transitions out of being the active flow item so the
-        next popup can receive keyboard input."""
-        from ..core.daemon import get_daemon
-        kind = get_daemon().kinds.get(self.popup_name)
-        # Only PopupKind has _release_grab; getattr keeps the static
-        # type checker happy and the runtime guarded in one shot.
-        release = getattr(kind, "_release_grab", None)
-        if callable(release):
-            try:
-                release()
-            except Exception:
-                pass
 
-    @staticmethod
-    def _normalize(keyval: int) -> str:
-        name = Gdk.keyval_name(keyval) or ""
-        return name[3:] if name.startswith("KP_") else name
+def _close() -> None:
+    from ..core.daemon import get_daemon
+    d = get_daemon()
+    if MENU_WINDOW in d.instances:
+        d.close(MENU_WINDOW)
+
+
+async def open_menu(daemon, menu: Menu) -> None:
+    """Resolve `menu`'s first stage and show the menu window with it.
+
+    Opening a different menu while one is up swaps the stages in place;
+    opening the same one again closes it, like a toggle.
+    """
+    spec = daemon.kinds.get(MENU_WINDOW)
+    if spec is None:
+        raise KeyError(f"no {MENU_WINDOW!r} window kind is configured")
+    host: MenuHost = spec.content
+    if MENU_WINDOW in daemon.instances and host._stack \
+            and host._stack[0][0].name == menu.name:
+        daemon.close(MENU_WINDOW)
+        return
+    await host.start(menu)
+    if MENU_WINDOW not in daemon.instances:
+        daemon.open(MENU_WINDOW)
+
+
+# ── rows ────────────────────────────────────────────────────────────────
+class _ChipRow(Widget):
+    """`SUSPEND        // 1`: label right-aligned against the key marker.
+    A hint, when an item has one, sits muted at the left edge where the
+    label leaves room."""
+
+    def __init__(self, host: MenuHost, index: int, item: Item) -> None:
+        super().__init__()
+        self.host = host
+        self.index = index
+        self.item = item
+
+    @property
+    def interactive(self) -> bool:
+        return True
+
+    @property
+    def digit(self) -> str:
+        return DIGITS[self.index] if self.index < len(DIGITS) else "?"
+
+    @property
+    def armed(self) -> bool:
+        return self.host._armed == self.index
+
+    def measure(self, avail: Size) -> Size:
+        w = (2 * PAD_X + GAP
+             + text.measure(self.item.label, theme.FONT_SIZE, tracking=TRACKING)
+             + text.measure(f"{MARK} {self.digit}", theme.FONT_SIZE, bold=True))
+        if self.item.hint:
+            w += GAP * 2 + text.measure(self.item.hint, theme.FONT_SIZE - 4)
+        return Size(max(w, MIN_WIDTH), ROW_H)
+
+    def _overlay(self) -> tuple[str, float] | None:
+        host = self.host
+        if host._reject_on:
+            return _REJECT
+        if self.armed:
+            return _PULSE if host._pulse_on else _ARMED
+        if self.item.active:
+            return _ACTIVE
+        return None
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        r = self.rect
+        x, y, w, h = r.left(), r.top(), r.width(), r.height()
+        slab = shapes.beveled(x, y, w, h, bevel=BEVEL, corners=CORNERS,
+                              inset=LINE_W / 2)
+        fill = skia.Paint(AntiAlias=True)
+        fill.setColor(theme.color(*_IDLE))
+        canvas.drawPath(slab, fill)
+        overlay = self._overlay()
+        if overlay is not None:
+            tint = skia.Paint(AntiAlias=True)
+            tint.setColor(theme.color(*overlay))
+            canvas.drawPath(slab, tint)
+        stroke = skia.Paint(AntiAlias=True)
+        stroke.setStyle(skia.Paint.kStroke_Style)
+        stroke.setStrokeWidth(LINE_W)
+        stroke.setColor(theme.color(*_BORDER))
+        canvas.drawPath(shapes.beveled(x, y, w, h, bevel=BEVEL, corners=CORNERS,
+                                       inset=LINE_W / 2), stroke)
+
+        baseline = text.baseline_in(r, theme.FONT_SIZE)
+        # `// N` at the right: yellow marker, cyan bold digit — both
+        # yellow-bright while armed.
+        digit_w = text.measure(self.digit, theme.FONT_SIZE, bold=True)
+        mark_w = text.measure(MARK + " ", theme.FONT_SIZE, bold=True)
+        kx = x + w - PAD_X - digit_w - mark_w
+        mark_color = theme.FG_ACCENT if self.armed else theme.YELLOW_MID
+        digit_color = theme.FG_ACCENT if self.armed else theme.HIGHLIGHT
+        text.draw(canvas, MARK + " ", kx, baseline, theme.FONT_SIZE,
+                  theme.color(mark_color), bold=True)
+        text.draw(canvas, self.digit, kx + mark_w, baseline, theme.FONT_SIZE,
+                  theme.color(digit_color), bold=True)
+        label = self.item.label
+        label_w = text.measure(label, theme.FONT_SIZE, tracking=TRACKING)
+        label_color = theme.FG_ACCENT if self.armed else theme.FG_STRONG
+        text.draw(canvas, label, kx - GAP - label_w, baseline, theme.FONT_SIZE,
+                  theme.color(label_color), tracking=TRACKING)
+        if self.item.hint:
+            hs = theme.FONT_SIZE - 4
+            text.draw(canvas, self.item.hint, x + PAD_X, text.baseline_in(r, hs),
+                      hs, theme.color(theme.BASE_MUTED))
+
+    # Hover arms, leaving disarms; a click fires.
+    def set_hovered(self, value: bool) -> None:
+        super().set_hovered(value)
+        if value:
+            self.host.arm(self.index)
+        elif self.host._armed == self.index:
+            self.host.disarm()
+
+    def click(self, button: int, x: float = 0.0, y: float = 0.0) -> bool:
+        if button != 1:
+            return False
+        self.host.commit(self.index)
+        return True

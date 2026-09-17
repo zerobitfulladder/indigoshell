@@ -5,13 +5,13 @@
 import skia
 
 from common import BAR_H, PAD, bar_strip, render_widget, sheet, tw
-from indigoshell2 import theme
-from indigoshell2.widgets.base import Size
-from indigoshell2.widgets.layout import Brackets, Row
-from indigoshell2.widgets.media import Media
-from indigoshell2.widgets.meters import StatMeter
-from indigoshell2.widgets.network import Network
-from indigoshell2.widgets.volume import Volume
+from indigoshell import theme
+from indigoshell.widgets.base import Size
+from indigoshell.widgets.layout import Brackets, Row
+from indigoshell.widgets.media import Media
+from indigoshell.widgets.meters import StatMeter
+from indigoshell.widgets.network import Network
+from indigoshell.widgets.volume import Volume
 from render_widgets import BANDS, IP, NAME, TITLE, VOL
 
 cpu = StatMeter("CPU", lambda: 42.0)

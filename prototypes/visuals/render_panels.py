@@ -10,14 +10,14 @@ strip. `panel_open.png` is appear 0 -> 1, `panel_close.png` is 1 -> 0.
 import skia
 
 from common import C, fill_rect, sheet, txt
-from indigoshell2 import effects, theme
-from indigoshell2.effects import Effect, ScanLock, compile_sksl
-from indigoshell2.widgets.base import Insets, Size
-from indigoshell2.widgets.hud import (HudCard, key_label, meta_label,
+from indigoshell import effects, theme
+from indigoshell.effects import Effect, ScanLock, compile_sksl
+from indigoshell.widgets.base import Insets, Size
+from indigoshell.widgets.hud import (HudCard, key_label, meta_label,
                                       section_header, value_label)
-from indigoshell2.widgets.label import Label
-from indigoshell2.widgets.layout import Align, Box, Column, Row, Spacer
-from indigoshell2.widgets.meters import BarMeter
+from indigoshell.widgets.label import Label
+from indigoshell.widgets.layout import Align, Box, Column, Row, Spacer
+from indigoshell.widgets.meters import BarMeter
 
 # ── the stand-in panel ──────────────────────────────────────────────────
 PANEL_W, PANEL_H = 330, 250

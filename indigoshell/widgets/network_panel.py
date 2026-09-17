@@ -1,38 +1,73 @@
-"""Cyberpunk HUD-style network panel.
+"""Network panel — live interface telemetry and a speedtest harness.
 
-A tabbed popup with two pages:
+Two tabs in the shared HUD language:
 
-  • NETWORK    — one card per UP interface: name, SSID (wifi only),
-                 IPv4, and live up/down rates.
-  • SPEEDTEST  — runnable `speedtest-cli` harness. Streaming-parse the
-                 stdout; animate two segmented progress meters (same
-                 recipe as the notification toast); show server /
-                 ping / final results.
+  • NETWORK    — firewall state, then one card per UP interface: name,
+                 SSID (wifi only), IPv4 and live up/down rates.
+  • SPEEDTEST  — a `speedtest-cli` run, stream-parsed out of its stdout,
+                 driving two segmented meters and the result readouts.
 
-Tabs use compact custom chrome and the page bodies live in a Gtk.Stack
-so switching is a cheap visibility flip.
+The tab strip is a `TabBar` and the pages are a slot it swaps. The
+one-shot queries (`iw`, `systemctl`) and the speedtest itself are
+coroutines, so a slow tool delays its own card and nothing else. The
+interface cards are built once and updated in place rather than rebuilt
+on every tick — the rows are already ours to mutate, so tearing them
+down each time would be pure waste.
 """
 
+import asyncio
+import logging
+import math
 import os
 import re
+import signal
 import socket
-import subprocess
 import time
 
 import psutil
+import skia
 
-import gi
+from .. import text, theme
+from ..services import proc
+from .base import Insets, Size, Widget
+from .hud import HudCard, key_label, meta_label, section_header
+from .label import Label
+from .layout import Align, Box, Column, Row, Spacer
+from .meters import BarMeter
+from .tabs import TabBar
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk
+log = logging.getLogger(__name__)
 
-from .. import theme
-from .base import Widget, paint
-from .hud import HudCard as _HudCard, TabBar as _TabBar
+BODY = theme.FONT_SIZE - 3
+IFACE_SIZE = theme.FONT_SIZE
+
+# The panel is transient — it only exists while you are looking at it —
+# so the clock runs while it is open and stops with it, and the rate
+# sample is gated to 4Hz on top.
+RATE_INTERVAL = 0.25
+
+# speedtest-cli's download/upload phases run ~10-15s on a typical link.
+# The dot stream it emits isn't a percentage, so the meter is animated
+# 0->95% on a fixed schedule and snapped to 100% when the result line
+# for that phase is parsed.
+PHASE_DURATION = 12.0
+
+# Order matters: the first service that reports active is the one
+# reported. Asking about firewalld alone would report "inactive" on a
+# host running ufw or plain nftables while it is perfectly well
+# firewalled.
+FIREWALLS = ("firewalld", "ufw", "nftables", "iptables")
+
+SERVER_CHARS = 30       # elide beyond this so a long ISP name can't push
+                        # the ping readout off the card
+
+TAB_GAP_BELOW = 14      # breathing room between the tab rule and the page
+
+# Big-but-finite box for "what's your natural size", as in systray.py.
+_UNBOUNDED = Size(10_000.0, 10_000.0)
 
 
-# ── small helpers ──────────────────────────────────────────────────────
-def _fmt_rate(bps: float) -> str:
+def fmt_rate(bps: float) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if bps < 1024:
             return f"{bps:.0f} {unit}/s" if unit == "B" else f"{bps:.1f} {unit}/s"
@@ -44,638 +79,554 @@ def _is_wifi(iface: str) -> bool:
     return os.path.isdir(f"/sys/class/net/{iface}/wireless")
 
 
-def _ssid_for(iface: str) -> str | None:
-    """Connected SSID for a wireless iface, or None. Uses `iw dev`
-    so it works without NetworkManager."""
-    if not _is_wifi(iface):
-        return None
-    try:
-        out = subprocess.check_output(
-            ["iw", "dev", iface, "link"], stderr=subprocess.DEVNULL, text=True
-        )
-    except Exception:
-        return None
-    m = re.search(r"^\s*SSID:\s*(.+)$", out, re.MULTILINE)
-    return m.group(1).strip() if m else None
+def _elide(value: str, limit: int) -> str:
+    return value if len(value) <= limit else value[:limit - 1] + "…"
 
 
-def _pango_escape(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+# ── button ──────────────────────────────────────────────────────────────
+class _Button(Box):
+    """`// RUN TEST` in a beveled cyan frame.
+
+    The only button in the shell that isn't a bar widget, so it is built
+    from `Box` — background, border, bevel and hover are all already
+    there; the click handler is what makes it hit-testable.
+    """
+
+    def __init__(self, label: str, on_click, **kwargs) -> None:
+        self._label = Label(label, size=BODY, bold=True,
+                            color=theme.HIGHLIGHT, tracking=1.5)
+        super().__init__(
+            Row([Label("//", size=BODY, bold=True, color=theme.YELLOW_MID),
+                 self._label], spacing=8, align=Align.CENTER),
+            padding=Insets.xy(18, 7),
+            background="#0a203075",          # rgba(10, 32, 48, 0.46)
+            hover_background="#05d9e833",    # rgba(5, 217, 232, 0.20)
+            border=theme.HIGHLIGHT, border_width=1.2,
+            bevel=8, bevel_corners=("top-right", "bottom-left"),
+            on_left_click=on_click, **kwargs)
+
+    def set_label(self, value: str) -> None:
+        self._label.set_value(value)
+
+    def set_hovered(self, value: bool) -> None:
+        super().set_hovered(value)
+        # The border lights along with the fill on hover.
+        self.border = theme.YELLOW_BRIGHT if value else theme.HIGHLIGHT
 
 
-def _plain(text: str, css_class: str | None = None, *, xalign: float = 0.0) -> Gtk.Label:
-    lbl = Gtk.Label(label=text)
-    if css_class:
-        lbl.get_style_context().add_class(css_class)
-    lbl.set_xalign(xalign)
-    lbl.set_valign(Gtk.Align.CENTER)
-    return lbl
+# ── readouts ────────────────────────────────────────────────────────────
+def _value_pair(unit_chars: int, color: str) -> tuple[Row, Label, Label]:
+    """A right-aligned number against a muted unit in a fixed cell.
+
+    Two labels rather than one string so the unit stays muted, and so
+    the number's column doesn't shift as digits come and go mid-test.
+    """
+    number = Label("—", size=BODY, bold=True, color=color, align="right",
+                   min_width=text.advance(BODY, True, 7))
+    unit = Label("", size=BODY, color=theme.BASE_MUTED,
+                 min_width=text.advance(BODY, False, unit_chars))
+    return Row([number, unit], spacing=5, align=Align.BASELINE), number, unit
 
 
-# ── segmented progress meter (notification toast recipe) ──────────────
-class _Meter(Gtk.DrawingArea):
-    _MIN_WIDTH = 200
+class _IfaceCard(HudCard):
+    """One interface, built once and updated in place."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.set_size_request(self._MIN_WIDTH, theme.NOTIF_METER_THICK + 4)
-        self.set_valign(Gtk.Align.CENTER)
-        self.set_hexpand(True)
-        self._progress = 0.0
-        self._color = theme.MAGENTA_BRIGHT
-        self.connect("draw", self._on_draw)
+    def __init__(self, iface: str) -> None:
+        self.iface = iface
+        self._name = Label(iface, size=IFACE_SIZE, bold=True,
+                           color=theme.CYAN_BRIGHT, tracking=2.0)
+        self._ssid = Label("", size=BODY, bold=True,
+                           color=theme.YELLOW_BRIGHT, align="right")
+        self._ip = Label("—", size=BODY, color=theme.FG)
+        self._down = Label("↓ —", size=BODY, bold=True,
+                           color=theme.MAGENTA_BRIGHT)
+        self._up = Label("— ↑", size=BODY, bold=True,
+                         color=theme.YELLOW_BRIGHT, align="right")
+        super().__init__(Column([
+            Row([self._name, Spacer(), self._ssid], spacing=10,
+                align=Align.BASELINE),
+            Row([key_label("ADDR"), self._ip], spacing=8,
+                align=Align.BASELINE),
+            Row([self._down, Spacer(), self._up], spacing=24,
+                align=Align.BASELINE),
+        ], spacing=6, align=Align.STRETCH), accent=theme.HIGHLIGHT)
 
-    def set_progress(self, p: float) -> None:
-        self._progress = max(0.0, min(100.0, p))
-        self.queue_draw()
-
-    def set_color(self, hex_color: str) -> None:
-        self._color = hex_color
-
-    def _on_draw(self, w, cr) -> bool:
-        alloc = w.get_allocation()
-        width, height = alloc.width, alloc.height
-        n   = theme.NOTIF_METER_SEGMENTS
-        gap = theme.NOTIF_METER_GAP
-        h   = theme.NOTIF_METER_THICK
-        usable_w = max(1, width)
-        tick_w = max(1.0, (usable_w - gap * (n - 1)) / n)
-        ratio = self._progress / 100.0
-        fill_end_x = ratio * usable_w
-        y = (height - h) / 2
-        for i in range(n):
-            x = i * (tick_w + gap)
-            mid = x + tick_w / 2
-            color = self._color if mid <= fill_end_x else theme.NOTIF_METER_DIM
-            paint(cr, color)
-            cr.rectangle(x, y, tick_w, h)
-            cr.fill()
-        return False
+    def update(self, ip: str, ssid: str | None, up: float, down: float) -> None:
+        self._ip.set_value(ip or "—")
+        self._ssid.set_value(ssid or "")
+        self._down.set_value(f"↓ {fmt_rate(down)}")
+        self._up.set_value(f"{fmt_rate(up)} ↑")
 
 
-# ── main panel ─────────────────────────────────────────────────────────
-class NetworkPanel(Widget):
-    # 4Hz refresh — rates and the firewall pip stay snappy while the
-    # popup is open (and the popup is non-persistent, so the timer is
-    # only running while you're looking at it).
-    interval_ms = 250
+class _Pages(Widget):
+    """Holds one visible page; the rest keep their last arrangement.
 
-    # speedtest-cli's download/upload phases run ~10–15s on a typical
-    # link. The dot stream isn't a percentage, so we animate 0→95% on
-    # a fixed schedule and snap to 100% when the result line is parsed.
-    _PHASE_DURATION_SEC = 12.0
+    Every page stays in `children()`, not just the active one — that is
+    the walk `attach()` uses, and a widget whose `window` was never set
+    has an `invalidate()` that silently does nothing.
+    """
 
-    def __init__(self, **kwargs):
+    def __init__(self, pages, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._iface_box: Gtk.Box | None = None
-        self._counters: dict[str, tuple[int, int, float]] = {}
-        self._iface_keys: tuple[str, ...] = ()
-        self._firewall_lbl: Gtk.Label | None = None
-        self._firewall_last: str | None = None
-        self._firewall_tick: int = 0
+        self.pages = list(pages)
+        self.active = 0
 
-        # speedtest state
-        self._st_proc: subprocess.Popen | None = None
-        self._st_watch_id: int | None = None
-        self._st_buf: str = ""
-        self._st_phase: str = "idle"
-        self._st_server_set: bool = False
-        self._st_anim_id: int | None = None
-        self._st_anim_target: str | None = None
-        self._st_anim_start: float = 0.0
+    def children(self):
+        return tuple(self.pages)
 
-        # speedtest widgets — populated in build_widget
-        self._st_server_lbl: Gtk.Label | None = None
-        self._st_ping_lbl: Gtk.Label | None = None
-        self._st_dn_meter: _Meter | None = None
-        self._st_up_meter: _Meter | None = None
-        self._st_dn_val: Gtk.Label | None = None
-        self._st_up_val: Gtk.Label | None = None
-        self._st_button: Gtk.Button | None = None
-        self._st_button_lbl: Gtk.Label | None = None
+    def set_active(self, index: int) -> None:
+        self.active = index
 
-    # ── construction ──────────────────────────────────────────────────
-    def build_widget(self) -> Gtk.Widget:
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        outer.set_margin_start(4)
-        outer.set_margin_end(4)
+    def hit(self, x: float, y: float) -> Widget | None:
+        if not self.pages or not self.rect.contains(x, y):
+            return None
+        return self.pages[self.active].hit(x, y)
 
-        stack = Gtk.Stack()
-        stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        stack.set_transition_duration(140)
+    def measure(self, avail: Size) -> Size:
+        if not self.pages:
+            return Size(avail.width, 0.0)
+        return Size(avail.width, self.pages[self.active].measure(avail).height)
 
-        stack.add_named(self._build_network_page(), "NETWORK")
-        stack.add_named(self._build_speedtest_page(), "SPEEDTEST")
-
-        tabs = _TabBar(["NETWORK", "SPEEDTEST"], stack.set_visible_child_name)
-        outer.pack_start(tabs, False, False, 0)
-        outer.pack_start(stack, True, True, 0)
-        return outer
-
-    def default_css(self) -> str:
-        # One body font-size for everything in the panel; per-role
-        # classes layer on color/weight/family overrides without
-        # repeating the size everywhere.
-        sel = f"#{self.name}"
-        body  = theme.FONT_SIZE - 3   # 13 by default
-        small = theme.FONT_SIZE - 5   # 11
-        big   = theme.FONT_SIZE       # 16 — interface names, result values
-        return (
-            f"{sel} {{ background: transparent; font-size: {body}px; "
-            f"font-family: {theme.FONT}; min-width: 520px; }}"
-            f"{sel} label {{ color: {theme.FG}; text-shadow: none; }}"
-            f"{sel} .panel-title {{ color: {theme.YELLOW_BRIGHT}; "
-            f"  font-size: {small}px; font-weight: bold; letter-spacing: 2px; }}"
-            f"{sel} .panel-subtitle {{ color: {theme.BASE_MUTED}; "
-            f"  font-size: {small}px; }}"
-            f"{sel} .label-key  {{ color: {theme.CYAN_DIM}; "
-            f"  font-size: {small}px; letter-spacing: 1px; }}"
-            f"{sel} .iface-name {{ color: {theme.CYAN_BRIGHT}; "
-            f"  font-size: {big}px; font-weight: bold; letter-spacing: 2px; }}"
-            f"{sel} .ssid       {{ color: {theme.YELLOW_BRIGHT}; "
-            f"  font-weight: bold; }}"
-            f"{sel} .ip         {{ color: {theme.FG}; "
-            f"  font-family: monospace; }}"
-            f"{sel} .rate-dn    {{ color: {theme.MAGENTA_BRIGHT}; "
-            f"  font-family: monospace; font-weight: bold; }}"
-            f"{sel} .rate-up    {{ color: {theme.YELLOW_BRIGHT}; "
-            f"  font-family: monospace; font-weight: bold; }}"
-            f"{sel} .empty      {{ color: {theme.BASE_MUTED}; font-style: italic; }}"
-            f"{sel} .server-name {{ color: {theme.CYAN_BRIGHT}; font-weight: bold; }}"
-            f"{sel} .server-idle {{ color: {theme.BASE_MUTED}; font-style: italic; }}"
-            f"{sel} .ping       {{ color: {theme.YELLOW_BRIGHT}; "
-            f"  font-family: monospace; }}"
-            f"{sel} .result-dn  {{ color: {theme.MAGENTA_BRIGHT}; "
-            f"  font-size: {big}px; font-weight: bold; font-family: monospace; }}"
-            f"{sel} .result-up  {{ color: {theme.YELLOW_BRIGHT}; "
-            f"  font-size: {big}px; font-weight: bold; font-family: monospace; }}"
-            f"{sel} .result-unit {{ color: {theme.BASE_MUTED}; "
-            f"  font-size: {small}px; }}"
-            f"{sel} .placeholder {{ color: {theme.BASE_MUTED}; }}"
-            f"{sel} button.st-btn {{"
-            f"  background-image: none;"
-            f"  background-color: rgba(10, 32, 48, 0.46);"
-            f"  border: 1.2px solid {theme.HIGHLIGHT};"
-            f"  border-radius: 0;"
-            f"  padding: 6px 18px;"
-            f"  min-height: 0;"
-            f"}}"
-            f"{sel} button.st-btn:hover {{"
-            f"  background-color: rgba(5, 217, 232, 0.20);"
-            f"  border-color: {theme.YELLOW_BRIGHT};"
-            f"}}"
-        )
-
-    # ── network page ─────────────────────────────────────────────────
-    def _build_network_page(self) -> Gtk.Widget:
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        page.set_margin_top(2)
-        page.pack_start(self._section_header("NETLINK", "LIVE INTERFACE TELEMETRY"),
-                        False, False, 0)
-        page.pack_start(self._build_status_row(), False, False, 0)
-        self._iface_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        page.pack_start(self._iface_box, False, False, 0)
-        return page
-
-    def _build_status_row(self) -> Gtk.Widget:
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.set_margin_start(2)
-        row.pack_start(_plain("FIREWALL", "label-key"), False, False, 0)
-        lbl = Gtk.Label()
-        lbl.set_valign(Gtk.Align.CENTER)
-        lbl.set_xalign(0.0)
-        self._firewall_lbl = lbl
-        row.pack_start(lbl, False, False, 0)
-        # Reset the cached state — the new label starts at "unknown",
-        # so the next poll must re-render even if the underlying state
-        # matches what we saw before close.
-        self._firewall_last = None
-        self._firewall_tick = 0
-        self._render_firewall("unknown")
-        return row
-
-    def _render_firewall(self, state: str) -> None:
-        if self._firewall_lbl is None:
+    def arrange(self, rect: skia.Rect) -> None:
+        self.rect = rect
+        if not self.pages:
             return
-        if state == "active":
-            dot, color, text = theme.LIME_BRIGHT, theme.LIME_BRIGHT, "active"
-        elif state in ("inactive", "failed", "unknown"):
-            dot, color, text = theme.MAGENTA_BRIGHT, theme.MAGENTA_BRIGHT, state
-        else:
-            dot, color, text = theme.BASE_MUTED, theme.BASE_MUTED, state
-        self._firewall_lbl.set_markup(
-            f"<span color='{dot}' weight='bold'>● </span>"
-            f"<span color='{color}' weight='bold' "
-            f"letter_spacing='1024'>{text}</span>"
-        )
+        page = self.pages[self.active]
+        natural = page.measure(Size(rect.width(), rect.height()))
+        page.arrange(skia.Rect.MakeXYWH(rect.left(), rect.top(),
+                                        rect.width(), natural.height))
 
-    def _poll_firewall(self) -> None:
+    def paint(self, canvas: skia.Canvas) -> None:
+        if self.pages:
+            self.pages[self.active].paint(canvas)
+
+
+# ── panel ───────────────────────────────────────────────────────────────
+class NetworkPanel(Widget):
+    animation_fps = 12
+
+    def __init__(self, *, width: int = 560, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.width = width
+        self._counters: dict[str, tuple[int, int, float]] = {}
+        self._cards: dict[str, _IfaceCard] = {}
+        self._keys: tuple[str, ...] = ()
+        self._ssids: dict[str, str | None] = {}
+        self._rate_acc = 0.0
+        self._firewall = ("unknown", "")
+        self._firewall_pending = False
+        self._firewall_acc = 0.0
+
+        # ── network page ────────────────────────────────────────────────
+        self._dot = Label("●", size=BODY, bold=True,
+                          color=lambda: self._firewall_color())
+        self._state = Label("unknown", size=BODY, bold=True, tracking=1.0,
+                            color=lambda: self._firewall_color())
+        self._service = meta_label()
+        self._iface_column = Column([], spacing=10, align=Align.STRETCH)
+        network = Column([
+            section_header("NETLINK", "LIVE INTERFACE TELEMETRY"),
+            Row([key_label("FIREWALL"), self._dot, self._state,
+                 self._service, Spacer()], spacing=8, align=Align.BASELINE),
+            self._iface_column,
+        ], spacing=12, align=Align.STRETCH)
+
+        # ── speedtest page ──────────────────────────────────────────────
+        self._server = Label("idle", size=BODY, color=theme.BASE_MUTED)
+        ping_row, self._ping, self._ping_unit = _value_pair(
+            3, theme.YELLOW_BRIGHT)
+        self._down_meter = BarMeter(color=theme.MAGENTA_BRIGHT,
+                                    dim_color=theme.NOTIF_METER_DIM,
+                                    tick=5, gap=theme.NOTIF_METER_GAP,
+                                    thick=theme.NOTIF_METER_THICK,
+                                    min_width=200, flex=1)
+        self._up_meter = BarMeter(color=theme.YELLOW_BRIGHT,
+                                  dim_color=theme.NOTIF_METER_DIM,
+                                  tick=5, gap=theme.NOTIF_METER_GAP,
+                                  thick=theme.NOTIF_METER_THICK,
+                                  min_width=200, flex=1)
+        down_row, self._down_value, self._down_unit = _value_pair(
+            8, theme.MAGENTA_BRIGHT)
+        up_row, self._up_value, self._up_unit = _value_pair(
+            8, theme.YELLOW_BRIGHT)
+        self._button = _Button("RUN TEST", self._toggle_speedtest)
+        speedtest = Column([
+            section_header("THROUGHPUT", "SECURE SPEEDTEST ROUTINE"),
+            HudCard(Column([
+                Row([key_label("SERVER"), self._server, Spacer(),
+                     key_label("PING"), ping_row], spacing=8,
+                    align=Align.BASELINE),
+                self._speed_row("DN", "↓", theme.MAGENTA_BRIGHT,
+                                self._down_meter, down_row),
+                self._speed_row("UP", "↑", theme.YELLOW_BRIGHT,
+                                self._up_meter, up_row),
+                Row([Spacer(), self._button], spacing=0, align=Align.CENTER),
+            ], spacing=10, align=Align.STRETCH), accent=theme.MAGENTA_BRIGHT),
+        ], spacing=12, align=Align.STRETCH)
+
+        self._pages = _Pages([network, speedtest])
+        self._bar = TabBar(["NETWORK", "SPEEDTEST"], self._switch)
+        # The gap is explicit rather than the Column's spacing because
+        # the trailing Spacer must stay flush: TabBar already reserves
+        # its own rule gap, and a page opens on a bare section header
+        # rather than a padded card, so without this the heading sits
+        # right on the rule.
+        self._column = Column(
+            [self._bar, Spacer(size=TAB_GAP_BELOW), self._pages, Spacer()],
+            spacing=0, align=Align.STRETCH)
+
+        # ── speedtest state ─────────────────────────────────────────────
+        self._st_task: asyncio.Task | None = None
+        self._st_proc: asyncio.subprocess.Process | None = None
+        self._st_buf = ""
+        self._st_phase = "idle"
+        self._st_server_set = False
+        self._st_target: str | None = None
+        self._st_started = 0.0
+        self._st_canceled = False
+
+    def _speed_row(self, tag: str, arrow: str, color: str,
+                   meter: BarMeter, value: Row) -> Widget:
+        return Row([key_label(tag, bold=True),
+                    Label(arrow, size=BODY, bold=True, color=color),
+                    meter, value],
+                   spacing=10, align=Align.CENTER)
+
+    def children(self):
+        return (self._column,)
+
+    def _switch(self, index: int) -> None:
+        # TabBar.click() has already moved its own highlight, but this is
+        # also the programmatic entry point, so it sets both. set_active
+        # is a no-op when the index already matches.
+        self._bar.set_active(index)
+        self._pages.set_active(index)
+        self.invalidate(layout=True)
+        self._refit()
+
+    def _refit(self) -> None:
+        """Size the host window to the content.
+
+        The other panels are fixed-size because their content is — a
+        fastfetch dump and a hardware readout come out the same height
+        every time, and their specs say so. This one is a tab away from
+        one height and an interface away from another, so a fixed size is
+        either too tight for three interfaces or mostly empty for one.
+        The spec's size is the opening guess; this is the correction.
+
+        Called before the window is mapped on open (from `attach`) and on
+        the two things that can change the height afterwards: switching
+        tab, and an interface appearing or going away.
+        """
+        window = self.window
+        content = getattr(window, "content", None)
+        if content is None:
+            return
+        natural = content.measure(_UNBOUNDED)
+        window.resize_content(math.ceil(natural.width),
+                              math.ceil(natural.height))
+
+    # ── lifecycle ───────────────────────────────────────────────────────
+    def attach(self, window) -> None:
+        super().attach(window)
+        # psutil only — no subprocess — so the cards are already on the
+        # first frame the spawn animation freezes and shows, and the
+        # refit below has a real height to work from.
+        self._sample_rates()
+        self._refit()
+
+    def on_shown(self) -> None:
+        super().on_shown()
+        # Everything that forks waits until the window is up: the spawn
+        # transition renders from a frozen snapshot, so a value arriving
+        # during it can't be seen anyway, while the work to fetch it
+        # stalls the loop that is trying to animate.
+        self._poll_firewall()
+        self._resolve_ssids()
+
+    def detach(self) -> None:
+        # A speedtest is a 30s network job; it must not outlive the panel
+        # that asked for it.
+        self._kill_speedtest(signal.SIGKILL)
+        self._st_task = None
+        super().detach()
+
+    def _spawn(self, coro) -> bool:
         try:
-            out = subprocess.check_output(
-                ["systemctl", "is-active", "firewalld"],
-                stderr=subprocess.DEVNULL, text=True, timeout=1,
-            ).strip()
-        except subprocess.CalledProcessError as e:
-            out = (e.output or "").strip() or "inactive"
-        except Exception:
-            out = "unknown"
-        if out != self._firewall_last:
-            self._firewall_last = out
-            self._render_firewall(out)
-
-    def _section_header(self, title: str, subtitle: str) -> Gtk.Widget:
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        row.set_margin_top(2)
-        title_lbl = Gtk.Label()
-        title_lbl.set_markup(
-            f"<span color='{theme.CYAN_BRIGHT}' weight='bold' "
-            f"letter_spacing='2048'>{title}</span>"
-        )
-        title_lbl.get_style_context().add_class("panel-title")
-        title_lbl.set_valign(Gtk.Align.CENTER)
-        sub_lbl = _plain(subtitle, "panel-subtitle")
-        row.pack_start(title_lbl, False, False, 0)
-        row.pack_start(sub_lbl, False, False, 0)
-        return row
-
-    def tick(self) -> bool:
-        if self._iface_box is None:
-            return True
-        self._render_ifaces(self._gather())
-        # Firewall state changes rarely — poll every 5 ticks (~5s).
-        # ~5s cadence at 4Hz ticks.
-        if self._firewall_tick % 20 == 0:
-            self._poll_firewall()
-        self._firewall_tick += 1
+            asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            coro.close()
+            return False
         return True
 
-    def _gather(self):
+    # ── firewall ────────────────────────────────────────────────────────
+    def _firewall_color(self) -> str:
+        state = self._firewall[0]
+        if state == "active":
+            return theme.LIME_BRIGHT
+        if state in ("inactive", "failed", "unknown"):
+            return theme.MAGENTA_BRIGHT
+        return theme.BASE_MUTED
+
+    def _poll_firewall(self) -> None:
+        # The in-flight guard is cleared by the query's `finally`, so a
+        # spawn that never happened has to clear it here — otherwise one
+        # failure to schedule stops the poll for the panel's lifetime.
+        if not self._firewall_pending:
+            self._firewall_pending = self._spawn(self._query_firewall())
+
+    async def _query_firewall(self) -> None:
+        try:
+            state, service = "inactive", ""
+            for name in FIREWALLS:
+                out = (await proc.run(
+                    ["systemctl", "is-active", name], timeout=2.0)).strip()
+                # `is-active` exits non-zero when it isn't, and proc.run
+                # keeps stdout either way — "unknown" means no such unit.
+                if out == "active":
+                    state, service = "active", name
+                    break
+                if out == "failed":
+                    state, service = "failed", name
+                    break
+            if (state, service) != self._firewall:
+                self._firewall = (state, service)
+                self._state.set_value(state)
+                self._service.set_value(service)
+                self.invalidate(layout=True)
+        finally:
+            self._firewall_pending = False
+
+    # ── interfaces ──────────────────────────────────────────────────────
+    def _resolve_ssids(self) -> None:
+        for iface in self._keys:
+            if _is_wifi(iface) and iface not in self._ssids:
+                self._spawn(self._query_ssid(iface))
+
+    async def _query_ssid(self, iface: str) -> None:
+        """Connected SSID for a wireless interface, via `iw dev` so it
+        works without NetworkManager."""
+        self._ssids[iface] = None
+        out = await proc.run(["iw", "dev", iface, "link"], timeout=2.0)
+        match = re.search(r"^\s*SSID:\s*(.+)$", out, re.MULTILINE)
+        self._ssids[iface] = match.group(1).strip() if match else None
+
+    def _sample_rates(self) -> None:
         now = time.monotonic()
-        addrs    = psutil.net_if_addrs()
-        stats    = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
         counters = psutil.net_io_counters(pernic=True)
-        out = []
+
+        rows = []
         for iface, addr_list in addrs.items():
             if iface == "lo":
                 continue
-            st = stats.get(iface)
-            if not st or not st.isup:
+            stat = stats.get(iface)
+            if stat is None or not stat.isup:
                 continue
-            ip = next((a.address for a in addr_list if a.family == socket.AF_INET), None)
+            ip = next((a.address for a in addr_list
+                       if a.family == socket.AF_INET), None)
             if not ip:
                 continue
-            c = counters.get(iface)
-            up = dn = 0.0
-            if c is not None:
-                prev = self._counters.get(iface)
-                if prev is not None:
-                    ls, lr, lt = prev
-                    dt = now - lt
+            up = down = 0.0
+            counter = counters.get(iface)
+            if counter is not None:
+                previous = self._counters.get(iface)
+                if previous is not None:
+                    sent, recv, then = previous
+                    dt = now - then
                     if dt > 0:
-                        up = max(0.0, (c.bytes_sent - ls) / dt)
-                        dn = max(0.0, (c.bytes_recv - lr) / dt)
-                self._counters[iface] = (c.bytes_sent, c.bytes_recv, now)
-            out.append((iface, ip, _ssid_for(iface), up, dn))
-        return out
+                        up = max(0.0, (counter.bytes_sent - sent) / dt)
+                        down = max(0.0, (counter.bytes_recv - recv) / dt)
+                self._counters[iface] = (counter.bytes_sent,
+                                         counter.bytes_recv, now)
+            rows.append((iface, ip, up, down))
 
-    def _render_ifaces(self, rows) -> None:
-        assert self._iface_box is not None
-        for child in self._iface_box.get_children():
-            self._iface_box.remove(child)
-        if not rows:
-            self._iface_box.pack_start(
-                _HudCard(_plain("no active interface", "empty"),
-                         accent=theme.MAGENTA_DIM),
-                False, False, 0,
-            )
-            self._iface_box.show_all()
+        keys = tuple(row[0] for row in rows)
+        if keys != self._keys:
+            self._keys = keys
+            self._rebuild_cards(keys)
+            self._resolve_ssids()
+            self._refit()
+        for iface, ip, up, down in rows:
+            self._cards[iface].update(ip, self._ssids.get(iface), up, down)
+
+    def _rebuild_cards(self, keys: tuple[str, ...]) -> None:
+        """Swap the card list only when the interface *set* changes.
+
+        Rates change four times a second and the card for an interface
+        that is still there has nothing to rebuild — only an appearing or
+        disappearing interface costs a relayout.
+        """
+        for iface in list(self._cards):
+            if iface not in keys:
+                del self._cards[iface]
+        for iface in keys:
+            if iface not in self._cards:
+                self._cards[iface] = _IfaceCard(iface)
+        if keys:
+            self._iface_column.replace([self._cards[k] for k in keys])
         else:
-            for (iface, ip, ssid, up, dn) in rows:
-                self._iface_box.pack_start(
-                    self._iface_card(iface, ip, ssid, up, dn), False, False, 0
-                )
-            self._iface_box.show_all()
+            self._iface_column.replace([HudCard(
+                Label("no active interface", size=BODY,
+                      color=theme.BASE_MUTED),
+                accent=theme.MAGENTA_DIM)])
 
-        # Refit the popup if the interface set changed — otherwise the
-        # window keeps its old size+position even as cards add/remove.
-        keys = tuple(r[0] for r in rows)
-        if keys != self._iface_keys:
-            self._iface_keys = keys
-            self._refit_popup()
-
-    def _refit_popup(self) -> None:
-        if self.gtk_widget is None:
+    # ── speedtest ───────────────────────────────────────────────────────
+    def _toggle_speedtest(self, _source=None) -> None:
+        if self._st_task is not None:
+            self._st_canceled = True
+            self._kill_speedtest(signal.SIGTERM)
             return
-        top = self.gtk_widget.get_toplevel()
-        if not isinstance(top, Gtk.Window) or not top.get_realized():
+        self._st_task = asyncio.get_running_loop().create_task(
+            self._run_speedtest())
+
+    def _kill_speedtest(self, sig: int) -> None:
+        process = self._st_proc
+        if process is None or process.returncode is not None:
             return
-        from ..core.daemon import get_daemon  # deferred: avoid import cycle
-        d = get_daemon()
-        name = next((n for n, w in d.instances.items() if w is top), None)
-        if name is None:
-            return
-        kind = d.kinds.get(name)
-        anchor = d.anchors.get(name)
-        if kind is not None and hasattr(kind, "refit"):
-            kind.refit(top, anchor)
+        try:
+            # Its own session, so the whole group goes — speedtest-cli
+            # spawns workers that ignore a signal to the parent alone.
+            os.killpg(os.getpgid(process.pid), sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
-    def _iface_card(
-        self, iface: str, ip: str, ssid: str | None, up: float, dn: float,
-    ) -> Gtk.Widget:
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-
-        # Header row: iface (cyan, big) + SSID on the right when wifi.
-        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        head.pack_start(_plain(iface, "iface-name"), False, False, 0)
-        if ssid:
-            head.pack_end(_plain(ssid, "ssid"), False, False, 0)
-        card.pack_start(head, False, False, 0)
-
-        # IP row: small dim "ADDR" key + mono value.
-        ip_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        ip_row.pack_start(_plain("ADDR", "label-key"), False, False, 0)
-        ip_row.pack_start(_plain(ip, "ip"), False, False, 0)
-        card.pack_start(ip_row, False, False, 0)
-
-        # Rate row: ↓ on the left, ↑ on the right.
-        rates = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
-        rates.set_margin_top(2)
-        dn_lbl = Gtk.Label()
-        dn_lbl.set_markup(
-            f"<span color='{theme.MAGENTA_BRIGHT}'>↓</span>  "
-            f"<span color='{theme.MAGENTA_BRIGHT}' font_family='monospace' "
-            f"weight='bold'>{_fmt_rate(dn)}</span>"
-        )
-        up_lbl = Gtk.Label()
-        up_lbl.set_markup(
-            f"<span color='{theme.YELLOW_BRIGHT}' font_family='monospace' "
-            f"weight='bold'>{_fmt_rate(up)}</span>  "
-            f"<span color='{theme.YELLOW_BRIGHT}'>↑</span>"
-        )
-        rates.pack_start(dn_lbl, False, False, 0)
-        rates.pack_end(up_lbl, False, False, 0)
-        card.pack_start(rates, False, False, 0)
-        return _HudCard(card, accent=theme.HIGHLIGHT)
-
-    # ── speedtest page ────────────────────────────────────────────────
-    def _build_speedtest_page(self) -> Gtk.Widget:
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        page.set_margin_top(2)
-        page.pack_start(self._section_header("THROUGHPUT", "SECURE SPEEDTEST ROUTINE"),
-                        False, False, 0)
-
-        # Server on the left, ping pushed to the right.
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        meta = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        meta.pack_start(_plain("SERVER", "label-key"), False, False, 0)
-        self._st_server_lbl = _plain("idle", "server-idle")
-        meta.pack_start(self._st_server_lbl, False, False, 0)
-        self._st_ping_lbl = _plain("—", "placeholder")
-        meta.pack_end(self._st_ping_lbl, False, False, 0)
-        meta.pack_end(_plain("PING", "label-key"), False, False, 8)
-        body.pack_start(meta, False, False, 0)
-
-        # Download row.
-        self._st_dn_meter = _Meter()
-        self._st_dn_meter.set_color(theme.MAGENTA_BRIGHT)
-        self._st_dn_val = _plain("—", "placeholder", xalign=1.0)
-        self._st_dn_val.set_width_chars(12)
-        body.pack_start(
-            self._speed_row("DN", "↓", theme.MAGENTA_BRIGHT,
-                            self._st_dn_meter, self._st_dn_val),
-            False, False, 0,
-        )
-
-        # Upload row.
-        self._st_up_meter = _Meter()
-        self._st_up_meter.set_color(theme.YELLOW_BRIGHT)
-        self._st_up_val = _plain("—", "placeholder", xalign=1.0)
-        self._st_up_val.set_width_chars(12)
-        body.pack_start(
-            self._speed_row("UP", "↑", theme.YELLOW_BRIGHT,
-                            self._st_up_meter, self._st_up_val),
-            False, False, 0,
-        )
-
-        # Run/cancel button — right-aligned so the meters' value column
-        # stays the visual anchor on the left.
-        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        btn_row.set_margin_top(8)
-        btn_row.set_halign(Gtk.Align.END)
-        self._st_button = Gtk.Button()
-        self._st_button.set_relief(Gtk.ReliefStyle.NONE)
-        self._st_button_lbl = Gtk.Label()
-        self._st_button_lbl.set_markup(self._button_markup("RUN TEST"))
-        self._st_button.add(self._st_button_lbl)
-        self._st_button.get_style_context().add_class("st-btn")
-        self._st_button.connect("clicked", self._on_speedtest_click)
-        btn_row.pack_start(self._st_button, False, False, 0)
-        body.pack_start(btn_row, False, False, 0)
-        page.pack_start(_HudCard(body, accent=theme.MAGENTA_BRIGHT), False, False, 0)
-        return page
-
-    def _speed_row(self, tag: str, arrow: str, arrow_color: str,
-                   meter: _Meter, val: Gtk.Label) -> Gtk.Widget:
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        head = Gtk.Label()
-        head.set_markup(
-            f"<span color='{theme.CYAN_DIM}' weight='bold' "
-            f"letter_spacing='1024'>{tag}</span> "
-            f"<span color='{arrow_color}' weight='bold'>{arrow}</span>"
-        )
-        head.set_xalign(0.0)
-        head.set_width_chars(5)
-        row.pack_start(head, False, False, 0)
-        row.pack_start(meter, True, True, 0)
-        row.pack_start(val, False, False, 0)
-        return row
-
-    def _button_markup(self, label: str) -> str:
-        return (
-            f"<span color='{theme.YELLOW_MID}' weight='bold'>//</span> "
-            f"<span color='{theme.HIGHLIGHT}' weight='bold' "
-            f"letter_spacing='1536'>{label}</span>"
-        )
-
-    # ── speedtest engine ──────────────────────────────────────────────
-    def _on_speedtest_click(self, _btn) -> None:
-        if self._st_proc is not None:
-            self._st_cancel()
-        else:
-            self._st_start()
-
-    def _st_start(self) -> None:
-        self._st_phase = "starting"
+    def _reset_speedtest(self) -> None:
         self._st_buf = ""
+        self._st_phase = "starting"
         self._st_server_set = False
-        if self._st_server_lbl:
-            self._st_server_lbl.set_text("connecting…")
-            self._reapply_class(self._st_server_lbl, "server-idle")
-        if self._st_ping_lbl:
-            self._st_ping_lbl.set_text("—")
-        if self._st_dn_val:
-            self._st_dn_val.set_text("—")
-            self._reapply_class(self._st_dn_val, "placeholder")
-        if self._st_up_val:
-            self._st_up_val.set_text("—")
-            self._reapply_class(self._st_up_val, "placeholder")
-        if self._st_dn_meter: self._st_dn_meter.set_progress(0)
-        if self._st_up_meter: self._st_up_meter.set_progress(0)
-        if self._st_button_lbl: self._st_button_lbl.set_markup(self._button_markup("CANCEL"))
+        self._st_target = None
+        self._st_canceled = False
+        self._server.color = theme.BASE_MUTED
+        self._server.set_value("connecting…")
+        for label, unit in ((self._ping, self._ping_unit),
+                            (self._down_value, self._down_unit),
+                            (self._up_value, self._up_unit)):
+            label.set_value("—")
+            unit.set_value("")
+        self._down_meter.set_value(0)
+        self._up_meter.set_value(0)
+        self._button.set_label("CANCEL")
 
+    async def _run_speedtest(self) -> None:
+        self._reset_speedtest()
+        process = None
         try:
-            self._st_proc = subprocess.Popen(
-                ["speedtest-cli", "--secure"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=0,
-                preexec_fn=os.setsid,  # so we can kill the group on cancel
-            )
-        except FileNotFoundError:
-            if self._st_server_lbl:
-                self._st_server_lbl.set_text("speedtest-cli not installed")
-            if self._st_button_lbl:
-                self._st_button_lbl.set_markup(self._button_markup("RUN TEST"))
-            self._st_proc = None
-            return
-
-        assert self._st_proc.stdout is not None
-        fd = self._st_proc.stdout.fileno()
-        os.set_blocking(fd, False)
-        self._st_watch_id = GLib.io_add_watch(
-            fd, GLib.IO_IN | GLib.IO_HUP, self._st_on_io
-        )
-
-    def _st_cancel(self) -> None:
-        proc = self._st_proc
-        if proc is not None:
             try:
-                os.killpg(proc.pid, 15)
-            except Exception:
-                pass
-        self._st_finalize(canceled=True)
+                process = await asyncio.create_subprocess_exec(
+                    "speedtest-cli", "--secure",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    start_new_session=True)
+            except (OSError, FileNotFoundError):
+                self._fail("speedtest-cli not installed")
+                return
+            self._st_proc = process
+            while True:
+                chunk = await process.stdout.read(4096)
+                if not chunk:
+                    break
+                # Read in chunks, not lines: the progress dots arrive
+                # without a newline until the phase is over, so a line
+                # reader sees nothing for ten seconds at a time.
+                self._st_buf += chunk.decode(errors="replace")
+                self._parse_speedtest()
+            await process.wait()
+        except Exception:
+            log.exception("speedtest failed")
+        finally:
+            if process is not None and self._st_proc is process:
+                self._st_proc = None
+            self._finish_speedtest()
 
-    def _st_on_io(self, fd: int, _cond) -> bool:
-        try:
-            chunk = os.read(fd, 4096)
-        except OSError:
-            chunk = b""
-        if not chunk:
-            self._st_finalize(canceled=False)
-            return False
-        self._st_buf += chunk.decode("utf-8", errors="replace")
-        self._st_parse()
-        return True
+    def _fail(self, message: str) -> None:
+        self._st_phase = "error"
+        self._server.color = theme.BASE_MUTED
+        self._server.set_value(message)
 
-    def _st_parse(self) -> None:
-        s = self._st_buf
+    def _finish_speedtest(self) -> None:
+        self._st_task = None
+        self._st_target = None
+        if self._st_phase not in ("done", "error"):
+            self._fail("canceled" if self._st_canceled else "speedtest failed")
+        self._button.set_label("RUN TEST")
+        self.invalidate(layout=True)
+
+    def _parse_speedtest(self) -> None:
+        buf = self._st_buf
 
         if not self._st_server_set:
-            m = re.search(r"Hosted by (.+?) \[.+?\]:\s*([\d.]+)\s*ms", s)
-            if m and self._st_server_lbl and self._st_ping_lbl:
+            match = re.search(r"Hosted by (.+?) \[.+?\]:\s*([\d.]+)\s*ms", buf)
+            if match:
                 self._st_server_set = True
-                self._st_server_lbl.set_text(m.group(1))
-                self._reapply_class(self._st_server_lbl, "server-name")
-                self._st_ping_lbl.set_markup(
-                    f"<span color='{theme.YELLOW_BRIGHT}' weight='bold' "
-                    f"font_family='monospace'>{m.group(2)}</span>"
-                    f"<span color='{theme.BASE_MUTED}'> ms</span>"
-                )
+                self._server.color = theme.CYAN_BRIGHT
+                self._server.set_value(_elide(match.group(1), SERVER_CHARS))
+                self._ping.set_value(match.group(2))
+                self._ping_unit.set_value("ms")
 
-        # Phase transitions detected by substring — dot lines don't
-        # end with \n until the phase is over.
-        if self._st_phase == "starting" and "Testing download speed" in s:
+        if self._st_phase == "starting" and "Testing download speed" in buf:
             self._st_phase = "download"
-            self._st_anim_start_for("download")
+            self._start_phase("download")
 
         if self._st_phase == "download":
-            m = re.search(r"Download:\s+([\d.]+)\s+(\S+)", s)
-            if m and self._st_dn_val and self._st_dn_meter:
-                self._st_dn_val.set_markup(
-                    f"<span color='{theme.MAGENTA_BRIGHT}' weight='bold' "
-                    f"font_family='monospace'>{m.group(1)}</span>"
-                    f"<span color='{theme.BASE_MUTED}'> {_pango_escape(m.group(2))}</span>"
-                )
-                self._st_dn_meter.set_progress(100)
-                self._st_anim_stop()
+            match = re.search(r"Download:\s+([\d.]+)\s+(\S+)", buf)
+            if match:
+                self._down_value.set_value(match.group(1))
+                self._down_unit.set_value(match.group(2))
+                self._down_meter.set_value(100)
+                self._st_target = None
                 self._st_phase = "between"
 
-        if self._st_phase == "between" and "Testing upload speed" in s:
+        if self._st_phase == "between" and "Testing upload speed" in buf:
             self._st_phase = "upload"
-            self._st_anim_start_for("upload")
+            self._start_phase("upload")
 
         if self._st_phase == "upload":
-            m = re.search(r"Upload:\s+([\d.]+)\s+(\S+)", s)
-            if m and self._st_up_val and self._st_up_meter:
-                self._st_up_val.set_markup(
-                    f"<span color='{theme.YELLOW_BRIGHT}' weight='bold' "
-                    f"font_family='monospace'>{m.group(1)}</span>"
-                    f"<span color='{theme.BASE_MUTED}'> {_pango_escape(m.group(2))}</span>"
-                )
-                self._st_up_meter.set_progress(100)
-                self._st_anim_stop()
+            match = re.search(r"Upload:\s+([\d.]+)\s+(\S+)", buf)
+            if match:
+                self._up_value.set_value(match.group(1))
+                self._up_unit.set_value(match.group(2))
+                self._up_meter.set_value(100)
+                self._st_target = None
                 self._st_phase = "done"
 
-    def _st_anim_start_for(self, target: str) -> None:
-        self._st_anim_target = target
-        self._st_anim_start = time.monotonic()
-        if self._st_anim_id is None:
-            self._st_anim_id = GLib.timeout_add(80, self._st_anim_tick)
+    def _start_phase(self, target: str) -> None:
+        self._st_target = target
+        self._st_started = time.monotonic()
 
-    def _st_anim_tick(self) -> bool:
-        elapsed = time.monotonic() - self._st_anim_start
-        pct = min(95.0, (elapsed / self._PHASE_DURATION_SEC) * 100)
-        if self._st_anim_target == "download" and self._st_dn_meter:
-            self._st_dn_meter.set_progress(pct)
-        elif self._st_anim_target == "upload" and self._st_up_meter:
-            self._st_up_meter.set_progress(pct)
-        return True
+    # ── frame clock ─────────────────────────────────────────────────────
+    def animate(self, t: float) -> None:
+        dt = self.tick_dt(t)
 
-    def _st_anim_stop(self) -> None:
-        if self._st_anim_id is not None:
-            GLib.source_remove(self._st_anim_id)
-            self._st_anim_id = None
-        self._st_anim_target = None
+        self._rate_acc += dt
+        if self._rate_acc >= RATE_INTERVAL:
+            self._rate_acc = 0.0
+            self._sample_rates()
 
-    def _st_finalize(self, canceled: bool) -> None:
-        if self._st_watch_id is not None:
-            GLib.source_remove(self._st_watch_id)
-            self._st_watch_id = None
-        if self._st_proc is not None:
-            try:
-                self._st_proc.wait(timeout=1)
-            except Exception:
-                pass
-            self._st_proc = None
-        self._st_anim_stop()
-        if canceled and self._st_phase != "done":
-            self._st_phase = "idle"
-            if self._st_server_lbl:
-                self._st_server_lbl.set_text("canceled")
-                self._reapply_class(self._st_server_lbl, "server-idle")
-        elif self._st_phase != "done":
-            self._st_phase = "error"
-            if self._st_server_lbl:
-                self._st_server_lbl.set_text("speedtest failed")
-                self._reapply_class(self._st_server_lbl, "server-idle")
-        if self._st_button_lbl:
-            self._st_button_lbl.set_markup(self._button_markup("RUN TEST"))
+        # Firewall state changes rarely, so this polls every ~5s.
+        self._firewall_acc += dt
+        if self._firewall_acc >= 5.0:
+            self._firewall_acc = 0.0
+            self._poll_firewall()
 
-    def _reapply_class(self, lbl: Gtk.Label, css_class: str) -> None:
-        """Swap state-driven CSS class on a label without piling up
-        stale ones (idle/name, placeholder/result)."""
-        ctx = lbl.get_style_context()
-        for c in ("server-idle", "server-name", "placeholder",
-                  "result-dn", "result-up"):
-            ctx.remove_class(c)
-        ctx.add_class(css_class)
+        if self._st_target is not None:
+            pct = min(95.0, (time.monotonic() - self._st_started)
+                      / PHASE_DURATION * 100.0)
+            meter = (self._down_meter if self._st_target == "download"
+                     else self._up_meter)
+            meter.set_value(pct)
 
-    def stop(self) -> None:
-        # Don't let a background subprocess outlive the widget.
-        if self._st_proc is not None:
-            try:
-                os.killpg(self._st_proc.pid, 9)
-            except Exception:
-                pass
-        self._st_anim_stop()
-        super().stop()
+    # ── layout / paint ──────────────────────────────────────────────────
+    def measure(self, avail: Size) -> Size:
+        inner = self._column.measure(Size(min(self.width, avail.width),
+                                          avail.height))
+        return Size(max(self.width, inner.width), inner.height)
+
+    def arrange(self, rect: skia.Rect) -> None:
+        self.rect = rect
+        self._column.measure(Size(rect.width(), rect.height()))
+        self._column.arrange(rect)
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        self._column.paint(canvas)

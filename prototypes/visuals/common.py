@@ -10,8 +10,8 @@ logging.disable(logging.WARNING)
 
 import skia
 
-from indigoshell2 import shapes, text as T, theme
-from indigoshell2.widgets.base import Size
+from indigoshell import shapes, text as T, theme
+from indigoshell.widgets.base import Size
 
 BAR_H = theme.BAR_HEIGHT
 PAD = 16
@@ -76,7 +76,7 @@ def arc(c, cx, cy, r, start, sweep, color, width, alpha=None, round_cap=True):
 
 
 def ticks_h(c, x, y, w, h, *, tick, gap, pct, lit, dim, dim_alpha=None):
-    from indigoshell2.widgets.meters import _ticks
+    from indigoshell.widgets.meters import _ticks
     _ticks(c, x, y, w, h, tick=tick, gap=gap, pct=pct, lit=lit, dim=dim,
            dim_alpha=dim_alpha)
 
