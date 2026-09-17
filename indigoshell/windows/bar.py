@@ -2,7 +2,7 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gtk, Gdk
+from gi.repository import Gtk, Gdk, GLib
 
 from .. import theme
 from ..style import build_css, child_style_to_css, style_to_css
@@ -45,6 +45,7 @@ class Bar(Gtk.Window):
 
         self.screen_width = 0
         self.screen_geo = None
+        self._remap_pending = False
         self._apply_geometry()
 
         # The display can change under us — resolution switches emit
@@ -93,10 +94,47 @@ class Bar(Gtk.Window):
         self.move(geo.x, y)
 
     def _on_display_changed(self, _screen):
+        # Never re-stamp the strut on a mapped window: qtile's strut
+        # accounting is additive — each _NET_WM_STRUT_PARTIAL write on a
+        # managed window adds the full strut to the screen's reserved
+        # space without freeing the previous reservation (it only frees
+        # on unmanage), so an in-place re-stamp grows the gap by one bar
+        # height per display change. Unmap → update → remap instead: the
+        # unmap makes the WM release the old reservation, the remap
+        # reserves the new one exactly once. size-changed and
+        # monitors-changed can both fire for a single xrandr call —
+        # coalesce the burst into one remap via an idle callback.
+        if self._remap_pending:
+            return
+        self._remap_pending = True
+        GLib.idle_add(self._remap_for_display_change)
+
+    def _remap_for_display_change(self):
+        self._remap_pending = False
+        if not self.get_realized():
+            return False
+        # Skip no-op bursts (e.g. re-selecting the already-active
+        # output): the strut and bar placement derive entirely from the
+        # primary monitor's geometry, so equal geometry means nothing to
+        # do — and no bar blink.
+        screen = Gdk.Screen.get_default()
+        geo = screen.get_monitor_geometry(screen.get_primary_monitor())
+        old = self.screen_geo
+        if old and (geo.x, geo.y, geo.width, geo.height) == (
+            old.x, old.y, old.width, old.height,
+        ):
+            return False
+        self.hide()
+        # _set_strut writes through its own X connection; force a
+        # round-trip on GDK's connection first so the server has
+        # processed the unmap before the strut lands. Otherwise the WM
+        # can see the new strut while the window is still managed and
+        # double-count the reservation.
+        Gdk.Display.get_default().sync()
         self._apply_geometry()
-        # Strut is keyed to the new width/height; re-stamp it. The window
-        # is already realized here, so _set_strut has a live X window.
         self._set_strut(self)
+        self.show()
+        return False
 
     def _disconnect_screen(self, _w):
         screen = Gdk.Screen.get_default()
