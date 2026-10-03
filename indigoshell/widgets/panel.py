@@ -22,7 +22,7 @@ from typing import Callable, Union
 import skia
 
 from .. import shapes, theme
-from .base import Insets, Size, Widget
+from .base import Insets, KeyEvent, Size, Widget
 from .label import Label as TextLabel
 from .layout import Align, Box, Column, Divider as Rule, Row as HRow, Spacer
 from .meters import BarMeter
@@ -367,7 +367,8 @@ class Panel(Widget):
             self.invalidate(layout=True)
 
     # ── keyboard ────────────────────────────────────────────────────────
-    def key(self, keysym: int, shift: bool = False) -> bool:
+    def key(self, ev: KeyEvent) -> bool:
+        keysym = ev.keysym
         count = len(self._rows)
         if keysym == _ESC:
             self._close()

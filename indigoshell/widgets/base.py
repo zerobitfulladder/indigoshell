@@ -59,6 +59,26 @@ class Insets:
         )
 
 
+@dataclass(frozen=True)
+class KeyEvent:
+    """One key press or release, already through the keyboard layout.
+
+    `keysym` names the key (`0xFF0D` Return, `0x31` the digit 1) and is
+    what shortcuts compare against. `text` is what the key types — empty
+    for keys that type nothing (arrows, F-keys, modifiers) and for any
+    chord holding Control, Alt or Super, since those are commands rather
+    than text. A text field appends `text`; everything else reads
+    `keysym` and the modifiers.
+    """
+
+    keysym: int
+    text: str = ""
+    shift: bool = False
+    ctrl: bool = False
+    alt: bool = False
+    super: bool = False
+
+
 class Widget:
     # >0 asks the host window for a frame clock at this rate. Widgets that
     # only change on input stay at 0 and cost nothing when idle.
@@ -247,7 +267,7 @@ class Widget:
                 return found
         return self if self.interactive else None
 
-    def key(self, keysym: int, shift: bool = False) -> bool:
+    def key(self, ev: KeyEvent) -> bool:
         """Handle a key press; return True if consumed.
 
         Forwarded down the tree until something consumes it, so a panel
@@ -255,17 +275,17 @@ class Widget:
         knowing anything about focus.
         """
         for child in self.children():
-            if child.key(keysym, shift):
+            if child.key(ev):
                 return True
         return False
 
-    def key_release(self, keysym: int, shift: bool = False) -> bool:
+    def key_release(self, ev: KeyEvent) -> bool:
         """Handle a key release; return True if consumed. Forwarded like
         `key`. Only a grabbing window receives releases — X reports both
         press and release to a keyboard grab regardless of event mask —
         and only press-to-arm / release-to-fire widgets care."""
         for child in self.children():
-            if child.key_release(keysym, shift):
+            if child.key_release(ev):
                 return True
         return False
 

@@ -29,6 +29,61 @@ def shape_ext(conn):
 
 log = logging.getLogger(__name__)
 
+# The keysyms whose place in the modifier map says which ModN bit plays
+# which role. Only Shift, Lock and Control have fixed bits; the rest are
+# wherever the keymap put them — AltGr is Mod5 on most layouts but is not
+# Alt, and treating it as Alt would make every AltGr character a command.
+_MODIFIER_ROLES = {
+    "alt": (0xFFE9, 0xFFEA, 0xFFE7, 0xFFE8),    # Alt_L/R, Meta_L/R
+    "super": (0xFFEB, 0xFFEC),                   # Super_L/R
+    "level3": (0xFE03,),                         # ISO_Level3_Shift (AltGr)
+    "numlock": (0xFF7F,),                        # Num_Lock
+}
+
+# Legacy keysym pages that are an ISO 8859 code page moved up by 256 x
+# page: the low byte of keysym 0x1BA is ISO 8859-2's 0xBA, "ş". Only the
+# pages that agree with libxkbcommon on every keysym they define are
+# listed. Cyrillic, Greek and Thai agree only in part, so a key on one of
+# those legacy pages types nothing rather than the wrong letter.
+_LEGACY_PAGES = {
+    0x01: "iso8859_2",      # Latin-2
+    0x02: "iso8859_3",      # Latin-3: Turkish ı ğ İ Ğ
+    0x03: "iso8859_4",      # Latin-4
+    0x05: "iso8859_6",      # Arabic
+    0x0C: "iso8859_8",      # Hebrew
+    0x13: "iso8859_15",     # Latin-9: Œ œ Ÿ
+}
+
+
+def keysym_text(keysym: int) -> str:
+    """The character a keysym types, or "" for one that types none.
+
+    Control characters — Return, Tab, BackSpace, Escape, Delete — count
+    as typing nothing: they are keys to act on, not text to insert.
+    """
+    if 0x20 <= keysym <= 0x7E or 0xA0 <= keysym <= 0xFF:
+        return chr(keysym)                  # Latin-1 keysyms are the codepoint
+    if 0x01000000 <= keysym <= 0x0110FFFF:
+        cp = keysym - 0x01000000            # Unicode keysyms
+        if cp < 0x20 or 0x7F <= cp < 0xA0 or 0xD800 <= cp <= 0xDFFF:
+            return ""
+        return chr(cp)
+    if keysym == 0xFF80:
+        return " "                          # KP_Space
+    if 0xFFAA <= keysym <= 0xFFB9 or keysym == 0xFFBD:
+        return chr(keysym - 0xFF80)         # keypad * + , - . / 0-9 =
+    codec = _LEGACY_PAGES.get(keysym >> 8)
+    if codec is not None and keysym & 0xFF >= 0xA0:
+        try:
+            return bytes([keysym & 0xFF]).decode(codec)
+        except UnicodeDecodeError:
+            return ""
+    return ""
+
+
+def _is_keypad(keysym: int) -> bool:
+    return 0xFF80 <= keysym <= 0xFFBD
+
 
 class DisplayError(RuntimeError):
     pass
@@ -97,7 +152,8 @@ class Display:
         self.on_unhandled = None
         self._root_listeners: list = []
         self._screen_listeners: list = []
-        self._keysyms: dict[int, int] | None = None
+        self._keymap: dict[int, tuple[int, ...]] | None = None
+        self._mod_masks: dict[str, int] = {}
 
     # ── connection ──────────────────────────────────────────────────────
     @property
@@ -221,6 +277,11 @@ class Display:
             self._pumping = False
 
     def dispatch(self, ev) -> None:
+        if isinstance(ev, xp.MappingNotifyEvent):
+            # Addressed to no window, so routing by window would drop it:
+            # the keyboard mapping changed (setxkbmap, xmodmap).
+            self.invalidate_keymap()
+            return
         if isinstance(ev, (xcffib.randr.ScreenChangeNotifyEvent,
                            xcffib.randr.NotifyEvent)):
             # Not addressed to any of our windows: the screen itself
@@ -252,33 +313,70 @@ class Display:
                           wid, type(ev).__name__)
 
     # ── keyboard ────────────────────────────────────────────────────────
-    def keysym(self, keycode: int, shift: bool = False) -> int:
-        """Unshifted (or shifted) keysym for a keycode.
+    def keysym(self, keycode: int, state: int = 0) -> int:
+        """The keysym a keycode produces under a modifier state.
 
         X delivers keycodes, not keysyms — the mapping is per-keyboard and
-        has to be fetched. Cached, and dropped on MappingNotify so a
-        layout switch doesn't leave us translating with a stale table.
+        has to be fetched. Under XKB the core mapping lists each key's
+        symbols as group 1 levels 1-2, group 2 levels 1-2, then group 1
+        levels 3-4: Shift picks the second of a pair and AltGr moves to
+        the third pair. Groups are not read. Layouts here are switched by
+        replacing the keymap (`setxkbmap tr`), so group 1 is the only one
+        there is; a multi-group keymap would need xkbcommon's state
+        machine rather than this table.
         """
-        if self._keysyms is None:
-            self._load_keymap()
-        assert self._keysyms is not None
-        return self._keysyms.get((keycode, bool(shift)), 0)
+        keymap = self._keymap if self._keymap is not None else self._load_keymap()
+        row = keymap.get(keycode, ())
+        if state & self._mod_masks.get("level3", 0) and len(row) > 4 and row[4]:
+            row = row[4:6]
+        if not row:
+            return 0
+        lower = row[0]
+        upper = row[1] if len(row) > 1 and row[1] else lower
+        shift = bool(state & xp.KeyButMask.Shift)
+        if state & self._mod_masks.get("numlock", 0) and _is_keypad(upper):
+            # NumLock inverts Shift on the keypad: digits by default.
+            return lower if shift else upper
+        if state & xp.KeyButMask.Lock and keysym_text(lower).islower():
+            # Caps Lock shifts letters and nothing else. Taken from the
+            # keymap's own upper level rather than str.upper(), which
+            # gets Turkish i -> İ wrong.
+            shift = not shift
+        return upper if shift else lower
 
-    def _load_keymap(self) -> None:
+    def mod_mask(self, role: str) -> int:
+        """State bits that carry `role` ("alt", "super", "level3",
+        "numlock") in the current modifier map; 0 if nothing does."""
+        if self._keymap is None:
+            self._load_keymap()
+        return self._mod_masks.get(role, 0)
+
+    def _load_keymap(self) -> dict[int, tuple[int, ...]]:
         lo, hi = self.setup.min_keycode, self.setup.max_keycode
         reply = self.conn.core.GetKeyboardMapping(lo, hi - lo + 1).reply()
         per = reply.keysyms_per_keycode
-        table: dict[tuple[int, bool], int] = {}
-        for i in range(hi - lo + 1):
-            base = i * per
-            table[(lo + i, False)] = reply.keysyms[base]
-            if per > 1:
-                table[(lo + i, True)] = reply.keysyms[base + 1] or reply.keysyms[base]
-        self._keysyms = table
-        log.debug("loaded keymap for keycodes %d..%d", lo, hi)
+        syms = list(reply.keysyms)
+        keymap = {lo + i: tuple(syms[i * per:(i + 1) * per])
+                  for i in range(hi - lo + 1)}
+
+        mods = self.conn.core.GetModifierMapping().reply()
+        per_mod = mods.keycodes_per_modifier
+        codes = list(mods.keycodes)
+        masks: dict[str, int] = {}
+        for bit in range(8):
+            for keycode in codes[bit * per_mod:(bit + 1) * per_mod]:
+                held = keymap.get(keycode, ())[:2] if keycode else ()
+                for role, keysyms in _MODIFIER_ROLES.items():
+                    if any(k in keysyms for k in held):
+                        masks[role] = masks.get(role, 0) | (1 << bit)
+
+        self._keymap, self._mod_masks = keymap, masks
+        log.debug("loaded keymap for keycodes %d..%d, modifiers %s",
+                  lo, hi, masks)
+        return keymap
 
     def invalidate_keymap(self) -> None:
-        self._keysyms = None
+        self._keymap = None
 
     # ── root events ─────────────────────────────────────────────────────
     def add_root_listener(self, callback) -> None:
