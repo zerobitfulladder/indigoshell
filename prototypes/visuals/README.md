@@ -14,6 +14,7 @@ code that reuses the theme, font and shapes so they are honest previews.
 | `network.png` | current + A signal bars, B live rates, C NET tag, D icon + stack |
 | `after.png` | the chosen configuration rendered from the real widget classes |
 | `panel_open.png` / `panel_close.png` | current ScanLock + A CRT power, B boot wipe, C hologram, D blinds, E decode cells |
+| `launcher.png` | the real launcher at 1x on this machine's apps: empty, matches lit, selection moved, no match |
 
 Animated versions of the panel transitions are in `gif/`: one looping
 30fps GIF per effect (open, hold, close, pause) and `panel_all.gif`
@@ -24,6 +25,7 @@ Regenerate from this folder:
     PYTHONPATH=../.. ../../.venv/bin/python render_widgets.py
     PYTHONPATH=../.. ../../.venv/bin/python render_panels.py
     PYTHONPATH=../.. ../../.venv/bin/python render_gifs.py    # needs ffmpeg
+    PYTHONPATH=../.. ../../.venv/bin/python render_launcher.py
 
 The panel effects are prototype SkSL inside `render_panels.py`; a chosen
 one moves into `indigoshell/effects.py` as a proper `Effect` class.

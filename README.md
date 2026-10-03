@@ -1,9 +1,9 @@
 # indigoshell
 
 A widget-engine desktop shell for X11. One Python process draws a bar,
-its panels, its chord menus, its notification toasts and its system tray
-on a single asyncio loop — no toolkit, no second main loop, no worker
-threads.
+its panels, its chord menus, its app launcher, its notification toasts
+and its system tray on a single asyncio loop — no toolkit, no second
+main loop, no worker threads.
 
 ```
 xcffib      windows, input, seat grabs, struts, ARGB visuals, RandR
@@ -33,6 +33,13 @@ electric cyan, neon yellow, violet accent, deep blue-violet base.
   layout, profile, audio, graphics. An action that returns another
   `Menu` becomes the next stage in the same window, so multi-step flows
   are just functions returning menus.
+- **Launcher** — replaces rofi's `drun`: a centred panel over every
+  installed desktop entry, with their theme icons, fuzzy matching (fzy's
+  scorer, case- and accent-blind, matched letters lit) and launch
+  history that lifts the apps actually used. Type straight away — keys
+  pressed during the spawn animation are kept. Shift+Return runs the
+  query as a command line. Apps start in their own systemd scope,
+  detached from the shell, so a reload never takes them down.
 - **Notifications** — a full `org.freedesktop.Notifications` daemon,
   replacing dunst. One window per toast, so the spawn and despawn
   animations play per notification; urgency styling, images, actions,
@@ -63,6 +70,7 @@ indigoshell/
   theme.py          ─ palette, semantic tokens, per-widget presets
   shapes.py         ─ the beveled rectangle, as a skia.Path
   text.py           ─ font cache, measurement, tracked drawing
+  fuzzy.py          ─ fzy's scorer with match positions, accent folding
   effects.py        ─ Effect base + ScanLock, Decode, GlitchWipe,
                       Aberration, ColorSplit (SkSL)
   plugin.py         ─ plugin contract: Menu, Item
@@ -92,7 +100,10 @@ indigoshell/
     music.py        ─ playerctl --follow status broker
     beat.py         ─ cava bands + aubio beat detection, both lazy
     sysinfo.py      ─ 1Hz CPU/RAM sampler, direct-sysfs temperature
-    proc.py         ─ run / fire / subscribe, all coroutines
+    apps.py         ─ installed-app catalog, ranked search, launch history
+    desktop_entry.py─ .desktop parsing, visibility, Exec -> argv
+    icons.py        ─ icon theme lookup (indexed once) and loading
+    proc.py         ─ run / fire / launch / subscribe, all coroutines
     text_effects.py ─ scramble and other arrival animations
   widgets/          ─ measure / arrange / paint / hit, and nothing else
     base.py           layout.py    label.py     panel.py    tabs.py
@@ -100,6 +111,7 @@ indigoshell/
     media.py          meters.py    hud.py       menu.py     systray.py
     notification.py   line_graph.py stdout_text.py
     hardware_panel.py network_panel.py fastfetch.py
+    launcher.py       text_input.py
 ```
 
 ### Conventions
@@ -118,7 +130,13 @@ indigoshell/
   log file and `INDIGOSHELL_*` env vars all follow it.
 - **All subprocess work goes through
   [`services/proc.py`](indigoshell/services/proc.py)** — `run`, `fire`,
-  `popen`, `subscribe`, every one a coroutine.
+  `launch`, `subscribe`, every one a coroutine. Anything the user starts
+  goes through `launch`, never `fire`: a reload re-execs the daemon in
+  place, and a child it started before that is never reaped.
+- **Keys arrive as a `KeyEvent`** — the keysym for shortcuts, the typed
+  `text` for fields, and the modifiers resolved from the live modifier
+  map (AltGr is not Alt). The keymap is re-read on every keyboard grab,
+  so a layout switch is picked up by the next menu or launcher.
 - **Services are brokers, widgets render.** A service owns the D-Bus or
   subprocess side and publishes to subscribers; it never draws. Backends
   that cost something (cava, aubio) are reference-counted and only exist
@@ -155,6 +173,7 @@ alone. With qtile:
 ```python
 INDIGOSHELL = ["/path/to/.venv/bin/python", "/path/to/main.py"]
 
+Key([MOD], "d",             lazy.spawn(INDIGOSHELL + ["toggle", "launcher"])),
 Key([MOD], "Escape",        lazy.spawn(INDIGOSHELL + ["menu", "power"])),
 Key([MOD, SHIFT], "s",      lazy.spawn(INDIGOSHELL + ["menu", "display"])),
 ```
@@ -254,6 +273,9 @@ rather than failing:
 | `pactl` | volume widget, audio menu |
 | `xrandr`, `setxkbmap` | display and layout menus |
 | `tuned-adm`, `optimus-manager` | profile and graphics menus |
+| `setsid` (util-linux) | launcher: detaches the apps it starts |
+| `systemd-run` + a user manager | launcher: one scope per app; skipped without |
+| `kitty` | launcher: `Terminal=true` apps (the `terminal=` option) |
 
 A Nerd Font is expected for the glyphs; `FiraCode Nerd Font Mono` is the
 theme default.

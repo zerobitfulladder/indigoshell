@@ -4,16 +4,20 @@ Everything is a coroutine on the one loop, so there is no thread and
 nothing to marshal — a callback fires directly on the loop that owns the
 widget tree.
 
-Three shapes:
+Four shapes:
   run(cmd)               -> stdout as a string ("" on missing binary)
   fire(cmd)              -> fire-and-forget
+  launch(cmd)            -> an application, detached from the shell
   subscribe(cmd, on_line)-> long-running; on_line per stdout line
 """
 
 import asyncio
 import logging
+import os
 import shutil
 from typing import Callable, Sequence
+
+from ..core.naming import APP
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +40,8 @@ async def run(cmd: Sequence[str], timeout: float = 5.0) -> str:
     return out.decode(errors="replace")
 
 
-def fire(cmd: Sequence[str], *, detach: bool = False) -> None:
+def fire(cmd: Sequence[str], *, detach: bool = False,
+         cwd: str | None = None) -> None:
     """Run and forget. Deliberately not awaited — callers are click
     handlers, which must not block the loop waiting on pactl."""
     async def _go():
@@ -44,7 +49,7 @@ def fire(cmd: Sequence[str], *, detach: bool = False) -> None:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
-                start_new_session=detach)
+                start_new_session=detach, cwd=cwd)
         except (OSError, FileNotFoundError):
             log.debug("cannot run %s", cmd, exc_info=True)
             return
@@ -55,6 +60,45 @@ def fire(cmd: Sequence[str], *, detach: bool = False) -> None:
         asyncio.get_running_loop().create_task(_go())
     except RuntimeError:
         log.debug("no running loop; dropped %s", cmd)
+
+
+def _user_manager() -> bool:
+    """Whether a systemd user manager is running to own app scopes."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    return (bool(runtime) and shutil.which("systemd-run") is not None
+            and os.path.exists(os.path.join(runtime, "systemd", "private")))
+
+
+def _unit_escape(name: str) -> str:
+    # systemd.unit(5) escaping: "-" separates slice levels, so it and
+    # anything outside [A-Za-z0-9:_.] become \xNN.
+    return "".join(ch if ch.isascii() and (ch.isalnum() or ch in ":_.")
+                   else "".join(f"\\x{b:02x}" for b in ch.encode())
+                   for ch in name)
+
+
+def launch(cmd: Sequence[str], *, app_id: str = "",
+           cwd: str | None = None) -> None:
+    """Start an application that must outlive the shell.
+
+    `fire(detach=True)` is not enough: the app would stay our child, and
+    a reload re-execs this process in place — same PID, a fresh loop
+    with no record of the child — so nothing would ever reap it. Run
+    through `setsid --fork`, the process we spawn exits at once (and is
+    reaped by `fire`) while the app is adopted by init.
+
+    With a systemd user manager the app also gets its own transient
+    scope, named the way the desktop-environment spec asks
+    (`app-<launcher>-<id>-<random>.scope` in `app.slice`). It then shows
+    up as itself in `systemctl --user status` and the journal, and an
+    OOM kill or a resource limit hits the app, not the shell's session.
+    """
+    argv = list(cmd)
+    if app_id and _user_manager():
+        unit = f"app-{_unit_escape(APP)}-{_unit_escape(app_id)}-{os.urandom(4).hex()}"
+        argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+                "--slice=app.slice", f"--unit={unit}.scope", "--", *argv]
+    fire(["setsid", "--fork", "--", *argv], cwd=cwd)
 
 
 class Subscription:
