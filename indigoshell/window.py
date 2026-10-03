@@ -25,8 +25,8 @@ import xcffib.shape
 
 from . import theme
 from .backend.gl import backend as gl_backend
-from .backend.x11 import Display, Monitor, shape_ext, xp
-from .widgets.base import Insets, Size, Widget
+from .backend.x11 import Display, Monitor, keysym_text, shape_ext, xp
+from .widgets.base import Insets, KeyEvent, Size, Widget
 
 log = logging.getLogger(__name__)
 
@@ -621,6 +621,14 @@ class Window:
                 return
             if reply.status == xp.GrabStatus.Success:
                 self._kb_grabbed = True
+                # Keys only reach us under a grab, so re-reading the
+                # keymap here covers every layout switch since the last
+                # one. MappingNotify alone is not enough: once a client
+                # has initialised XKB (detectable auto-repeat, above) the
+                # server may send it XKB notifies instead, which we do
+                # not select. The reload is lazy — one round trip on the
+                # first key press.
+                self.display.invalidate_keymap()
                 log.debug("%s grabbed the keyboard", self.spec.name)
                 return
             time.sleep(0.01 * (attempt + 1))
@@ -1278,8 +1286,6 @@ class Window:
             self._on_key_release(ev)
         elif isinstance(ev, xp.KeyPressEvent):
             self._on_key(ev)
-        elif isinstance(ev, xp.MappingNotifyEvent):
-            self.display.invalidate_keymap()
         elif isinstance(ev, xp.LeaveNotifyEvent):
             self._set_hover(None)
         elif isinstance(ev, xp.VisibilityNotifyEvent):
@@ -1288,28 +1294,47 @@ class Window:
             if ev.state != xp.Visibility.Unobscured and self._phase != "exit":
                 self.raise_()
 
+    def _key_event(self, ev) -> KeyEvent:
+        d, state = self.display, ev.state
+        keysym = d.keysym(ev.detail, state)
+        ctrl = bool(state & xp.KeyButMask.Control)
+        alt = bool(state & d.mod_mask("alt"))
+        sup = bool(state & d.mod_mask("super"))
+        return KeyEvent(
+            keysym=keysym,
+            text="" if (ctrl or alt or sup) else keysym_text(keysym),
+            shift=bool(state & xp.KeyButMask.Shift),
+            ctrl=ctrl, alt=alt, super=sup)
+
+    def _dismissing(self) -> bool:
+        # Keys are dropped only while dismissing: the exit pass runs over
+        # a still image and the widget tree may already belong to a
+        # freshly opened window. The *enter* pass is frozen too, but its
+        # tree is ours, so keys are delivered — a launcher opened by a
+        # keybinding is typed into at once, and dropping the first 0.2s
+        # of keys loses letters. What they change is painted when the
+        # entrance unfreezes, which re-lays out and repaints everything.
+        return self._phase in ("exit", "gone")
+
     def _on_key(self, ev) -> None:
-        if self.content is None or self._frozen is not None:
+        if self.content is None or self._dismissing():
             return
-        shift = bool(ev.state & xp.KeyButMask.Shift)
-        keysym = self.display.keysym(ev.detail, shift)
+        key = self._key_event(ev)
         try:
-            if not self.content.key(keysym, shift):
+            if not self.content.key(key):
                 # Escape always closes a grabbing window, even if nothing
                 # in the tree wanted it — otherwise a grab with no exit
                 # is a locked session.
-                if keysym == 0xFF1B:
+                if key.keysym == 0xFF1B:
                     self._request_close()
         except Exception:
             log.exception("key handler failed in %s", self.spec.name)
 
     def _on_key_release(self, ev) -> None:
-        if self.content is None or self._frozen is not None:
+        if self.content is None or self._dismissing():
             return
-        shift = bool(ev.state & xp.KeyButMask.Shift)
-        keysym = self.display.keysym(ev.detail, shift)
         try:
-            self.content.key_release(keysym, shift)
+            self.content.key_release(self._key_event(ev))
         except Exception:
             log.exception("key release handler failed in %s", self.spec.name)
 

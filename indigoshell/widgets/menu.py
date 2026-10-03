@@ -26,7 +26,7 @@ import skia
 from .. import shapes, text, theme
 from ..plugin import Item, Menu
 from ..services import proc
-from .base import Size, Widget
+from .base import KeyEvent, Size, Widget
 from .layout import Align, Column
 
 log = logging.getLogger(__name__)
@@ -198,9 +198,10 @@ class MenuHost(Column):
     def _index(keysym: int) -> int | None:
         return keysym - 0x31 if 0x31 <= keysym <= 0x39 else None
 
-    def key(self, keysym: int, shift: bool = False) -> bool:
+    def key(self, ev: KeyEvent) -> bool:
         if self._task is not None:
             return True                     # an action is in flight
+        keysym = ev.keysym
         index = self._index(keysym)
         if index is not None and index < len(self._rows):
             self.arm(index)                 # repeats of a held key are no-ops
@@ -215,8 +216,8 @@ class MenuHost(Column):
         self._flash_reject()
         return True
 
-    def key_release(self, keysym: int, shift: bool = False) -> bool:
-        index = self._index(keysym)
+    def key_release(self, ev: KeyEvent) -> bool:
+        index = self._index(ev.keysym)
         if index is None or self._armed != index:
             return False
         self.commit(index)
