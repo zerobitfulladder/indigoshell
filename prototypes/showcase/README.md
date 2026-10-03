@@ -29,6 +29,7 @@ Run from this folder with the project's venv:
 | `reel.py` | the closing widget reel: each widget alone and large, scripted values, cut to the take's music |
 | `audio.py` | visualiser bands and beats from a recording, for the reel |
 | `edit.py` | the cut from those markers: trims, zooms on the bar, the reel appended over the continuing music, fades |
+| `readme_media.py` | the README's pictures in `docs/media/`: footage cut from a take, and widget loops from the real classes |
 
 The take plays on workspace 6 and fetches the music player, which setup
 cues and pauses there beforehand, from workspace 7; it refuses to start

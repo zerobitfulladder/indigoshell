@@ -5,6 +5,11 @@ its panels, its chord menus, its app launcher, its notification toasts
 and its system tray on a single asyncio loop — no toolkit, no second
 main loop, no worker threads.
 
+<p align="center">
+  <img src="docs/media/hero.png" width="100%"
+       alt="indigoshell on qtile: the bar playing a song with its lyrics, the hardware panel open, a music player floating top-left">
+</p>
+
 ```
 xcffib      windows, input, seat grabs, struts, ARGB visuals, RandR
 skia        all rendering; SkSL shaders for the post-process effects
@@ -17,7 +22,14 @@ electric cyan, neon yellow, violet accent, deep blue-violet base.
 
 ## Showcase
 
-[▶ indigoshell on qtile — the full tour (YouTube)](https://youtu.be/k2VP-eW4FqI)
+<p align="center">
+  <a href="https://youtu.be/k2VP-eW4FqI">
+    <img src="docs/media/showcase.png" width="640"
+         alt="Watch the indigoshell showcase on YouTube">
+  </a>
+  <br>
+  <a href="https://youtu.be/k2VP-eW4FqI">▶ indigoshell on qtile — the full tour (YouTube)</a>
+</p>
 
 Nothing in the video is played by hand: it was performed by synthetic
 input, recorded at 1440p60 and cut by the scripts in
@@ -29,6 +41,10 @@ size, cut to the song's beats.
 
 - **Bar** — a dock window that reserves its own strut, with a
   declarative widget tree (`Row([...])`, `Box`, `Spacer`, `Brackets`).
+
+  <img src="docs/media/bar.png" width="100%"
+       alt="The bar, left half above right half: INDIGO tag, workspaces and a lyric line; meters, network, now playing, volume and clock">
+
 - **Widgets** — plain at rest, animated when something happens:
   - **workspaces**, each a stack of bars for its window count, an urgent
     one ringing red;
@@ -45,17 +61,41 @@ size, cut to the song's beats.
   - the **clock**, with a battery underline that sweeps while charging
     or discharging and shimmers lime when full;
   - the **system tray**.
+
+  <table>
+    <tr>
+      <td align="center"><img src="docs/media/widget-media.gif" alt="Now playing: the title scrolling over a cava visualiser that swells on the beat"><br><sub>now playing</sub></td>
+      <td align="center"><img src="docs/media/widget-lyrics.gif" alt="Lyrics: each line glitch-wipes in and pulses on the beat"><br><sub>lyrics</sub></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="docs/media/widget-meters.gif" alt="CPU, RAM and TEMP meters inside corner brackets, TEMP turning red as it rises"><br><sub>meters</sub></td>
+      <td align="center"><img src="docs/media/widget-network.gif" alt="Network: two dots blinking with upload and download throughput above the address"><br><sub>network</sub></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="docs/media/widget-workspaces.gif" alt="Workspaces: the current one stepping along, then one ringing urgent"><br><sub>workspaces</sub></td>
+      <td align="center"><img src="docs/media/widget-battery.gif" alt="Clock with its battery underline charging, then shimmering lime when full"><br><sub>clock + battery</sub></td>
+    </tr>
+  </table>
+
 - **Panels** — `system` (fastfetch), `hardware` (CPU/RAM history, live
   GPU readouts), `network` (interfaces, wifi, firewall, a streamed
   `speedtest-cli` run). Anchored to a screen edge, dismissed by clicking
   outside — and by Escape where the window takes a keyboard grab — and
   kept alive between opens, so a keybind shows one in the time a close
   would take.
+
+  <img src="docs/media/panels.png" width="100%"
+       alt="The hardware, network and system panels side by side">
+
 - **Chord menus** — a keybind opens a stack of chips at the bottom
   right; a digit picks, Escape backs out. Shipped: power, display,
   layout, profile, audio, graphics. An action that returns another
   `Menu` becomes the next stage in the same window, so multi-step flows
   are just functions returning menus.
+
+  <img src="docs/media/menu.gif" width="440"
+       alt="The profile menu scanning in, its rows lighting up under the pointer">
+
 - **Launcher** — replaces rofi's `drun`: a centred panel over every
   installed desktop entry, with their theme icons, fuzzy matching (fzy's
   scorer, case- and accent-blind, matched letters lit) and launch
@@ -63,21 +103,36 @@ size, cut to the song's beats.
   pressed during the spawn animation are kept. Shift+Return runs the
   query as a command line. Apps start in their own systemd scope,
   detached from the shell, so a reload never takes them down.
+
+  <img src="docs/media/launcher.gif" width="560"
+       alt="The launcher opening, nvim typed and Neovim picked">
+
 - **Notifications** — a full `org.freedesktop.Notifications` daemon,
   replacing dunst. One window per toast, so the spawn and despawn
   animations play per notification; urgency styling, images, action
   chips, replace-by-id, and a segmented meter when a `value` hint
   arrives. The border traces the remaining time; hovering any toast
   pauses them all; a critical one stays until clicked.
+
+  <img src="docs/media/notifications.gif" width="530"
+       alt="Four toasts: a meter driven in place, an action chip clicked, the stack closing up">
+
 - **System tray** — registers as `org.kde.StatusNotifierWatcher` and
   Host. Compatible with `nm-applet --indicator`, `blueman-applet`,
   `udiskie --tray`, Discord, Steam. Right-click opens the app's own
   menu, walked over `com.canonical.dbusmenu` and drawn as our own rows.
+
+  <img src="docs/media/tray.png" width="340" alt="The tray panel listing its icons">
+
 - **GPU effects** — every window can run a chain of SkSL post-process
   passes over its finished frame. Panels open with `ScanLock`, a
   scan-lock reveal where bands snap in out of order with a sideways tear
   and an RGB split. Rendering goes through an EGL/GL surface when one
   can be created and falls back to CPU raster when it can't.
+
+  <img src="docs/media/panel-open.gif" width="480"
+       alt="The hardware panel opening with the scan-lock effect">
+
 - **Damage-driven repaint** — a window only paints the rectangles that
   changed, and only wakes at the highest `animation_fps` any visible
   widget asks for. A still bar costs nothing.
