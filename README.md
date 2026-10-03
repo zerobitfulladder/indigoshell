@@ -15,13 +15,36 @@ asyncio     X events, IPC, D-Bus, subprocesses and frame clocks, one loop
 Styled out of the box with the INDIGO Cyberpunk palette: hot magenta,
 electric cyan, neon yellow, violet accent, deep blue-violet base.
 
+## Showcase
+
+[▶ indigoshell on qtile — the full tour (YouTube)](https://youtu.be/k2VP-eW4FqI)
+
+Nothing in the video is played by hand: it was performed by synthetic
+input, recorded at 1440p60 and cut by the scripts in
+[`prototypes/showcase/`](prototypes/showcase/), and its closing reel is
+the bar's own widget classes rendered on the GPU at several times their
+size, cut to the song's beats.
+
 ## What it does
 
 - **Bar** — a dock window that reserves its own strut, with a
   declarative widget tree (`Row([...])`, `Box`, `Spacer`, `Brackets`).
-- **Widgets** — workspaces, identity tag, now-playing lyrics piped from
-  `sptlrx`, CPU/RAM/temperature meters, network, media title over a cava
-  visualiser, volume, clock with a battery underline, system tray.
+- **Widgets** — plain at rest, animated when something happens:
+  - **workspaces**, each a stack of bars for its window count, an urgent
+    one ringing red;
+  - the **INDIGO** tag, breathing slowly;
+  - **lyrics** piped from `sptlrx`, each line arriving with a glitch-wipe
+    reveal and pulsing on the beat;
+  - **CPU / RAM / TEMP** meters framed as one cluster by corner brackets,
+    TEMP sweeping cyan → yellow → red;
+  - **network**, with two dots that blink with throughput (cyan sent,
+    lime received) over the address;
+  - **now playing**, the title scrolling over a cava visualiser that
+    tints on every beat, with the odd binary glitch;
+  - **volume**, a level stack under a yellow cap;
+  - the **clock**, with a battery underline that sweeps while charging
+    or discharging and shimmers lime when full;
+  - the **system tray**.
 - **Panels** — `system` (fastfetch), `hardware` (CPU/RAM history, live
   GPU readouts), `network` (interfaces, wifi, firewall, a streamed
   `speedtest-cli` run). Anchored to a screen edge, dismissed by clicking
@@ -42,8 +65,10 @@ electric cyan, neon yellow, violet accent, deep blue-violet base.
   detached from the shell, so a reload never takes them down.
 - **Notifications** — a full `org.freedesktop.Notifications` daemon,
   replacing dunst. One window per toast, so the spawn and despawn
-  animations play per notification; urgency styling, images, actions,
-  replace-by-id, and a segmented meter when a `value` hint arrives.
+  animations play per notification; urgency styling, images, action
+  chips, replace-by-id, and a segmented meter when a `value` hint
+  arrives. The border traces the remaining time; hovering any toast
+  pauses them all; a critical one stays until clicked.
 - **System tray** — registers as `org.kde.StatusNotifierWatcher` and
   Host. Compatible with `nm-applet --indicator`, `blueman-applet`,
   `udiskie --tray`, Discord, Steam. Right-click opens the app's own
@@ -112,6 +137,10 @@ indigoshell/
     notification.py   line_graph.py stdout_text.py
     hardware_panel.py network_panel.py fastfetch.py
     launcher.py       text_input.py
+prototypes/
+  visuals/          ─ offline design sheets and GIFs, from the real widgets
+  showcase/         ─ the scripted demo: XTEST input, staging, recording,
+                      the GPU-rendered widget reel, the ffmpeg cut
 ```
 
 ### Conventions
@@ -211,8 +240,8 @@ WINDOWS = [
 ```
 
 [`config_default.py`](indigoshell/config_default.py) is the worked
-example: five windows, the widget set, and the reasoning behind the
-numbers.
+example: six windows — the bar, three panels, the chord menu and the
+launcher — the widget set, and the reasoning behind the numbers.
 
 ### Plugins
 
