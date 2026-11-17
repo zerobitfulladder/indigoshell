@@ -16,6 +16,11 @@ is left alone — unless every active output has gone, which is the
 unplugged-and-dark case, and then the panel comes on. A restore that
 would change nothing is skipped, so neither a `reload` nor the burst of
 events its own xrandr call raises ever re-modesets the screen.
+
+While braindance (the VITURE glasses session) runs, it owns the outputs:
+it lights the glasses alone and switches their modes itself. It marks
+its whole session with a RandR monitor named `braindance`, and restore()
+leaves the screen alone while that monitor exists.
 """
 
 import logging
@@ -29,11 +34,14 @@ log = logging.getLogger(__name__)
 
 STATE_KEY = "display.output"
 _EMBEDDED_PREFIXES = ("eDP", "LVDS")
+_BRAINDANCE_MONITOR = "braindance"
 
 _HEADER = re.compile(r"^(\S+) (connected|disconnected)( primary)?")
 _GEOMETRY = re.compile(r"\d+x\d+\+\d+\+\d+")
 _MODE = re.compile(r"^\s+(\d+)x(\d+)i?\s+(.*)$")
 _RATE = re.compile(r"(\d+(?:\.\d+)?)([*+]*)")
+# ` 0: braindance 1920/309x1080/174+0+0  DP-0` (name may carry + and *)
+_MONITOR = re.compile(r"^\s*\d+: [+*]*(\S+) ", re.MULTILINE)
 
 
 async def _query():
@@ -125,9 +133,16 @@ def _panel(outputs):
                  and o["name"].startswith(_EMBEDDED_PREFIXES)), None)
 
 
+async def _braindance_running() -> bool:
+    out = await proc.run(["xrandr", "--listmonitors"])
+    return any(m.group(1) == _BRAINDANCE_MONITOR for m in _MONITOR.finditer(out))
+
+
 async def restore() -> None:
     """Startup and screen-change hook: enforce the remembered output,
     or fall back to the laptop panel while it is unplugged."""
+    if await _braindance_running():
+        return
     wanted = state.get(STATE_KEY)
     outputs = await _query()
     connected = {o["name"] for o in outputs if o["connected"]}
