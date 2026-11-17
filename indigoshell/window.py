@@ -30,6 +30,10 @@ from .widgets.base import Insets, KeyEvent, Size, Widget
 
 log = logging.getLogger(__name__)
 
+# A running frame clock at least this fast paints new damage on its next
+# tick (within 1/20s) rather than redrawing at once as well — see damage().
+COALESCE_FPS = 20
+
 
 class Layer(Enum):
     """Stacking role. Maps to _NET_WM_WINDOW_TYPE plus _NET_WM_STATE."""
@@ -110,6 +114,19 @@ class WindowSpec:
     # Take the keyboard while open, like a chord menu. Implies the window
     # is transient — a grab held forever locks the session.
     grab_keyboard: bool = False
+
+    # Ask the compositor to blur whatever is behind the window, so a
+    # translucent plate reads as frosted glass. picom here only blurs
+    # windows that carry _KDE_NET_WM_BLUR_BEHIND_REGION (the exclude rule
+    # in its config), and it blurs the window's whole *bounding shape* —
+    # for a plate that is not the window's full rectangle, the content
+    # should provide `blur_shape() -> skia.Path` in window coordinates.
+    # The window then cuts its SHAPE bounding region to that path, or the
+    # transparent margin around the plates would show as a blurred box.
+    # The cut clips drawing too, so it is only in force while the window
+    # is still: the spawn and despawn run uncut and unblurred, since their
+    # tear reaches past the plates into the bleed margin.
+    blur: bool = False
 
     autostart: bool = False
     singleton: bool = True
@@ -199,6 +216,12 @@ class Window:
         self._seed = 0.0
         self._grabbed = False
         self._kb_grabbed = False
+        # Last bounding shape sent to the server, so a relayout that
+        # leaves the plates where they were costs no request.
+        self._bounding: tuple | None = None
+        # Whether the blur and the cut to `blur_shape()` are in force —
+        # off during transitions, see `WindowSpec.blur`.
+        self._blur_on = False
 
     # ── geometry ────────────────────────────────────────────────────────
     def _compute_geometry(
@@ -322,6 +345,79 @@ class Window:
         inner = self.spec.padding.deflate(self.content_rect)
         self.content.measure(Size(inner.width(), inner.height()))
         self.content.arrange(inner)
+        self._set_bounding_shape()
+
+    def _set_bounding_shape(self) -> None:
+        """Cut the window to its content's `blur_shape()` — see
+        `WindowSpec.blur`. Runs after every layout, since that is when
+        the plates move; a shape that comes out the same is not resent.
+
+        The path is rasterised into a `skia.Region` (aliased, so it
+        covers whole pixels the way SHAPE does) and sent as its
+        rectangles: a 45° bevel becomes one thin rect per pixel row,
+        a few dozen per plate.
+        """
+        if not self.spec.blur or self.wid is None or self.content is None:
+            return
+        shape_of = getattr(self.content, "blur_shape", None)
+        path = shape_of() if (shape_of is not None and self._blur_on) \
+            else None
+        ext = shape_ext(self.display.conn)
+        if ext is None:
+            return
+        if path is None:
+            rects: tuple = ((0, 0, self.width, self.height),)
+        else:
+            region = skia.Region()
+            region.setPath(path, skia.Region(
+                skia.IRect.MakeWH(self.width, self.height)))
+            out = []
+            it = skia.Region.Iterator(region)
+            while not it.done():
+                r = it.rect()
+                out.append((r.left(), r.top(), r.width(), r.height()))
+                it.next()
+            rects = tuple(out) or ((0, 0, 1, 1),)
+        if rects == self._bounding:
+            return
+        self._bounding = rects
+        xrects = [xp.RECTANGLE.synthetic(*r) for r in rects]
+        ext.Rectangles(
+            xcffib.shape.SO.Set, xcffib.shape.SK.Bounding,
+            xp.ClipOrdering.Unsorted, self.wid, 0, 0, len(xrects), xrects)
+        self.display.flush()
+
+    def _set_blur(self, on: bool) -> None:
+        """Put the blur and the cut into force, or lift both.
+
+        picom only tests that _KDE_NET_WM_BLUR_BEHIND_REGION exists — and
+        a property with zero items does not count, so the empty region
+        KWin reads as "whole window" would leave picom's opt-in rule
+        excluding us. One rect (x, y, w, h) spanning the window satisfies
+        both. picom re-reads the rule when the property changes, so this
+        can follow the transitions. Ordered so the blur never covers the
+        uncut window: cut, then blur on; blur off, then uncut.
+        """
+        if not self.spec.blur or self.wid is None or on == self._blur_on:
+            return
+        d = self.display
+        atom = "_KDE_NET_WM_BLUR_BEHIND_REGION"
+        self._blur_on = on
+        if on:
+            self._set_bounding_shape()
+            d.set_prop(self.wid, atom, xp.Atom.CARDINAL,
+                       [0, 0, self.width, self.height])
+        else:
+            d.conn.core.DeleteProperty(self.wid, d.atom(atom))
+            self._set_bounding_shape()
+        d.flush()
+
+    def reshape(self) -> None:
+        """Re-cut the window to its content's `blur_shape()` after the
+        content moved its pieces itself, without a window relayout — the
+        call overlay, which re-arranges its plates inside a window that
+        keeps its size."""
+        self._set_bounding_shape()
 
     def _set_properties(self) -> None:
         d, spec, wid = self.display, self.spec, self.wid
@@ -441,6 +537,14 @@ class Window:
         # A fresh surface holds nothing, so a partial repaint would leave
         # uninitialised pixels everywhere it skipped.
         self._damage_all = True
+        if self.mapped:
+            # Nothing else will: the ConfigureNotify this provokes finds
+            # the size already adopted and skips its redraw, and a stopped
+            # frame clock only restarts through `damage()`. Without this a
+            # window resized while mapped froze — spinners, clocks and all
+            # — until the next key or pointer event happened to damage it.
+            self._schedule_redraw()
+            self._ensure_clock()
 
     def resize_content(self, cw: int, ch: int) -> None:
         """Resize to a new content size, re-anchored per the spec.
@@ -513,6 +617,8 @@ class Window:
         self.display.conn.core.MapWindow(self.wid)
         self.display.flush()
         self.mapped = True
+        if self._phase != "enter":
+            self._set_blur(True)
         if self.spec.keep_above:
             self.raise_()
 
@@ -558,6 +664,7 @@ class Window:
             return
         self._ungrab_pointer()
         self._ungrab_keyboard()
+        self._set_blur(False)
         self._seed = random.random() * 997.0
         self._frozen = self.surface.makeImageSnapshot()
         self._phase = "exit"
@@ -709,6 +816,7 @@ class Window:
         self.hide()
         self._ungrab_pointer()
         self._ungrab_keyboard()
+        self._set_blur(False)
         self._frozen = None
         self._phase = "idle"
         self._appear = 1.0
@@ -1008,7 +1116,14 @@ class Window:
                 self._damage.setRect(box)
             else:
                 self._damage.op(box, skia.Region.kUnion_Op)
-        self._schedule_redraw()
+        # While the frame clock runs fast, its next tick paints this damage
+        # anyway; an immediate redraw on top only doubles the frames. The
+        # call overlay streaming a reply was redrawing ~70 times a second
+        # this way — every arriving chunk plus every 30fps tick. Below
+        # COALESCE_FPS (a 2fps meter, a stopped clock) the wait would be
+        # visible, so those still redraw at once.
+        if self._clock_fps < COALESCE_FPS:
+            self._schedule_redraw()
         # A widget that starts animating raises its `animation_fps` and
         # invalidates; this is what gets the clock going again if it had
         # stopped because nothing was moving.
@@ -1157,6 +1272,7 @@ class Window:
                 # still image and was swallowed, so re-measure as well.
                 self._frozen = None
                 self._relayout_queued = True
+                self._set_blur(True)
                 # Deferred until here so the loop was free for the whole
                 # animation — see Widget.on_shown.
                 self._notify_shown()
@@ -1359,7 +1475,13 @@ class Window:
             # Under the grab, clicks anywhere else in the session arrive
             # here with coordinates relative to us — so "outside" is just
             # a rect test.
-            if not self.content_rect.contains(ev.event_x, ev.event_y):
+            inside = self.content_rect.contains(ev.event_x, ev.event_y)
+            # A window cut to its plates (`blur`) is only as big as they
+            # are: a click in the cut-away part of its rect is outside.
+            shape_of = getattr(self.content, "blur_shape", None)
+            if inside and self.spec.blur and shape_of is not None:
+                inside = shape_of().contains(ev.event_x, ev.event_y)
+            if not inside:
                 log.debug("%s dismissed by outside click", self.spec.name)
                 self._request_close()
                 return

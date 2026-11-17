@@ -116,3 +116,46 @@ def draw(canvas: skia.Canvas, text: str, x: float, baseline: float,
     for ch in text:
         canvas.drawString(ch, x, baseline, f, paint)
         x += f.measureText(ch) + tracking
+
+
+def wrap(value: str, size: float, max_w: float, bold: bool = False) -> list[str]:
+    """Greedy word wrap to `max_w` px; a word longer than a line breaks
+    mid-word. Newlines in `value` are kept as line breaks."""
+    out: list[str] = []
+    for raw in value.splitlines() or [""]:
+        cur = ""
+        for word in raw.split(" "):
+            candidate = f"{cur} {word}" if cur else word
+            if measure(candidate, size, bold) <= max_w:
+                cur = candidate
+                continue
+            if cur:
+                out.append(cur)
+                cur = ""
+            while len(word) > 1 and measure(word, size, bold) > max_w:
+                lo, hi = 1, len(word)
+                while lo < hi:
+                    mid = (lo + hi + 1) // 2
+                    if measure(word[:mid], size, bold) <= max_w:
+                        lo = mid
+                    else:
+                        hi = mid - 1
+                out.append(word[:lo])
+                word = word[lo:]
+            cur = word
+        out.append(cur)
+    return out
+
+
+def ellipsize(value: str, size: float, max_w: float, bold: bool = False) -> str:
+    """`value` cut to fit `max_w` px, with an ellipsis if anything went."""
+    if measure(value, size, bold) <= max_w:
+        return value
+    lo, hi = 0, len(value)
+    while lo < hi:                      # longest prefix that fits with "…"
+        mid = (lo + hi + 1) // 2
+        if measure(value[:mid] + "…", size, bold) <= max_w:
+            lo = mid
+        else:
+            hi = mid - 1
+    return value[:lo].rstrip() + "…"

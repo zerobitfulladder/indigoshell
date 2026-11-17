@@ -1,9 +1,10 @@
 # indigoshell
 
 A widget-engine desktop shell for X11. One Python process draws a bar,
-its panels, its chord menus, its app launcher, its notification toasts
-and its system tray on a single asyncio loop — no toolkit, no second
-main loop, no worker threads.
+its panels, its chord menus, its app launcher, its notification toasts,
+its system tray and a call overlay that puts Claude on the line — all on
+a single asyncio loop, with no toolkit, no second main loop and no
+worker threads.
 
 <p align="center">
   <img src="docs/media/hero.png" width="100%"
@@ -19,6 +20,101 @@ asyncio     X events, IPC, D-Bus, subprocesses and frame clocks, one loop
 
 Styled out of the box with the INDIGO Cyberpunk palette: hot magenta,
 electric cyan, neon yellow, violet accent, deep blue-violet base.
+
+## Agent — Claude on the line
+
+`MOD+A` calls Claude. A call overlay drops into the top-right corner,
+takes the keyboard, and on the other end is an agent that lives on the
+machine: it runs commands, reads and edits files, searches the web and
+drives the desktop, then answers in a few lines — in a netrunner's
+voice, by default.
+
+<p align="center">
+  <img src="docs/media/call.gif" width="100%"
+       alt="A call: a question typed and sent, the agent's commands appearing one by one under a running turn clock, its answer decoding in as it streams, then a scan band glitching down the whole call">
+</p>
+
+Underneath it is [Claude Code](https://claude.com/claude-code), driven
+through the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python),
+so it runs on a Claude subscription rather than an API key — and from a
+config directory of its own, so it can be signed in to a different
+account from the `claude` in your terminal.
+
+- **A call, not a chat window.** Your plate on top, the agent's below,
+  each with its chip. What it *does* shows as one-line steps, kept apart
+  from what it *says*; click a step for the whole command and its
+  output. Replies render Markdown with clickable links, and any of it
+  can be selected and copied.
+- **Chips you read at a glance.** Arcs turning: working. Blinking: it
+  wants you — an answer blinks twice, a question blinks until answered.
+  While a turn runs, the agent's frame is redrawn clockwise as a turn
+  clock, one lap a minute.
+- **It hangs up on long jobs and calls back.** For anything slow it
+  says what it's about to do and hangs up; a status chip in the corner
+  keeps working, and rings when the work is done. Escape hangs up from
+  your side — the work carries on either way.
+
+  <img src="docs/media/call-status.gif" width="460"
+       alt="Hung up: the status chip spinning through a system update, then calling back with the result">
+
+- **It asks before anything destructive.** Routine calls run in Claude
+  Code's auto mode; `rm`, `sudo`, `kill`, `git push` and their
+  kin stop and ask on the call — `Y` once, `A` always, `N` no.
+
+  <img src="docs/media/call-ask.png" width="100%"
+       alt="The agent asking for the ok to run sudo pacman -Syu, its frame and chip turned yellow">
+
+- **The desktop is its toolkit.** An in-process MCP server gives it the
+  shell's reach: screenshots; opening links and files in their own app
+  and bringing that window forward on its workspace; notifications;
+  apps, workspaces and windows; the clipboard; and Spotify — the
+  official app over MPRIS, plus the Web API for search, the queue,
+  playlists and your library.
+
+  <img src="docs/media/call-music.png" width="100%"
+       alt="Asked for music that sounds like rain on neon, the agent searching Spotify and queueing Vangelis">
+
+- **Reports, not walls of text.** Anything long becomes an offline HTML
+  report in the shell's own palette, opened in the browser; images and
+  videos open in their apps.
+- **It keeps notes.** `~/.config/indigoshell/assistant/CLAUDE.md` is
+  its notebook for the machine — hardware, setup, fixes that worked,
+  your rules for working on it — and Claude Code's memory holds what it
+  learns about you. Tell it on a call to do things differently and it
+  edits its own notebook.
+- **A hologram, glitches and all.** The plates and chips share one
+  raster on the screen's pixel grid; every few seconds a scan band runs
+  down the whole call and the image tears as it passes. Replies decode
+  in a chunk at a time as they stream.
+
+| Key | In the call |
+|---|---|
+| `Return` | send — or, while it works, queue the next line |
+| `Esc` | hang up (the work carries on) |
+| `Ctrl+C` | copy the selection; with none, stop the task |
+| `Ctrl+N` · `Ctrl+H` | a new conversation · past ones, to resume |
+| `Ctrl+M` · `Ctrl+T` | next model (opus, sonnet, haiku, fable) · effort |
+| `Ctrl+O` | every step of the turn |
+| `Y` `A` `N` | allow, always allow, deny |
+| `PgUp` `PgDn` | scroll a long reply |
+
+Setting it up takes the SDK (the `call` extra) and one sign-in into the
+agent's own config directory; until then the call says what is missing:
+
+```bash
+uv pip install 'claude-agent-sdk>=0.2.183'
+CLAUDE_CONFIG_DIR=~/.config/indigoshell/claude claude auth login
+```
+
+```python
+Key([MOD], "a", lazy.spawn(INDIGOSHELL + ["toggle", "call"])),
+```
+
+The agent is one line of config — `Agent(name="INDIGO", model="opus",
+tools=ShellTools())` — with `persona=` for another voice. Spotify search
+and the account tools want a Spotify app's `client_id` and
+`client_secret` in `~/.config/indigoshell/spotify.json`, with
+`http://127.0.0.1:8989/login` as a redirect URI; then ask it to sign in.
 
 ## Showcase
 
@@ -154,7 +250,21 @@ indigoshell/
   effects.py        ─ Effect base + ScanLock, Decode, GlitchWipe,
                       Aberration, ColorSplit (SkSL)
   plugin.py         ─ plugin contract: Menu, Item
-  config_default.py ─ the shipped bar, panels, menus and services
+  markdown.py       ─ Markdown to plain text + spans, for mono-grid wrapping
+  config_default.py ─ the shipped bar, panels, menus, services and the call
+  agent/            ─ Claude on a call (see Agent, above)
+    session.py      ─ the conversation: Claude Code via the Agent SDK,
+                      turns, approvals, hang-up and ring-back, sessions
+    tools.py        ─ the desktop as an in-process MCP server
+    spotify.py      ─ the Spotify app (MPRIS) and Web API, with sign-in
+    prompts.py      ─ the call protocol and the persona
+    permissions.py  ─ the commands that always ask
+    activity.py     ─ one line per step, approvals, tool formatting
+    seed.py         ─ the agent's workspace: notebook, report skill, palette
+    workspace/      ─ the starting notebook and report skill
+    ui/             ─ call.py (keys, layout), agent_plate.py, you_plate.py,
+                      chip.py, status.py, frame.py (turn clock), reveal.py
+                      (decode), holo.py (raster + glitch scan), rows.py
   backend/
     x11.py          ─ the process's single xcffib connection + event pump
     gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback
@@ -184,6 +294,7 @@ indigoshell/
     desktop_entry.py─ .desktop parsing, visibility, Exec -> argv
     icons.py        ─ icon theme lookup (indexed once) and loading
     proc.py         ─ run / fire / launch / subscribe, all coroutines
+    clipboard.py    ─ copy to CLIPBOARD / PRIMARY through xclip
     text_effects.py ─ scramble and other arrival animations
   widgets/          ─ measure / arrange / paint / hit, and nothing else
     base.py           layout.py    label.py     panel.py    tabs.py
@@ -258,6 +369,7 @@ alone. With qtile:
 INDIGOSHELL = ["/path/to/.venv/bin/python", "/path/to/main.py"]
 
 Key([MOD], "d",             lazy.spawn(INDIGOSHELL + ["toggle", "launcher"])),
+Key([MOD], "a",             lazy.spawn(INDIGOSHELL + ["toggle", "call"])),
 Key([MOD], "Escape",        lazy.spawn(INDIGOSHELL + ["menu", "power"])),
 Key([MOD, SHIFT], "s",      lazy.spawn(INDIGOSHELL + ["menu", "display"])),
 ```
@@ -295,8 +407,9 @@ WINDOWS = [
 ```
 
 [`config_default.py`](indigoshell/config_default.py) is the worked
-example: six windows — the bar, three panels, the chord menu and the
-launcher — the widget set, and the reasoning behind the numbers.
+example: eight windows — the bar, three panels, the chord menu, the
+launcher, and the call with its status chip — the widget set, and the
+reasoning behind the numbers.
 
 ### Plugins
 
@@ -341,7 +454,9 @@ Runtime files: `$XDG_RUNTIME_DIR/indigoshell-$UID.{sock,lock}`, state in
 ## Dependencies
 
 Python (declared in `pyproject.toml`, needs 3.14+): `xcffib`,
-`skia-python`, `dbus-fast`, `psutil`, `watchdog`.
+`skia-python`, `dbus-fast`, `psutil`, `watchdog`; and, for the call
+only, `claude-agent-sdk` (the `call` extra), which brings its own
+Claude Code.
 
 On `PATH`, each optional — the widget or menu that needs one degrades
 rather than failing:
@@ -360,6 +475,9 @@ rather than failing:
 | `setsid` (util-linux) | launcher: detaches the apps it starts |
 | `systemd-run` + a user manager | launcher: one scope per app; skipped without |
 | `kitty` | launcher: `Terminal=true` apps (the `terminal=` option) |
+| `xclip` | copying from the call; the agent's clipboard tool |
+| `xdg-open`, `xdg-mime` | the agent's `open` tool, links clicked in a reply |
+| ImageMagick `import` | the agent's screenshots |
 
 A Nerd Font is expected for the glyphs; `FiraCode Nerd Font Mono` is the
 theme default.

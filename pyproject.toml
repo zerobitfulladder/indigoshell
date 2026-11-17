@@ -26,3 +26,12 @@ dependencies = [
 
 [project.scripts]
 indigoshell = "indigoshell.app:main"
+
+[project.optional-dependencies]
+# The call overlay (indigoshell/agent/): Claude through the Agent SDK,
+# which bundles its own Claude Code binary. Without it the shell runs
+# as before and the call says the SDK is missing. Install into the venv
+# with `uv pip install`, not `uv sync` — see the aubio note above.
+call = [
+    "claude-agent-sdk>=0.2.183",
+]

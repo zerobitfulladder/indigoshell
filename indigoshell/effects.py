@@ -119,7 +119,12 @@ def paint_through(canvas: skia.Canvas, rect: skia.Rect, draw, passes, *,
     inner.clear(skia.ColorSetARGB(0, 0, 0, 0))
     inner.translate(bleed - rect.left(), bleed - rect.top())
     draw(inner)
-    surface.flushAndSubmit()
+    # No flushAndSubmit here. Skia orders the offscreen's draws before
+    # anything that samples its snapshot within the same context, so a
+    # flush buys no correctness — only a submit-and-wait. Per call that
+    # was cheap; the call overlay's reveal runs one pass per fresh chunk
+    # of a streaming reply, and those flushes were a third of all paint
+    # time and the source of 100ms+ stalls while long replies arrived.
 
     # kDecal so a tear that reaches past the widget reads as transparent
     # rather than smearing the edge column, same as the window pass.
@@ -680,6 +685,7 @@ uniform float noise;
 uniform float after;     // aftershock strength
 uniform float after_rate;
 uniform float bar_w;     // cursor bar width, px
+uniform float bar_on;    // 1 draws the cursor bar and its glow, 0 hides them
 uniform float glow_px;   // glow length behind the bar, px
 uniform float3 spark;    // tint of hot pixels and colour of the blocks
 uniform float3 cursor;   // colour of the bar
@@ -762,7 +768,7 @@ half4 main(float2 xy) {
     float inrow = step(inset, xy.y) * step(xy.y, res.y - inset);
     float bar = smoothstep(bar_w, 0.0, abs(d));
     float glow = step(0.0, d) * exp(-d / max(1.0, glow_px)) * 0.45;
-    float cur = clamp(bar + glow, 0.0, 1.0) * inrow;
+    float cur = clamp(bar + glow, 0.0, 1.0) * inrow * bar_on;
     col = half4(half3(cursor) * half(cur) + col.rgb * half(1.0 - cur),
                 half(cur) + col.a * half(1.0 - cur));
 
@@ -791,8 +797,12 @@ class GlitchWipe(Effect):
                  bar_w: float = 2.0, glow_px: float = 14.0,
                  spark: tuple[float, float, float] = (0.36, 0.90, 0.94),
                  cursor: tuple[float, float, float] = (1.0, 0.165, 0.427),
-                 fps: int = 60):
+                 fps: int = 60, bar: bool = True):
         self.duration = duration
+        # False hides the sweeping cursor bar — for a reveal run once per
+        # chunk of streaming text, where one bar per chunk would stutter
+        # and the caller draws a single cursor of its own.
+        self.bar = bar
         self.scan = scan
         self.settle = settle
         self.cell = cell
@@ -842,6 +852,7 @@ class GlitchWipe(Effect):
         b.setUniform("after", float(self.after))
         b.setUniform("after_rate", float(self.after_rate))
         b.setUniform("bar_w", float(self.bar_w))
+        b.setUniform("bar_on", 1.0 if self.bar else 0.0)
         b.setUniform("glow_px", float(self.glow_px))
         b.setUniform("spark", list(self.spark))
         b.setUniform("cursor", list(self.cursor))

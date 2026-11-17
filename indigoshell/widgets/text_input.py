@@ -61,9 +61,15 @@ class TextInput(Widget):
                  placeholder_color: str = theme.BASE_MUTED,
                  caret_color: str = theme.CYAN_BRIGHT,
                  on_change: Callable[[str], None] | None = None,
+                 blink_for: float = BLINK_FOR_S,
                  **kwargs) -> None:
         super().__init__(**kwargs)
         self.placeholder = placeholder
+        # How long the caret blinks after the last edit before it holds
+        # still and lets the frame clock stop. `math.inf` blinks for as
+        # long as the field is shown — the call, where a steady caret
+        # read as a line gone dead.
+        self.blink_for = blink_for
         self.size = size
         self.color = color
         self.placeholder_color = placeholder_color
@@ -79,7 +85,7 @@ class TextInput(Widget):
     # ── state ───────────────────────────────────────────────────────────
     @property
     def animation_fps(self) -> int:
-        return BLINK_FPS if self._blink_age < BLINK_FOR_S else 0
+        return BLINK_FPS if self._blink_age < self.blink_for else 0
 
     def set_text(self, value: str, caret: int | None = None) -> None:
         caret = len(value) if caret is None else max(0, min(caret, len(value)))
@@ -172,7 +178,7 @@ class TextInput(Widget):
     def animate(self, t: float) -> None:
         dt = self.tick_dt(t)
         self._blink_age += dt
-        if self._blink_age >= BLINK_FOR_S:
+        if self._blink_age >= self.blink_for:
             self._caret_on = True
             return
         self._blink_phase += dt

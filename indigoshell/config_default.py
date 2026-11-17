@@ -11,6 +11,8 @@ from .core import registry
 from .services import sysinfo
 from .services.text_effects import Scramble
 from .widgets.base import Insets
+from .agent import (CALL_WINDOW, STATUS_WINDOW, Agent, CallHost,
+                    CallRouter, CallStatus, ShellTools)
 from .widgets.clock import Clock
 from .widgets.fastfetch import Fastfetch
 from .widgets.hardware_panel import HardwarePanel
@@ -82,12 +84,40 @@ PANEL_SPAWN = ScanLock(duration=0.22, band_px=36.0, tear_px=29.0, split_px=17.0,
                        spark=(0.035, 0.33, 0.35))
 
 
+# ── The call ───────────────────────────────────────────────────────────
+# Claude on the line, through the Agent SDK — `indigoshell toggle call`
+# from a keybinding. It signs in from its own Claude Code config
+# directory, so it can use a different account from a `claude` in a
+# terminal; sign that directory in once with
+#
+#     CLAUDE_CONFIG_DIR=~/.config/indigoshell/claude claude auth login
+#
+# `persona` is the voice (agent/prompts.py has the default: a netrunner
+# on the line, street slang and all). `model="opus"` follows the newest
+# Opus; `effort` defaults to Claude Code's own. `permission_mode="auto"`
+# (the default) lets a classifier approve routine tool calls; the ones in
+# `agent/permissions.py` (rm, sudo, kill, ...) still ask on the call.
+# `tools` gives it the desktop (agent/tools.py): screenshots, opening
+# links and files (reports, images, videos) brought forward on their
+# workspace, apps, workspaces, the clipboard and Spotify.
+# The agent works in ~/.config/indigoshell/assistant, whose CLAUDE.md is
+# its notebook for this machine — how it shows you things included; ask
+# it on a call to work differently and it edits the notebook — and whose
+# .claude/commands/ holds any slash commands of your own (`/name` on the
+# call runs one).
+AGENT = Agent(name="INDIGO", model="opus",
+              tools=ShellTools())
+
+
 # ── Services ───────────────────────────────────────────────────────────
 # Long-lived non-window services the daemon starts once its loop is up.
 # Each toast is its own window, so the scan-lock spawn/despawn plays per
-# notification rather than once for the stack.
+# notification rather than once for the stack. The router shows the
+# call's status chip while a hung-up call works or rings back.
 SERVICES = [
     NotificationManager(effects=(PANEL_SPAWN,), effect_scale=0.35),
+    AGENT,
+    CallRouter(AGENT),
 ]
 
 
@@ -332,5 +362,47 @@ WINDOWS = [
         effects=(PANEL_SPAWN,),
         effect_scale=0.35,           # raster fallback only
         content=Launcher(rows=12, width=760, terminal=("kitty",)),
+    ),
+
+    # The call — top right, clear of the bar. Frosted rather than solid:
+    # translucent plates with `blur`, which has the compositor blur what
+    # is behind them and cuts the window to the plates' outline. Grabs
+    # the keyboard and pointer like the launcher; Escape, an outside
+    # click or the keybinding again hangs up, and the work carries on.
+    WindowSpec(
+        name=CALL_WINDOW,
+        layer=Layer.OVERLAY,
+        anchor=Anchor.TOP | Anchor.RIGHT,
+        size=(1, 1),                 # placeholder; content-sized
+        margin=Insets(top=16, right=theme.BAR_MARGIN + 12),
+        override_redirect=True,
+        focusable=False,
+        dismiss_on_outside_click=True,
+        grab_keyboard=True,
+        keep_alive=True,
+        background="#00000000",
+        blur=True,
+        effects=(PANEL_SPAWN,),
+        effect_scale=0.35,           # raster fallback only
+        content=CallHost(AGENT),
+    ),
+
+    # Where the call goes when it is hung up but still working, and what
+    # rings when the work is done. No grab: it sits in the corner while
+    # you carry on. Click to answer, right-click to silence a ring.
+    WindowSpec(
+        name=STATUS_WINDOW,
+        layer=Layer.OVERLAY,
+        anchor=Anchor.TOP | Anchor.RIGHT,
+        size=(1, 1),                 # placeholder; content-sized
+        margin=Insets(top=16, right=theme.BAR_MARGIN + 12),
+        override_redirect=True,
+        focusable=False,
+        keep_alive=True,
+        background="#00000000",
+        blur=True,
+        effects=(PANEL_SPAWN,),
+        effect_scale=0.35,           # raster fallback only
+        content=CallStatus(AGENT),
     ),
 ]
