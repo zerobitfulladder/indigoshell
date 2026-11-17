@@ -17,6 +17,9 @@ Two sources, because neither alone answers "is my player playing":
 Getting this wrong is not cosmetic. Everything gated on `playing` —
 the cava visualiser, the parec/aubio beat pulse — keeps its subprocesses
 alive for as long as this says True.
+
+Which player the widgets follow is a choice the AUDIO // PLAYER menu
+makes and the state file remembers — see `chosen_player`.
 """
 
 import asyncio
@@ -25,6 +28,7 @@ from typing import Callable
 
 from dbus_fast import Message
 
+from ..core import state
 from . import proc
 
 log = logging.getLogger(__name__)
@@ -197,3 +201,52 @@ def get_status(player: str | None = None) -> MusicStatus:
     if player not in _statuses:
         _statuses[player] = MusicStatus(player)
     return _statuses[player]
+
+
+# ── which player ────────────────────────────────────────────────────────
+# The Spotify clients the AUDIO // PLAYER menu switches between, as
+# (label, MPRIS name). The desktop app registers as `spotify`, the
+# terminal client as `spotify_player` — sometimes with an `.instanceNNNN`
+# suffix, which the filters above already accept. A widget filtering on
+# the wrong one sees nothing playing at all: no title, no visualiser, no
+# beat pulse on the lyrics.
+SPOTIFY_CLIENTS = (
+    ("SPOTIFY APP", "spotify"),
+    ("SPOTIFY_PLAYER", "spotify_player"),
+)
+PLAYER_KEY = "music.player"
+
+_followed: str | None = None
+
+
+def chosen_player(default: str) -> str:
+    """The player to follow: the menu's last pick, or `default` until
+    one has been made. Config calls this once, while building widgets."""
+    global _followed
+    picked = state.get(PLAYER_KEY)
+    _followed = picked if isinstance(picked, str) and picked else default
+    return _followed
+
+
+def followed_player() -> str | None:
+    """The player this run of the shell follows. None when the config
+    named one outright instead of asking `chosen_player`, in which case
+    the menu's pick is remembered but changes nothing."""
+    return _followed
+
+
+def choose_player(name: str) -> None:
+    """Remember `name` and restart the shell to follow it.
+
+    A reload, not a live swap: the config hands the player to each widget
+    as it builds it, and the widgets subscribe with it on attach. A
+    restart rebuilds them from the new pick, at the cost of a blink of
+    the bar — and of anything else the daemon is running, a call
+    included. Picking the player already followed only remembers it.
+    """
+    state.set(PLAYER_KEY, name)
+    if name == _followed:
+        return
+    log.info("following %s; reloading", name)
+    from ..core.daemon import get_daemon
+    get_daemon().reload()

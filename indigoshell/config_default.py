@@ -8,7 +8,7 @@ from . import theme
 from .api import toggle
 from .effects import Decode, ScanLock, GlitchWipe
 from .core import registry
-from .services import sysinfo
+from .services import music, sysinfo
 from .services.text_effects import Scramble
 from .widgets.base import Insets
 from .agent import (CALL_WINDOW, STATUS_WINDOW, Agent, CallHost,
@@ -40,7 +40,15 @@ LAUNCHER = "launcher"
 # player, which also means a browser tab counts as "playing" and starts
 # cava and aubio for it; naming one keeps the visualiser and the beat
 # pulse tied to actual music.
-MUSIC_PLAYER = "spotify_player"
+#
+# AUDIO // PLAYER (`indigoshell menu audio`) switches between the Spotify
+# desktop app ("spotify") and the terminal client ("spotify_player"),
+# remembers the pick, and reloads the shell to follow it; the default
+# here is what is followed until a pick has been made. A fixed string
+# instead — `MUSIC_PLAYER = "spotify_player"` — ignores the menu.
+# sptlrx needs no switch: `player: spotify` in its config reads the
+# account through Spotify's web API, whichever client is playing.
+MUSIC_PLAYER = music.chosen_player(default="spotify")
 
 # Chord menus, by name. Plugins load from `indigoshell/plugins/` and
 # `~/.config/indigoshell/plugins/`; a user file with the same module

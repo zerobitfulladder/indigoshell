@@ -1,14 +1,17 @@
-"""Audio menu: pick the default output or input device.
+"""Audio menu: pick the default output or input device, or the player.
 
 Two stages — OUTPUT or INPUT, then the devices of that kind with the
 current default lit. Labels are PulseAudio's descriptions ("Built-in
 Audio Analog Stereo") rather than its names, which are unreadable.
+
+PLAYER picks which Spotify client the now-playing widgets follow — the
+desktop app or spotify_player — and reloads the shell to follow it.
 """
 
 import json
 
 from ..plugin import Item, Menu
-from ..services import proc
+from ..services import music, proc
 
 
 async def _devices(kind: str) -> list[Item]:
@@ -43,9 +46,17 @@ async def _devices(kind: str) -> list[Item]:
     return items or [Item("NO DEVICES")]
 
 
+def _players() -> list[Item]:
+    followed = music.followed_player()
+    return [Item(label, lambda name=name: music.choose_player(name),
+                 active=(name == followed))
+            for label, name in music.SPOTIFY_CLIENTS]
+
+
 MENUS = [
     Menu("audio", "AUDIO", [
         Item("OUTPUT", lambda: Menu("output", "OUTPUT", lambda: _devices("sink"))),
         Item("INPUT", lambda: Menu("input", "INPUT", lambda: _devices("source"))),
+        Item("PLAYER", lambda: Menu("player", "PLAYER", _players)),
     ]),
 ]
