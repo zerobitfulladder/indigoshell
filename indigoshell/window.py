@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import random
+import sys
 import time
 from dataclasses import dataclass, field
 from enum import Enum, Flag, auto
@@ -31,8 +32,16 @@ from .widgets.base import Insets, KeyEvent, Size, Widget
 log = logging.getLogger(__name__)
 
 # A running frame clock at least this fast paints new damage on its next
-# tick (within 1/20s) rather than redrawing at once as well — see damage().
+# tick (within 1/20s) rather than in a frame of its own — see damage().
 COALESCE_FPS = 20
+# The most one frame may move a spawn or despawn along, in frame
+# intervals. A dropped frame passes unnoticed; a real stall holds the
+# effect where it was instead of skipping it — see `_advance_phase`.
+MAX_PHASE_STEP = 2.0
+# A refused pointer or keyboard grab is tried again this often, for this
+# long — see `_grab`.
+GRAB_RETRY_S = 0.01
+GRAB_GIVE_UP_S = 2.0
 
 
 class Layer(Enum):
@@ -176,7 +185,8 @@ class Window:
         self.content_rect = skia.Rect.MakeEmpty()
         self.content_root = (0, 0, 0, 0)
 
-        self._redraw_queued = False
+        self._frame_queued = False      # a frame off the clock's grid
+        self._ticking = False           # inside `_tick_widgets`
         self._relayout_queued = False
         # Dirty region for the next repaint, in window coordinates. A
         # *region*, not a bounding rect: the bar's animated widgets sit at
@@ -189,6 +199,8 @@ class Window:
         self._frame_interval = 0.0
         self._next_frame_at = 0.0
         self._clock_fps = 0
+        # The fastest rate any widget asked for at the last tick.
+        self._widget_demand = 0
         self._t0 = 0.0
         self._t = 0.0
         self._hovered: Widget | None = None
@@ -208,7 +220,10 @@ class Window:
         self._transition = max((e.duration for e in self.effects), default=0.0)
         self._appear = 1.0
         self._phase = "idle"        # idle | enter | exit | gone
-        self._phase_t0 = 0.0
+        # How much of the running spawn or despawn has played, and when
+        # its last frame was — see `_advance_phase`.
+        self._phase_elapsed = 0.0
+        self._phase_at: float | None = None
         self._frozen: skia.Image | None = None
         self._out: skia.Surface | None = None
         self._sampling = skia.SamplingOptions()
@@ -216,6 +231,10 @@ class Window:
         self._seed = 0.0
         self._grabbed = False
         self._kb_grabbed = False
+        # Grabs still being retried, by "pointer" / "keyboard".
+        self._grab_retry: dict[str, asyncio.TimerHandle] = {}
+        # Failures already logged — see `_complain`.
+        self._complained: set[tuple] = set()
         # Last bounding shape sent to the server, so a relayout that
         # leaves the plates where they were costs no request.
         self._bounding: tuple | None = None
@@ -535,16 +554,10 @@ class Window:
             self.gl_surface.resize(self.width, self.height)
         self._layout_content()
         # A fresh surface holds nothing, so a partial repaint would leave
-        # uninitialised pixels everywhere it skipped.
-        self._damage_all = True
-        if self.mapped:
-            # Nothing else will: the ConfigureNotify this provokes finds
-            # the size already adopted and skips its redraw, and a stopped
-            # frame clock only restarts through `damage()`. Without this a
-            # window resized while mapped froze — spinners, clocks and all
-            # — until the next key or pointer event happened to damage it.
-            self._schedule_redraw()
-            self._ensure_clock()
+        # uninitialised pixels everywhere it skipped. And nothing else
+        # will ask for the frame: the ConfigureNotify this provokes finds
+        # the size already adopted.
+        self.damage(None)
 
     def resize_content(self, cw: int, ch: int) -> None:
         """Resize to a new content size, re-anchored per the spec.
@@ -590,7 +603,7 @@ class Window:
         self._seed = random.random() * 997.0
         if self._transition > 0:
             self._appear = 0.0
-            self._phase = "enter"
+            self._begin_phase("enter")
 
         # Paint and freeze the content *before* mapping.
         #
@@ -609,6 +622,7 @@ class Window:
             if self._relayout_queued:
                 self._relayout_queued = False
                 self._layout_content()
+            self._census()
             self.paint(self.surface.getCanvas(), self.width, self.height)
             self.surface.flushAndSubmit()
             if self._phase == "enter":
@@ -622,10 +636,10 @@ class Window:
         if self.spec.keep_above:
             self.raise_()
 
-        # Clock starts once the window is up and the costly work is done,
-        # so `_appear` (wall-clock driven, so a late frame can't stretch
-        # the animation) isn't charged for setup it didn't cause.
-        self._phase_t0 = time.monotonic()
+        # The spawn's own time starts with its first frame on the clock,
+        # not here: this frame draws it at zero, which for the panels'
+        # effect is a transparent window, and nothing that happens between
+        # the two is charged to it — see `_advance_phase`.
         self.redraw()
         # Grabs after the first frame is out, not before: each grab waits
         # on a server reply, and with the compositor busy that wait was
@@ -635,7 +649,7 @@ class Window:
             self._grab_pointer()
         if self.spec.grab_keyboard:
             self._grab_keyboard()
-        self._start_clock()
+        self._pace()
         if self._phase != "enter":
             self._notify_shown()
 
@@ -667,11 +681,10 @@ class Window:
         self._set_blur(False)
         self._seed = random.random() * 997.0
         self._frozen = self.surface.makeImageSnapshot()
-        self._phase = "exit"
-        self._phase_t0 = time.monotonic()
+        self._begin_phase("exit")
         log.debug("%s despawning over %.2fs", self.spec.name, self._transition)
         self._stop_clock()
-        self._start_clock()
+        self._pace()
 
     # ── stacking and grabs ──────────────────────────────────────────────
     def raise_(self) -> None:
@@ -688,78 +701,96 @@ class Window:
         windows, so the bar stays usable while a panel is open — the
         trade-off is that the panel never sees them, and the window that
         did has to dismiss us on our behalf (Daemon.dismiss_others).
-
-        Grabs race with whatever else is grabbing, so retry briefly.
         """
-        if self.wid is None:
+        self._grab("pointer")
+
+    def _grab_keyboard(self) -> None:
+        """Take the keyboard, so keys reach a window that has no focus."""
+        self._grab("keyboard")
+
+    def _grab(self, what: str, since: float | None = None) -> None:
+        """Take the pointer or the keyboard, trying again for a while if
+        something else holds it.
+
+        Something usually does. A window opened from a keybinding is
+        shown while that key is still down, and the window manager's own
+        grab on the key lasts until it comes up — a tenth of a second or
+        more, during which ours is refused. The retries are timers, not
+        sleeps: the window is on screen and animating meanwhile. Sleeping
+        through them (10, 20, 30… ms) froze the whole shell for that
+        long, and since the spawn was already counting, a panel opened
+        from the keyboard was first seen with most of its spawn played.
+        """
+        self._grab_retry.pop(what, None)
+        if self.wid is None or not self.mapped or self._dismissing():
             return
-        for attempt in range(10):
-            try:
-                reply = self.display.conn.core.GrabPointer(
+        core = self.display.conn.core
+        try:
+            if what == "pointer":
+                reply = core.GrabPointer(
                     True, self.wid,
                     xp.EventMask.ButtonPress | xp.EventMask.ButtonRelease,
                     xp.GrabMode.Async, xp.GrabMode.Async,
                     xp.Atom._None, xp.Atom._None, xp.Time.CurrentTime).reply()
-            except Exception:
-                log.debug("%s pointer grab errored", self.spec.name,
-                          exc_info=True)
-                return
-            if reply.status == xp.GrabStatus.Success:
-                self._grabbed = True
-                log.debug("%s grabbed the pointer", self.spec.name)
-                return
-            time.sleep(0.01 * (attempt + 1))
-        log.warning("%s could not grab the pointer; outside clicks will not "
-                    "dismiss it", self.spec.name)
-
-    def _grab_keyboard(self) -> None:
-        """Take the keyboard. Retried because grabs race with whatever
-        else is grabbing at the same moment (a WM chord, a menu closing)."""
-        if self.wid is None:
-            return
-        for attempt in range(10):
-            try:
-                reply = self.display.conn.core.GrabKeyboard(
+            else:
+                reply = core.GrabKeyboard(
                     False, self.wid, xp.Time.CurrentTime,
                     xp.GrabMode.Async, xp.GrabMode.Async).reply()
-            except Exception:
-                log.debug("%s keyboard grab errored", self.spec.name,
-                          exc_info=True)
-                return
-            if reply.status == xp.GrabStatus.Success:
+        except Exception:
+            log.debug("%s %s grab errored", self.spec.name, what,
+                      exc_info=True)
+            return
+        # The reply may have pulled events off the wire behind the fd.
+        self.display.wake()
+        if reply.status == xp.GrabStatus.Success:
+            if what == "pointer":
+                self._grabbed = True
+            else:
                 self._kb_grabbed = True
                 # Keys only reach us under a grab, so re-reading the
                 # keymap here covers every layout switch since the last
                 # one. MappingNotify alone is not enough: once a client
-                # has initialised XKB (detectable auto-repeat, above) the
-                # server may send it XKB notifies instead, which we do
-                # not select. The reload is lazy — one round trip on the
+                # has initialised XKB (detectable auto-repeat) the server
+                # may send it XKB notifies instead, which we do not
+                # select. The reload is lazy — one round trip on the
                 # first key press.
                 self.display.invalidate_keymap()
-                log.debug("%s grabbed the keyboard", self.spec.name)
-                return
-            time.sleep(0.01 * (attempt + 1))
-        log.warning("%s could not grab the keyboard", self.spec.name)
+            log.debug("%s grabbed the %s", self.spec.name, what)
+            return
+        now = time.monotonic()
+        since = now if since is None else since
+        if self.loop is None or now - since > GRAB_GIVE_UP_S:
+            log.warning("%s could not grab the %s%s", self.spec.name, what,
+                        "; outside clicks will not dismiss it"
+                        if what == "pointer" else "")
+            return
+        self._grab_retry[what] = self.loop.call_later(
+            GRAB_RETRY_S, self._grab, what, since)
+
+    def _ungrab(self, what: str) -> None:
+        retry = self._grab_retry.pop(what, None)
+        if retry is not None:
+            retry.cancel()
+        held = self._grabbed if what == "pointer" else self._kb_grabbed
+        if not held:
+            return
+        core = self.display.conn.core
+        try:
+            if what == "pointer":
+                self._grabbed = False
+                core.UngrabPointer(xp.Time.CurrentTime)
+            else:
+                self._kb_grabbed = False
+                core.UngrabKeyboard(xp.Time.CurrentTime)
+            self.display.flush()
+        except Exception:
+            log.debug("%s ungrab failed", what, exc_info=True)
 
     def _ungrab_keyboard(self) -> None:
-        if not self._kb_grabbed:
-            return
-        self._kb_grabbed = False
-        try:
-            self.display.conn.core.UngrabKeyboard(xp.Time.CurrentTime)
-            self.display.flush()
-        except Exception:
-            log.debug("keyboard ungrab failed", exc_info=True)
+        self._ungrab("keyboard")
 
     def _ungrab_pointer(self) -> None:
-        if not self._grabbed:
-            return
-        self._grabbed = False
-        try:
-            self.display.conn.core.UngrabPointer(xp.Time.CurrentTime)
-            self.display.flush()
-        except Exception:
-            log.debug("ungrab failed", exc_info=True)
+        self._ungrab("pointer")
 
     def _finish_dismiss(self) -> None:
         callback, self._on_dismissed = self._on_dismissed, None
@@ -794,12 +825,9 @@ class Window:
             self.display.primary_monitor(), size=size)
         if (cx, cy, cw, ch) == self.content_root:
             return
-        self._apply_geometry(cx, cy, cw, ch)
+        self._apply_geometry(cx, cy, cw, ch)     # repaints, too
         if self.spec.exclusive:
             self._set_struts()
-        if self.mapped:
-            self._damage_all = True
-            self._schedule_redraw()
 
     def park(self) -> None:
         """Hide, and keep everything expensive for the next `show()`.
@@ -915,19 +943,28 @@ class Window:
     def _paint_region(self, canvas: skia.Canvas, w: int, h: int,
                       clip: "skia.Rect | None") -> None:
         spec = self.spec
-        canvas.save()
-        if clip is not None:
-            canvas.clipRect(clip)
-        canvas.clear(skia.ColorSetARGB(0, 0, 0, 0))
-        bg = skia.Paint(AntiAlias=False)
-        bg.setColor(theme.color(spec.background))
-        bg.setBlendMode(skia.BlendMode.kSrc)
-        canvas.drawRect(self.content_rect, bg)
-        if spec.rule:
-            self._paint_rule(canvas, w, h)
-        if self.content is not None:
-            self.content.paint(canvas)
-        canvas.restore()
+        saved = canvas.save()
+        try:
+            if clip is not None:
+                canvas.clipRect(clip)
+            canvas.clear(skia.ColorSetARGB(0, 0, 0, 0))
+            bg = skia.Paint(AntiAlias=False)
+            bg.setColor(theme.color(spec.background))
+            bg.setBlendMode(skia.BlendMode.kSrc)
+            canvas.drawRect(self.content_rect, bg)
+            if spec.rule:
+                self._paint_rule(canvas, w, h)
+            if self.content is not None:
+                self.content.paint(canvas)
+        except Exception:
+            # One widget that cannot paint costs what would have been
+            # drawn after it here, not the frame: the rest is presented,
+            # and the window still opens.
+            self._complain("paint")
+        finally:
+            # Whatever it left on the stack: the next region must not
+            # inherit its clip.
+            canvas.restoreToCount(saved)
 
     def _paint_rule(self, canvas: skia.Canvas, w: int, h: int) -> None:
         spec = self.spec
@@ -960,17 +997,16 @@ class Window:
         canvas.drawRect(rect, crisp)
 
     def redraw(self) -> None:
-        self._redraw_queued = False
+        """Paint what is dirty and present it. Frames call this; nothing
+        else should, or it paints widgets no tick has looked at — see
+        `_tick_widgets`."""
         if self.surface is None or self.wid is None or not self.mapped:
             return
 
-        # Nothing to present. Without this the frame loop swaps twice per
-        # frame: `_tick_widgets` damages each widget it animates, and each
-        # `damage()` queues a `call_soon(redraw)` on top of the redraw
-        # `_on_frame` performs itself. The second one finds no damage and
-        # paints nothing — but still snapshots, blits and *swaps*, and a
-        # second vsync-synchronised swap is what turns a 30fps clock into
-        # a visibly uneven one.
+        # Nothing to present: every frame comes through here, and one
+        # with no damage must not snapshot, blit and *swap* — a second
+        # swap in a frame is what turns a 30fps clock into a visibly
+        # uneven one.
         if not (self._damage_all
                 or (self._damage is not None and not self._damage.isEmpty())
                 or self._frozen is not None
@@ -1104,41 +1140,59 @@ class Window:
         repainted; everything else is still valid in `self.surface`, which
         persists between frames.
         """
-        if layout or widget is None:
-            self._relayout_queued = self._relayout_queued or layout
-            self._damage_all = True
-        elif not self._damage_all:
-            # roundOut, not round: a widget on a half-pixel boundary must
-            # own the whole pixel it tints, or it leaves a seam behind.
-            box = widget.paint_bounds().roundOut()
-            if self._damage is None:
-                self._damage = skia.Region()
-                self._damage.setRect(box)
-            else:
-                self._damage.op(box, skia.Region.kUnion_Op)
-        # While the frame clock runs fast, its next tick paints this damage
-        # anyway; an immediate redraw on top only doubles the frames. The
-        # call overlay streaming a reply was redrawing ~70 times a second
-        # this way — every arriving chunk plus every 30fps tick. Below
-        # COALESCE_FPS (a 2fps meter, a stopped clock) the wait would be
-        # visible, so those still redraw at once.
-        if self._clock_fps < COALESCE_FPS:
-            self._schedule_redraw()
-        # A widget that starts animating raises its `animation_fps` and
-        # invalidates; this is what gets the clock going again if it had
-        # stopped because nothing was moving.
-        self._ensure_clock()
+        self._mark(widget, layout=layout)
+        self._damaged()
+
+    def damage_rect(self, rect: skia.Rect) -> None:
+        """Mark a bare rectangle dirty: somewhere a widget used to be,
+        which no widget's `paint_bounds()` covers any more."""
+        self._mark_box(rect.roundOut())
+        self._damaged()
 
     def invalidate(self, layout: bool = False) -> None:
         """Whole-window repaint. Kept for callers that have no widget to
         attribute the change to."""
         self.damage(None, layout=layout)
 
-    def _schedule_redraw(self) -> None:
-        if self._redraw_queued or self.loop is None:
+    def _mark(self, widget=None, *, layout: bool = False) -> None:
+        if layout or widget is None:
+            self._relayout_queued = self._relayout_queued or layout
+            self._damage_all = True
+        else:
+            # roundOut, not round: a widget on a half-pixel boundary must
+            # own the whole pixel it tints, or it leaves a seam behind.
+            self._mark_box(widget.paint_bounds().roundOut())
+
+    def _mark_box(self, box: skia.IRect) -> None:
+        if self._damage_all:
             return
-        self._redraw_queued = True
-        self.loop.call_soon(self.redraw)
+        if self._damage is None:
+            self._damage = skia.Region()
+            self._damage.setRect(box)
+        else:
+            self._damage.op(box, skia.Region.kUnion_Op)
+
+    def _has_damage(self) -> bool:
+        return (self._damage_all or self._relayout_queued
+                or (self._damage is not None and not self._damage.isEmpty()))
+
+    def _damaged(self) -> None:
+        """Get the new damage painted: by the clock's next tick if that
+        is soon, in a frame of its own otherwise.
+
+        While the clock runs fast its next tick is at most 1/20s away,
+        and a frame per change on top of it only doubles the frames —
+        the call overlay streaming a reply was painting ~70 times a
+        second that way, every arriving chunk plus every 30fps tick.
+        Below COALESCE_FPS (a 2fps meter, a stopped clock) the wait would
+        be visible. That frame is also what starts a stopped clock or
+        speeds up a slow one: it ticks the widgets, so one that has just
+        begun to animate — and invalidated, as the contract asks — is
+        seen at once rather than at the slow clock's next tick.
+        """
+        if self._ticking or self._clock_fps >= COALESCE_FPS:
+            return
+        self._frame_soon()
 
     def _take_damage(self) -> "skia.Region | None":
         """The region to repaint this frame, or None if nothing is dirty."""
@@ -1151,119 +1205,54 @@ class Window:
         region, self._damage = self._damage, None
         return region
 
-    # ── frame clock ─────────────────────────────────────────────────────
-    def _widget_fps(self) -> int:
-        if self.content is None or self._frozen is not None:
-            return 0
-        return max((w.animation_fps for w in self.content.walk()), default=0)
-
-    def _effect_fps(self) -> int:
-        live = [e for e in self.effects
-                if e.is_transition or e.active(self._appear)]
-        if self._phase in ("enter", "exit"):
-            return max((e.fps for e in self.effects if e.is_transition),
-                       default=0)
-        return max((e.fps for e in live if not e.is_transition), default=0)
-
-    def _needs_clock(self) -> bool:
-        return self._phase in ("enter", "exit") \
-            or self._widget_fps() > 0 or self._effect_fps() > 0
-
-    def _demand(self) -> int:
-        """Fastest rate anything in this window wants right now."""
-        return max(self._widget_fps(), self._effect_fps())
-
-    def _start_clock(self) -> None:
-        if self.loop is None:
+    # ── frames ──────────────────────────────────────────────────────────
+    # Everything that paints the live widget tree is a frame: step the
+    # spawn or despawn, tick the widgets, paint what is dirty. The clock
+    # runs frames on a fixed grid while anything animates; damage that
+    # cannot wait for it gets a frame of its own in between. One path, so
+    # the widgets are always ticked before they are painted — which is
+    # what lets `_tick_widgets` promise that nothing is left on screen
+    # mid-motion.
+    def _frame_soon(self) -> None:
+        if self._frame_queued or self.loop is None:
             return
-        fps = self._demand()
-        if fps <= 0:
-            return
-        self._clock_fps = fps
-        self._frame_interval = 1.0 / fps
-        self._next_frame_at = time.monotonic()
-        # A stopped clock means nothing was animating, so no widget has a
-        # "previous frame" — see `_tick_widgets`, which does the same for
-        # widgets that idle while the clock runs for others.
-        if self.content is not None:
-            for widget in self.content.walk():
-                widget._last_animate_t = None
-        log.debug("%s frame clock at %d fps (%s)",
-                  self.spec.name, fps, self._phase)
-        self._schedule_frame()
+        self._frame_queued = True
+        self.loop.call_soon(self._frame_now)
 
-    def _ensure_clock(self) -> None:
-        """Start the clock if something now wants frames.
-
-        `animation_fps` is read fresh every frame, so a widget can drop to
-        0 and let the clock stop. Nothing would ever start it again — the
-        clock is what re-reads the demand — so waking it is tied to
-        `damage()`, which a widget that starts animating calls anyway.
-
-        Gated on `_clock_fps` rather than on `_frame_handle`: the handle
-        is None *during* a frame too, and damage raised from `animate()`
-        would otherwise schedule a second one alongside it.
-        """
-        if self._clock_fps == 0 and self.mapped:
-            self._start_clock()
-
-    def _rerate_clock(self) -> None:
-        """Follow a change in demand without dropping the schedule.
-
-        Re-rating rather than stop/start keeps `_next_frame_at` on its
-        grid, so a widget going quiet cannot make the next frame land
-        early and stutter whatever is still moving.
-        """
-        fps = self._demand()
-        if fps <= 0 or fps == self._clock_fps:
-            return
-        log.debug("%s frame clock %d -> %d fps", self.spec.name,
-                  self._clock_fps, fps)
-        self._clock_fps = fps
-        self._frame_interval = 1.0 / fps
-
-    def _stop_clock(self) -> None:
-        if self._frame_handle is not None:
-            self._frame_handle.cancel()
-            self._frame_handle = None
-        self._clock_fps = 0
-
-    def _schedule_frame(self) -> None:
-        """Aim at the next slot on a fixed grid, not `interval` from now.
-
-        `_schedule_frame` is called at the end of `_on_frame`, so a plain
-        `call_later(interval)` makes the period *work + interval* rather
-        than `interval`. At 15.7ms of frame work against a 16.7ms budget
-        that halves the rate — 34fps where 60 was asked for — and because
-        `_appear` is driven by wall clock the animation still finishes on
-        time, simply with half the frames it wanted. That is the whole of
-        the "not fluent" feel; it is a scheduling bug, not a shader one.
-        """
-        assert self.loop is not None
-        now = time.monotonic()
-        self._next_frame_at += self._frame_interval
-        if self._next_frame_at <= now:
-            # A frame overran. Skip the slots we missed instead of firing
-            # a burst of zero-delay callbacks that can never catch up and
-            # would starve the loop of everything else.
-            behind = now - self._next_frame_at
-            self._next_frame_at += (
-                int(behind / self._frame_interval) + 1) * self._frame_interval
-        self._frame_handle = self.loop.call_later(
-            self._next_frame_at - now, self._on_frame)
+    def _frame_now(self) -> None:
+        """A frame off the clock's grid."""
+        self._frame_queued = False
+        if self.mapped and self._frame():
+            self._pace()
 
     def _on_frame(self) -> None:
+        """The clock's tick."""
         self._frame_handle = None
         if not self.mapped:
+            self._clock_fps = 0
             return
+        if self._frame():
+            self._pace()
+
+    def _frame(self) -> bool:
+        """One frame. False if the window finished its despawn in it.
+
+        A widget that raises must not take the clock with it. The tick
+        would never be rescheduled, and with `_clock_fps` still saying
+        the clock runs, every later change would wait for a tick that
+        never comes: a window frozen until it is closed.
+        """
+        try:
+            return self._run_frame()
+        except Exception:
+            self._complain("a frame")
+            return self._phase != "gone"
+
+    def _run_frame(self) -> bool:
         self._t = time.monotonic() - self._t0
 
-        # Driven by wall clock, not by frame count: a late frame must not
-        # stretch the transition. Under load the animation drops frames
-        # and still finishes in `duration`.
         if self._phase == "enter":
-            elapsed = time.monotonic() - self._phase_t0
-            self._appear = min(1.0, elapsed / self._transition)
+            self._appear = min(1.0, self._advance_phase() / self._transition)
             if self._appear >= 1.0:
                 self._phase = "idle"
                 # Hand the window back to the live widget tree. Anything
@@ -1277,30 +1266,63 @@ class Window:
                 # animation — see Widget.on_shown.
                 self._notify_shown()
         elif self._phase == "exit":
-            elapsed = time.monotonic() - self._phase_t0
-            self._appear = max(0.0, 1.0 - elapsed / self._transition)
+            self._appear = max(
+                0.0, 1.0 - self._advance_phase() / self._transition)
             if self._appear <= 0.0:
                 self.redraw()          # final, fully dissolved frame
                 self._stop_clock()
                 self._finish_dismiss()
-                return
+                return False
 
         if self._frozen is None and self.content is not None:
             self._tick_widgets()
+        # Only presents if something changed. A window whose widgets are
+        # all quiet still ticks — cheaply — until its demand drops to
+        # zero and the clock stops on its own.
+        self.redraw()
+        return True
 
-        # Only produce a frame if something actually changed. A window
-        # whose widgets are all quiet still ticks — cheaply — until its
-        # demand drops to zero and the clock stops on its own.
-        if self._damage_all or self._damage is not None \
-                or self._phase in ("enter", "exit") or self._effect_fps() > 0:
-            self.redraw()
+    def _begin_phase(self, phase: str) -> None:
+        self._phase = phase
+        self._phase_elapsed = 0.0
+        self._phase_at = None
 
-        self._rerate_clock()
-        if self._needs_clock():
-            self._schedule_frame()
-        else:
-            self._clock_fps = 0
-            log.debug("%s idle, clock stopped", self.spec.name)
+    def _advance_phase(self) -> float:
+        """Seconds of the running spawn or despawn played so far, this
+        frame included.
+
+        Counted in frames' own time, not from a start stamp. The first
+        frame is one interval in, whenever it comes — so whatever stood
+        between showing the window and its first tick (a grab's round
+        trip, another window's heavy frame, a busy compositor) costs the
+        effect nothing. After that a frame adds the real time since the
+        last one, so the effect lasts what it says on a healthy loop, but
+        never more than MAX_PHASE_STEP intervals: a stall holds the
+        effect where it was. Read off the wall clock instead, a spawn
+        whose loop was blocked for 150ms came back four-fifths played —
+        the window was transparent until then, so it was seen to pop in
+        with the last flicker of its effect.
+        """
+        now = time.monotonic()
+        interval = self._frame_interval or 1.0 / 60
+        step = interval if self._phase_at is None else now - self._phase_at
+        self._phase_at = now
+        self._phase_elapsed += min(step, MAX_PHASE_STEP * interval)
+        return self._phase_elapsed
+
+    def _census(self) -> None:
+        """For the first paint of an open, which no tick comes before:
+        note which widgets it will catch moving (see `_tick_widgets`),
+        and that none of them has a previous frame."""
+        demand = 0
+        if self.content is not None:
+            for widget in self.content.walk():
+                widget._last_animate_t = None
+                fps = self._fps_of(widget)
+                if fps > 0:
+                    widget._animating = True
+                    demand = max(demand, fps)
+        self._widget_demand = demand
 
     def _tick_widgets(self) -> None:
         """Call `animate` on each widget at *its* rate, not the window's.
@@ -1309,41 +1331,178 @@ class Window:
         this a meter wanting 2fps was animated 30 times a second — its
         declared rate did nothing but pin the clock. Each widget carries
         its own due time, so the schedules stay independent.
+
+        Due times are `time.monotonic()`, not seconds since the window
+        opened. The widgets outlive the window's opens — a parked panel
+        keeps its tree, and so does a spec whose window is rebuilt — and
+        a due time counted from the open was still "minute five" when the
+        next open began again at zero. Nothing was due until the new open
+        had lasted as long as the old one: no spinner, no caret, nothing
+        that moves on its own, only what input happened to repaint.
+
+        **The settle frame.** A widget whose `animation_fps` has fallen
+        to 0 since it was last looked at gets one more `animate()` and a
+        repaint of everything it may have touched. Its last frame before
+        that was painted while it was still moving — a comet two-thirds
+        round, text half decoded — and with no further frame that is
+        what would stay on screen. The rate is read here, before the
+        paint, so an effect that is over by this reading is drawn over;
+        one that ends between two ticks, or whose last frames a stall
+        swallowed, is caught at the next. Widgets therefore never keep
+        themselves alive past the end of an effect to clean up after it.
         """
-        t = self._t
-        for widget in self.content.walk():
-            fps = widget.animation_fps
-            if fps <= 0:
-                # Idle. Forget its last frame so `tick_dt` reports zero
-                # when it next animates, as its contract says. Left set,
-                # the gap since it went idle came back as one full
-                # MAX_TICK_DT of elapsed time on its first frame — which
-                # skipped the first ~45% of a 0.55s lyric reveal whenever
-                # no beat had kept the widget ticking in between.
-                widget._last_animate_t = None
-                continue
-            interval = 1.0 / fps
-            # Half an interval of tolerance. `t` is when the callback ran,
-            # which is always a little *after* the slot it was scheduled
-            # for, so a widget wanting exactly the clock rate is never
-            # quite due on the frame that should carry it — it slips to
-            # the next one, and every other frame gets dropped. Asking
-            # for 30 got 19.
-            if t + interval * 0.5 < widget._next_animate_at:
-                continue
-            # Advance on the widget's own grid so the error cannot
-            # accumulate, but never behind `t` — a widget that was idle
-            # for a while must not then fire a burst catching up.
-            widget._next_animate_at = max(
-                widget._next_animate_at + interval, t)
+        t, now = self._t, time.monotonic()
+        demand = 0
+        self._ticking = True
+        try:
+            for widget in self.content.walk():
+                fps = self._fps_of(widget)
+                if fps <= 0:
+                    if widget._animating:
+                        widget._animating = False
+                        self._animate(widget, t)
+                    # Idle. Forget its last frame so `tick_dt` reports
+                    # zero when it next animates, as its contract says.
+                    # Left set, the gap since it went idle came back as
+                    # one full MAX_TICK_DT of elapsed time on its first
+                    # frame — which skipped the first ~45% of a 0.55s
+                    # lyric reveal whenever no beat had kept the widget
+                    # ticking in between.
+                    widget._last_animate_t = None
+                    continue
+                demand = max(demand, fps)
+                widget._animating = True
+                interval = 1.0 / fps
+                if interval < widget._animate_every:
+                    # It sped up. Its slot was set on the slower grid —
+                    # up to a second away for a 1fps widget — and an
+                    # effect shorter than that would be over before its
+                    # first frame.
+                    widget._animate_due = min(widget._animate_due, now)
+                widget._animate_every = interval
+                # Half an interval of tolerance. `now` is when the
+                # callback ran, which is always a little *after* the slot
+                # it was scheduled for, so a widget wanting exactly the
+                # clock rate is never quite due on the frame that should
+                # carry it — it slips to the next one, and every other
+                # frame gets dropped. Asking for 30 got 19.
+                if now + interval * 0.5 < widget._animate_due:
+                    continue
+                # Advance on the widget's own grid so the error cannot
+                # accumulate, but never behind `now` — a widget that was
+                # idle for a while must not then fire a burst catching up.
+                widget._animate_due = max(widget._animate_due + interval, now)
+                self._animate(widget, t)
+        finally:
+            self._ticking = False
+        self._widget_demand = demand
+
+    def _fps_of(self, widget: Widget) -> int:
+        try:
+            return widget.animation_fps
+        except Exception:
+            self._complain(f"animation_fps of {type(widget).__name__}")
+            return 0
+
+    def _animate(self, widget: Widget, t: float) -> None:
+        try:
             widget.animate(t)
-            # Assume an animated frame changed something. A widget could
-            # report this precisely instead, but then one that forgot
-            # would silently stop updating — a failure that looks like a
-            # frozen clock, not like a bug. Being conservative here costs
-            # a repaint of that widget's own rect and keeps the contract
-            # for new widgets down to "declare a rate".
-            self.damage(widget)
+        except Exception:
+            self._complain(f"animate() of {type(widget).__name__}")
+        # Assume an animated frame changed something. A widget could
+        # report this precisely instead, but then one that forgot would
+        # silently stop updating — a failure that looks like a frozen
+        # clock, not like a bug. Being conservative here costs a repaint
+        # of that widget's own rect and keeps the contract for new
+        # widgets down to "declare a rate".
+        self._mark(widget)
+
+    def _complain(self, what: str) -> None:
+        """Log the exception being handled — once. A frame that fails
+        does so again 30 times a second."""
+        key = (what, repr(sys.exc_info()[1]))
+        if key in self._complained:
+            return
+        if len(self._complained) > 64:
+            self._complained.clear()
+        self._complained.add(key)
+        log.exception("%s failed in %s (reported once)", what, self.spec.name)
+
+    # ── frame clock ─────────────────────────────────────────────────────
+    def _effect_fps(self) -> int:
+        """What the window's own passes want: the transition's rate while
+        one plays, the continuous ones' otherwise."""
+        playing = self._phase in ("enter", "exit")
+        return max((e.fps for e in self.effects
+                    if e.is_transition == playing), default=0)
+
+    def _demand(self) -> int:
+        """Fastest rate anything in this window wants right now. The
+        widgets' is what the last tick found; a transition plays over a
+        still image, so they want nothing during one."""
+        widgets = self._widget_demand if self._frozen is None else 0
+        return max(widgets, self._effect_fps())
+
+    def _pace(self) -> None:
+        """Run the clock at the rate the window wants now: start it,
+        change its rate, or let it stop."""
+        fps = self._demand()
+        if fps <= 0:
+            if self._clock_fps:
+                log.debug("%s idle, clock stopped", self.spec.name)
+            self._stop_clock()
+            # Damage raised after this frame's paint was counting on the
+            # tick that now is not coming.
+            if self._has_damage():
+                self._frame_soon()
+            return
+        if fps != self._clock_fps:
+            log.debug("%s frame clock %d -> %d fps (%s)", self.spec.name,
+                      self._clock_fps, fps, self._phase)
+            if fps > self._clock_fps:
+                # Starting, or faster: the next tick is one new interval
+                # from now, not at the end of a slot on the slower grid.
+                if self._frame_handle is not None:
+                    self._frame_handle.cancel()
+                    self._frame_handle = None
+                self._next_frame_at = time.monotonic()
+            # Slower keeps `_next_frame_at` on its grid, so a widget
+            # going quiet cannot make the next frame land early and
+            # stutter whatever is still moving.
+            self._clock_fps = fps
+            self._frame_interval = 1.0 / fps
+        if self._frame_handle is None:
+            self._schedule_frame()
+
+    def _stop_clock(self) -> None:
+        if self._frame_handle is not None:
+            self._frame_handle.cancel()
+            self._frame_handle = None
+        self._clock_fps = 0
+
+    def _schedule_frame(self) -> None:
+        """Aim at the next slot on a fixed grid, not `interval` from now.
+
+        `_schedule_frame` is called at the end of a frame, so a plain
+        `call_later(interval)` makes the period *work + interval* rather
+        than `interval`. At 15.7ms of frame work against a 16.7ms budget
+        that halves the rate — 34fps where 60 was asked for. That is the
+        whole of the "not fluent" feel; it is a scheduling bug, not a
+        shader one.
+        """
+        if self.loop is None:
+            return
+        now = time.monotonic()
+        self._next_frame_at += self._frame_interval
+        if self._next_frame_at <= now:
+            # A frame overran. Skip the slots we missed instead of firing
+            # a burst of zero-delay callbacks that can never catch up and
+            # would starve the loop of everything else.
+            behind = now - self._next_frame_at
+            self._next_frame_at += (
+                int(behind / self._frame_interval) + 1) * self._frame_interval
+        self._frame_handle = self.loop.call_later(
+            self._next_frame_at - now, self._on_frame)
 
     def _present(self, pixels: bytes) -> None:
         """Upload the frame.
@@ -1373,14 +1532,12 @@ class Window:
             # damage region says what *we* changed, not what was lost.
             # Coalesced: only the last rectangle of a burst needs it.
             if ev.count == 0:
-                self._damage_all = True
-                self.redraw()
+                self.damage(None)
         elif isinstance(ev, xp.ConfigureNotifyEvent):
             if (ev.width, ev.height) != (self.width, self.height):
                 log.debug("%s resized %dx%d -> %dx%d", self.spec.name,
                           self.width, self.height, ev.width, ev.height)
                 self._adopt_size(ev.width, ev.height)
-                self.redraw()
             self.x, self.y = ev.x, ev.y
         elif isinstance(ev, xp.ButtonPressEvent):
             self._on_press(ev)

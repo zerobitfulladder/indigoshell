@@ -9,11 +9,14 @@ import skia
 from ... import markdown, text, theme
 from ...widgets.base import Size, Widget
 from ..session import Agent
-from .frame import Trace
-from .style import AGENT_FILL, ACT_SIZE, CHIP_SM, GAP, PAD_X, PAD_Y, RING_FOR_S, SPIN, STATUS_W, STATUS_WORDS, TAG_SIZE, TOOL_FG, UNBOUNDED, accent_of, clock_text, line_h, paint_heading, paint_plate, plate_path
-from .chip import Chip
-from .holo import Projection
 from .call import CALL_WINDOW
+from .chip import Chip
+from .frame import TRACE_BLEED, Trace
+from .holo import Projection
+from .style import (ACT_SIZE, AGENT_FILL, CHIP_SM, GAP, PAD_X, PAD_Y,
+                    RING_FOR_S, SPIN, STATUS_W, STATUS_WORDS, TAG_SIZE,
+                    TOOL_FG, UNBOUNDED, accent_of, clock_text, line_h,
+                    paint_heading, paint_plate, plate_path)
 
 
 STATUS_WINDOW = "call-status"
@@ -60,13 +63,11 @@ class CallStatus(Widget):
 
     @property
     def animation_fps(self) -> int:
-        a = self.agent
-        # The turn clock on the frame, the switch from ringing to missed.
-        return max(1 if (a.busy or a.ringing is not None) else 0,
-                   self.trace.fps(a))
-
-    def animate(self, t: float) -> None:
-        self.tick_dt(t)
+        # The trace round the frame, and with it the turn clock, while a
+        # turn runs. A ring only has to be seen ending: asking for frames
+        # until it does gets the plate the window's last repaint at that
+        # moment, with "missed call" on it as the chip goes dim.
+        return self.trace.fps(self.agent) or (1 if self._fresh() else 0)
 
     def attach(self, window) -> None:
         super().attach(window)
@@ -116,6 +117,10 @@ class CallStatus(Widget):
         path.addPath(plate_path(self._plate_rect()))
         path.addPath(self.chip.path())
         return path
+
+    def paint_bounds(self) -> skia.Rect:
+        # The trace's head glows past the plate, as on the call.
+        return self.rect.makeOutset(TRACE_BLEED, TRACE_BLEED)
 
     def _lines(self) -> tuple[str, str]:
         a = self.agent

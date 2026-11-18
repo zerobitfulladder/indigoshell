@@ -13,7 +13,13 @@ from ...services import clipboard
 from ..session import DEFAULT_EFFORT, Agent
 from .frame import TRACE_BLEED, Trace
 from .reveal import Reveal
-from .style import AGENT_FILL, ACT_ROWS_ALL, ACT_ROWS_BUSY, ACT_ROWS_IDLE, ACT_SIZE, ASK_ACCENT, BODY_SIZE, CLICK_S, COPIED_S, CORNERS, FAIL_ACCENT, HISTORY_ROWS, MAX_BODY_ROWS, NAME_SIZE, OUT_ROWS, OUT_ROWS_FULL, PAD_X, PAD_Y, PLATE_W, STATUS_WORDS, TAG_SIZE, TOOL_FG, accent_of, ago, clock_text, line_h, paint_heading, paint_plate
+from .style import (ACT_ROWS_ALL, ACT_ROWS_BUSY, ACT_ROWS_IDLE, ACT_SIZE,
+                    AGENT_FILL, ASK_ACCENT, BODY_SIZE, CLICK_S, COPIED_FPS,
+                    COPIED_S, CORNERS, DOTS_PER_S, FAIL_ACCENT, HISTORY_ROWS,
+                    MAX_BODY_ROWS, NAME_SIZE, OUT_ROWS, OUT_ROWS_FULL, PAD_X,
+                    PAD_Y, PLATE_W, STATUS_WORDS, TAG_SIZE, TOOL_FG,
+                    accent_of, ago, clock_text, line_h, paint_heading,
+                    paint_plate)
 from .rows import Row, code_rows, highlight, markdown_rows, paint_line, text_rows
 
 
@@ -21,8 +27,9 @@ from .rows import Row, code_rows, highlight, markdown_rows, paint_line, text_row
 class AgentPlate(Widget):
     """What the agent is doing and what it says, selectable.
 
-    Rows are rebuilt from the agent's state for every measure, paint and
-    pointer event, so all three always agree on where everything is.
+    Measure, paint and pointer events all read the same rows, built from
+    the agent's state and kept until it changes (`_build`), so the three
+    always agree on where everything is.
     """
 
     def __init__(self, agent: Agent, width: int = PLATE_W) -> None:
@@ -42,7 +49,6 @@ class AgentPlate(Widget):
         self.history: list | None = None
         self.hist_sel = 0
         self.hist_top = 0
-        self._dots = 0
         self.reveal = Reveal()      # how reply text arrives
         self._built: list[Row] = []
         self._built_key: tuple | None = None
@@ -68,19 +74,15 @@ class AgentPlate(Widget):
 
     @property
     def animation_fps(self) -> int:
-        a = self.agent
-        motion = max(self.reveal.fps(), self.trace.fps(a))
-        if self._copied_until:
-            return max(4, motion)
-        if a.busy and a.phase == "thinking" and not a.thought:
-            return max(4, motion)   # the thinking dots
-        return max(1 if a.busy else 0, motion)   # the turn clock
+        # Everything here that moves is drawn from the time: the trace
+        # round the frame (and with it the turn clock and the thinking
+        # dots, for as long as a turn runs), the reply decoding, and the
+        # "copied" tag waiting to come down.
+        return max(self.trace.fps(self.agent), self.reveal.fps(),
+                   COPIED_FPS if self._copied() else 0)
 
-    def animate(self, t: float) -> None:
-        self.tick_dt(t)
-        self._dots = (self._dots + 1) % 4
-        if self._copied_until and time.monotonic() >= self._copied_until:
-            self._copied_until = 0.0
+    def _copied(self) -> bool:
+        return time.monotonic() < self._copied_until
 
     # ── building rows ───────────────────────────────────────────────────
     def _build_key(self) -> tuple:
@@ -480,7 +482,6 @@ class AgentPlate(Widget):
         left = self.rect.left() + PAD_X
         right = self.rect.right() - PAD_X
         clip = canvas.getLocalClipBounds()
-        self.reveal.begin_paint()
         for row, top in laid:
             if top > clip.bottom() or top + row.h < clip.top():
                 continue
@@ -492,8 +493,10 @@ class AgentPlate(Widget):
             elif kind == "act":
                 self._paint_act(canvas, box, row, sel)
             elif kind == "think":
+                dots = int((time.monotonic() - a.turn_started)
+                           * DOTS_PER_S) % 4
                 tail = a.thought.strip().splitlines()[-1] if a.thought.strip() \
-                    else "thinking" + "." * self._dots
+                    else "thinking" + "." * dots
                 self._glyph(canvas, box, "∴", theme.VIOLET_BRIGHT)
                 x = left + text.advance(ACT_SIZE) * 2
                 text.draw(canvas, text.ellipsize(tail, ACT_SIZE, right - x),
@@ -521,9 +524,6 @@ class AgentPlate(Widget):
                 self._paint_keys(canvas, box)
             elif kind == "session":
                 self._paint_session(canvas, box, int(row.label), accent)
-        # A frame the clock drove repaints the whole plate; only then has
-        # every reply row shown whether it is still decoding.
-        self.reveal.end_paint(clip.contains(self.rect))
 
     def _paint_session(self, canvas, box, index: int, accent) -> None:
         info = self.history[index]
@@ -560,7 +560,7 @@ class AgentPlate(Widget):
                           (("LINES", accent, True),
                            ("past conversations", theme.BASE_MUTED, False)))
             return
-        if self._copied_until:
+        if self._copied():
             tag = ("copied", accent, True)
         else:
             tag = (STATUS_WORDS.get(a.phase, a.phase),

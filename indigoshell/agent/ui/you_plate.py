@@ -2,6 +2,7 @@
 you are typing."""
 
 import math
+
 import skia
 
 from ... import text, theme
@@ -9,7 +10,9 @@ from ...widgets.base import Size, Widget
 from ...widgets.text_input import TextInput
 from ..session import Agent
 from .frame import Comet
-from .style import ACT_SIZE, BODY_SIZE, MAX_HEARD_LINES, NAME_SIZE, PAD_X, PAD_Y, PLATE_W, TAG_SIZE, YOU_ACCENT, YOU_FILL, line_h, paint_heading, paint_plate
+from .style import (ACT_SIZE, BODY_SIZE, MAX_HEARD_LINES, NAME_SIZE, PAD_X,
+                    PAD_Y, PLATE_W, TAG_SIZE, YOU_ACCENT, YOU_FILL, line_h,
+                    paint_heading, paint_plate)
 
 
 # ── your plate ──────────────────────────────────────────────────────────
@@ -52,7 +55,13 @@ class YouPlate(Widget):
         h = line_h(NAME_SIZE, True) + 6
         h += len(self._heard()) * (line_h(BODY_SIZE) + 3)
         h += len(self.agent.queued) * (line_h(ACT_SIZE) + 3)
-        self._input_h = self.input.measure(Size(self.inner_w, 100)).height
+        # Whole pixels, like every other row: the plates and chips below
+        # are placed from this height, and a frame edge on a fractional
+        # row is soft — and on the GPU its antialiasing reaches a pixel
+        # past the clip of a partial repaint, where it is never cleared
+        # and builds up, repaint by repaint, into a bright dot.
+        self._input_h = math.ceil(
+            self.input.measure(Size(self.inner_w, 100)).height)
         return h + self._input_h
 
     def measure(self, avail: Size) -> Size:

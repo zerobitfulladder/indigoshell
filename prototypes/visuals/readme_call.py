@@ -151,10 +151,13 @@ def walk(widget):
 
 
 def tick(widget) -> None:
-    """What the frame clock does: animate everything that asks."""
+    """What the frame clock does: animate everything that asks, and
+    once more when it stops asking (`Window._tick_widgets`)."""
     for w in walk(widget):
-        if w.animation_fps:
+        moving = bool(w.animation_fps)
+        if moving or w._animating:
             w.animate(NOW[0])
+        w._animating = moving
 
 
 def place(widget, x: float = MARGIN, y: float = MARGIN):
@@ -249,7 +252,7 @@ def scene_call() -> None:
 
     # The scan's passes, lined up so one runs down the finished answer.
     end = 15.5
-    host.projection.pulse._t0 = t0 + 11.0 - SCAN_EVERY_S * 2
+    host.projection.epoch = t0 + 11.0 - SCAN_EVERY_S * 2
 
     run(0.8)
     typing = (0.8, 2.9)
@@ -313,7 +316,7 @@ def scene_ask() -> None:
     a.ring_started = NOW[0] - 0.05      # the blink's lit half
     host = place(CallHost(a))
     host._on_agent("update")
-    host.projection.pulse._t0 = NOW[0] - 4.0        # between passes
+    host.projection.epoch = NOW[0] - 4.0        # between passes
     tick(host)
     W, H = int(host.rect.width()) + 2 * MARGIN, int(host._natural()) + 2 * MARGIN
     save(f"{OUT}/call-ask.png", frame(host, W, H))
@@ -336,7 +339,7 @@ def scene_music() -> None:
                  "Lights down, choom. Rain's on me.")
     host = place(CallHost(a))
     host._on_agent("update")
-    host.projection.pulse._t0 = NOW[0] - 4.0
+    host.projection.epoch = NOW[0] - 4.0
     tick(host)
     W, H = int(host.rect.width()) + 2 * MARGIN, int(host._natural()) + 2 * MARGIN
     save(f"{OUT}/call-music.png", frame(host, W, H))
@@ -352,7 +355,7 @@ def scene_status() -> None:
     st = place(CallStatus(a), MARGIN, MARGIN)
     W = int(st.rect.width()) + 2 * MARGIN
     H = int(st.rect.height()) + 2 * MARGIN
-    st.projection.pulse._t0 = NOW[0] - SCAN_EVERY_S + 1.2
+    st.projection.epoch = NOW[0] - SCAN_EVERY_S + 1.2
     frames = []
     t0 = NOW[0]
     acts = [(1.6, bash("pacman -Q linux", "linux 7.2.11.arch1-1", 2)),

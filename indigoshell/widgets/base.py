@@ -87,6 +87,12 @@ class Widget:
     # animates sometimes should return 0 the rest of the time and the
     # window will slow down or stop its clock. A widget that *raises* it
     # must also `invalidate()`, which is what wakes a stopped clock.
+    #
+    # It only has to say whether the widget is moving *now*. When it
+    # falls to 0 the window gives the widget one last `animate()` and
+    # repaints it, so what stays on screen is the widget at rest and not
+    # the last frame of whatever it was doing — nothing has to ask for
+    # extra frames to clean up after an effect.
     animation_fps: int = 0
 
     # Damage from this widget's subtree is reported as damage to *this*
@@ -96,11 +102,15 @@ class Widget:
     # and a partial repaint clipped to the child would leave that stale.
     absorbs_damage: bool = False
 
-    # Owned by the host window's frame clock: when this widget is next
-    # due an `animate()` call. Kept on the widget rather than in a map
-    # keyed by id() so a replaced subtree takes its schedule with it and
-    # leaves nothing behind to leak.
-    _next_animate_at: float = 0.0
+    # Owned by the host window's frame clock (`Window._tick_widgets`):
+    # when this widget is next due an `animate()` call, in
+    # `time.monotonic()` seconds, the interval that was set for, and
+    # whether it was moving when last looked at. Kept on the widget
+    # rather than in a map keyed by id() so a replaced subtree takes its
+    # schedule with it and leaves nothing behind to leak.
+    _animate_due: float = 0.0
+    _animate_every: float = 0.0
+    _animating: bool = False
     _last_animate_t: float | None = None
 
     def __init__(
@@ -155,9 +165,9 @@ class Widget:
         The transition runs off a frozen snapshot, so a value that
         arrives during it cannot be seen anyway, while the work needed to
         fetch it blocks the loop that is trying to render the animation.
-        A panel that launched twenty subprocesses from `attach()` simply
-        never showed its spawn: `_appear` is driven by wall clock, so the
-        frames the loop missed were frames the animation skipped.
+        A panel that launched twenty subprocesses from `attach()` had no
+        spawn to speak of: the animation only moves in the frames the
+        loop gets round to, and it got round to very few.
         """
         for child in self.children():
             child.on_shown()
@@ -216,8 +226,8 @@ class Widget:
         self.window.damage(target, layout=layout)
 
     def animate(self, t: float) -> None:
-        """Called at `animation_fps` while it is > 0. `t` is seconds since
-        the window opened.
+        """Called at `animation_fps` while it is > 0, and once more when
+        it falls to 0. `t` is seconds since the window opened.
 
         Anything advancing by elapsed time should take it from
         `tick_dt(t)` rather than differencing `t` itself.

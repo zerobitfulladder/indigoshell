@@ -11,7 +11,6 @@ from ... import shapes, text, theme
 from ...widgets.base import Size
 
 
-
 # ── geometry ────────────────────────────────────────────────────────────
 PLATE_W = 680
 CHIP = 64
@@ -91,7 +90,9 @@ RING_FOR_S = 40.0       # a hung-up ring blinks this long, then "missed"
 # flash (the ring pattern is on 0-150ms and 250-400ms).
 NUDGE_S = 0.4
 HANGUP_CLOSE_S = 1.8    # the agent's hang-up line stays this long
-COPIED_S = 1.2
+COPIED_S = 1.2          # the "copied" tag in the agent's heading
+COPIED_FPS = 4          # ...and how promptly it comes down again
+DOTS_PER_S = 4.0        # "thinking" gains a dot this often, up to three
 CLICK_S = 0.4           # double/triple-click window
 
 

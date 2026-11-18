@@ -410,12 +410,10 @@ class NotificationManager:
             win = d.instances.get(_win_name(notif.id))
             if win is not None:
                 size = existing.measure(Size(theme.NOTIF_WIDTH, 10_000.0))
-                win.resize_content(round(size.width), round(size.height))
                 # A persistent toast has no clock; an update that adds a
-                # timeout needs one started. Stop first — _start_clock
-                # doesn't check for a live handle.
-                win._stop_clock()
-                win._start_clock()
+                # timeout needs one, and the toast's own invalidate (in
+                # `update`) is what starts it.
+                win.resize_content(round(size.width), round(size.height))
             self._reposition()
             return
 

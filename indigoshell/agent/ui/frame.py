@@ -11,10 +11,9 @@ hung-up status plate carries the same clock.
 **The comet** runs once round your plate when you send a line, in step
 with your chip's half-turn.
 
-**The pulse** is the timing for a short effect that repeats — the
-hologram's scan (holo.py) — which animates only while it plays and
-schedules its own wake-up for the next pass, so an idle call keeps its
-frame clock off in between.
+Both only say whether they are moving right now (`fps`). The window
+repaints a widget once more when it stops asking for frames, so neither
+has to see its own last frame off the screen.
 """
 
 import time
@@ -40,13 +39,6 @@ TRACE_DIM = 0.8             # how far the untraced frame fades into the plate
 COMET_S = 0.45
 COMET_TAIL_PX = 160.0
 COMET_FPS = 30
-PULSE_FPS = 30
-# Every timed effect asks for frames this long past its end. The clock
-# stops the moment a widget asks for none, so the last frame painted is
-# whichever ran *before* the end — a comet two-thirds round, a scanline
-# near the bottom — and it stayed on screen until something else
-# repainted. A few more frames guarantee the rest state gets painted.
-SETTLE_GRACE_S = 0.15
 
 
 def _stroke(color: str, alpha: float | None = None, width: float = FRAME_W,
@@ -72,6 +64,7 @@ class Trace:
     needs; `paint()` over the plate's own frame."""
 
     def __init__(self) -> None:
+        # The turn that just ended: (when, its lap, how far round it).
         self._finish: tuple[float, int, float] | None = None
 
     def turn_ended(self, agent) -> None:
@@ -92,24 +85,18 @@ class Trace:
             k = (time.monotonic() - t0) / TRACE_FINISH_S
             if k < 1.0:
                 return lap, f, _ease_out(k)
+            self._finish = None
         return None
 
     def fps(self, agent) -> int:
         if agent.busy:
             return TRACE_FPS
-        return FINISH_FPS if self._finish is not None else 0
+        return FINISH_FPS if self._progress(agent) is not None else 0
 
     def paint(self, canvas: skia.Canvas, r: skia.Rect, agent,
               accent: str) -> None:
         got = self._progress(agent)
         if got is None:
-            # The sweep is over only once a paint covering the whole frame
-            # has drawn it without the trace. Ended by any paint, a partial
-            # one (the caret blinking, a scan passing) stopped the frames
-            # and left the rest of the frame half swept.
-            if self._finish is not None and not agent.busy \
-                    and canvas.getLocalClipBounds().contains(r):
-                self._finish = None
             return
         lap, f, done = got
         border = plate_path(r, inset=frame_inset())
@@ -143,7 +130,6 @@ class Comet:
     def __init__(self, color: str = theme.MAGENTA_BLOOM) -> None:
         self.color = color
         self._at: float | None = None
-        self._painted_lit = False
 
     def fire(self) -> None:
         self._at = time.monotonic()
@@ -153,15 +139,10 @@ class Comet:
                 and time.monotonic() - self._at < COMET_S)
 
     def fps(self) -> int:
-        # Frames until one has been painted without the comet: a grace
-        # window alone was not enough when a stall swallowed it.
-        if self.active() or self._painted_lit:
-            return COMET_FPS
-        return 0
+        return COMET_FPS if self.active() else 0
 
     def paint(self, canvas: skia.Canvas, r: skia.Rect) -> None:
-        self._painted_lit = self.active()
-        if not self._painted_lit:
+        if not self.active():
             return
         k = (time.monotonic() - self._at) / COMET_S
         border = plate_path(r, inset=frame_inset())
@@ -177,52 +158,3 @@ class Comet:
                 canvas.drawPath(seg, _stroke(
                     self.color, (i + 1) / steps * (1 - k * 0.3),
                     FRAME_W + 0.5))
-
-
-class Pulse:
-    """A short effect, `duration` seconds out of every `period`, shifted
-    by `offset`. `fps(widget)` asks for frames only while it plays; when
-    it is between passes it schedules one `invalidate()` for the start of
-    the next, which is what wakes a stopped frame clock."""
-
-    def __init__(self, period: float, duration: float,
-                 offset: float = 0.0) -> None:
-        self.period, self.duration, self.offset = period, duration, offset
-        self._t0 = time.monotonic()
-        self._handle = None
-
-    def _k(self) -> float:
-        return (time.monotonic() - self._t0 + self.offset) % self.period
-
-    def elapsed(self) -> float:
-        """Seconds since the current pass started (it plays for the first
-        `duration` of them)."""
-        return self._k()
-
-    def phase(self) -> float | None:
-        """0..1 through the current pass, or None between passes."""
-        k = self._k()
-        return k / self.duration if k < self.duration else None
-
-    def fps(self, widget) -> int:
-        if self._k() < self.duration + SETTLE_GRACE_S:
-            return PULSE_FPS
-        self._wake(widget)
-        return 0
-
-    def _wake(self, widget) -> None:
-        win = getattr(widget, "window", None)
-        if self._handle is not None or win is None or win.loop is None:
-            return
-        delay = self.period - self._k()
-        self._handle = win.loop.call_later(delay, self._fire, widget)
-
-    def _fire(self, widget) -> None:
-        self._handle = None
-        widget.invalidate()
-
-    def cancel(self) -> None:
-        if self._handle is not None:
-            self._handle.cancel()
-            self._handle = None
-

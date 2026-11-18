@@ -28,7 +28,6 @@ import skia
 
 from ...effects import compile_sksl
 from ...widgets.base import Size, Widget
-from .frame import Pulse
 from .style import RASTER_PITCH
 
 SCAN_EVERY_S = 7.0          # one pass starts this often
@@ -110,62 +109,87 @@ half4 main(float2 xy) {
 
 class Projection(Widget):
     """The scan down the whole hologram; place it last in its host, over
-    the surfaces it distorts."""
+    the surfaces it distorts.
+
+    A pass starts every SCAN_EVERY_S, counted from `epoch`, and runs at
+    a constant speed until its wake has left the bottom of the call —
+    so where the band is follows from the time alone, whatever the call
+    grows or shrinks to meanwhile. It asks for frames only while a pass
+    is on the call; a timer wakes it for the next one, so an idle call's
+    clock is not kept running in between.
+    """
 
     def __init__(self) -> None:
         super().__init__()
-        self.pulse = Pulse(SCAN_EVERY_S, 1.0)
+        self.epoch = time.monotonic()
         self._effect = compile_sksl(_SCAN)
+        self._wake_handle = None
         self._seed = 0.0
-        self._y: float | None = None
         self._t = 0.0
+        # The band as of the last `animate()` — what `paint()` draws.
+        self._y: float | None = None
         self._shown = skia.Rect.MakeEmpty()     # the strip on screen now
         self._dirty = skia.Rect.MakeEmpty()     # ...and where it just was
 
     # ── timing ──────────────────────────────────────────────────────────
-    def arrange(self, rect: skia.Rect) -> None:
-        self.rect = rect
-        # Constant speed, so a pass down a taller call takes longer; the
-        # position comes from elapsed time, so a call that grows while a
-        # pass runs does not make the band jump.
-        travel = rect.height() + SCAN_WAKE_PX + 2 * _BELOW * SCAN_HEAD_PX
-        self.pulse.duration = min(travel / SCAN_SPEED, SCAN_EVERY_S - 0.5)
-
-    def measure(self, avail: Size) -> Size:
-        return Size(0, 0)
+    def _into_pass(self) -> float:
+        """Seconds since the current pass started."""
+        return (time.monotonic() - self.epoch) % SCAN_EVERY_S
 
     def _band_y(self) -> float | None:
-        k = self.pulse.elapsed()
-        if k >= self.pulse.duration:
-            return None
-        return self.rect.top() - _BELOW * SCAN_HEAD_PX + k * SCAN_SPEED
+        """Where the band's centre is now; None between passes."""
+        y = (self.rect.top() - _BELOW * SCAN_HEAD_PX
+             + self._into_pass() * SCAN_SPEED)
+        over = self.rect.bottom() + SCAN_WAKE_PX + _BELOW * SCAN_HEAD_PX
+        return y if y < over else None
 
     @property
     def animation_fps(self) -> int:
-        playing = self.pulse.fps(self)
-        # Until a frame has cleared the band, whatever the clock says.
-        # The pass's end moves when the call's height does — a finished
-        # turn folds its steps away — and a band past the new end, or a
-        # pass whose last frames a stall swallowed, was left on screen
-        # mid-glitch with nothing scheduled to take it off.
-        return SCAN_FPS if playing or self._y is not None \
-            or not self._shown.isEmpty() else 0
+        return SCAN_FPS if self._band_y() is not None else 0
 
     def attach(self, window) -> None:
         self._forget()
         super().attach(window)
+        self._arm()
+
+    def detach(self) -> None:
+        if self._wake_handle is not None:
+            self._wake_handle.cancel()
+            self._wake_handle = None
+        self._forget()
+        super().detach()
+
+    def _arm(self) -> None:
+        """A wake-up for the start of the next pass. Without a loop —
+        an offline render, which steps the time itself — there is
+        nothing to wake."""
+        if self._wake_handle is not None:
+            self._wake_handle.cancel()
+            self._wake_handle = None
+        loop = getattr(self.window, "loop", None)
+        if loop is not None:
+            self._wake_handle = loop.call_later(
+                SCAN_EVERY_S - self._into_pass(), self._wake)
+
+    def _wake(self) -> None:
+        self._wake_handle = None
+        if self.window is None:
+            return
+        self._arm()
+        self.invalidate()       # nothing to repaint yet: starts the clock
 
     def animate(self, t: float) -> None:
-        self.tick_dt(t)
         was = self._y
         self._y = self._band_y()
         self._t = time.monotonic()
-        if self._y is not None and was is None:
+        if self._y is not None and (was is None or self._y < was):
             self._seed = (self._t * 7.31) % 97.0     # a new pass, new tears
         strip = (self._strip(self._y) if self._y is not None
                  else skia.Rect.MakeEmpty())
         # The frame clock repaints `paint_bounds()` after this: the strip
         # the band is in now, and the one it left, which must be cleared.
+        # When the pass is over that is its last strip alone — the frame
+        # the window gives a widget that has stopped asking for them.
         self._dirty = skia.Rect.MakeLTRB(self._shown.left(), self._shown.top(),
                                          self._shown.right(), self._shown.bottom())
         self._dirty.join(strip)
@@ -178,13 +202,11 @@ class Projection(Widget):
                                   self.rect.right() + pad,
                                   y + _BELOW * SCAN_HEAD_PX + 2)
 
+    def measure(self, avail: Size) -> Size:
+        return Size(0, 0)
+
     def paint_bounds(self) -> skia.Rect:
         return self._dirty
-
-    def detach(self) -> None:
-        self.pulse.cancel()
-        self._forget()
-        super().detach()
 
     def _forget(self) -> None:
         """No band: a call closed mid-pass reopens clean."""
@@ -194,9 +216,9 @@ class Projection(Widget):
 
     # ── paint ───────────────────────────────────────────────────────────
     def paint(self, canvas: skia.Canvas) -> None:
+        # From `animate()`'s reading, not the time now: the band drawn is
+        # the one whose strip was marked dirty.
         y = self._y
-        if y is not None and self._band_y() is None:
-            return      # over; the next frame clears what is left of it
         surface = canvas.getSurface()
         m = canvas.getTotalMatrix()
         if y is None or surface is None or not m.isTranslate():

@@ -34,6 +34,9 @@ class FakeWindow:
     def damage(self, widget=None, *, layout=False):
         pass
 
+    def damage_rect(self, rect):
+        pass
+
     def resize_content(self, w, h):
         pass
 

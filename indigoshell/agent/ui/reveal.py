@@ -25,7 +25,6 @@ import skia
 
 from ... import text, theme
 from ...effects import GlitchWipe, paint_through
-from .frame import SETTLE_GRACE_S
 from .rows import Row, paint_line
 
 HOLD = 0.42                 # a chunk's decode, start to settled
@@ -41,11 +40,7 @@ class Reveal:
                                spark=cyan, cursor=violet, bar=False)
         self.arrivals: dict[str, list[float]] = {}
         self._turn = None
-        self._latest = 0.0
-        # Whether the last whole-plate paint still had text mid-decode;
-        # see fps().
-        self._painted_fresh = False
-        self._saw_fresh = False
+        self._latest = 0.0          # when the newest character arrived
 
     # ── bookkeeping ─────────────────────────────────────────────────────
     def track(self, agent, rows: list[Row]) -> None:
@@ -68,26 +63,9 @@ class Reveal:
             elif n < len(arr):          # the Markdown re-read shortened it
                 del arr[n:]
 
-    def fresh(self) -> bool:
-        return time.monotonic() - self._latest < HOLD
-
     def fps(self) -> int:
-        # Frames until the plate has been painted whole with everything
-        # settled. Stopping at HOLD, or a little after, left the last
-        # chunk frozen mid-decode whenever those frames went missing — a
-        # stall as the turn ended was enough.
-        if time.monotonic() - self._latest < HOLD + SETTLE_GRACE_S \
-                or self._painted_fresh:
-            return REVEAL_FPS
-        return 0
-
-    def begin_paint(self) -> None:
-        self._saw_fresh = False
-
-    def end_paint(self, whole: bool) -> None:
-        """After the plate's rows; `whole` when every row was painted."""
-        if whole:
-            self._painted_fresh = self._saw_fresh
+        """Frames while the newest chunk is still decoding."""
+        return REVEAL_FPS if time.monotonic() - self._latest < HOLD else 0
 
     def _arrival(self, row: Row, i: int) -> float:
         arr = self.arrivals.get(row.key, ())
@@ -110,7 +88,6 @@ class Reveal:
             if row.cursor:
                 _bar(canvas, box, row, accent)
             return
-        self._saw_fresh = True
         k = bisect.bisect_left(arr, now - HOLD, row.start,
                                min(row.end, len(arr)))
         paint_line(canvas, box, _piece(row, row.start, k), sel, accent)

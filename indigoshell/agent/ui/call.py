@@ -77,10 +77,12 @@ from ...core import state
 from ...widgets.base import KeyEvent, Size, Widget
 from ...widgets.text_input import ctrl_letter
 from ..session import Agent
-from .style import CHIP, GAP, HANGUP_CLOSE_S, HISTORY_ROWS, MAX_BODY_ROWS, NUDGE_S, PLATE_W, ROW_GAP, SPIN, UNBOUNDED, YOU_ACCENT, accent_of, plate_path
+from .agent_plate import AgentPlate
 from .chip import Chip
 from .holo import Projection
-from .agent_plate import AgentPlate
+from .style import (CHIP, GAP, HANGUP_CLOSE_S, HISTORY_ROWS, MAX_BODY_ROWS,
+                    NUDGE_S, PLATE_W, ROW_GAP, SPIN, UNBOUNDED, YOU_ACCENT,
+                    accent_of, plate_path)
 from .you_plate import YouPlate
 
 
@@ -216,12 +218,8 @@ class CallHost(Widget):
             return
         natural = self._natural()
         if natural != self._natural_h:
-            # Plates grew or shrank: place them again and re-cut the
-            # window to them. Whatever they no longer cover is outside
-            # the new cut, so it needs no repaint.
             self._natural_h = natural
-            self.arrange(self.rect)
-            win.reshape()
+            self._place()
         # Repaint what changed, not the window: it is the screen's height,
         # and repainting all of it on every change of a streaming reply
         # cost ~30ms a frame. The agent's plate changes with nearly every
@@ -237,6 +235,29 @@ class CallHost(Widget):
         if look != self._chip_look:
             self._chip_look = look
             self.agent_chip.invalidate()
+
+    def _place(self) -> None:
+        """Plates grew or shrank: place everything again, re-cut the
+        window to it, and repaint whatever is no longer where it was.
+
+        A taller line of yours moves the agent's plate and chip down
+        with nothing about them changed, so nothing else would repaint
+        them in their new place. Where a piece used to be is repainted
+        too, although the new cut hides it: it is still in the window's
+        surface, and the despawn plays over that surface uncut.
+        """
+        pieces = (self.agent_plate, self.agent_chip, self.you_plate,
+                  self.you_chip)
+        before = [w.paint_bounds() for w in pieces]
+        self.arrange(self.rect)
+        for piece, was in zip(pieces, before):
+            if piece.paint_bounds() != was:
+                self.window.damage_rect(was)
+                piece.invalidate()
+        # A taller call can put a scan that had run off the bottom back
+        # on it.
+        self.projection.invalidate()
+        self.window.reshape()
 
     def _open_link(self, url: str) -> None:
         """A link clicked in a reply: hang up, so you land on it, and open
