@@ -16,7 +16,13 @@ The package, by job:
                      shows them
     tools.py         `ShellTools`: the desktop as tools — screenshots,
                      opening links and files (brought forward on their
-                     workspace), apps, workspaces, the clipboard, Spotify
+                     workspace), apps, workspaces, the clipboard,
+                     Spotify, WiZ lights, Firefox
+    spotify.py       the Spotify app and Web API, with its own sign-in
+    wiz.py           WiZ lights on the LAN: discovery, scenes, names
+    firefox.py       `Firefox`: the shell's end of the INDIGO bridge
+                     add-on (extension/) and its native host
+                     (browser_host.py) — the everyday Firefox, no port
     workspace/       the agent's starting files: its notebook
                      (CLAUDE.md, including how you want to be shown
                      things) and its report skill (steps, page template)
@@ -41,17 +47,19 @@ different account from a `claude` in a terminal. Its working directory is
 `~/.config/indigoshell/assistant`, whose CLAUDE.md is its notebook for
 this machine. Wiring it into a config:
 
+    FIREFOX = Firefox()
     AGENT = Agent(name="INDIGO", model="opus",
-                  tools=ShellTools())
-    SERVICES = [..., AGENT, CallRouter(AGENT)]
+                  tools=ShellTools(firefox=FIREFOX))
+    SERVICES = [..., FIREFOX, AGENT, CallRouter(AGENT)]
     WINDOWS = [..., WindowSpec(name=CALL_WINDOW, content=CallHost(AGENT), ...),
                WindowSpec(name=STATUS_WINDOW, content=CallStatus(AGENT), ...)]
 """
 
+from .firefox import Firefox
 from .session import Agent
 from .tools import ShellTools
 from .ui.call import CALL_WINDOW, CallHost
 from .ui.status import STATUS_WINDOW, CallRouter, CallStatus
 
-__all__ = ["Agent", "ShellTools", "CallHost", "CallStatus", "CallRouter",
-           "CALL_WINDOW", "STATUS_WINDOW"]
+__all__ = ["Agent", "ShellTools", "Firefox", "CallHost", "CallStatus",
+           "CallRouter", "CALL_WINDOW", "STATUS_WINDOW"]

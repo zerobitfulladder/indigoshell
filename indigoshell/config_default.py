@@ -12,7 +12,7 @@ from .services import music, sysinfo
 from .services.text_effects import Scramble
 from .widgets.base import Insets
 from .agent import (CALL_WINDOW, STATUS_WINDOW, Agent, CallHost,
-                    CallRouter, CallStatus, ShellTools)
+                    CallRouter, CallStatus, Firefox, ShellTools)
 from .widgets.clock import Clock
 from .widgets.fastfetch import Fastfetch
 from .widgets.hardware_panel import HardwarePanel
@@ -107,23 +107,29 @@ PANEL_SPAWN = ScanLock(duration=0.22, band_px=36.0, tear_px=29.0, split_px=17.0,
 # `agent/permissions.py` (rm, sudo, kill, ...) still ask on the call.
 # `tools` gives it the desktop (agent/tools.py): screenshots, opening
 # links and files (reports, images, videos) brought forward on their
-# workspace, apps, workspaces, the clipboard and Spotify.
+# workspace, apps, workspaces, the clipboard, Spotify, the WiZ lights
+# on the LAN (named in ~/.config/indigoshell/wiz.json), and your
+# everyday Firefox through the INDIGO bridge add-on — set up once with
+# `python -m indigoshell.agent.firefox install` (agent/firefox.py).
 # The agent works in ~/.config/indigoshell/assistant, whose CLAUDE.md is
 # its notebook for this machine — how it shows you things included; ask
 # it on a call to work differently and it edits the notebook — and whose
 # .claude/commands/ holds any slash commands of your own (`/name` on the
 # call runs one).
+FIREFOX = Firefox()
 AGENT = Agent(name="INDIGO", model="opus",
-              tools=ShellTools())
+              tools=ShellTools(firefox=FIREFOX))
 
 
 # ── Services ───────────────────────────────────────────────────────────
 # Long-lived non-window services the daemon starts once its loop is up.
 # Each toast is its own window, so the scan-lock spawn/despawn plays per
 # notification rather than once for the stack. The router shows the
-# call's status chip while a hung-up call works or rings back.
+# call's status chip while a hung-up call works or rings back; FIREFOX
+# is the socket the browser add-on's host connects to.
 SERVICES = [
     NotificationManager(effects=(PANEL_SPAWN,), effect_scale=0.35),
+    FIREFOX,
     AGENT,
     CallRouter(AGENT),
 ]

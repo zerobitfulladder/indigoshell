@@ -67,9 +67,14 @@ account from the `claude` in your terminal.
 - **The desktop is its toolkit.** An in-process MCP server gives it the
   shell's reach: screenshots; opening links and files in their own app
   and bringing that window forward on its workspace; notifications;
-  apps, workspaces and windows; the clipboard; and Spotify — the
-  official app over MPRIS, plus the Web API for search, the queue,
-  playlists and your library.
+  apps, workspaces and windows; the clipboard; Spotify — the official
+  app over MPRIS, plus the Web API for search, the queue, playlists and
+  your library; WiZ lights, found on the local network with no cloud
+  account — colours, whites, brightness and their built-in scenes, by
+  the names and rooms you give them on a call; and your everyday
+  Firefox, signed in as you — tabs, pages read as text with every link,
+  field and button numbered, clicks, typing, forms, JavaScript in the
+  page, screenshots of a tab.
 
   <img src="docs/media/call-music.png" width="100%"
        alt="Asked for music that sounds like rain on neon, the agent searching Spotify and queueing Vangelis">
@@ -115,6 +120,21 @@ tools=ShellTools())` — with `persona=` for another voice. Spotify search
 and the account tools want a Spotify app's `client_id` and
 `client_secret` in `~/.config/indigoshell/spotify.json`, with
 `http://127.0.0.1:8989/login` as a redirect URI; then ask it to sign in.
+
+The browser tools reach your everyday Firefox through **INDIGO
+bridge**, an add-on in this repository (`indigoshell/agent/extension/`)
+that talks to the shell over native messaging — no debugging port, so
+sites see an ordinary browser. Arch builds Firefox to load unsigned
+add-ons from the system extension folder, so no Mozilla account or
+signing is involved; one command links the add-on there, registers its
+host and sets two Firefox preferences (it asks for `sudo` once):
+
+```bash
+.venv/bin/python -m indigoshell.agent.firefox install
+```
+
+Then restart Firefox, and under about:addons → INDIGO bridge → Options
+press **Allow JavaScript** for the tool that runs scripts in a page.
 
 ## Showcase
 
@@ -257,6 +277,10 @@ indigoshell/
                       turns, approvals, hang-up and ring-back, sessions
     tools.py        ─ the desktop as an in-process MCP server
     spotify.py      ─ the Spotify app (MPRIS) and Web API, with sign-in
+    wiz.py          ─ WiZ lights on the LAN: discovery, scenes, names
+    firefox.py      ─ the everyday Firefox, via the INDIGO bridge add-on
+    browser_host.py ─ that add-on's native messaging host
+    extension/      ─ the add-on: page reader, clicks, forms, JavaScript
     prompts.py      ─ the call protocol and the persona
     permissions.py  ─ the commands that always ask
     activity.py     ─ one line per step, approvals, tool formatting

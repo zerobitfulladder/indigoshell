@@ -24,9 +24,19 @@ workspace, skip a song). Nothing here clicks or types for you.
                         playback state, the queue, playlists, liked songs,
                         top and recent tracks
     spotify_api         any other Web API call (volume, devices, ...)
+    lights              the WiZ lights at home and what each shows
+    lights_set          on/off, brightness, white temperature, colour or
+                        a built-in scene, for one light, a room or all
+    lights_identify     blink lights, so the user can say which is which
+    lights_name         give a light a name and a room
+    browser_*           the everyday Firefox, with the user's sign-ins:
+                        tabs, reading pages, clicking, filling forms,
+                        keys, JavaScript, screenshots of a tab
 
 What each Spotify tool needs — nothing, the app's credentials, or the
-user's sign-in — is set out in agent/spotify.py.
+user's sign-in — is set out in agent/spotify.py; how the lights are
+found and named, in agent/wiz.py; how Firefox is reached, in
+agent/firefox.py.
 """
 
 import asyncio
@@ -41,6 +51,8 @@ import skia
 
 from ..services import clipboard, proc
 from .spotify import Spotify, SpotifyError, track_line, uri as spotify_uri
+from .firefox import Firefox, FirefoxError
+from .wiz import COLORS, Wiz, WizError, parse_color, parse_scene
 
 log = logging.getLogger(__name__)
 
@@ -54,8 +66,18 @@ images, videos) in their usual program, which brings that window \
 forward; launch apps; list and switch workspaces and windows; use the \
 clipboard; and use Spotify — the desktop app, the catalogue, and, once \
 the user is signed in (spotify_login), their account: the queue, \
-playlists, liked songs, playback on any device. You cannot click or \
-type on the user's behalf. Screenshots include the call overlay in the top-right \
+playlists, liked songs, playback on any device; and the WiZ lights at \
+home (`lights` to see them, `lights_set` to change them — colours, \
+white temperatures, brightness, built-in scenes). Lights have no names \
+until you give them some with the user: `lights_identify` blinks one, \
+they tell you what it is, `lights_name` remembers it. The user's own \
+Firefox is yours too, signed in as them, through the `browser_*` tools: \
+list and open tabs, read a page (links, fields and buttons come back \
+numbered, {12 button "Sign in"}, and the other tools take those \
+numbers), click, fill forms, press keys, run JavaScript in a page, and \
+screenshot a tab. Prefer them to fetching a page yourself when the user \
+means something in their browser or behind their sign-in. Outside \
+Firefox, you cannot click or type on the user's behalf. Screenshots include the call overlay in the top-right \
 corner. How the user wants to be shown things is in your CLAUDE.md."""
 
 
@@ -190,8 +212,12 @@ class ShellTools:
 
     prompt = PROMPT
 
-    def __init__(self, *, spotify: Spotify | None = None) -> None:
+    def __init__(self, *, spotify: Spotify | None = None,
+                 lights: Wiz | None = None,
+                 firefox: Firefox | None = None) -> None:
         self.spotify = spotify or Spotify()
+        self.lights = lights or Wiz()
+        self.firefox = firefox or Firefox()
 
     # ── the tools ───────────────────────────────────────────────────────
     def build(self, agent) -> list:
@@ -344,7 +370,357 @@ class ShellTools:
         tools = [screenshot, notify, open_, launch_app, list_windows,
                  switch_workspace, focus_window, read_clipboard,
                  write_clipboard]
-        return tools + self._spotify_tools(agent)
+        return (tools + self._spotify_tools(agent) + self._light_tools()
+                + self._browser_tools())
+
+    # ── firefox ─────────────────────────────────────────────────────────
+    def _browser_tools(self) -> list:
+        """The everyday Firefox, through the indigoshell bridge add-on —
+        agent/firefox.py."""
+        from claude_agent_sdk import tool
+        ff = self.firefox
+        TAB = {"type": "string",
+               "description": "'active' (default: the tab the user is "
+                              "looking at), a number from browser_tabs, "
+                              "or words from its title or address"}
+
+        def guard(fn):
+            async def run(args):
+                try:
+                    return await fn(args)
+                except FirefoxError as e:
+                    return _error(str(e))
+            run.__name__ = fn.__name__
+            return run
+
+        @tool("browser_tabs",
+              "List the tabs open in the user's Firefox: number, title, "
+              "address, and which one they are looking at.",
+              {"type": "object", "properties": {},
+               "additionalProperties": False})
+        @guard
+        async def browser_tabs(args):
+            tabs = await ff.tabs()
+            lines = [f"{t['n']}. {t['title'] or '(untitled)'} — {t['url']}"
+                     + ("   ← looking at it" if t["focused"]
+                        else "   (showing in its window)" if t["active"]
+                        else "")
+                     for t in tabs]
+            return _text("\n".join(lines) or "no tabs")
+
+        @tool("browser_open",
+              "Open an address in the user's Firefox — in a new tab "
+              "(default) or, with new_tab false, in `tab` — and show it "
+              "to them.",
+              {"type": "object",
+               "properties": {"url": {"type": "string"},
+                              "new_tab": {"type": "boolean"}, "tab": TAB},
+               "required": ["url"], "additionalProperties": False})
+        @guard
+        async def browser_open(args):
+            tab = None if args.get("new_tab", True) else await ff.tab(args.get("tab"))
+            t = await ff.call("open", url=args["url"], tab=tab)
+            where = await bring_forward("firefox.desktop")
+            return _text(f"Opened {t['title'] or '(untitled)'} — {t['url']}{where}.")
+
+        @tool("browser_switch",
+              "Bring a Firefox tab to the front and show the user its "
+              "window.",
+              {"type": "object", "properties": {"tab": TAB},
+               "required": ["tab"], "additionalProperties": False})
+        @guard
+        async def browser_switch(args):
+            tab = await ff.tab(args.get("tab"))
+            await ff.call("show", tab=tab)
+            where = await bring_forward("firefox.desktop")
+            return _text(f"Showing {await ff.where(tab)}{where}.")
+
+        @tool("browser_close", "Close a Firefox tab.",
+              {"type": "object", "properties": {"tab": TAB},
+               "required": ["tab"], "additionalProperties": False})
+        @guard
+        async def browser_close(args):
+            tab = await ff.tab(args.get("tab"))
+            was = await ff.where(tab)
+            await ff.call("close", tab=tab)
+            return _text(f"Closed {was}.")
+
+        @tool("browser_go",
+              "In a Firefox tab: go to an address, or 'back', 'forward' "
+              "or 'reload'.",
+              {"type": "object",
+               "properties": {"to": {"type": "string"}, "tab": TAB},
+               "required": ["to"], "additionalProperties": False})
+        @guard
+        async def browser_go(args):
+            tab = await ff.tab(args.get("tab"))
+            t = await ff.call("go", tab=tab, to=args["to"])
+            return _text(f"Now at {t['title'] or '(untitled)'} — {t['url']}.")
+
+        @tool("browser_read",
+              "Read a page in the user's Firefox as text: headings, text, "
+              "lists, tables, and every link, field and button numbered "
+              "in braces, like {12 input:email \"Email\" = \"\"}. The "
+              "numbers are what browser_click and browser_fill take, until "
+              "the page is read again. selector narrows it to part of the "
+              "page (CSS); max_chars defaults to 12000.",
+              {"type": "object",
+               "properties": {"tab": TAB, "selector": {"type": "string"},
+                              "max_chars": {"type": "integer"}},
+               "additionalProperties": False})
+        @guard
+        async def browser_read(args):
+            tab = await ff.tab(args.get("tab"))
+            return _text(await ff.read(tab, int(args.get("max_chars") or 12000),
+                                       args.get("selector")))
+
+        @tool("browser_click",
+              "Click something on a page: by its number from browser_read "
+              "(ref), a CSS selector, or the text on it. Waits for any page "
+              "it opens.",
+              {"type": "object",
+               "properties": {"tab": TAB, "ref": {"type": "integer"},
+                              "selector": {"type": "string"},
+                              "text": {"type": "string"},
+                              "double": {"type": "boolean"}},
+               "additionalProperties": False})
+        @guard
+        async def browser_click(args):
+            tab = await ff.tab(args.get("tab"))
+            await ff.page(tab, "click", wait=6, ref=args.get("ref"),
+                          selector=args.get("selector"), text=args.get("text"),
+                          double=bool(args.get("double")))
+            return _text(f"Clicked. Now at {await ff.where(tab)}.")
+
+        @tool("browser_fill",
+              "Fill form fields: each by ref (from browser_read) or CSS "
+              "selector, with a value. Text goes in as typing would; a "
+              "select takes an option's text or value; a checkbox or "
+              "radio takes true/false. submit then submits the form, by "
+              "its own submit button where it has one.",
+              {"type": "object",
+               "properties": {
+                   "tab": TAB,
+                   "fields": {"type": "array", "items": {
+                       "type": "object",
+                       "properties": {"ref": {"type": "integer"},
+                                      "selector": {"type": "string"},
+                                      "value": {"type": ["string", "boolean",
+                                                         "number"]}},
+                       "required": ["value"]}},
+                   "submit": {"type": "boolean"}},
+               "required": ["fields"], "additionalProperties": False})
+        @guard
+        async def browser_fill(args):
+            tab = await ff.tab(args.get("tab"))
+            fields = []
+            for f in args.get("fields") or []:
+                if f.get("ref") is None and not f.get("selector"):
+                    return _error("each field needs a ref or a selector")
+                fields.append({k: f[k] for k in ("ref", "selector", "value")
+                               if f.get(k) is not None})
+            res = await ff.page(tab, "fill", wait=8 if args.get("submit") else 0,
+                                fields=fields, submit=bool(args.get("submit")))
+            tail = (f" and submitted; now at {await ff.where(tab)}"
+                    if res.get("submitted") else "")
+            return _text(f"Filled {', '.join(res.get('done', []))}{tail}.")
+
+        @tool("browser_keys",
+              "Press keys in a Firefox tab, in order, on whatever has "
+              "focus: characters, or names like Enter, Tab, Escape, "
+              "Backspace, ArrowDown, PageDown, and chords like Control+a. "
+              "scroll (in screens, negative for up) scrolls instead.",
+              {"type": "object",
+               "properties": {"tab": TAB,
+                              "keys": {"type": "array",
+                                       "items": {"type": "string"}},
+                              "scroll": {"type": "number"}},
+               "additionalProperties": False})
+        @guard
+        async def browser_keys(args):
+            tab = await ff.tab(args.get("tab"))
+            if args.get("scroll"):
+                await ff.page(tab, "scroll", pages=float(args["scroll"]))
+                return _text("Scrolled.")
+            keys = [str(k) for k in args.get("keys") or []]
+            if not keys:
+                return _error("give keys or scroll")
+            await ff.page(tab, "keys", wait=4, keys=keys)
+            return _text(f"Pressed. Now at {await ff.where(tab)}.")
+
+        @tool("browser_js",
+              "Run JavaScript in a page of the user's Firefox, in the "
+              "page's own context (its variables, its DOM, signed in as "
+              "the user). The value of the last expression comes back as "
+              "JSON; for promises, end with an awaited expression inside "
+              "an async function you call.",
+              {"type": "object",
+               "properties": {"tab": TAB, "code": {"type": "string"}},
+               "required": ["code"], "additionalProperties": False})
+        @guard
+        async def browser_js(args):
+            tab = await ff.tab(args.get("tab"))
+            return _text(await ff.js(tab, args["code"]))
+
+        @tool("browser_screenshot",
+              "See what a Firefox tab shows (its visible area), even when "
+              "it is not on screen.",
+              {"type": "object", "properties": {"tab": TAB},
+               "additionalProperties": False})
+        @guard
+        async def browser_screenshot(args):
+            tab = await ff.tab(args.get("tab"))
+            image = decode(await ff.screenshot(tab))
+            if image is None:
+                return _error("could not decode the screenshot")
+            b64, tw, th = _encode(image, SHOT_MAX_SIDE)
+            return {"content": [{"type": "image", "data": b64,
+                                 "mimeType": "image/jpeg"},
+                                {"type": "text", "text":
+                                 f"{await ff.where(tab)}, {tw}x{th}."}]}
+
+        return [browser_tabs, browser_open, browser_switch, browser_close,
+                browser_go, browser_read, browser_click, browser_fill,
+                browser_keys, browser_js, browser_screenshot]
+
+    # ── lights ──────────────────────────────────────────────────────────
+    def _light_tools(self) -> list:
+        """The WiZ bulbs on the LAN — see agent/wiz.py."""
+        from claude_agent_sdk import tool
+        wiz = self.lights
+
+        async def found(target: str | None = None):
+            # A command for lights it knows goes straight to them; a full
+            # search (~1s) only for the list, or when that falls short.
+            if target is not None:
+                bulbs = await wiz.discover(sweep=False)
+                try:
+                    if bulbs and len(bulbs) == len(wiz.remembered()):
+                        return wiz.resolve(target, bulbs)
+                except WizError:
+                    pass
+            bulbs = await wiz.discover()
+            if not bulbs:
+                raise WizError("no WiZ lights answered on the local network")
+            return bulbs if target is None else wiz.resolve(target, bulbs)
+
+        @tool("lights",
+              "List the WiZ lights at home: each one's name and room (if "
+              "given), what it shows now, whether it does colour or only "
+              "white, and its white range.",
+              {"type": "object", "properties": {},
+               "additionalProperties": False})
+        async def lights(args):
+            try:
+                bulbs = await found()
+            except WizError as e:
+                return _error(str(e))
+            unnamed = sum(1 for b in bulbs if not b.name)
+            tail = (f"\n{unnamed} unnamed: lights_identify + lights_name "
+                    "to name them with the user." if unnamed else "")
+            return _text("\n".join(b.line() for b in bulbs) + tail)
+
+        @tool("lights_set",
+              "Change WiZ lights. target: 'all', or light names, rooms, "
+              "MACs or addresses, comma-separated. Give any of: on "
+              "(false turns off), brightness (10-100 %), temp (white, in "
+              "kelvin, e.g. 2700 warm .. 6500 cool), color ('#rrggbb' or "
+              f"a word: {', '.join(COLORS)}), colors (a list, spread "
+              "over the targets in turn), scene (a built-in scene by "
+              "name — e.g. Cozy, Fireplace, Ocean, Party, Club, Night "
+              "light, Focus, Relax, Sunset, Candlelight — with speed "
+              "10-200 for moving ones). Setting anything turns a light "
+              "on. White-only lights take temp, not colours.",
+              {"type": "object",
+               "properties": {
+                   "target": {"type": "string"},
+                   "on": {"type": "boolean"},
+                   "brightness": {"type": "integer"},
+                   "temp": {"type": "integer"},
+                   "color": {"type": "string"},
+                   "colors": {"type": "array", "items": {"type": "string"}},
+                   "scene": {"type": "string"},
+                   "speed": {"type": "integer"}},
+               "required": ["target"], "additionalProperties": False})
+        async def lights_set(args):
+            try:
+                # Words that mean nothing are wrong for every light: say
+                # so once, before asking any of them.
+                if args.get("scene") is not None:
+                    parse_scene(args["scene"])
+                for c in (args.get("colors") or []) + (
+                        [args["color"]] if args.get("color") else []):
+                    parse_color(c)
+                bulbs = await found(args.get("target") or "all")
+                colors = args.get("colors") or []
+                plans, skipped = [], []
+                for i, b in enumerate(bulbs):
+                    color = colors[i % len(colors)] if colors \
+                        else args.get("color")
+                    try:
+                        plans.append((b, wiz.plan(
+                            b, on=args.get("on"),
+                            brightness=args.get("brightness"),
+                            temp=args.get("temp"), color=color,
+                            scene=args.get("scene"),
+                            speed=args.get("speed"))))
+                    except WizError as e:
+                        skipped.append(f"{b.label}: {e}")
+                if not plans:
+                    return _error("\n".join(skipped) or "nothing to change")
+                results = await wiz.apply(plans)
+            except WizError as e:
+                return _error(str(e))
+            lines = [f"{b.label}: " + (f"failed — {err}" if err
+                                       else b.showing())
+                     for b, err in results] + skipped
+            failed = all(err for _, err in results)
+            return (_error if failed else _text)("\n".join(lines))
+
+        @tool("lights_identify",
+              "Blink WiZ lights twice, then put them back as they were, so "
+              "the user can tell you which light is which. target as for "
+              "lights_set; one light at a time is clearest.",
+              {"type": "object",
+               "properties": {"target": {"type": "string"}},
+               "required": ["target"], "additionalProperties": False})
+        async def lights_identify(args):
+            try:
+                bulbs = await found(args.get("target") or "")
+                await wiz.identify(bulbs)
+            except WizError as e:
+                return _error(str(e))
+            return _text("Blinked " + ", ".join(b.label for b in bulbs)
+                         + " and put back as before.")
+
+        @tool("lights_name",
+              "Give a WiZ light a name, and optionally a room, so it can "
+              "be addressed by them (rooms address every light in them). "
+              "light: its current name, MAC or address.",
+              {"type": "object",
+               "properties": {"light": {"type": "string"},
+                              "name": {"type": "string"},
+                              "room": {"type": "string"}},
+               "required": ["light", "name"],
+               "additionalProperties": False})
+        async def lights_name(args):
+            name = str(args.get("name", "")).strip()
+            if not name or "," in name:
+                return _error("a name, without commas")
+            try:
+                hit = await found(args.get("light", ""))
+            except WizError as e:
+                return _error(str(e))
+            if len(hit) != 1:
+                return _error("that matches "
+                              + ", ".join(b.label for b in hit)
+                              + "; name one light at a time")
+            room = args.get("room")
+            wiz.name(hit[0].mac, name, room.strip() if room else None)
+            return _text(f"{hit[0].mac} is now {name!r}"
+                         + (f" in {room.strip()!r}." if room else "."))
+
+        return [lights, lights_set, lights_identify, lights_name]
 
     # ── spotify ─────────────────────────────────────────────────────────
     def _spotify_tools(self, agent) -> list:

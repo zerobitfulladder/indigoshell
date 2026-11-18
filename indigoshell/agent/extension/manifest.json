@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "INDIGO bridge",
+  "version": "0.1.0",
+  "description": "Lets INDIGO, the indigoshell desktop's call agent, use this browser: tabs, pages, forms.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "bridge@indigoshell",
+      "strict_min_version": "153.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  },
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "permissions": [
+    "tabs",
+    "scripting",
+    "nativeMessaging",
+    "alarms"
+  ],
+  "optional_permissions": [
+    "userScripts"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "48": "icon-48.png",
+    "96": "icon-96.png",
+    "128": "icon-128.png"
+  }
+}
