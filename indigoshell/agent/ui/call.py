@@ -73,6 +73,7 @@ import time
 import skia
 
 from ... import theme
+from ...core import state
 from ...widgets.base import KeyEvent, Size, Widget
 from ...widgets.text_input import ctrl_letter
 from ..session import Agent
@@ -84,6 +85,7 @@ from .you_plate import YouPlate
 
 
 CALL_WINDOW = "call"
+DRAFT_KEY = "agent.draft"       # your unsent line, between calls
 
 _RETURN, _KP_ENTER, _ESCAPE = 0xFF0D, 0xFF8D, 0xFF1B
 _UP, _DOWN, _KP_UP, _KP_DOWN = 0xFF52, 0xFF54, 0xFF97, 0xFF99
@@ -155,7 +157,13 @@ class CallHost(Widget):
     def attach(self, window) -> None:
         super().attach(window)
         self.agent_plate.reset()
-        self.you_plate.input.set_text("")
+        # What you were typing when the call closed is still there — kept
+        # in the state file too, so a reload of the shell keeps it.
+        field_ = self.you_plate.input
+        if not field_.text:
+            draft = state.get(DRAFT_KEY)
+            if isinstance(draft, str) and draft:
+                field_.set_text(draft)
         self._was_busy = self.agent.busy
         self._nudge_t0 = 0.0
         self._unsub = self.agent.subscribe(self._on_agent)
@@ -173,6 +181,7 @@ class CallHost(Widget):
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
+        state.set(DRAFT_KEY, self.you_plate.input.text)
         super().detach()
         self.agent.set_call_open(False)
 
