@@ -27,6 +27,10 @@ from .style import AGENT_FILL, FRAME_W, frame_inset, plate_path
 TRACE_LAP_S = 60.0          # one lap of the frame per minute of the turn
 TRACE_FINISH_S = 0.45       # the closing sweep when the answer lands
 TRACE_HEAD_PX = 22.0
+# How far the head's glow reaches past the plate. A plate with a trace
+# repaints this much around itself (`paint_bounds`), or the glow it
+# leaves outside its own rect is never cleared.
+TRACE_BLEED = 10.0
 # 30, not lower: at 12 the head visibly hopped along the frame. Only the
 # agent's plate (or the status plate) repaints at this rate, and only
 # while a turn runs.
@@ -88,7 +92,6 @@ class Trace:
             k = (time.monotonic() - t0) / TRACE_FINISH_S
             if k < 1.0:
                 return lap, f, _ease_out(k)
-            self._finish = None
         return None
 
     def fps(self, agent) -> int:
@@ -100,6 +103,13 @@ class Trace:
               accent: str) -> None:
         got = self._progress(agent)
         if got is None:
+            # The sweep is over only once a paint covering the whole frame
+            # has drawn it without the trace. Ended by any paint, a partial
+            # one (the caret blinking, a scan passing) stopped the frames
+            # and left the rest of the frame half swept.
+            if self._finish is not None and not agent.busy \
+                    and canvas.getLocalClipBounds().contains(r):
+                self._finish = None
             return
         lap, f, done = got
         border = plate_path(r, inset=frame_inset())
@@ -133,6 +143,7 @@ class Comet:
     def __init__(self, color: str = theme.MAGENTA_BLOOM) -> None:
         self.color = color
         self._at: float | None = None
+        self._painted_lit = False
 
     def fire(self) -> None:
         self._at = time.monotonic()
@@ -142,12 +153,15 @@ class Comet:
                 and time.monotonic() - self._at < COMET_S)
 
     def fps(self) -> int:
-        if self._at is None:
-            return 0
-        return COMET_FPS if time.monotonic() - self._at < COMET_S + SETTLE_GRACE_S else 0
+        # Frames until one has been painted without the comet: a grace
+        # window alone was not enough when a stall swallowed it.
+        if self.active() or self._painted_lit:
+            return COMET_FPS
+        return 0
 
     def paint(self, canvas: skia.Canvas, r: skia.Rect) -> None:
-        if not self.active():
+        self._painted_lit = self.active()
+        if not self._painted_lit:
             return
         k = (time.monotonic() - self._at) / COMET_S
         border = plate_path(r, inset=frame_inset())

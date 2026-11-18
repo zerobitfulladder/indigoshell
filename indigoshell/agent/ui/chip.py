@@ -34,9 +34,13 @@ class Chip(Widget):
         self.ring_since = ring_since or (lambda: 0.0)
         self.angle = -90.0
         self._kick_left = 0.0
-        # A blink's off frame must not be the last one painted: the clock
-        # stops once the mode turns still, and the chip would stay dim.
-        self._painted_dim = False
+        # The look last painted over the whole chip: (accent, label, mode,
+        # lit). Frames continue until it is the look the chip has now.
+        # The mode changes with time as well as with events — a nudge's
+        # two blinks run out by the clock — and a chip that stopped asking
+        # for frames first stayed in its last blink, bright or dim, until
+        # the pointer happened to cross it.
+        self._painted: tuple | None = None
 
     def _offset(self) -> float:
         """Degrees from the nearest rest angle (the arcs are symmetric,
@@ -49,7 +53,9 @@ class Chip(Widget):
         _a, _l, mode = self.look()
         if mode in SPIN or self._kick_left > 0 or abs(self._offset()) > 0.5:
             return CHIP_FPS
-        if mode == "blink" or self._painted_dim:
+        if mode == "blink":
+            return BLINK_FPS
+        if self._painted != (_a, _l, mode, True):
             return BLINK_FPS
         return 0
 
@@ -84,7 +90,8 @@ class Chip(Widget):
         accent, label, mode = self.look()
         r = self.rect
         lit = mode != "blink" or blink_on(time.monotonic() - self.ring_since())
-        self._painted_dim = not lit
+        if canvas.getLocalClipBounds().contains(r):
+            self._painted = (accent, label, mode, lit)
         alpha = 1.0 if lit else 0.3
         if mode == "dim":
             alpha = 0.45

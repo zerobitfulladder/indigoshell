@@ -91,6 +91,7 @@ class Row:
 def text_rows(key: str, value: str, size: float, w: float,
                color: str, x: float = 0.0, spans=(), bold=False,
                bar: str | None = None) -> list[Row]:
+    value = text.pad_wide(value)     # unchanged if already padded
     cols = cols_for(w - x, size)
     return [Row("line", line_h(size) + 3, x=x, size=size, color=color,
                 key=key, src=value, start=s, end=e, spans=list(spans),
@@ -99,6 +100,7 @@ def text_rows(key: str, value: str, size: float, w: float,
 
 def code_rows(key: str, value: str, w: float, bar: str,
                color: str = CODE_FG) -> list[Row]:
+    value = text.pad_wide(value)
     x = text.advance(ACT_SIZE) * 1.5
     cols = cols_for(w - x, ACT_SIZE)
     return [Row("line", line_h(ACT_SIZE) + 3, x=x, size=ACT_SIZE,
@@ -107,10 +109,12 @@ def code_rows(key: str, value: str, w: float, bar: str,
 
 
 def markdown_rows(message: str, w: float) -> list[Row]:
-    """Rows for a Markdown reply, `w` px wide, selectable by block."""
+    """Rows for a Markdown reply, `w` px wide, selectable by block.
+    Wide characters get their second cell before parsing, so the
+    spans' offsets already count it."""
     out: list[Row] = []
     cell = text.advance(BODY_SIZE)
-    for i, b in enumerate(markdown.parse(message)):
+    for i, b in enumerate(markdown.parse(text.pad_wide(message))):
         key = f"m{i}"
         if b.kind == "blank":
             out.append(Row("gap", 7))
@@ -153,6 +157,28 @@ def highlight(canvas, box, row: Row, sel, visible: int) -> None:
     x = box.left() + row.x
     canvas.drawRect(skia.Rect.MakeLTRB(x + s * cell, box.top() + 1,
                                        x + e * cell, box.bottom() - 1), p)
+
+
+def _draw_cells(canvas, seg: str, x: float, base: float, cell: float,
+                size: float, bold: bool, f, paint) -> None:
+    """A run with characters the theme font may lack, one cell each: a
+    fallback font for those, fitted to their cells (two for a wide one,
+    whose PAD then draws nothing)."""
+    for i, ch in enumerate(seg):
+        if ch == text.PAD:
+            continue
+        cx = x + i * cell
+        if text.has_glyph(ch, bold):
+            canvas.drawString(ch, cx, base, f, paint)
+            continue
+        cells = 2 if text.is_wide(ch) else 1
+        fb = text.grid_font(ch, size, cells * cell)
+        if fb is None:
+            continue
+        # Centred in its cells: a glyph narrower than them sits mid-way.
+        w = fb.measureText(ch)
+        canvas.drawString(ch, cx + max(0.0, (cells * cell - w) / 2), base,
+                          fb, paint)
 
 
 def paint_line(canvas, box, row: Row, sel, accent) -> None:
@@ -201,7 +227,9 @@ def paint_line(canvas, box, row: Row, sel, accent) -> None:
         # Glyph by glyph on the grid for skewed italics, so they keep
         # the columns selection is measured in.
         f = font_for(row.size, bold, italic)
-        if italic:
+        if not seg.isascii():
+            _draw_cells(canvas, seg, x, base, cell, row.size, bold, f, paint)
+        elif italic:
             for i, ch in enumerate(seg):
                 canvas.drawString(ch, x + i * cell, base, f, paint)
         else:

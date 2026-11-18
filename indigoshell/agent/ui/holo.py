@@ -142,7 +142,18 @@ class Projection(Widget):
 
     @property
     def animation_fps(self) -> int:
-        return SCAN_FPS if self.pulse.fps(self) else 0
+        playing = self.pulse.fps(self)
+        # Until a frame has cleared the band, whatever the clock says.
+        # The pass's end moves when the call's height does — a finished
+        # turn folds its steps away — and a band past the new end, or a
+        # pass whose last frames a stall swallowed, was left on screen
+        # mid-glitch with nothing scheduled to take it off.
+        return SCAN_FPS if playing or self._y is not None \
+            or not self._shown.isEmpty() else 0
+
+    def attach(self, window) -> None:
+        self._forget()
+        super().attach(window)
 
     def animate(self, t: float) -> None:
         self.tick_dt(t)
@@ -172,11 +183,20 @@ class Projection(Widget):
 
     def detach(self) -> None:
         self.pulse.cancel()
+        self._forget()
         super().detach()
+
+    def _forget(self) -> None:
+        """No band: a call closed mid-pass reopens clean."""
+        self._y = None
+        self._shown = skia.Rect.MakeEmpty()
+        self._dirty = skia.Rect.MakeEmpty()
 
     # ── paint ───────────────────────────────────────────────────────────
     def paint(self, canvas: skia.Canvas) -> None:
         y = self._y
+        if y is not None and self._band_y() is None:
+            return      # over; the next frame clears what is left of it
         surface = canvas.getSurface()
         m = canvas.getTotalMatrix()
         if y is None or surface is None or not m.isTranslate():

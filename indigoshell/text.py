@@ -7,10 +7,18 @@ from other applications. When notification bodies and MPRIS titles land,
 they go through `skia.textlayout` instead — it does HarfBuzz shaping and
 walks a fallback chain, so a CJK or emoji character renders instead of
 turning into tofu.
+
+The call overlay's text is somewhere in between: it comes from the
+agent, but it lives on a monospace grid where selection and copy count
+one cell per character. For that, `draw`/`measure` fall back per
+character to whichever installed font has a glyph the theme font lacks
+(an emoji, say), and `pad_wide` gives a wide character the second cell
+it needs on the grid — see `PAD`.
 """
 
 import logging
 import os
+import unicodedata
 
 import skia
 
@@ -69,9 +77,99 @@ def font(size: float, bold: bool = False) -> skia.Font:
     return hit
 
 
+# ── characters the theme font lacks ──────────────────────────────────
+# Stands in the second grid cell of a wide character (an emoji, CJK):
+# a Unicode noncharacter, so it never occurs in real text. It is drawn
+# as nothing, copied as nothing, and otherwise counts as a cell.
+PAD = "\ufdd0"
+
+_has: dict[tuple[bool, str], bool] = {}
+_fallback: dict[str, skia.Typeface | None] = {}
+_fallback_fonts: dict[tuple[str, float], skia.Font] = {}
+
+
+def is_wide(ch: str) -> bool:
+    return unicodedata.east_asian_width(ch) in ("W", "F")
+
+
+def pad_wide(value: str) -> str:
+    """`value` with a PAD after every wide character (once: padding
+    padded text changes nothing)."""
+    if value.isascii():
+        return value
+    out = []
+    for i, ch in enumerate(value):
+        out.append(ch)
+        if is_wide(ch) and value[i + 1:i + 2] != PAD:
+            out.append(PAD)
+    return "".join(out)
+
+
+def unpad(value: str) -> str:
+    return value.replace(PAD, "")
+
+
+def has_glyph(ch: str, bold: bool = False) -> bool:
+    key = (bold, ch)
+    hit = _has.get(key)
+    if hit is None:
+        hit = _has[key] = font(14, bold).unicharToGlyph(ord(ch)) != 0
+    return hit
+
+
+def fallback_font(ch: str, size: float) -> skia.Font | None:
+    """A font that has `ch`, from whatever is installed, or None."""
+    if ch not in _fallback:
+        tf = skia.FontMgr().matchFamilyStyleCharacter(
+            "", skia.FontStyle(), ["en"], ord(ch))
+        _fallback[ch] = tf
+    tf = _fallback[ch]
+    if tf is None:
+        return None
+    key = (tf.getFamilyName(), size)
+    hit = _fallback_fonts.get(key)
+    if hit is None:
+        hit = skia.Font(tf, size)
+        hit.setSubpixel(True)
+        hit.setEdging(skia.Font.Edging.kAntiAlias)
+        _fallback_fonts[key] = hit
+    return hit
+
+
+def grid_font(ch: str, size: float, width: float) -> skia.Font | None:
+    """A fallback font for `ch` at `size` or smaller, so the glyph is no
+    wider than `width` — its cells on the grid."""
+    f = fallback_font(ch, size)
+    if f is None:
+        return None
+    w = f.measureText(ch)
+    return f if w <= width + 0.5 or w <= 0 else fallback_font(
+        ch, round(size * width / w * 4) / 4)
+
+
+def _runs(text: str, size: float, bold: bool) -> list[tuple[str, skia.Font]]:
+    """`text` split into runs of one font: the theme font, or a fallback
+    for characters it lacks. PADs are dropped."""
+    main = font(size, bold)
+    runs: list[tuple[str, skia.Font]] = []
+    for ch in text:
+        if ch == PAD:
+            continue
+        f = main if has_glyph(ch, bold) else (fallback_font(ch, size) or main)
+        if runs and runs[-1][1] is f:
+            runs[-1] = (runs[-1][0] + ch, f)
+        else:
+            runs.append((ch, f))
+    return runs
+
+
 def measure(text: str, size: float, bold: bool = False,
             tracking: float = 0.0) -> float:
-    width = font(size, bold).measureText(text)
+    if text.isascii():
+        width = font(size, bold).measureText(text)
+    else:
+        width = sum(f.measureText(run) for run, f in _runs(text, size, bold))
+        text = unpad(text)
     if tracking and len(text) > 1:
         # Gaps between glyphs only — no trailing space, so a tracked
         # label still butts up cleanly against whatever follows it.
@@ -106,6 +204,16 @@ def draw(canvas: skia.Canvas, text: str, x: float, baseline: float,
     paint = skia.Paint(AntiAlias=True)
     paint.setColor(color)
     f = font(size, bold)
+    if not text.isascii():
+        for run, rf in _runs(text, size, bold):
+            if tracking:
+                for ch in run:
+                    canvas.drawString(ch, x, baseline, rf, paint)
+                    x += rf.measureText(ch) + tracking
+            else:
+                canvas.drawString(run, x, baseline, rf, paint)
+                x += rf.measureText(run)
+        return
     if not tracking:
         canvas.drawString(text, x, baseline, f, paint)
         return

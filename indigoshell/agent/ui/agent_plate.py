@@ -11,7 +11,7 @@ from ... import shapes, text, theme
 from ...widgets.base import Size, Widget
 from ...services import clipboard
 from ..session import DEFAULT_EFFORT, Agent
-from .frame import Trace
+from .frame import TRACE_BLEED, Trace
 from .reveal import Reveal
 from .style import AGENT_FILL, ACT_ROWS_ALL, ACT_ROWS_BUSY, ACT_ROWS_IDLE, ACT_SIZE, ASK_ACCENT, BODY_SIZE, CLICK_S, COPIED_S, CORNERS, FAIL_ACCENT, HISTORY_ROWS, MAX_BODY_ROWS, NAME_SIZE, OUT_ROWS, OUT_ROWS_FULL, PAD_X, PAD_Y, PLATE_W, STATUS_WORDS, TAG_SIZE, TOOL_FG, accent_of, ago, clock_text, line_h, paint_heading, paint_plate
 from .rows import Row, code_rows, highlight, markdown_rows, paint_line, text_rows
@@ -371,7 +371,8 @@ class AgentPlate(Widget):
             got = spans.setdefault(row.key, [sel[0], sel[1]])
             got[0], got[1] = min(got[0], sel[0]), max(got[1], sel[1])
             sources[row.key] = row.src
-        return "\n".join(sources[k][s:e] for k, (s, e) in spans.items())
+        return text.unpad("\n".join(sources[k][s:e]
+                                    for k, (s, e) in spans.items()))
 
     def copy(self, selection: str = "clipboard") -> bool:
         value = self.selected_text()
@@ -465,6 +466,9 @@ class AgentPlate(Widget):
         return False
 
     # ── paint ───────────────────────────────────────────────────────────
+    def paint_bounds(self) -> skia.Rect:
+        return self.rect.makeOutset(TRACE_BLEED, TRACE_BLEED)
+
     def paint(self, canvas: skia.Canvas) -> None:
         a = self.agent
         accent = accent_of(a)
@@ -476,6 +480,7 @@ class AgentPlate(Widget):
         left = self.rect.left() + PAD_X
         right = self.rect.right() - PAD_X
         clip = canvas.getLocalClipBounds()
+        self.reveal.begin_paint()
         for row, top in laid:
             if top > clip.bottom() or top + row.h < clip.top():
                 continue
@@ -516,6 +521,9 @@ class AgentPlate(Widget):
                 self._paint_keys(canvas, box)
             elif kind == "session":
                 self._paint_session(canvas, box, int(row.label), accent)
+        # A frame the clock drove repaints the whole plate; only then has
+        # every reply row shown whether it is still decoding.
+        self.reveal.end_paint(clip.contains(self.rect))
 
     def _paint_session(self, canvas, box, index: int, accent) -> None:
         info = self.history[index]

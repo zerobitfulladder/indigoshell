@@ -42,6 +42,10 @@ class Reveal:
         self.arrivals: dict[str, list[float]] = {}
         self._turn = None
         self._latest = 0.0
+        # Whether the last whole-plate paint still had text mid-decode;
+        # see fps().
+        self._painted_fresh = False
+        self._saw_fresh = False
 
     # ── bookkeeping ─────────────────────────────────────────────────────
     def track(self, agent, rows: list[Row]) -> None:
@@ -68,12 +72,22 @@ class Reveal:
         return time.monotonic() - self._latest < HOLD
 
     def fps(self) -> int:
-        # Past HOLD by a few frames, so the settled text is what gets
-        # painted last — stopping right at HOLD left the final chunk
-        # frozen mid-decode until something else repainted the plate.
-        return (REVEAL_FPS
-                if time.monotonic() - self._latest < HOLD + SETTLE_GRACE_S
-                else 0)
+        # Frames until the plate has been painted whole with everything
+        # settled. Stopping at HOLD, or a little after, left the last
+        # chunk frozen mid-decode whenever those frames went missing — a
+        # stall as the turn ended was enough.
+        if time.monotonic() - self._latest < HOLD + SETTLE_GRACE_S \
+                or self._painted_fresh:
+            return REVEAL_FPS
+        return 0
+
+    def begin_paint(self) -> None:
+        self._saw_fresh = False
+
+    def end_paint(self, whole: bool) -> None:
+        """After the plate's rows; `whole` when every row was painted."""
+        if whole:
+            self._painted_fresh = self._saw_fresh
 
     def _arrival(self, row: Row, i: int) -> float:
         arr = self.arrivals.get(row.key, ())
@@ -96,6 +110,7 @@ class Reveal:
             if row.cursor:
                 _bar(canvas, box, row, accent)
             return
+        self._saw_fresh = True
         k = bisect.bisect_left(arr, now - HOLD, row.start,
                                min(row.end, len(arr)))
         paint_line(canvas, box, _piece(row, row.start, k), sel, accent)
