@@ -12,6 +12,24 @@ const HOST = "indigoshell";
 const LOAD_MS = 8000;
 
 let port = null;
+// Pings to the shell, by id. The host keeps the port open while the
+// shell is down, so an open port alone does not say the shell is there:
+// asking it does.
+const pings = new Map();
+let pingCount = 0;
+
+function pingShell(ms = 1000) {
+  if (!port) return Promise.resolve(false);
+  const id = "ping" + (++pingCount);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { pings.delete(id); resolve(false); }, ms);
+    pings.set(id, () => { clearTimeout(timer); resolve(true); });
+    port.postMessage({id, ping: true});
+  });
+}
+// Files on their way into a page, by upload id: Firefox caps a message
+// from the host at 1 MB, so the shell sends them in base64 pieces.
+const uploads = new Map();
 
 function connect() {
   if (port) return;
@@ -36,6 +54,12 @@ browser.tabs.onActivated.addListener(connect);
 connect();
 
 async function onMessage(msg) {
+  if (msg.pong) {                 // the shell answering a ping
+    const done = pings.get(msg.id);
+    pings.delete(msg.id);
+    if (done) done();
+    return;
+  }
   let reply;
   try {
     reply = {id: msg.id, ok: true, result: await handle(msg.op, msg.args || {})};
@@ -44,6 +68,15 @@ async function onMessage(msg) {
   }
   if (port) port.postMessage(reply);
 }
+
+// The toolbar popup and the options page ask how the bridge is doing.
+browser.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.type === "status") {
+    return pingShell().then((shell) => ({
+      port: !!port, shell, version: browser.runtime.getManifest().version}));
+  }
+  return undefined;
+});
 
 // ── tabs ───────────────────────────────────────────────────────────────
 function info(t, focusedWindow) {
@@ -86,6 +119,28 @@ async function inPage(tabId, fn, args) {
   if (!res) throw new Error("the page gave no answer");
   if (res.error) throw new Error(res.error.message || String(res.error));
   return res.result;
+}
+
+// Runs in the page's own world (see page.js, markDrop): the file and the
+// drag events are the page's own objects, so its drop handler can read
+// them.
+function dropInPage(b64, name, type, token) {
+  const el = document.querySelector(`[data-indigo-drop="${token}"]`);
+  if (!el) throw new Error("the drop target went away");
+  el.removeAttribute("data-indigo-drop");
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const dt = new DataTransfer();
+  dt.items.add(new File([bytes], name, {type, lastModified: Date.now()}));
+  el.scrollIntoView({block: "center"});
+  const r = el.getBoundingClientRect();
+  const at = {bubbles: true, cancelable: true, composed: true, dataTransfer: dt,
+              clientX: r.left + r.width / 2, clientY: r.top + r.height / 2};
+  for (const kind of ["dragenter", "dragover", "drop"]) {
+    el.dispatchEvent(new DragEvent(kind, at));
+  }
+  return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "");
 }
 
 async function handle(op, a) {
@@ -156,6 +211,33 @@ async function handle(op, a) {
 
     case "shot":
       return await browser.tabs.captureTab(a.tab, {format: "png"});
+
+    case "upload_part": {
+      const u = uploads.get(a.id) || {parts: []};
+      u.parts[a.index] = a.data;
+      uploads.set(a.id, u);
+      return a.index;
+    }
+
+    case "upload": {
+      const u = uploads.get(a.id);
+      uploads.delete(a.id);
+      if (!u || u.parts.length !== a.parts || u.parts.some((p) => p === undefined)) {
+        throw new Error("the file did not arrive whole; try again");
+      }
+      const b64 = u.parts.join("");
+      if (!a.drop) {
+        return await inPage(a.tab, "upload", {
+          b64, name: a.name, type: a.type, ref: a.ref, selector: a.selector});
+      }
+      const token = await inPage(a.tab, "markDrop", {ref: a.ref, selector: a.selector});
+      const [res] = await browser.scripting.executeScript({
+        target: {tabId: a.tab}, world: "MAIN", func: dropInPage,
+        args: [b64, a.name, a.type, token]});
+      if (!res) throw new Error("the page gave no answer");
+      if (res.error) throw new Error(res.error.message || String(res.error));
+      return {how: "drop", into: res.result};
+    }
 
     case "options":                 // where Allow JavaScript lives
       await browser.runtime.openOptionsPage();

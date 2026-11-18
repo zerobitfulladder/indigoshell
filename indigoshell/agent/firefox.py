@@ -49,6 +49,8 @@ CALL_S = 30.0
 CONNECT_WAIT_S = 4.0
 READ_MAX = 12000
 JS_MAX = 20000
+UPLOAD_MAX = 64 * 1024 * 1024     # bytes; more is a job for the app itself
+UPLOAD_PART = 512 * 1024          # base64 characters per message (< 1 MB)
 
 
 class FirefoxError(Exception):
@@ -213,6 +215,10 @@ class Firefox:
                     msg = json.loads(line)
                 except ValueError:
                     continue
+                if msg.get("ping"):     # the add-on asking if we are here
+                    writer.write((json.dumps({"id": msg.get("id"), "pong": True})
+                                  + "\n").encode())
+                    continue
                 fut = self._pending.pop(msg.get("id"), None)
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
@@ -332,6 +338,37 @@ class Firefox:
         if len(text) > JS_MAX:
             text = text[:JS_MAX] + f"\n… (cut, {len(text)} characters)"
         return text
+
+    async def upload(self, tab: int, path: str, *, ref: int | None = None,
+                     selector: str | None = None, drop: bool = False) -> dict:
+        """Put a local file into a page's upload box (or drop it onto an
+        element), as picking it in the file dialog would. Sent in pieces:
+        Firefox caps a message to an add-on at 1 MB."""
+        import mimetypes
+        import uuid
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isfile(path):
+            raise FirefoxError(f"no file at {path}")
+        size = os.path.getsize(path)
+        if size > UPLOAD_MAX:
+            raise FirefoxError(f"{size // 1048576} MB is more than "
+                               f"{UPLOAD_MAX // 1048576} MB; send it some other way")
+
+        def read() -> str:
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode()
+        b64 = await asyncio.to_thread(read)
+        parts = [b64[i:i + UPLOAD_PART] for i in range(0, len(b64), UPLOAD_PART)] or [""]
+        uid = uuid.uuid4().hex
+        for i, part in enumerate(parts):
+            await self.call("upload_part", id=uid, index=i, data=part)
+        res = await self.call(
+            "upload", timeout=90, tab=tab, id=uid, parts=len(parts),
+            name=os.path.basename(path),
+            type=mimetypes.guess_type(path)[0] or "application/octet-stream",
+            ref=ref, selector=selector, drop=drop)
+        res["size"] = size
+        return res
 
     async def screenshot(self, tab: int) -> bytes:
         url = await self.call("shot", tab=tab)

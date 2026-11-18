@@ -73,8 +73,9 @@ account from the `claude` in your terminal.
   account — colours, whites, brightness and their built-in scenes, by
   the names and rooms you give them on a call; and your everyday
   Firefox, signed in as you — tabs, pages read as text with every link,
-  field and button numbered, clicks, typing, forms, JavaScript in the
-  page, screenshots of a tab.
+  field and button numbered, clicks, typing, forms, file uploads (send
+  a file on WhatsApp, attach it to a mail), JavaScript in the page,
+  screenshots of a tab.
 
   <img src="docs/media/call-music.png" width="100%"
        alt="Asked for music that sounds like rain on neon, the agent searching Spotify and queueing Vangelis">
@@ -133,8 +134,9 @@ host and sets two Firefox preferences (it asks for `sudo` once):
 .venv/bin/python -m indigoshell.agent.firefox install
 ```
 
-Then restart Firefox, and under about:addons → INDIGO bridge → Options
-press **Allow JavaScript** for the tool that runs scripts in a page.
+Then restart Firefox. The add-on's toolbar button shows whether it is
+connected to the shell; press **Allow JavaScript** there once for the
+tool that runs scripts in a page.
 
 ## Showcase
 

@@ -31,7 +31,7 @@ workspace, skip a song). Nothing here clicks or types for you.
     lights_name         give a light a name and a room
     browser_*           the everyday Firefox, with the user's sign-ins:
                         tabs, reading pages, clicking, filling forms,
-                        keys, JavaScript, screenshots of a tab
+                        keys, uploading files, JavaScript, screenshots
 
 What each Spotify tool needs — nothing, the app's credentials, or the
 user's sign-in — is set out in agent/spotify.py; how the lights are
@@ -74,8 +74,9 @@ they tell you what it is, `lights_name` remembers it. The user's own \
 Firefox is yours too, signed in as them, through the `browser_*` tools: \
 list and open tabs, read a page (links, fields and buttons come back \
 numbered, {12 button "Sign in"}, and the other tools take those \
-numbers), click, fill forms, press keys, run JavaScript in a page, and \
-screenshot a tab. Prefer them to fetching a page yourself when the user \
+numbers), click, fill forms, press keys, upload a local file into a \
+page (sending it on WhatsApp, attaching it to a mail), run JavaScript \
+in a page, and screenshot a tab. Prefer them to fetching a page yourself when the user \
 means something in their browser or behind their sign-in. Outside \
 Firefox, you cannot click or type on the user's behalf. Screenshots include the call overlay in the top-right \
 corner. How the user wants to be shown things is in your CLAUDE.md."""
@@ -548,6 +549,35 @@ class ShellTools:
             await ff.page(tab, "keys", wait=4, keys=keys)
             return _text(f"Pressed. Now at {await ff.where(tab)}.")
 
+        @tool("browser_upload",
+              "Put a local file into a page's upload box, as picking it in "
+              "the file dialog would — to send it in a chat, attach it to "
+              "a mail, upload it to a form. path is the file. ref (an "
+              "upload box from browser_read, which lists hidden ones too) "
+              "or selector says where; leave both out and the page's upload "
+              "box that takes this kind of file is used. Many apps "
+              "(WhatsApp, Gmail) only create their upload boxes once their "
+              "attach menu is opened: click that first. drop instead drops "
+              "the file onto ref/selector, as if dragged in. Afterwards the "
+              "app usually shows a preview: press its send button.",
+              {"type": "object",
+               "properties": {"tab": TAB, "path": {"type": "string"},
+                              "ref": {"type": "integer"},
+                              "selector": {"type": "string"},
+                              "drop": {"type": "boolean"}},
+               "required": ["path"], "additionalProperties": False})
+        @guard
+        async def browser_upload(args):
+            tab = await ff.tab(args.get("tab"))
+            res = await ff.upload(tab, args["path"], ref=args.get("ref"),
+                                  selector=args.get("selector"),
+                                  drop=bool(args.get("drop")))
+            kb = res["size"] / 1024
+            how = ("dropped onto " + res["into"] if res.get("how") == "drop"
+                   else f"in the upload box ({res['into']})")
+            return _text(f"{os.path.basename(args['path'])} ({kb:.0f} KB) is "
+                         f"{how}. Now at {await ff.where(tab)}.")
+
         @tool("browser_js",
               "Run JavaScript in a page of the user's Firefox, in the "
               "page's own context (its variables, its DOM, signed in as "
@@ -581,7 +611,7 @@ class ShellTools:
 
         return [browser_tabs, browser_open, browser_switch, browser_close,
                 browser_go, browser_read, browser_click, browser_fill,
-                browser_keys, browser_js, browser_screenshot]
+                browser_keys, browser_upload, browser_js, browser_screenshot]
 
     # ── lights ──────────────────────────────────────────────────────────
     def _light_tools(self) -> list:

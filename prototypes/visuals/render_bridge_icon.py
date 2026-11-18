@@ -18,8 +18,10 @@ OUT = os.path.normpath(os.path.join(HERE, "..", "..", "indigoshell", "agent",
 
 
 def main() -> None:
-    for size in (48, 96, 128):
-        chip = Chip(size, lambda: (AGENT_ACCENT, "INDIGO" if size >= 96 else "AI", "still"))
+    # The toolbar uses 16 and 32; at 16 there is no room for a word.
+    for size in (16, 32, 48, 96, 128):
+        label = "INDIGO" if size >= 96 else "AI" if size >= 32 else ""
+        chip = Chip(size, lambda label=label: (AGENT_ACCENT, label, "still"))
         chip.rect = skia.Rect.MakeWH(size, size)
         s = skia.Surface(size, size)
         s.getCanvas().clear(skia.ColorTRANSPARENT)

@@ -39,6 +39,15 @@
   };
   const ref = (el) => { refs.push(el); return refs.length - 1; };
 
+  // An upload box: {12 file "Attach" accept image/*} — what
+  // browser_upload takes.
+  const fileMarker = (el) => {
+    const accept = el.getAttribute("accept");
+    return `{${ref(el)} file ${q(labelOf(el) || "upload")}`
+      + (accept ? ` accept ${clip(accept, 60)}` : "")
+      + (el.multiple ? " multiple" : "") + "}";
+  };
+
   // A brace marker for what can be acted on, or null for anything else.
   const marker = (el) => {
     const tag = el.tagName, role = el.getAttribute("role");
@@ -54,6 +63,9 @@
         || (tag === "INPUT" && ["submit", "button", "reset", "image"].includes(el.type))) {
       const kind = role === "tab" ? "tab" : role === "menuitem" ? "menuitem" : "button";
       return `{${ref(el)} ${kind} ${q(text(el) || el.value || labelOf(el))}${el.disabled ? " disabled" : ""}}`;
+    }
+    if (tag === "INPUT" && el.type === "file") {
+      return fileMarker(el);
     }
     if (tag === "INPUT") {
       if (el.type === "hidden") return "";
@@ -123,6 +135,16 @@
     };
     walk(root);
     flush();
+    // Apps hide their real upload boxes behind a button of their own; list
+    // those too, since they are what an upload goes into.
+    const hidden = [...root.querySelectorAll("input[type=file]")]
+      .filter((el) => !refs.includes(el) && !el.disabled);
+    if (hidden.length) {
+      const wasCut = cut;
+      cut = false;        // room for this line even after a long page
+      push("Upload boxes: " + hidden.map(fileMarker).join(" "));
+      cut = cut || wasCut;
+    }
     return {title: document.title, url: location.href, text: out.join("\n"),
             cut, frames, refs: refs.length};
   }
@@ -326,6 +348,73 @@
     return a && a !== document.body ? (a.tagName.toLowerCase() + (a.id ? "#" + a.id : "")) : "";
   }
 
+  // ── uploading ────────────────────────────────────────────────────────
+  // How well an <input type=file accept=...> takes a file: 2 when a token
+  // names its type or extension, 1 when it takes anything, 0 when not.
+  function fits(el, name, type) {
+    const accept = (el.getAttribute("accept") || "").trim();
+    if (!accept || accept === "*" || accept === "*/*") return 1;
+    const ext = "." + (name.split(".").pop() || "").toLowerCase();
+    for (let t of accept.split(",")) {
+      t = t.trim().toLowerCase();
+      if (!t) continue;
+      if (t === ext || t === type) return 2;
+      if (t.endsWith("/*") && type.startsWith(t.slice(0, -1))) return 2;
+      if (t === "*" || t === "*/*") return 1;
+    }
+    return 0;
+  }
+
+  function uploadTarget(a, name, type) {
+    if (a.ref !== undefined && a.ref !== null || a.selector) {
+      const el = find(a);
+      return el;
+    }
+    const boxes = [...document.querySelectorAll("input[type=file]")].filter((e) => !e.disabled);
+    let best = null, score = 0;
+    for (const e of boxes) {
+      const f = fits(e, name, type);
+      if (f > score) { best = e; score = f; }
+    }
+    if (!best) {
+      throw new Error(boxes.length
+        ? `no upload box here takes ${name} (${type || "unknown type"})`
+        : "no upload box on this page — open its attach menu first (the paperclip or + button), then try again");
+    }
+    return best;
+  }
+
+  function upload({b64, name, type = "", ref, selector} = {}) {
+    const el = uploadTarget({ref, selector}, name, type);
+    if (!(el.tagName === "INPUT" && el.type === "file")) {
+      throw new Error("that is not an upload box; to drop the file onto it, use drop");
+    }
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes], name, {type, lastModified: Date.now()}));
+    // As the file picker leaves it: the box holds the file, and the page
+    // hears input and change.
+    el.files = dt.files;
+    el.dispatchEvent(new Event("input", {bubbles: true}));
+    el.dispatchEvent(new Event("change", {bubbles: true}));
+    return {how: "box", into: (el.getAttribute("accept") || "any file")};
+  }
+
+  // A drop has to be built in the page's own world: Firefox does not hand
+  // the page the files of a drop made here. So this only finds the
+  // target and marks it for that step (background.js, dropInPage).
+  function markDrop({ref, selector} = {}) {
+    if ((ref === undefined || ref === null) && !selector) {
+      throw new Error("say where to drop it: ref or selector");
+    }
+    const el = find({ref, selector});
+    const token = Math.random().toString(36).slice(2);
+    el.setAttribute("data-indigo-drop", token);
+    return token;
+  }
+
   function scroll({pages = 1} = {}) {
     scrollBy(0, pages * innerHeight * 0.9);
     return Math.round(scrollY);
@@ -335,5 +424,5 @@
     return {title: document.title, url: location.href, ready: document.readyState};
   }
 
-  window.__indigo = {read, click, fill, keys, scroll, where};
+  window.__indigo = {read, click, fill, keys, scroll, where, upload, markDrop};
 })();
