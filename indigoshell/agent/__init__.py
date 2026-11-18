@@ -17,9 +17,10 @@ The package, by job:
     tools.py         `ShellTools`: the desktop as tools — screenshots,
                      opening links and files (brought forward on their
                      workspace), apps, workspaces, the clipboard,
-                     Spotify, WiZ lights, Firefox
+                     Spotify, WiZ lights, Firefox, the phone
     spotify.py       the Spotify app and Web API, with its own sign-in
     wiz.py           WiZ lights on the LAN: discovery, scenes, names
+    phone.py         the user's phone over SFTP (MiXplorer's server)
     firefox.py       `Firefox`: the shell's end of the INDIGO bridge
                      add-on (extension/) and its native host
                      (browser_host.py) — the everyday Firefox, no port

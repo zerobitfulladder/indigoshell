@@ -33,5 +33,6 @@ indigoshell = "indigoshell.app:main"
 # as before and the call says the SDK is missing. Install into the venv
 # with `uv pip install`, not `uv sync` — see the aubio note above.
 call = [
+    "asyncssh>=2.24",
     "claude-agent-sdk>=0.2.183",
 ]

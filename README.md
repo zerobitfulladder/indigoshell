@@ -75,7 +75,8 @@ account from the `claude` in your terminal.
   Firefox, signed in as you — tabs, pages read as text with every link,
   field and button numbered, clicks, typing, forms, file uploads (send
   a file on WhatsApp, attach it to a mail), JavaScript in the page,
-  screenshots of a tab.
+  screenshots of a tab; and your phone over Wi-Fi — its folders
+  listed and searched, files pulled to this computer or pushed to it.
 
   <img src="docs/media/call-music.png" width="100%"
        alt="Asked for music that sounds like rain on neon, the agent searching Spotify and queueing Vangelis">
@@ -137,6 +138,16 @@ host and sets two Firefox preferences (it asks for `sudo` once):
 Then restart Firefox. The add-on's toolbar button shows whether it is
 connected to the shell; press **Allow JavaScript** there once for the
 tool that runs scripts in a page.
+
+The phone tools speak SFTP to the server in the phone's file manager
+(MiXplorer's, from its Servers menu; any SFTP server works). Start it,
+then pair once — it asks for the address the server shows and its
+password, and pins the server's key, so files only ever go to that
+phone, wherever DHCP puts it:
+
+```bash
+.venv/bin/python -m indigoshell.agent.phone setup
+```
 
 ## Showcase
 
@@ -281,6 +292,7 @@ indigoshell/
     spotify.py      ─ the Spotify app (MPRIS) and Web API, with sign-in
     wiz.py          ─ WiZ lights on the LAN: discovery, scenes, names
     firefox.py      ─ the everyday Firefox, via the INDIGO bridge add-on
+    phone.py        ─ the phone's files over SFTP: pairing, finding it
     browser_host.py ─ that add-on's native messaging host
     extension/      ─ the add-on: page reader, clicks, forms, JavaScript
     prompts.py      ─ the call protocol and the persona
