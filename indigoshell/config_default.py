@@ -393,6 +393,7 @@ WINDOWS = [
         focusable=False,
         dismiss_on_outside_click=True,
         grab_keyboard=True,
+        close_keys=("super+a",),     # qtile's MOD+A, hidden from it by the grab
         keep_alive=True,
         background="#00000000",
         blur=True,

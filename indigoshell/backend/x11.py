@@ -12,6 +12,7 @@ into the loop with `add_reader`.
 
 import logging
 import struct
+import time
 from dataclasses import dataclass
 
 import xcffib
@@ -152,6 +153,12 @@ class Display:
         self.on_unhandled = None
         self._root_listeners: list = []
         self._screen_listeners: list = []
+        self._root_mask = 0
+        # Override-redirect windows held above every other client's, in
+        # the order they are raised — see `keep_above`.
+        self._above: list[int] = []
+        self._raise_due = False
+        self._raised_at: list[float] = []
         self._keymap: dict[int, tuple[int, ...]] | None = None
         self._mod_masks: dict[str, int] = {}
 
@@ -270,6 +277,11 @@ class Display:
                 except Exception as e:
                     raise DisplayError(f"X connection lost: {e}") from e
                 if ev is None:
+                    if self._raise_due:
+                        # Once per drained batch: a workspace switch maps
+                        # several windows, and one raise answers them all.
+                        self._raise_due = False
+                        self._raise_kept()
                     return count
                 count += 1
                 self.dispatch(ev)
@@ -386,12 +398,20 @@ class Display:
         root properties, so this is how a widget learns about workspace
         changes without polling.
         """
-        if not self._root_listeners:
-            self.conn.core.ChangeWindowAttributes(
-                self.root, xp.CW.EventMask, [xp.EventMask.PropertyChange])
-            self.on(self.root, self._on_root_event)
-            self.flush()
+        self._select_root(xp.EventMask.PropertyChange)
         self._root_listeners.append(callback)
+
+    def _select_root(self, mask: int) -> None:
+        """Add to what this connection hears from the root window. A
+        client has one event mask per window, and setting it replaces the
+        last one, so every subscriber's bits go in together."""
+        if self._root_mask & mask == mask:
+            return
+        self._root_mask |= mask
+        self.conn.core.ChangeWindowAttributes(
+            self.root, xp.CW.EventMask, [self._root_mask])
+        self.on(self.root, self._on_root_event)
+        self.flush()
 
     def add_screen_listener(self, callback) -> None:
         """Subscribe to RandR changes: the screen configuration, and
@@ -423,13 +443,69 @@ class Display:
             log.debug("cannot watch 0x%x", wid, exc_info=True)
 
     def _on_root_event(self, ev) -> None:
-        if not isinstance(ev, xp.PropertyNotifyEvent):
+        if isinstance(ev, xp.PropertyNotifyEvent):
+            for cb in list(self._root_listeners):
+                try:
+                    cb(ev)
+                except Exception:
+                    log.exception("root listener failed")
+        elif self._above and self._covers(ev):
+            self._raise_due = True
+
+    # ── stacking ────────────────────────────────────────────────────────
+    def keep_above(self, wid: int, keep: bool = True) -> None:
+        """Hold an override-redirect window above every other client's
+        window, or (`keep=False`) stop.
+
+        The window manager never sees an override-redirect window, so
+        _NET_WM_STATE_ABOVE means nothing for it and stacking is raw X
+        order: whatever was raised last is on top, and qtile raises a
+        window when it is clicked. VisibilityNotify, the event meant for
+        noticing that, does not come under picom (tested: a window mapped
+        over ours sent it nothing). What does come is the root's
+        SubstructureNotify, every map and restack of a top-level window;
+        when another client's window lands over ours, ours go back up.
+        """
+        if not keep:
+            if wid in self._above:
+                self._above.remove(wid)
             return
-        for cb in list(self._root_listeners):
-            try:
-                cb(ev)
-            except Exception:
-                log.exception("root listener failed")
+        if wid not in self._above:
+            self._above.append(wid)
+        self._select_root(xp.EventMask.SubstructureNotify)
+        self._raise_kept()
+
+    def _ours(self, wid: int) -> bool:
+        """Whether this connection created the window: X hands each
+        client its own range of resource ids."""
+        return (wid & ~self.setup.resource_id_mask) == self.setup.resource_id_base
+
+    def _covers(self, ev) -> bool:
+        """Whether a root SubstructureNotify event put another client's
+        window over ours. Ours sit at the top of the stack, so a window
+        stacked over any of them lands directly on one of ours."""
+        if isinstance(ev, xp.MapNotifyEvent):
+            return not self._ours(ev.window)    # mapped on top of the stack
+        if isinstance(ev, xp.ConfigureNotifyEvent):
+            return (not self._ours(ev.window) and ev.above_sibling != 0
+                    and self._ours(ev.above_sibling))
+        if isinstance(ev, xp.CirculateNotifyEvent):
+            return not self._ours(ev.window) and ev.place == xp.Place.OnTop
+        return False
+
+    def _raise_kept(self) -> None:
+        now = time.monotonic()
+        self._raised_at = [t for t in self._raised_at if now - t < 1.0]
+        if len(self._raised_at) >= 20:
+            # Another client keeping itself on top the same way would
+            # answer each of our raises with one of its own: let it have
+            # the top rather than trade raises forever.
+            return
+        self._raised_at.append(now)
+        for wid in self._above:
+            self.conn.core.ConfigureWindow(
+                wid, xp.ConfigWindow.StackMode, [xp.StackMode.Above])
+        self.flush()
 
     # ── properties ──────────────────────────────────────────────────────
     def get_ints(self, wid: int, name: str, length: int = 64) -> list[int]:

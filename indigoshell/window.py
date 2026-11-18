@@ -123,6 +123,11 @@ class WindowSpec:
     # Take the keyboard while open, like a chord menu. Implies the window
     # is transient — a grab held forever locks the session.
     grab_keyboard: bool = False
+    # Chords that close a grabbing window, besides Escape: its own
+    # keybinding. With the keyboard held here the window manager never
+    # sees the second press, so the window has to know it. Written like
+    # "super+a": modifiers (super, ctrl, alt, shift), then one key.
+    close_keys: tuple[str, ...] = ()
 
     # Ask the compositor to blur whatever is behind the window, so a
     # translucent plate reads as frosted glass. picom here only blurs
@@ -150,7 +155,7 @@ class WindowSpec:
 
     @property
     def keep_above(self) -> bool:
-        """Whether we must raise ourselves.
+        """Whether we must hold ourselves on top (`Display.keep_above`).
 
         An override-redirect window is invisible to the window manager, so
         _NET_WM_STATE_ABOVE is ignored for it and stacking falls back to
@@ -158,6 +163,15 @@ class WindowSpec:
         bar) get their layer honoured and need none of this.
         """
         return self.override_redirect and self.layer in (Layer.DOCK, Layer.OVERLAY)
+
+
+def _chord_is(key: KeyEvent, chord: str) -> bool:
+    """Whether a key press is `chord` ("super+a"): exactly those
+    modifiers held, and the key itself in either case."""
+    *mods, name = chord.lower().split("+")
+    held = {m for m in ("super", "ctrl", "alt", "shift") if getattr(key, m)}
+    return (held == set(mods) and len(name) == 1
+            and 0 < key.keysym < 0x100 and chr(key.keysym).lower() == name)
 
 
 class Window:
@@ -312,10 +326,6 @@ class Window:
                        | xp.EventMask.PointerMotion | xp.EventMask.LeaveWindow)
         if self.spec.grab_keyboard:
             events |= xp.EventMask.KeyPress
-        if self.spec.keep_above:
-            # VisibilityNotify is how an unmanaged window learns something
-            # was stacked over it; there is no other signal.
-            events |= xp.EventMask.VisibilityChange
         # BackPixel *and* BorderPixel are both required on a depth-32
         # window: without an explicit border pixel the server inherits
         # the parent's, whose depth doesn't match, and CreateWindow
@@ -634,7 +644,7 @@ class Window:
         if self._phase != "enter":
             self._set_blur(True)
         if self.spec.keep_above:
-            self.raise_()
+            self.display.keep_above(self.wid)
 
         # The spawn's own time starts with its first frame on the clock,
         # not here: this frame draws it at zero, which for the panels'
@@ -686,14 +696,7 @@ class Window:
         self._stop_clock()
         self._pace()
 
-    # ── stacking and grabs ──────────────────────────────────────────────
-    def raise_(self) -> None:
-        if self.wid is None:
-            return
-        self.display.conn.core.ConfigureWindow(
-            self.wid, xp.ConfigWindow.StackMode, [xp.StackMode.Above])
-        self.display.flush()
-
+    # ── grabs ───────────────────────────────────────────────────────────
     def _grab_pointer(self) -> None:
         """Grab the pointer so clicks anywhere else reach us.
 
@@ -802,6 +805,7 @@ class Window:
         if self.wid is None or not self.mapped:
             return
         self._stop_clock()
+        self.display.keep_above(self.wid, False)
         self.display.conn.core.UnmapWindow(self.wid)
         self.display.flush()
         self.mapped = False
@@ -902,6 +906,7 @@ class Window:
             except Exception:
                 log.exception("detach failed for %s", self.spec.name)
         self.display.off(self.wid)
+        self.display.keep_above(self.wid, False)
         try:
             self.display.conn.core.DestroyWindow(self.wid)
             self.display.flush()
@@ -1561,11 +1566,6 @@ class Window:
             self._on_key(ev)
         elif isinstance(ev, xp.LeaveNotifyEvent):
             self._set_hover(None)
-        elif isinstance(ev, xp.VisibilityNotifyEvent):
-            # Something stacked over us. Managed windows never get here;
-            # for an override-redirect window this is the only way back up.
-            if ev.state != xp.Visibility.Unobscured and self._phase != "exit":
-                self.raise_()
 
     def _key_event(self, ev) -> KeyEvent:
         d, state = self.display, ev.state
@@ -1593,6 +1593,9 @@ class Window:
         if self.content is None or self._dismissing():
             return
         key = self._key_event(ev)
+        if any(_chord_is(key, chord) for chord in self.spec.close_keys):
+            self._request_close()
+            return
         try:
             if not self.content.key(key):
                 # Escape always closes a grabbing window, even if nothing
