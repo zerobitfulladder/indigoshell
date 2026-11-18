@@ -12,6 +12,13 @@ for working on it, including how to show them things. Things about the
 user as a person (how they like to be talked to, nicknames, what they
 enjoy) go in the agent's memory instead. Each fact lives in one place.
 
+## Working rules
+- New abilities are skills. When the user wants a job you can repeat
+  (transcribe a video, convert files, …), build it as a skill under
+  .claude/skills/ the way the `new-skill` skill says: Python as uv
+  scripts with their packages declared inline. Never pip install or
+  create venvs; ask before pacman or yay.
+
 ## Showing things
 How the user wants to be shown things. When they ask for it done
 differently on a call, change this section (and, for how reports look,

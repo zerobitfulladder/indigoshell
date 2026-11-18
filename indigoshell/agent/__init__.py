@@ -26,7 +26,10 @@ The package, by job:
                      (browser_host.py) — the everyday Firefox, no port
     workspace/       the agent's starting files: its notebook
                      (CLAUDE.md, including how you want to be shown
-                     things) and its report skill (steps, page template)
+                     things), its report skill (steps, page template)
+                     and new-skill: how it builds itself new abilities,
+                     each a skill folder with uv scripts, nothing
+                     installed outside it
     seed.py          puts those in its workspace when missing — never
                      over its own copies, which it edits when you ask it
                      to work differently — and regenerates the report
