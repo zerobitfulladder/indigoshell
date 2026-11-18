@@ -146,8 +146,11 @@ class Agent:
         self._session: str | None = None
         self._resume: str | None = None
         # The reply so far this turn: one entry per text block, so text the
-        # agent writes between tool calls stays part of what it says.
+        # agent writes between tool calls stays part of what it says. With
+        # each, the id of the last step before it (0: none), so the
+        # overlay can show text and steps in the order they happened.
         self._segments: list[str] = []
+        self._seg_after: list[int] = []
         self._restart_after_turn = False
         self._interrupted = False
         self._redial = False
@@ -216,7 +219,8 @@ class Agent:
             # A conversation quiet for longer than RESUME_WITHIN_S starts
             # over, however long the shell has been running.
             self._session = self._resume = None
-            self.message = self.heard = self.thought = ""
+            self._clear_said()
+            self.heard = self.thought = ""
             self.activity.clear()
             self.activity.append(Activity(
                 "info", "a fresh line — the last one was quiet for over "
@@ -274,7 +278,8 @@ class Agent:
             return False
         self._session = self._resume = None
         state.delete("agent.session")
-        self.message = self.heard = self.thought = ""
+        self._clear_said()
+        self.heard = self.thought = ""
         self.hangup_line = self.error = self.hint = None
         self.activity.clear()
         self.activity.append(Activity("info", "new line — context cleared"))
@@ -374,6 +379,7 @@ class Agent:
         if session_id == self.session_id:
             return True
         heard, said = self._last_exchange(session_id)
+        self._clear_said()
         self.message, self.heard, self.thought = said, heard, ""
         self.hangup_line = self.error = self.hint = None
         self.activity.clear()
@@ -426,8 +432,8 @@ class Agent:
         self.busy = True
         self.ringing = None
         self.heard = line
-        self.message = self.thought = ""
-        self._segments = []
+        self._clear_said()
+        self.thought = ""
         self.hangup_line = None
         self.activity.clear()
         self.error = self.hint = None
@@ -629,8 +635,8 @@ class Agent:
               {"message": str})
         async def hang_up(args):
             line = str(args.get("message", "")).strip()
-            self.hangup_line = line or "on it — I'll call you back"
-            self._segments.append(self.hangup_line)
+            self.hangup_line = line or "on it, I'll call you back"
+            self._new_segment(self.hangup_line)
             self.message = self._said()
             self._emit("hangup")
             return {"content": [{"type": "text", "text": (
@@ -773,7 +779,7 @@ class Agent:
             elif btype == "text":
                 # A new text block, after a tool call or not: it adds to
                 # the reply, it does not replace what came before it.
-                self._segments.append("")
+                self._new_segment("")
                 self.phase = "speaking"
                 self._emit()
         elif kind == "content_block_delta":
@@ -781,7 +787,7 @@ class Agent:
             dtype = delta.get("type")
             if dtype == "text_delta":
                 if not self._segments:
-                    self._segments.append("")
+                    self._new_segment("")
                 self._segments[-1] += delta.get("text", "")
                 self.message = self._said()
                 self.phase = "speaking"
@@ -819,3 +825,26 @@ class Agent:
     def _said(self) -> str:
         """The reply so far: every text block this turn, in order."""
         return "\n\n".join(s.strip() for s in self._segments if s.strip())
+
+    def _new_segment(self, value: str) -> None:
+        self._segments.append(value)
+        self._seg_after.append(self.activity[-1].id if self.activity else 0)
+
+    def _clear_said(self) -> None:
+        self.message = ""
+        self._segments = []
+        self._seg_after = []
+
+    def said_parts(self) -> list[tuple[str, float, str]]:
+        """The reply as it was said, for showing between the steps: one
+        (key, after, text) per text block, `after` being the id of the
+        last step before it. A reply with no blocks behind it (a resumed
+        conversation's last answer, a result given only at the end) is
+        one part after every step."""
+        parts = [(f"m{i}_", float(after), s.strip())
+                 for i, (s, after) in enumerate(zip(self._segments,
+                                                    self._seg_after))
+                 if s.strip()]
+        if not parts and self.message.strip():
+            parts = [("m", float("inf"), self.message.strip())]
+        return parts

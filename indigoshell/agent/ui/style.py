@@ -37,11 +37,11 @@ NAME_SIZE = 15          # the toast heading's size
 TAG_SIZE = theme.FONT_SIZE - 4
 BODY_SIZE = theme.FONT_SIZE - 1
 ACT_SIZE = theme.FONT_SIZE - 3
-MAX_BODY_ROWS = 30      # reply rows shown before it scrolls
+MAX_BODY_ROWS = 30      # the turn's height before it scrolls, in reply rows
 HISTORY_ROWS = 12       # past conversations listed at once
 MAX_HEARD_LINES = 3
-ACT_ROWS_BUSY = 3       # steps shown collapsed while it works
-ACT_ROWS_IDLE = 2       # ... and after
+ACT_ROWS_BUSY = 3       # steps shown of the run still going
+ACT_ROWS_IDLE = 2       # ... and of each finished run
 ACT_ROWS_ALL = 30       # the most "every step" shows
 OUT_ROWS = 12           # output rows of an expanded step
 OUT_ROWS_FULL = 40      # ... after "more lines" is clicked
@@ -72,6 +72,10 @@ YOU_FILL = plate_fill(YOU_ACCENT)
 SLASH_FG = theme.NOTIF_SEPARATOR_FG     # the toasts' cyan `//`
 ASK_ACCENT = theme.YELLOW_BRIGHT
 FAIL_ACCENT = theme.ERROR
+# A hung-up call ringing back, and missed until answered: the bar's
+# urgent-workspace red, which blinks in the same pattern. Violet was too
+# easy to miss in the corner (user's call).
+RING_ACCENT = theme.ERROR
 TOOL_FG = theme.CYAN_BRIGHT
 CODE_FG = theme.YELLOW_BRIGHT
 LINK_FG = theme.CYAN_BRIGHT
@@ -263,6 +267,8 @@ def ago(epoch: float) -> str:
 def accent_of(agent) -> str:
     if agent.approval is not None or agent.ringing == "ask":
         return ASK_ACCENT
+    if agent.ringing is not None:       # only a closed call rings
+        return RING_ACCENT
     if agent.phase == "error":
         return FAIL_ACCENT
     return AGENT_ACCENT

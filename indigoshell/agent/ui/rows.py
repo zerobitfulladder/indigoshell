@@ -108,14 +108,16 @@ def code_rows(key: str, value: str, w: float, bar: str,
             for s, e in hard_spans(value, cols)]
 
 
-def markdown_rows(message: str, w: float) -> list[Row]:
+def markdown_rows(message: str, w: float, prefix: str = "m") -> list[Row]:
     """Rows for a Markdown reply, `w` px wide, selectable by block.
     Wide characters get their second cell before parsing, so the
-    spans' offsets already count it."""
+    spans' offsets already count it. Each block's key is `prefix` and
+    its index: rows that show reply text keep an "m" prefix, which is
+    how the reveal and the plate's painter know them."""
     out: list[Row] = []
     cell = text.advance(BODY_SIZE)
     for i, b in enumerate(markdown.parse(text.pad_wide(message))):
-        key = f"m{i}"
+        key = f"{prefix}{i}"
         if b.kind == "blank":
             out.append(Row("gap", 7))
         elif b.kind == "rule":

@@ -69,10 +69,10 @@ You can also use this desktop through the `shell` tools: take a \
 screenshot to see what is on screen; `open` links and files (reports, \
 images, videos) in their usual program, which brings that window \
 forward; launch apps; list and switch workspaces and windows; use the \
-clipboard; and use Spotify — the desktop app, the catalogue, and, once \
+clipboard; and use Spotify (the desktop app, the catalogue, and, once \
 the user is signed in (spotify_login), their account: the queue, \
-playlists, liked songs, playback on any device; and the WiZ lights at \
-home (`lights` to see them, `lights_set` to change them — colours, \
+playlists, liked songs, playback on any device); and the WiZ lights at \
+home (`lights` to see them, `lights_set` to change them: colours, \
 white temperatures, brightness, built-in scenes). Lights have no names \
 until you give them some with the user: `lights_identify` blinks one, \
 they tell you what it is, `lights_name` remembers it. The user's own \
@@ -294,7 +294,7 @@ class ShellTools:
               "Open something for the user to look at, in the program that "
               "normally opens it, and bring that window forward, switching "
               "to its workspace. target: a link (http, https, mailto) or a "
-              "file — an HTML report, an image, a video, a PDF; relative "
+              "file (an HTML report, an image, a video, a PDF); relative "
               "paths are from your working directory. Pages, images and "
               "PDFs open in Firefox here, most videos in a video player.",
               {"target": str})
@@ -403,7 +403,7 @@ class ShellTools:
               "Screenshots, Documents, ...) or absolute; empty for that "
               "root. pattern: match file names (*.pdf, *invoice*). depth: "
               f"how many folders down to look (0 = just this one, max "
-              f"{DEPTH_MAX}). newest: newest first — 'the photo I just "
+              f"{DEPTH_MAX}). newest: newest first; 'the photo I just "
               f"took' is DCIM/Camera, newest, limit 1. limit: entries "
               f"(default {LIST_DEFAULT}, max {LIST_MAX}). Works only while "
               "the user has MiXplorer's SFTP server on.",
@@ -432,7 +432,7 @@ class ShellTools:
               "paths: phone paths as phone_files gives them; wildcards "
               "work (DCIM/Camera/IMG_20261118_*). to: a local folder "
               "(default ~/Downloads, created if missing). An existing "
-              "name is never replaced unless overwrite is true — the copy "
+              "name is never replaced unless overwrite is true: the copy "
               "gets ' (1)' instead. Answers with the local paths.",
               {"type": "object", "properties": {
                   "paths": {"type": "array", "items": {"type": "string"},
@@ -499,7 +499,7 @@ class ShellTools:
         @guard
         async def browser_tabs(args):
             tabs = await ff.tabs()
-            lines = [f"{t['n']}. {t['title'] or '(untitled)'} — {t['url']}"
+            lines = [f"{t['n']}. {t['title'] or '(untitled)'} | {t['url']}"
                      + ("   ← looking at it" if t["focused"]
                         else "   (showing in its window)" if t["active"]
                         else "")
@@ -507,8 +507,8 @@ class ShellTools:
             return _text("\n".join(lines) or "no tabs")
 
         @tool("browser_open",
-              "Open an address in the user's Firefox — in a new tab "
-              "(default) or, with new_tab false, in `tab` — and show it "
+              "Open an address in the user's Firefox, in a new tab "
+              "(default) or, with new_tab false, in `tab`, and show it "
               "to them.",
               {"type": "object",
                "properties": {"url": {"type": "string"},
@@ -519,7 +519,7 @@ class ShellTools:
             tab = None if args.get("new_tab", True) else await ff.tab(args.get("tab"))
             t = await ff.call("open", url=args["url"], tab=tab)
             where = await bring_forward("firefox.desktop")
-            return _text(f"Opened {t['title'] or '(untitled)'} — {t['url']}{where}.")
+            return _text(f"Opened {t['title'] or '(untitled)'} | {t['url']}{where}.")
 
         @tool("browser_switch",
               "Bring a Firefox tab to the front and show the user its "
@@ -553,7 +553,7 @@ class ShellTools:
         async def browser_go(args):
             tab = await ff.tab(args.get("tab"))
             t = await ff.call("go", tab=tab, to=args["to"])
-            return _text(f"Now at {t['title'] or '(untitled)'} — {t['url']}.")
+            return _text(f"Now at {t['title'] or '(untitled)'} | {t['url']}.")
 
         @tool("browser_read",
               "Read a page in the user's Firefox as text: headings, text, "
@@ -648,7 +648,7 @@ class ShellTools:
 
         @tool("browser_upload",
               "Put a local file into a page's upload box, as picking it in "
-              "the file dialog would — to send it in a chat, attach it to "
+              "the file dialog would: to send it in a chat, attach it to "
               "a mail, upload it to a form. path is the file. ref (an "
               "upload box from browser_read, which lists hidden ones too) "
               "or selector says where; leave both out and the page's upload "
@@ -754,8 +754,8 @@ class ShellTools:
               "kelvin, e.g. 2700 warm .. 6500 cool), color ('#rrggbb' or "
               f"a word: {', '.join(COLORS)}), colors (a list, spread "
               "over the targets in turn), scene (a built-in scene by "
-              "name — e.g. Cozy, Fireplace, Ocean, Party, Club, Night "
-              "light, Focus, Relax, Sunset, Candlelight — with speed "
+              "name, e.g. Cozy, Fireplace, Ocean, Party, Club, Night "
+              "light, Focus, Relax, Sunset, Candlelight; with speed "
               "10-200 for moving ones). Setting anything turns a light "
               "on. White-only lights take temp, not colours.",
               {"type": "object",
@@ -798,7 +798,7 @@ class ShellTools:
                 results = await wiz.apply(plans)
             except WizError as e:
                 return _error(str(e))
-            lines = [f"{b.label}: " + (f"failed — {err}" if err
+            lines = [f"{b.label}: " + (f"failed: {err}" if err
                                        else b.showing())
                      for b, err in results] + skipped
             failed = all(err for _, err in results)
@@ -865,7 +865,7 @@ class ShellTools:
             else:
                 msg = str(err or data or "")
             if status == 404 and "device" in msg.lower():
-                msg += " — open Spotify on a device first, or play something"
+                msg += ". Open Spotify on a device first, or play something"
             return _error(f"Spotify {status}: {msg}"[:600])
 
         def playlist_id(value: str) -> str:
@@ -907,7 +907,7 @@ class ShellTools:
                 return _text(f"Spotify is open; nothing loaded ({out}).")
             status, artist, title = parts[:3]
             album = parts[3] if len(parts) > 3 else ""
-            return _text(f"{status}: {title} — {artist}"
+            return _text(f"{status}: {title} by {artist}"
                          + (f" ({album})" if album else ""))
 
         @tool("spotify_play",

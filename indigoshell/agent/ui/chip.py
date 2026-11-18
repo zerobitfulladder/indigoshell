@@ -29,7 +29,7 @@ class Chip(Widget):
         self.size = size
         self.look = look
         # Whose chip: its fill keeps that speaker's tint whatever the
-        # accent is doing (yellow while asking, red when down).
+        # accent is doing (yellow while asking, red ringing or down).
         self.tint = tint
         self.ring_since = ring_since or (lambda: 0.0)
         self.angle = -90.0

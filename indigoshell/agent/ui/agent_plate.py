@@ -1,6 +1,7 @@
-"""The agent's plate: what it is doing (its steps, expandable) above a
-rule, what it says (rendered Markdown, selectable) below, and the list of
-past conversations when that is open."""
+"""The agent's plate: the turn as it happened — what it says (rendered
+Markdown, selectable) and, between its words, the steps it ran
+(expandable), in order — and the list of past conversations when that
+is open."""
 
 import time
 from typing import Callable
@@ -52,6 +53,7 @@ class AgentPlate(Widget):
         self.reveal = Reveal()      # how reply text arrives
         self._built: list[Row] = []
         self._built_key: tuple | None = None
+        self._body: list[Row] = []  # the whole turn, before scrolling
         self.trace = Trace()        # the turn clock on the frame
         self._copied_until = 0.0
         self._dragging = False
@@ -113,54 +115,109 @@ class AgentPlate(Widget):
         a, w = self.agent, self.inner_w
         rows = [Row("header", line_h(NAME_SIZE, True) + 6)]
         if self.history is not None:
+            self._body = []
             return rows + self._history_rows()
 
-        acts = self._activity_rows(w)
-        rows += acts
-        thinking = a.busy and a.phase == "thinking"
-        if thinking:
-            rows.append(Row("think", line_h(ACT_SIZE) + 3, size=ACT_SIZE))
-        if acts or thinking:
-            rows.append(Row("rule", 11))
+        body = self._turn_rows(w)
+        if a.busy and a.phase == "thinking":
+            body.append(Row("think", line_h(ACT_SIZE) + 3, size=ACT_SIZE))
+        self._body = body
+        rows += self._window(body)
 
+        # A question or a failure comes after the turn, never scrolled
+        # out of sight with it.
         if a.approval is not None:
             ap = a.approval
+            if body:
+                rows.append(Row("rule", 11))
             rows += self._text_rows("ap-t", ap.title, BODY_SIZE, w,
                                     theme.HUD_FG_BRIGHT)[:2]
             rows += self._code_rows("ap-d", ap.detail, w, ASK_ACCENT)[:6]
             rows.append(Row("keys", line_h(ACT_SIZE) + 10, size=ACT_SIZE))
         elif a.phase == "error" and a.error:
+            if body:
+                rows.append(Row("rule", 11))
             rows += self._text_rows("err", a.error, BODY_SIZE, w, FAIL_ACCENT)
             if a.hint:
                 rows.append(Row("gap", 4))
                 rows += self._code_rows("hint", a.hint, w, ASK_ACCENT)
-        elif a.message.strip():
-            rows += self._reply_rows(a.message.strip(), w,
-                                     cursor=a.phase == "speaking")
-        elif not (acts or thinking):
+        elif not body:
             hint = "dialing…" if a.phase in ("dialing", "offline") \
                 else "go ahead"
             rows.append(Row("note", line_h(BODY_SIZE) + 3, label=hint,
                             color=theme.BASE_MUTED))
         return rows
 
-    def _reply_rows(self, message: str, w: float, cursor: bool) -> list[Row]:
-        out = markdown_rows(message, w)
-        self.reveal.track(self.agent, out)
-        if cursor:
-            for row in reversed(out):
+    def _turn_rows(self, w: float) -> list[Row]:
+        """The turn in the order it happened: each block of text the agent
+        wrote, and between them the runs of steps it took."""
+        a = self.agent
+        parts = a.said_parts()
+        items: list = []            # a part, or a run of steps (a list)
+        i = 0
+        for act in a.activity:
+            # A part goes before the first step that came after it.
+            while i < len(parts) and parts[i][1] < act.id:
+                items.append(parts[i])
+                i += 1
+            if items and isinstance(items[-1], list):
+                items[-1].append(act)
+            else:
+                items.append([act])
+        items += parts[i:]
+
+        rows: list[Row] = []
+        for n, item in enumerate(items):
+            if rows:
+                rows.append(Row("gap", 6))
+            if isinstance(item, list):
+                rows += self._step_rows(item, w,
+                                        current=a.busy and n == len(items) - 1)
+            else:
+                key, _after, said = item
+                rows += markdown_rows(said, w, key)
+        self.reveal.track(a, rows)
+        if a.phase == "speaking" and items and not isinstance(items[-1], list):
+            for row in reversed(rows):
                 if row.kind == "line":
                     row.cursor = True
                     break
-        # Scroll: the newest MAX_BODY_ROWS rows, unless scrolled back.
-        n = len(out)
-        if n <= MAX_BODY_ROWS:
+        return rows
+
+    # ── scrolling ───────────────────────────────────────────────────────
+    @staticmethod
+    def _budget() -> float:
+        """How tall the turn may be before it scrolls: MAX_BODY_ROWS
+        lines of reply. Steps are shorter lines, so more of them fit."""
+        return MAX_BODY_ROWS * (line_h(BODY_SIZE) + 3)
+
+    def _fit_back(self, body: list[Row], end: int) -> int:
+        """The first row shown when the window ends at `end`."""
+        budget, start, acc = self._budget(), end, 0.0
+        while start > 0 and acc + body[start - 1].h <= budget:
+            start -= 1
+            acc += body[start].h
+        return start
+
+    def _fit_forward(self, body: list[Row], start: int) -> int:
+        """Where the window ends when it starts at `start`."""
+        budget, end, acc = self._budget(), start, 0.0
+        while end < len(body) and acc + body[end].h <= budget:
+            acc += body[end].h
+            end += 1
+        return max(end, start + 1)
+
+    def _window(self, body: list[Row]) -> list[Row]:
+        """The newest rows of the turn that fit, or older ones while it is
+        scrolled back (`scroll` counts rows up from the end)."""
+        n = len(body)
+        if sum(r.h for r in body) <= self._budget():
             self.scroll = 0
-            return out
-        self.scroll = max(0, min(self.scroll, n - MAX_BODY_ROWS))
+            return body
+        self.scroll = max(0, min(self.scroll, n - self._fit_forward(body, 0)))
         end = n - self.scroll
-        start = end - MAX_BODY_ROWS
-        shown = out[start:end]
+        start = self._fit_back(body, end)
+        shown = body[start:end]
         if start:
             shown.insert(0, Row("more", line_h(ACT_SIZE) + 2, size=ACT_SIZE,
                                 label=f"↑ {start} more — PageUp"))
@@ -169,16 +226,33 @@ class AgentPlate(Widget):
                              label=f"↓ {self.scroll} more — PageDown"))
         return shown
 
+    def _toggle_step(self, act, which: set[int]) -> None:
+        """Open or close a step's command or its full output, keeping the
+        turn where it was on screen: the rows a step opens push what is
+        below it down, not the step up, and the step's own row stays in
+        view however much it opens."""
+        self._build()
+        n0, end0 = len(self._body), len(self._body) - self.scroll
+        which ^= {act.id}
+        self._build()
+        body = self._body
+        i = next((k for k, r in enumerate(body)
+                  if r.kind == "act" and r.act is act), None)
+        if i is not None:
+            end = max(i + 1, min(len(body), end0 + len(body) - n0))
+            if self._fit_back(body, end) > i:
+                end = self._fit_forward(body, i)
+            self.scroll = len(body) - end
+        self.relayout()
+
     _text_rows = staticmethod(text_rows)
     _code_rows = staticmethod(code_rows)
 
-    def _activity_rows(self, w: float) -> list[Row]:
-        a = self.agent
-        acts = list(a.activity)
-        if not acts:
-            return []
+    def _step_rows(self, acts: list, w: float, current: bool) -> list[Row]:
+        """A run of steps between two blocks of text: its last few, or
+        all of them after Ctrl+O. The run still going shows a few more."""
         keep = ACT_ROWS_ALL if self.show_all else (
-            ACT_ROWS_BUSY if a.busy else ACT_ROWS_IDLE)
+            ACT_ROWS_BUSY if current else ACT_ROWS_IDLE)
         shown = acts[-keep:]
         hidden = len(acts) - len(shown)
         rows: list[Row] = []
@@ -450,13 +524,11 @@ class AgentPlate(Widget):
             self.hist_pick(int(row.label))
             return
         if row is not None and row.kind == "act" and row.act is not None:
-            self.expanded ^= {row.act.id}
-            self.relayout()
+            self._toggle_step(row.act, self.expanded)
         elif row is not None and row.kind == "toggle":
             self.toggle_all()
         elif row is not None and row.kind == "outmore" and row.act is not None:
-            self.full_output ^= {row.act.id}
-            self.relayout()
+            self._toggle_step(row.act, self.full_output)
         elif had:
             self.invalidate()
 
