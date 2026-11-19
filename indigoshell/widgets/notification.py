@@ -363,9 +363,11 @@ class NotificationManager:
     and re-anchored whenever the stack changes shape.
     """
 
-    def __init__(self, *, effects: tuple = (), effect_scale: float = 0.35) -> None:
+    def __init__(self, *, effects: tuple = (), effect_scale: float = 0.35,
+                 holo: bool = False) -> None:
         self.effects = tuple(effects)
         self.effect_scale = effect_scale
+        self.holo = holo                # `WindowSpec.holo` on every toast
         self._server = NotificationServer(
             on_notify=self._on_notify,
             on_close_request=lambda nid: self._remove(nid, REASON_CLOSED),
@@ -434,6 +436,7 @@ class NotificationManager:
             background="#00000000",
             effects=self.effects,
             effect_scale=self.effect_scale,
+            holo=self.holo,
             content=toast,
         )
         self._toasts[notif.id] = toast

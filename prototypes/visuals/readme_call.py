@@ -37,7 +37,7 @@ from common import C  # noqa: E402  (also quiets logging)
 from indigoshell.agent.activity import Activity, Approval, describe_tool  # noqa: E402
 from indigoshell.agent.session import Agent  # noqa: E402
 from indigoshell.agent.ui.call import CallHost  # noqa: E402
-from indigoshell.agent.ui.holo import SCAN_EVERY_S  # noqa: E402
+from indigoshell.widgets.holo import SCAN_EVERY_S  # noqa: E402
 from indigoshell.agent.ui.status import CallStatus  # noqa: E402
 from indigoshell.agent.ui.style import UNBOUNDED  # noqa: E402
 from indigoshell.widgets.base import Size, Widget  # noqa: E402

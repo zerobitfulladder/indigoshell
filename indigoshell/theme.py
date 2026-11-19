@@ -149,6 +149,7 @@ NOTIF_TIMER_BORDER_FG   = BASE_MUTED
 # ── Popup window ────────────────────────────────────────────────────────
 POPUP_BG        = "#170620F2"           # tinted violet-black, ~95% alpha
 POPUP_BORDER    = HIGHLIGHT             # cyan-bright beveled stroke
+POPUP_RASTER    = POPUP_BORDER          # hologram lines on `holo` windows
 POPUP_BEVEL     = 16
 POPUP_BEVEL_CORNERS = ("top-right", "bottom-left")
 POPUP_GAP       = 10                    # clearance from the bar

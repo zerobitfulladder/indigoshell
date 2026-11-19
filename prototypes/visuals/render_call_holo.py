@@ -1,4 +1,4 @@
-"""The call as a hologram (agent/ui/holo.py), rendered offline at 1x
+"""The call as a hologram (widgets/holo.py), rendered offline at 1x
 from the real widgets on a clock the frames own.
 
     gif/call_holo.gif         one full scan period of an open call

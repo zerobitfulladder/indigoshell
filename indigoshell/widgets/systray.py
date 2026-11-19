@@ -51,7 +51,7 @@ class Systray(Widget):
 
     def __init__(self, *, bars: int = 5, gap: int = 2, width: int = 10,
                  panel_effects: tuple = (), effect_scale: float = 0.35,
-                 **kwargs) -> None:
+                 holo: bool = False, **kwargs) -> None:
         def _click(_source, self=self):
             self._toggle_panel()
         _click._indigo_window = PANEL_WINDOW
@@ -62,6 +62,7 @@ class Systray(Widget):
         self.w = max(4, width)
         self.panel_effects = tuple(panel_effects)
         self.effect_scale = effect_scale
+        self.holo = holo                # the panel and its app menus
         self._broker = get_broker()
 
     def attach(self, window) -> None:
@@ -130,6 +131,7 @@ class Systray(Widget):
             background="#00000000",
             effects=self.panel_effects,
             effect_scale=self.effect_scale,
+            holo=self.holo,
             content=content,
         )
 
@@ -242,6 +244,7 @@ class TrayPanel(Column):
             dismiss_on_outside_click=True,
             grab_keyboard=True,
             background="#00000000",
+            holo=win.spec.holo,         # drawn like the panel it came from
             content=content,
         )
         d.open(MENU_WINDOW)

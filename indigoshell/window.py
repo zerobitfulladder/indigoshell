@@ -28,6 +28,7 @@ from . import theme
 from .backend.gl import backend as gl_backend
 from .backend.x11 import Display, Monitor, keysym_text, shape_ext, xp
 from .widgets.base import Insets, KeyEvent, Size, Widget
+from .widgets.holo import Projection, raster
 
 log = logging.getLogger(__name__)
 
@@ -142,6 +143,14 @@ class WindowSpec:
     # tear reaches past the plates into the bleed margin.
     blur: bool = False
 
+    # Project the window as a hologram, the way the call is drawn
+    # (widgets/holo.py): a faint raster over whatever the content paints,
+    # and every few seconds a scan band that runs down it, tearing the
+    # image as it passes. Drawn by the window over the content, so no
+    # widget has to know; transparent pixels stay transparent. The call
+    # draws its own, per plate, and leaves this off.
+    holo: bool = False
+
     autostart: bool = False
     singleton: bool = True
     # Keep the X window, its GL surface and its warmed-up GPU state
@@ -190,6 +199,9 @@ class Window:
         self.surface: skia.Surface | None = None
         self.mapped = False
         self.content = spec.content
+        # The scan over a `holo` window: a widget the window owns, outside
+        # the content tree, attached, laid out, ticked and painted with it.
+        self.holo = Projection() if spec.holo else None
         # Effects that displace pixels draw past the content's edge, so the
         # X window is grown by `bleed` on every side and the content is
         # inset by it. `content_rect` is that inset area in window-local
@@ -362,6 +374,8 @@ class Window:
         self.surface = self._make_surface(self.width, self.height)
         if self.content is not None:
             self.content.attach(self)
+            if self.holo is not None:
+                self.holo.attach(self)
             self._layout_content()
         log.info("created %s 0x%x %dx%d+%d+%d depth %d on %s%s",
                  self.spec.name, self.wid, self.width, self.height,
@@ -374,6 +388,8 @@ class Window:
         inner = self.spec.padding.deflate(self.content_rect)
         self.content.measure(Size(inner.width(), inner.height()))
         self.content.arrange(inner)
+        if self.holo is not None:
+            self.holo.arrange(self.content.rect)
         self._set_bounding_shape()
 
     def _set_bounding_shape(self) -> None:
@@ -862,6 +878,8 @@ class Window:
                 self.content.detach()
             except Exception:
                 log.exception("detach failed for %s", self.spec.name)
+            if self.holo is not None:
+                self.holo.detach()
         self._parked = True
 
     def unpark(self) -> None:
@@ -872,6 +890,8 @@ class Window:
         self._parked = False
         if self.content is not None:
             self.content.attach(self)
+            if self.holo is not None:
+                self.holo.attach(self)
         # Re-anchor at the size the window has — attach() may just have
         # resized it to its content — not at the spec's size, which for a
         # content-sized window is only a placeholder.
@@ -905,6 +925,8 @@ class Window:
                 self.content.detach()
             except Exception:
                 log.exception("detach failed for %s", self.spec.name)
+            if self.holo is not None:
+                self.holo.detach()
         self.display.off(self.wid)
         self.display.keep_above(self.wid, False)
         try:
@@ -961,6 +983,8 @@ class Window:
                 self._paint_rule(canvas, w, h)
             if self.content is not None:
                 self.content.paint(canvas)
+                if self.holo is not None:
+                    self._paint_holo(canvas)
         except Exception:
             # One widget that cannot paint costs what would have been
             # drawn after it here, not the frame: the rest is presented,
@@ -970,6 +994,18 @@ class Window:
             # Whatever it left on the stack: the next region must not
             # inherit its clip.
             canvas.restoreToCount(saved)
+
+    def _paint_holo(self, canvas: skia.Canvas) -> None:
+        """`WindowSpec.holo`: the raster over what the content just
+        painted, then the scan over both. `SrcATop` puts the lines only
+        where there are pixels to project onto — the plates, not the
+        transparent gaps or the bleed margin. Over the text too, which
+        at the raster's 7% reads as the same grain, not as a change in
+        the type."""
+        lines = skia.Paint(Shader=raster(theme.POPUP_RASTER))
+        lines.setBlendMode(skia.BlendMode.kSrcATop)
+        canvas.drawRect(self.content_rect, lines)
+        self.holo.paint(canvas)
 
     def _paint_rule(self, canvas: skia.Canvas, w: int, h: int) -> None:
         spec = self.spec
@@ -1315,13 +1351,20 @@ class Window:
         self._phase_elapsed += min(step, MAX_PHASE_STEP * interval)
         return self._phase_elapsed
 
+    def _widgets(self):
+        """Every widget the frame clock ticks: the content's tree, then
+        the window's own scan on a `holo` window."""
+        yield from self.content.walk()
+        if self.holo is not None:
+            yield self.holo
+
     def _census(self) -> None:
         """For the first paint of an open, which no tick comes before:
         note which widgets it will catch moving (see `_tick_widgets`),
         and that none of them has a previous frame."""
         demand = 0
         if self.content is not None:
-            for widget in self.content.walk():
+            for widget in self._widgets():
                 widget._last_animate_t = None
                 fps = self._fps_of(widget)
                 if fps > 0:
@@ -1360,7 +1403,7 @@ class Window:
         demand = 0
         self._ticking = True
         try:
-            for widget in self.content.walk():
+            for widget in self._widgets():
                 fps = self._fps_of(widget)
                 if fps <= 0:
                     if widget._animating:

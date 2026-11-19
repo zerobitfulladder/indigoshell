@@ -9,6 +9,8 @@ import skia
 
 from ... import shapes, text, theme
 from ...widgets.base import Size
+from ...widgets.holo import (RASTER_ALPHA, RASTER_PITCH,  # noqa: F401
+                             paint_raster, raster)
 
 
 # ── geometry ────────────────────────────────────────────────────────────
@@ -157,41 +159,6 @@ def corner_marks(r: skia.Rect, d: float = BRACKET_INSET,
             path.lineTo(cx, cy)
             path.lineTo(cx, cy + sy * arm)
     return path
-
-
-# The hologram's raster (see holo.py): a faint line every few pixels,
-# on the window's own grid so it runs on from one surface to the next.
-RASTER_PITCH = 3
-RASTER_ALPHA = 0.07
-RASTER_LIFT = 0.35          # how far the raster's colour leans to white
-
-_rasters: dict[tuple[str, float], skia.Shader] = {}
-
-
-def raster(color: str, alpha: float = RASTER_ALPHA) -> skia.Shader:
-    """Horizontal lines one px tall, every `RASTER_PITCH`, aligned to the
-    canvas's own y — so every surface in a window shares the grid."""
-    key = (color, alpha)
-    shader = _rasters.get(key)
-    if shader is None:
-        s = skia.Surface(1, RASTER_PITCH)
-        c = s.getCanvas()
-        c.clear(skia.ColorTRANSPARENT)
-        p = skia.Paint()
-        p.setColor(theme.color(theme.lerp(color, theme.HUD_FG_BRIGHT,
-                                          RASTER_LIFT), alpha))
-        c.drawRect(skia.Rect.MakeXYWH(0, 0, 1, 1), p)
-        shader = s.makeImageSnapshot().makeShader(
-            skia.TileMode.kRepeat, skia.TileMode.kRepeat,
-            skia.SamplingOptions())
-        _rasters[key] = shader
-    return shader
-
-
-def paint_raster(canvas: skia.Canvas, shape: skia.Path, color: str,
-                 alpha: float = RASTER_ALPHA) -> None:
-    canvas.drawPath(shape, skia.Paint(AntiAlias=True,
-                                      Shader=raster(color, alpha)))
 
 
 def paint_plate(canvas: skia.Canvas, r: skia.Rect, frame: str,

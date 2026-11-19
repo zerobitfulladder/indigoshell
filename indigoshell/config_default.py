@@ -128,7 +128,7 @@ AGENT = Agent(name="INDIGO", model="opus",
 # call's status chip while a hung-up call works or rings back; FIREFOX
 # is the socket the browser add-on's host connects to.
 SERVICES = [
-    NotificationManager(effects=(PANEL_SPAWN,), effect_scale=0.35),
+    NotificationManager(effects=(PANEL_SPAWN,), effect_scale=0.35, holo=True),
     FIREFOX,
     AGENT,
     CallRouter(AGENT),
@@ -216,7 +216,7 @@ clock = Clock(extra=BatteryMeter(cell_thick=2, gap=2, height=4,
 # panel and menu windows aren't in WINDOWS below — their size depends
 # on what's registered, so the widget builds their specs at open time.
 clock_cluster = Row(
-    [clock, Systray(width=7, panel_effects=(PANEL_SPAWN,))],
+    [clock, Systray(width=7, panel_effects=(PANEL_SPAWN,), holo=True)],
     spacing=4,
 )
 
@@ -271,6 +271,7 @@ WINDOWS = [
         grab_keyboard=True,
         background="#00000000",
         effects=(PANEL_SPAWN,),
+        holo=True,                  # the call's hologram look
         effect_scale=0.35,          # raster fallback only
         content=Box(
             Fastfetch(width=540),
@@ -296,6 +297,7 @@ WINDOWS = [
         keep_alive=True,
         background="#00000000",
         effects=(PANEL_SPAWN,),
+        holo=True,                  # the call's hologram look
         effect_scale=0.35,          # raster fallback only
         content=Box(
             HardwarePanel(width=560),
@@ -324,6 +326,7 @@ WINDOWS = [
         keep_alive=True,
         background="#00000000",
         effects=(PANEL_SPAWN,),
+        holo=True,                  # the call's hologram look
         effect_scale=0.35,          # raster fallback only
         content=Box(
             NetworkPanel(width=560),
@@ -354,6 +357,7 @@ WINDOWS = [
         keep_alive=True,
         background="#00000000",
         effects=(PANEL_SPAWN,),
+        holo=True,                  # the call's hologram look
         effect_scale=0.35,
         content=MenuHost(),
     ),
@@ -374,6 +378,7 @@ WINDOWS = [
         keep_alive=True,
         background="#00000000",
         effects=(PANEL_SPAWN,),
+        holo=True,                  # the call's hologram look
         effect_scale=0.35,           # raster fallback only
         content=Launcher(rows=12, width=760, terminal=("kitty",)),
     ),

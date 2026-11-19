@@ -1,15 +1,23 @@
-"""The call as a hologram: every plate and chip is one projection.
+"""Panels as holograms: every surface in a window is one projection.
+
+Started on the call (agent/ui), where every plate and chip is one
+projection; any window gets the same with `WindowSpec(holo=True)`, which
+is how the panels, menus, launcher and notifications carry it.
 
 **The raster** is the projection's grain: faint horizontal lines every
-few pixels across each surface, under its content (`style.raster`, drawn
-by `paint_plate` and the chips). The lines sit on the window's own pixel
-grid, so they run on unbroken from a chip into the plate beside it — two
-pieces of one image, not two textured boxes.
+few pixels across each surface (`raster`). The lines sit on the window's
+own pixel grid, so they run on unbroken from a chip into the plate
+beside it — two pieces of one image, not two textured boxes. The call
+draws them under its content, per plate, in each plate's colour
+(`paint_plate`, the chips). A `holo` window draws them once over
+whatever its content painted, composited `SrcATop` so they land on the
+plates and never in the transparent gaps between them.
 
 **The scan** is the projector refreshing that image, and the image
 glitching as it does. Every few seconds a thick glowing band runs slowly
-down the whole call, crossing your plate and chip, then the agent's, at
-the same height at the same moment. Where it is, the hologram loses its
+down the whole window — on the call it crosses your plate and chip,
+then the agent's, at the same height at the same moment. Where it is,
+the hologram loses its
 shape: rows tear sideways in chunks — so the plates' outlines notch and
 jog, not just their text — colours split apart, a few slices drop out;
 above it the raster stays lit for a while and fades. In the gaps between
@@ -19,19 +27,54 @@ It distorts what is really there: `Projection` paints after the plates
 and chips, snapshots the band they just drew, and redraws it through one
 shader (`_SCAN`). It is a widget of its own whose dirty area is just the
 strip the band moved through, so a pass repaints a band of the window,
-not every plate it crosses.
+not every plate it crosses. On the call it is the host's last child; on
+a `holo` window the window owns it and paints it after the content.
 """
 
 import time
 
 import skia
 
-from ...effects import compile_sksl
-from ...widgets.base import Size, Widget
-from .style import RASTER_PITCH
+from .. import theme
+from ..effects import compile_sksl
+from .base import Size, Widget
+
+# The raster: a faint line every few pixels, on the window's own grid so
+# it runs on from one surface to the next.
+RASTER_PITCH = 3
+RASTER_ALPHA = 0.07
+RASTER_LIFT = 0.35          # how far the raster's colour leans to white
+
+_rasters: dict[tuple[str, float], skia.Shader] = {}
+
+
+def raster(color: str, alpha: float = RASTER_ALPHA) -> skia.Shader:
+    """Horizontal lines one px tall, every `RASTER_PITCH`, aligned to the
+    canvas's own y — so every surface in a window shares the grid."""
+    key = (color, alpha)
+    shader = _rasters.get(key)
+    if shader is None:
+        s = skia.Surface(1, RASTER_PITCH)
+        c = s.getCanvas()
+        c.clear(skia.ColorTRANSPARENT)
+        p = skia.Paint()
+        p.setColor(theme.color(theme.lerp(color, theme.HUD_FG_BRIGHT,
+                                          RASTER_LIFT), alpha))
+        c.drawRect(skia.Rect.MakeXYWH(0, 0, 1, 1), p)
+        shader = s.makeImageSnapshot().makeShader(
+            skia.TileMode.kRepeat, skia.TileMode.kRepeat,
+            skia.SamplingOptions())
+        _rasters[key] = shader
+    return shader
+
+
+def paint_raster(canvas: skia.Canvas, shape: skia.Path, color: str,
+                 alpha: float = RASTER_ALPHA) -> None:
+    canvas.drawPath(shape, skia.Paint(AntiAlias=True,
+                                      Shader=raster(color, alpha)))
 
 SCAN_EVERY_S = 7.0          # one pass starts this often
-SCAN_SPEED = 170.0          # px/s down the call
+SCAN_SPEED = 170.0          # px/s down the panel
 SCAN_HEAD_PX = 11.0         # the band's half-thickness
 SCAN_WAKE_PX = 100.0        # the lit raster above it
 SCAN_SHIFT_PX = 9.0         # sideways tear at the band, at most
@@ -109,13 +152,13 @@ half4 main(float2 xy) {
 
 class Projection(Widget):
     """The scan down the whole hologram; place it last in its host, over
-    the surfaces it distorts.
+    the surfaces it distorts (or let a `holo` window own it).
 
     A pass starts every SCAN_EVERY_S, counted from `epoch`, and runs at
-    a constant speed until its wake has left the bottom of the call —
-    so where the band is follows from the time alone, whatever the call
+    a constant speed until its wake has left the bottom of its surfaces —
+    so where the band is follows from the time alone, whatever the window
     grows or shrinks to meanwhile. It asks for frames only while a pass
-    is on the call; a timer wakes it for the next one, so an idle call's
+    is on screen; a timer wakes it for the next one, so an idle window's
     clock is not kept running in between.
     """
 
@@ -209,7 +252,7 @@ class Projection(Widget):
         return self._dirty
 
     def _forget(self) -> None:
-        """No band: a call closed mid-pass reopens clean."""
+        """No band: a window closed mid-pass reopens clean."""
         self._y = None
         self._shown = skia.Rect.MakeEmpty()
         self._dirty = skia.Rect.MakeEmpty()

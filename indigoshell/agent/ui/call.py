@@ -81,7 +81,7 @@ from ...widgets.text_input import ctrl_letter
 from ..session import Agent
 from .agent_plate import AgentPlate
 from .chip import Chip
-from .holo import Projection
+from ...widgets.holo import Projection
 from .style import (CHIP, GAP, HANGUP_CLOSE_S, HISTORY_ROWS, MAX_BODY_ROWS,
                     NUDGE_S, PLATE_W, ROW_GAP, SPIN, UNBOUNDED, YOU_ACCENT,
                     accent_of, plate_path)
@@ -117,7 +117,7 @@ class CallHost(Widget):
         self.you_chip = Chip(CHIP, lambda: (YOU_ACCENT, "YOU", "still"),
                              tint=YOU_ACCENT)
         # The plates and chips are one hologram; its scan glitches down
-        # all four at once (holo.py).
+        # all four at once (widgets/holo.py).
         self.projection = Projection()
         self._unsub = None
         self._was_busy = False

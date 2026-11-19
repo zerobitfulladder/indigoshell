@@ -15,7 +15,7 @@ from .bars import Bars
 from .call import CALL_WINDOW
 from .chip import Chip
 from .frame import TRACE_BLEED, Trace
-from .holo import Projection
+from ...widgets.holo import Projection
 from .style import (ACT_SIZE, AGENT_ACCENT, AGENT_FILL, CHIP_SM, GAP, PAD_X,
                     PAD_Y, RING_FOR_S, SPIN, STATUS_W, STATUS_WORDS, TAG_SIZE,
                     TOOL_FG, UNBOUNDED, accent_of, clock_text, line_h,

@@ -161,7 +161,7 @@ class ScriptedAgent(Agent):
         if self.phase in ("offline", "dialing"):
             self.phase = "idle"
 
-    async def _send(self, line: str) -> None:
+    async def _send(self, line: str, uid: str = "") -> None:
         return
 
     def _schedule_idle(self) -> None:

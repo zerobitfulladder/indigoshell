@@ -294,7 +294,8 @@ size, cut to the song's beats.
 - **GPU effects** — every window can run a chain of SkSL post-process
   passes over its finished frame. Panels open with `ScanLock`, a
   scan-lock reveal where bands snap in out of order with a sideways tear
-  and an RGB split. Rendering goes through an EGL/GL surface when one
+  and an RGB split, and then carry the call's hologram: a faint raster,
+  and a scan band that glitches down them every few seconds. Rendering goes through an EGL/GL surface when one
   can be created and falls back to CPU raster when it can't.
 
   <img src="docs/media/panel-open.gif" width="480"
@@ -344,7 +345,7 @@ indigoshell/
     ui/             ─ call.py (keys, layout), agent_plate.py, you_plate.py,
                       choice.py (GREENLIGHT / SCRUB), bars.py (progress),
                       chip.py, status.py, frame.py (turn clock), reveal.py
-                      (decode), holo.py (raster + glitch scan), rows.py
+                      (decode), rows.py
   backend/
     x11.py          ─ the process's single xcffib connection + event pump
     gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback
@@ -383,6 +384,8 @@ indigoshell/
     notification.py   line_graph.py stdout_text.py
     hardware_panel.py network_panel.py fastfetch.py
     launcher.py       text_input.py
+    holo.py           the hologram: raster + glitch scan, on the call and on
+                      every `WindowSpec(holo=True)` panel
 prototypes/
   visuals/          ─ offline design sheets and GIFs, from the real widgets
   showcase/         ─ the scripted demo: XTEST input, staging, recording,
