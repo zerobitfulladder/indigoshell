@@ -90,6 +90,14 @@ account from the `claude` in your terminal.
   <img src="docs/media/call-music.png" width="100%"
        alt="Asked for music that sounds like rain on neon, the agent searching Spotify and queueing Vangelis">
 
+- **It knows what "this" is.** The moment you open the call, before
+  the overlay shows, the shell notes the workspace, the focused window,
+  Firefox's tab in front, what is playing, and the text you have
+  highlighted (whole, with which app it is in and how long ago), and
+  sends that with your first line. It also keeps a screenshot of that
+  moment, without the call on it, for the agent to look at only if it
+  needs to.
+
 - **Reports, not walls of text.** Anything long becomes an offline HTML
   report in the shell's own palette, opened in the browser; images and
   videos open in their apps.
@@ -298,6 +306,7 @@ indigoshell/
     session.py      ─ the conversation: Claude Code via the Agent SDK,
                       turns, approvals, hang-up and ring-back, sessions
     tools.py        ─ the desktop as an in-process MCP server
+    glance.py       ─ the desktop as the call opened: window, highlight, screen
     spotify.py      ─ the Spotify app (MPRIS) and Web API, with sign-in
     wiz.py          ─ WiZ lights on the LAN: discovery, scenes, names
     firefox.py      ─ the everyday Firefox, via the INDIGO bridge add-on
@@ -522,7 +531,7 @@ rather than failing:
 | `setsid` (util-linux) | launcher: detaches the apps it starts |
 | `systemd-run` + a user manager | launcher: one scope per app; skipped without |
 | `kitty` | launcher: `Terminal=true` apps (the `terminal=` option) |
-| `xclip` | copying from the call; the agent's clipboard tool |
+| `xclip` | copying from the call; the agent's clipboard tool; the highlighted text it is sent |
 | `xdg-open`, `xdg-mime` | the agent's `open` tool, links clicked in a reply |
 | ImageMagick `import` | the agent's screenshots |
 

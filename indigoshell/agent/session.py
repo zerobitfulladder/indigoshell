@@ -172,6 +172,11 @@ class Agent:
         self._interrupted = False
         self._redial = False
         self._idle_handle: asyncio.TimerHandle | None = None
+        # The desktop as the call opened goes with the first line sent in
+        # it (agent/glance.py); `_told` is what earlier notes in this
+        # conversation already said, emptied whenever it changes.
+        self._glance_due = False
+        self._told: dict = {}
 
     # ── service hooks ───────────────────────────────────────────────────
     def start(self) -> None:
@@ -218,6 +223,14 @@ class Agent:
         self.call_open = value
         if value:
             self.ringing = None
+            # Called from the overlay's attach(), before its window maps:
+            # the look at the desktop must not have the call in it.
+            if hasattr(self.tools, "look"):
+                try:
+                    self.tools.look()
+                    self._glance_due = True
+                except Exception:
+                    log.exception("could not look at the desktop")
             self.dial()
         elif self.approval is not None:
             # Hung up on a question: it rings until answered, since the
@@ -238,6 +251,7 @@ class Agent:
             # A conversation quiet for longer than RESUME_WITHIN_S starts
             # over, however long the shell has been running.
             self._session = self._resume = None
+            self._told = {}
             self._clear_said()
             self.heard = self.thought = ""
             self.activity.clear()
@@ -296,6 +310,7 @@ class Agent:
         if self.busy:
             return False
         self._session = self._resume = None
+        self._told = {}
         state.delete("agent.session")
         self._clear_said()
         self.heard = self.thought = ""
@@ -404,6 +419,7 @@ class Agent:
         self.activity.clear()
         self.activity.append(Activity("info", "back on an earlier line"))
         self._session = session_id
+        self._told = {}
         state.set("agent.session", {"id": session_id, "at": time.time()})
         if self._stop is not None and self._client is not None:
             self._redial = True
@@ -433,6 +449,10 @@ class Agent:
             else:
                 texts = [b.get("text", "") for b in content or []
                          if isinstance(b, dict) and b.get("type") == "text"]
+            if m.type == "user":
+                # What was typed is the first block; a second is the
+                # desktop note (`_with_note`), not something they said.
+                texts = texts[:1]
             joined = "\n".join(t for t in texts if t).strip()
             if not joined:
                 continue
@@ -628,7 +648,7 @@ class Agent:
             self.dial()
             return
         try:
-            await client.query(line)
+            await client.query(await self._with_note(line))
         except Exception as e:
             log.exception("agent send failed")
             self.busy = False
@@ -702,6 +722,34 @@ class Agent:
             cli_path=self.cli_path,
             stderr=lambda line: log.debug("claude: %s", line.rstrip()),
         )
+
+    async def _with_note(self, line: str):
+        """What goes out for `line`: the line alone, or — the first line
+        of a call — the line and, as a second text block of the same
+        message, the note of the desktop as the call opened.
+
+        In the message rather than in a UserPromptSubmit hook's
+        additionalContext: Claude Code persists hook context over ~10KB
+        to a file and shows the model a 2KB preview, and the highlighted
+        text goes whole. The line stays the first block, which is what
+        the past-conversation list and `_last_exchange` read."""
+        if not self._glance_due or not hasattr(self.tools, "note"):
+            return line
+        self._glance_due = False
+        try:
+            note = await self.tools.note(self._told)
+        except Exception:
+            log.exception("could not describe the desktop")
+            return line
+        if not note:
+            return line
+
+        async def one():
+            yield {"type": "user", "parent_tool_use_id": None,
+                   "message": {"role": "user", "content": [
+                       {"type": "text", "text": line},
+                       {"type": "text", "text": note}]}}
+        return one()
 
     # ── permission prompts ──────────────────────────────────────────────
     async def _can_use_tool(self, name: str, args: dict, ctx) -> Any:

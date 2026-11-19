@@ -243,6 +243,12 @@ class Firefox:
         except FirefoxError:
             pass
 
+    @property
+    def connected(self) -> bool:
+        """Whether the add-on is on the line now. `call()` would wait a
+        while for it otherwise."""
+        return self._writer is not None
+
     # ── requests ────────────────────────────────────────────────────────
     async def call(self, op: str, timeout: float = CALL_S, **args):
         if self._writer is None:

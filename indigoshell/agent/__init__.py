@@ -24,6 +24,11 @@ The package, by job:
                      opening links and files (brought forward on their
                      workspace), apps, workspaces, the clipboard,
                      Spotify, WiZ lights, Firefox, the phone
+    glance.py        the desktop as the call opened: workspace, focused
+                     window, Firefox's tab, what is playing, the
+                     highlighted text and a screenshot without the call,
+                     taken before the overlay maps; sent with the first
+                     line of each call
     spotify.py       the Spotify app and Web API, with its own sign-in
     wiz.py           WiZ lights on the LAN: discovery, scenes, names
     phone.py         the user's phone over SFTP (MiXplorer's server)

@@ -7,7 +7,8 @@ them as `mcp__shell__<name>`. They are pre-approved: each is either
 read-only or a small, visible desktop action (open a link, switch a
 workspace, skip a song). Nothing here clicks or types for you.
 
-    screenshot          look at the screen, a window or a region
+    screenshot          look at the screen, a window or a region, now or
+                        as it was when the call opened (agent/glance.py)
     open                a link or a file (a report, an image, a video) in
                         its usual program, brought forward on its workspace
     notify              a toast
@@ -51,6 +52,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 import skia
@@ -58,6 +60,7 @@ import skia
 from ..services import clipboard, proc
 from .spotify import Spotify, SpotifyError, track_line, uri as spotify_uri
 from .firefox import Firefox, FirefoxError
+from .glance import FILL_WAIT_S, Glancer, describe as describe_glance
 from .phone import DEPTH_MAX, LIST_DEFAULT, LIST_MAX, Phone, PhoneError
 from .wiz import COLORS, Wiz, WizError, parse_color, parse_scene
 
@@ -90,7 +93,12 @@ phone is reachable over Wi-Fi while its SFTP server is on in \
 MiXplorer: `phone_files` lists and searches its folders, `phone_pull` \
 copies files from it to this computer, `phone_push` sends files to \
 it. Screenshots include the call overlay in the top-right \
-corner. How the user wants to be shown things is in your CLAUDE.md."""
+corner. The first line the user sends in each call comes with a note of \
+what was on their desktop when they opened it (workspace, focused \
+window, Firefox tab, what is playing, highlighted text), and a \
+screenshot of that moment without the overlay is kept for \
+`screenshot` with before_call true. How the user wants to be shown \
+things is in your CLAUDE.md."""
 
 
 def _text(value: str) -> dict:
@@ -232,6 +240,64 @@ class ShellTools:
         self.lights = lights or Wiz()
         self.firefox = firefox or Firefox()
         self.phone = phone or Phone()
+        self.glancer = Glancer()
+
+    # ── the desktop as the call opened (agent/glance.py) ───────────────
+    def look(self) -> None:
+        """The call is opening: note the desktop before it maps."""
+        g = self.glancer.take()
+        asyncio.get_running_loop().create_task(
+            self.glancer.fill(g, firefox=self.firefox, run=_run))
+
+    async def note(self, told: dict) -> str | None:
+        """The note for the line about to go out, or None."""
+        g = self.glancer.last
+        if g is None:
+            return None
+        try:
+            await asyncio.wait_for(g.done.wait(), FILL_WAIT_S)
+        except asyncio.TimeoutError:
+            log.warning("glance: still filling after %.0fs; sending what "
+                        "there is", FILL_WAIT_S)
+        return describe_glance(g, told)
+
+    def _screenshot_before_call(self, target: str, args: dict) -> dict:
+        g = self.glancer.last
+        if g is None or g.image is None:
+            return _error("there is no screenshot from when this call "
+                          "opened; take one of the screen now instead")
+        image = g.image
+        crop = None
+        try:
+            if target == "window":
+                if g.rect is None:
+                    return _error("no window was focused when the call "
+                                  "opened")
+                crop = g.rect
+            elif target == "region":
+                crop = tuple(int(args[k]) for k in
+                             ("x", "y", "width", "height"))
+        except (KeyError, TypeError, ValueError) as e:
+            return _error(f"cannot find what to capture: {e}")
+        if crop is not None:
+            bounds = skia.IRect.MakeXYWH(*crop)
+            if not bounds.intersect(image.bounds()):
+                return _error("that region is off the screen")
+            image = image.makeSubset(bounds)
+            if image is None:
+                return _error("cannot crop to that region")
+            crop = (bounds.x(), bounds.y(), bounds.width(), bounds.height())
+        b64, tw, th = _encode(image, SHOT_MAX_SIDE)
+        scale = tw / image.width()
+        where = (f"region {crop[2]}x{crop[3]} at {crop[0]},{crop[1]}"
+                 if crop else f"whole screen {image.width()}x{image.height()}")
+        when = time.strftime("%H:%M:%S", time.localtime(g.at))
+        note = (f"{where} as it was at {when}, when the call opened, shown "
+                f"at {tw}x{th}"
+                + (f" (scale {scale:.2f})" if scale < 1 else "") + ".")
+        return {"content": [{"type": "image", "data": b64,
+                             "mimeType": "image/jpeg"},
+                            {"type": "text", "text": note}]}
 
     # ── the tools ───────────────────────────────────────────────────────
     def build(self, agent) -> list:
@@ -240,18 +306,24 @@ class ShellTools:
         @tool("screenshot",
               "Look at the screen. target: 'screen' (default, every "
               "monitor), 'window' (the focused window) or 'region' (give "
-              "x, y, width, height in screen pixels). The image may be "
-              "scaled down; the reply says by how much.",
+              "x, y, width, height in screen pixels). before_call: true "
+              "for the screen as it was when the user opened this call, "
+              "without the overlay ('window' is then the window focused "
+              "at that moment). The image may be scaled down; the reply "
+              "says by how much.",
               {"type": "object",
                "properties": {
                    "target": {"type": "string",
                               "enum": ["screen", "window", "region"]},
                    "x": {"type": "integer"}, "y": {"type": "integer"},
                    "width": {"type": "integer"},
-                   "height": {"type": "integer"}},
+                   "height": {"type": "integer"},
+                   "before_call": {"type": "boolean"}},
                "additionalProperties": False})
         async def screenshot(args):
             target = args.get("target") or "screen"
+            if args.get("before_call"):
+                return self._screenshot_before_call(target, args)
             crop = None
             try:
                 if target == "window":
