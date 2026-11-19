@@ -1,39 +1,59 @@
-"""Files on the user's phone, for the call's agent.
+"""The user's phone, for the call's agent: its files, and a shell on it.
 
-The phone runs MiXplorer, whose Servers menu can share its storage over
-SFTP, FTP(S), HTTP or WebDAV. This uses SFTP: one port, everything
-encrypted (the password too, which FTP and plain HTTP send in the
-clear), and the server proves who it is with its host key, so files
-never go to some other device that took the phone's address.
+The phone (Android) runs Termux with its OpenSSH server on port 8022,
+and Termux:API, so one key-only SSH login reaches both its storage
+(SFTP) and its commands: texts, the call log, notifications, location,
+the camera, ... The user switches the server on and off with the
+`uplink` home-screen widget, a Termux script (~/.shortcuts/tasks/uplink)
+that starts sshd, holds a wake lock and pins a notification whose SEVER
+button stops it again.
 
-**Setting up** — once, by the user, in a terminal, so the password
-never passes through the agent:
+**Two ways in.**
 
-    ~/Projects/indigoshell/.venv/bin/python -m indigoshell.agent.phone setup
+- The file tools here (phone_files, phone_pull, phone_push), which feed
+  the call's progress bars.
+- `ssh phone <command>` in the agent's Bash, for everything else. Setup
+  writes a `phone` host into ~/.ssh/config whose ProxyCommand is
+  `proxy` below: it finds the phone and hands ssh the connected socket.
+  The workspace's phone skill (workspace/.claude/skills/phone) tells
+  the agent what the commands are; being Bash, each one passes auto
+  mode's check like any other command.
 
-It asks for the address MiXplorer shows when its SFTP server starts
-(sftp://192.168.1.42:2222) and the user and password set there,
-connects, and pins the server's key. All of it goes to
-`~/.config/indigoshell/phone.json` (0600):
+**Setting up** — once, by the user, in a terminal, with sshd running in
+Termux (`pkg install openssh`, `passwd`, `sshd`):
 
-    {"host": "192.168.1.42", "port": 2222, "user": "me",
-     "password": "...", "host_key": "ssh-ed25519 AAAA..."}
+    .venv/bin/python -m indigoshell.agent.phone setup     # in the checkout
 
-**Finding it.** The server runs only while it is switched on in
-MiXplorer, and the phone's address can change (DHCP). Each connection
-tries the last address that answered (state key `agent.phone`), then
-the configured one, then every host on the local subnets with the port
-open; only a server holding the pinned key counts.
+(Messages that tell the user to run it name this checkout and this
+interpreter, worked out at run time: see `SET_UP`.) It asks for the
+phone's address, makes this computer a key
+(~/.config/indigoshell/phone_ed25519) and, the first time, asks for the
+Termux password once to put the key on the phone, so the password never
+passes through the agent; then it turns password logins off there. It
+pins the server's host key and writes `~/.config/indigoshell/phone.json`
+(0600):
 
-**Paths** are the server's: relative ones start in the folder it opens
-in (MiXplorer's server root, usually internal storage), and listings
-give paths that way so they can be handed straight back.
+    {"host": "192.168.1.42", "port": 8022, "user": "termux",
+     "key": "/home/me/.config/indigoshell/phone_ed25519",
+     "host_key": "ssh-ed25519 AAAA...", "root": "/storage/emulated/0"}
+
+and the `phone` block in ~/.ssh/config, with its own known_hosts.
+
+**Finding it.** The server runs only while the uplink is on, and the
+phone's address can change (DHCP). Each connection tries the last
+address that answered (state key `agent.phone`) and the configured one,
+then every host on the local subnets with the port open; only a server
+holding the pinned key counts. `proxy` does the same for ssh, and keeps
+phone.json's host current.
+
+**Paths** are the phone's: relative ones start in `root`, internal
+storage (DCIM, Download, Pictures, ...), and listings give paths that
+way so they can be handed straight back.
 
 **Out of process.** SSH spends Python time on every packet; a large
 video moved on the shell's one loop would hitch the bar. Each operation
 runs in a child (`python -m indigoshell.agent.phone do`: a JSON request
-on stdin, a JSON answer on stdout) that reads the password from
-phone.json itself. Stopping the agent kills it.
+on stdin, a JSON answer on stdout). Stopping the agent kills it.
 """
 
 import asyncio
@@ -53,6 +73,11 @@ from .watch import Reporter
 log = logging.getLogger(__name__)
 
 STATE_KEY = "agent.phone"
+PORT = 8022                 # Termux's sshd: Android keeps apps off 22
+USER = "termux"             # Termux takes any user name
+ROOT = "/storage/emulated/0"
+SSH_HOST = "phone"          # `ssh phone`
+HOST_KEY_ALIAS = "indigoshell-phone"   # its known_hosts name, any address
 CONNECT_S = 5.0
 LOGIN_S = 15.0
 KNOWN_PROBE_S = 1.5         # a TCP connect to an address it had before
@@ -65,14 +90,31 @@ WALK_MAX = 20000            # entries looked at by one listing
 SKIP_WALK = {"Android"}     # app data: huge, and mostly unreadable
 DROP_DIRS = ("Download", "/storage/emulated/0/Download", "/sdcard/Download")
 
-SET_UP = ("~/Projects/indigoshell/.venv/bin/python -m "
+# The checkout this runs from: children's PYTHONPATH, and where the user
+# runs setup. Found at run time, so no one's paths live in the repo.
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+
+
+def _shown(path: str) -> str:
+    """A path as the user would type it: ~/... under their home, and
+    relative to the checkout when inside it."""
+    if path.startswith(REPO + os.sep):
+        return os.path.relpath(path, REPO)
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path.startswith(home + os.sep) else path
+
+
+SET_UP = (f"cd {_shown(REPO)} && {_shown(sys.executable)} -m "
           "indigoshell.agent.phone setup")
-NOT_SET_UP = ("The phone isn't set up yet. The user starts the SFTP server "
-              "in MiXplorer (its Servers menu) and runs, once, in a "
-              f"terminal: {SET_UP}")
-NOT_FOUND = ("The phone didn't answer — its SFTP server is probably off. "
-             "Ask the user to start it in MiXplorer (Servers menu); the "
-             "phone and this computer must be on the same Wi-Fi.")
+NOT_SET_UP = ("The phone isn't paired yet. With Termux's SSH server running "
+              "on it, the user runs, once, in a terminal: " + SET_UP)
+NOT_FOUND = ("The phone didn't answer — its uplink is probably off. Ask "
+             "the user to tap the uplink widget on the phone (it starts "
+             "Termux's SSH server); the phone and this computer must be "
+             "on the same Wi-Fi.")
+REPAIR = ("If Termux was reinstalled or lost this computer's key, the user "
+          "runs setup again: " + SET_UP)
 
 
 class PhoneError(Exception):
@@ -83,13 +125,31 @@ def config_path() -> str:
     return os.path.join(paths.config_dir(), "phone.json")
 
 
+def key_path() -> str:
+    """This computer's key for the phone (and its .pub)."""
+    return os.path.join(paths.config_dir(), "phone_ed25519")
+
+
+def known_hosts_path() -> str:
+    """The phone's host key, for `ssh phone`."""
+    return os.path.join(paths.config_dir(), "phone_known_hosts")
+
+
+
+def _remembered() -> list[str]:
+    """The address that answered last time, if any."""
+    got = state.get(STATE_KEY)
+    host = got.get("host") if isinstance(got, dict) else None
+    return [host] if isinstance(host, str) else []
+
+
 def _asyncssh():
     try:
         import asyncssh
     except ImportError:
         raise PhoneError(
-            "asyncssh is missing — in ~/Projects/indigoshell: uv pip "
-            "install --python .venv/bin/python asyncssh") from None
+            f"asyncssh is missing — in {_shown(REPO)}: uv pip install "
+            f"--python {_shown(sys.executable)} asyncssh") from None
     return asyncssh
 
 
@@ -102,8 +162,8 @@ def human(n: float) -> str:
 
 
 def parse_address(text: str) -> tuple[str, int | None, str | None]:
-    """Host, port and user from what MiXplorer shows
-    (sftp://user@192.168.1.42:2222/), or a bare host[:port]."""
+    """Host, port and user from 192.168.1.42, 192.168.1.42:8022 or
+    sftp://user@192.168.1.42:8022/."""
     from urllib.parse import urlsplit
     text = text.strip()
     if "://" not in text:
@@ -124,27 +184,28 @@ def _read_config(path: str) -> dict:
         raise PhoneError(NOT_SET_UP) from None
     except (OSError, ValueError) as e:
         raise PhoneError(f"{path}: {e}") from None
-    missing = [k for k in ("host", "port", "user", "host_key")
+    missing = [k for k in ("host", "port", "user", "key", "host_key")
                if not cfg.get(k)]
     if missing:
         raise PhoneError(f"{path} lacks {', '.join(missing)} — run "
                          f"setup again: {SET_UP}")
+    if not os.path.exists(cfg["key"]):
+        raise PhoneError(f"This computer's key for the phone, {cfg['key']}, "
+                         f"is gone. {REPAIR}")
     return cfg
 
 
 def _options(cfg: dict, *, pinned: bool = True) -> dict:
     ssh = _asyncssh()
-    opts = dict(port=int(cfg["port"]), username=cfg["user"],
-                connect_timeout=CONNECT_S, login_timeout=LOGIN_S,
-                known_hosts=None)
+    # This key only: no agent or default keys offered first, which the
+    # server would count as failed attempts.
+    opts: dict = dict(port=int(cfg["port"]), username=cfg["user"],
+                      connect_timeout=CONNECT_S, login_timeout=LOGIN_S,
+                      known_hosts=None, client_keys=[cfg["key"]],
+                      agent_path=None)
     if pinned:
         key = ssh.import_public_key(cfg["host_key"])
         opts["known_hosts"] = ([key], [], [])
-    if cfg.get("password"):
-        # The password only: no SSH keys or agent offered first, which a
-        # small server may count as failed attempts.
-        opts.update(password=cfg["password"], client_keys=None,
-                    agent_path=None)
     return opts
 
 
@@ -165,47 +226,63 @@ async def _reachable(hosts: list[str], port: int, wait: float) -> list[str]:
     return [h for h in await asyncio.gather(*map(probe, hosts)) if h]
 
 
-async def _connect(cfg: dict, remembered: list[str]):
-    """(connection, host) to the phone, wherever it is now."""
+async def _holds_key(host: str, port: int, pinned) -> bool | None:
+    """Whether the server at host shows the phone's pinned key: a key
+    exchange, no login. None when it couldn't tell."""
     ssh = _asyncssh()
-    opts = _options(cfg)
+    algs = [a.decode() for a in pinned.sig_algorithms]
+    try:
+        key = await asyncio.wait_for(ssh.get_server_host_key(
+            host, port, server_host_key_algs=algs), CONNECT_S)
+    except (OSError, asyncio.TimeoutError, ssh.Error) as e:
+        log.debug("phone: %s: %s", host, e)
+        return None
+    return key is not None and key.public_data == pinned.public_data
+
+
+async def _locate(cfg: dict, remembered: list[str]) -> str:
+    """The address of the server holding the phone's key, wherever DHCP
+    put it."""
+    ssh = _asyncssh()
+    pinned = ssh.import_public_key(cfg["host_key"])
+    port = int(cfg["port"])
     stranger = []
 
-    async def attempt(host):
-        try:
-            return await ssh.connect(host, **opts)
-        except ssh.HostKeyNotVerifiable:
-            stranger.append(host)
-        except ssh.PermissionDenied:
-            raise PhoneError(
-                "The phone turned down the user name or password. If they "
-                f"changed in MiXplorer, the user runs setup again: {SET_UP}"
-            ) from None
-        except (OSError, asyncio.TimeoutError, ssh.Error) as e:
-            log.debug("phone: %s: %s", host, e)
+    async def first(hosts: list[str], wait: float) -> str | None:
+        for host in await _reachable(hosts, port, wait):
+            held = await _holds_key(host, port, pinned)
+            if held:
+                return host
+            if held is False:
+                stranger.append(host)
         return None
 
     # The addresses it had first, all at once, so a stale one costs a
     # short probe rather than an SSH timeout; then the whole LAN.
-    port = int(cfg["port"])
     known = list(dict.fromkeys([*remembered, cfg["host"]]))
-    for host in await _reachable(known, port, KNOWN_PROBE_S):
-        conn = await attempt(host)
-        if conn:
-            return conn, host
-    from .wiz import _networks
-    lan = [h for h in _networks()[1] if h not in known]
-    for host in await _reachable(lan, port, PROBE_S):
-        conn = await attempt(host)
-        if conn:
-            return conn, host
+    host = await first(known, KNOWN_PROBE_S)
+    if host is None:
+        from .wiz import _networks
+        host = await first([h for h in _networks()[1] if h not in known],
+                           PROBE_S)
+    if host:
+        return host
     if stranger:
         raise PhoneError(
-            f"Something answers at {', '.join(stranger)} on port "
-            f"{cfg['port']}, but with a different key than the phone's. If "
-            "MiXplorer's server was reset or reinstalled, the user runs "
-            f"setup again: {SET_UP}")
+            f"Something answers at {', '.join(stranger)} on port {port}, "
+            f"but with a different key than the phone's. {REPAIR}")
     raise PhoneError(NOT_FOUND)
+
+
+async def _connect(cfg: dict, remembered: list[str]):
+    """(connection, host) to the phone, wherever it is now."""
+    ssh = _asyncssh()
+    host = await _locate(cfg, remembered)
+    try:
+        return await ssh.connect(host, **_options(cfg)), host
+    except ssh.PermissionDenied:
+        raise PhoneError(f"The phone turned down this computer's key. "
+                         f"{REPAIR}") from None
 
 
 def _kind(attrs) -> str:
@@ -396,7 +473,8 @@ async def _serve(request: dict) -> dict:
         conn, host = await _connect(cfg, request.get("hosts") or [])
         try:
             async with conn.start_sftp_client() as sftp:
-                remote = _Remote(sftp, await sftp.realpath("."))
+                remote = _Remote(sftp, cfg.get("root")
+                                 or await sftp.realpath("."))
                 op = request.get("op")
                 if op not in ("list", "pull", "push"):
                     raise PhoneError(f"unknown operation {op!r}")
@@ -459,21 +537,14 @@ class Phone:
         # agent/progress.py's Jobs, when the call shows transfers' bars.
         self.progress = None
 
-    def _remembered(self) -> list[str]:
-        got = state.get(STATE_KEY)
-        host = got.get("host") if isinstance(got, dict) else None
-        return [host] if isinstance(host, str) else []
-
     async def _run(self, op: str, **args) -> dict:
         if not os.path.exists(self.config):
             raise PhoneError(NOT_SET_UP)
         request = {"op": op, "args": args, "config": self.config,
-                   "hosts": self._remembered()}
-        root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))))
+                   "hosts": _remembered()}
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join(
-            p for p in (root, env.get("PYTHONPATH")) if p)
+            p for p in (REPO, env.get("PYTHONPATH")) if p)
         if self.progress is not None:
             env.update(self.progress.child_env())
         proc = await asyncio.create_subprocess_exec(
@@ -495,7 +566,7 @@ class Phone:
             raise PhoneError(f"the phone helper failed: "
                              f"{tail or f'exit {proc.returncode}'}") from None
         host = reply.get("host")
-        if host and [host] != self._remembered():
+        if host and [host] != _remembered():
             state.set(STATE_KEY, {"host": host})
         if not reply.get("ok"):
             raise PhoneError(reply.get("error") or "the phone helper failed")
@@ -586,93 +657,261 @@ def _report(verb: str, prep: str, r: dict, *, missing_where: str) -> str:
     return "\n".join(lines)
 
 
+# ── `ssh phone`: the proxy, and the files ssh reads ─────────────────────
+
+BEGIN = "# >>> indigoshell phone >>>"
+END = "# <<< indigoshell phone <<<"
+
+
+def proxy() -> int:
+    """ssh's ProxyCommand, with ProxyUseFdpass: find the phone, connect
+    to it and pass ssh the socket over stdout. ssh checks the host key
+    and logs in itself; this only knows where the phone is now."""
+    import socket
+    host = None
+    try:
+        cfg = _read_config(config_path())
+        host = asyncio.run(_locate(cfg, _remembered()))
+        sock = socket.create_connection((host, int(cfg["port"])), CONNECT_S)
+    except PhoneError as e:
+        print(f"phone: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"phone: {host or 'finding it'}: {e}", file=sys.stderr)
+        return 1
+    if host != cfg["host"]:
+        cfg["host"] = host
+        _write_config(config_path(), cfg)
+    sock.setblocking(True)
+    with socket.socket(fileno=os.dup(sys.stdout.fileno())) as out:
+        socket.send_fds(out, [b"\0"], [sock.fileno()])
+    sock.close()
+    return 0
+
+
+def ssh_config_block(cfg: dict) -> str:
+    """The `phone` host for ~/.ssh/config."""
+    return "\n".join([
+        BEGIN,
+        "# `ssh phone`: Termux on the user's phone, wherever DHCP put it.",
+        "# Written by `python -m indigoshell.agent.phone setup`; run that",
+        "# again rather than editing here.",
+        f"Host {SSH_HOST}",
+        f"    HostKeyAlias {HOST_KEY_ALIAS}",
+        f"    Port {cfg['port']}",
+        f"    User {cfg['user']}",
+        f"    IdentityFile {cfg['key']}",
+        "    IdentitiesOnly yes",
+        f"    UserKnownHostsFile {known_hosts_path()}",
+        "    StrictHostKeyChecking yes",
+        "    BatchMode yes",
+        f"    ProxyCommand env PYTHONPATH={REPO} {sys.executable} "
+        "-W ignore::RuntimeWarning -m indigoshell.agent.phone proxy",
+        "    ProxyUseFdpass yes",
+        "    ServerAliveInterval 15",
+        "    ServerAliveCountMax 2",
+        "    ControlMaster auto",
+        "    ControlPath ~/.ssh/indigoshell-phone-%C",
+        "    ControlPersist 60",
+        END, ""])
+
+
+def _write_ssh_files(cfg: dict) -> str:
+    """The phone's known_hosts, and its block in ~/.ssh/config (whose
+    path this returns)."""
+    _write_private(known_hosts_path(),
+                   f"{HOST_KEY_ALIAS} {cfg['host_key']}\n")
+    ssh_dir = os.path.expanduser("~/.ssh")
+    os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+    path = os.path.join(ssh_dir, "config")
+    try:
+        with open(path) as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+    block = ssh_config_block(cfg)
+    start, end = text.find(BEGIN), text.find(END)
+    if start != -1 and end > start:
+        rest = text[end + len(END):].lstrip("\n")
+        text = text[:start] + block + ("\n" + rest if rest else "")
+    else:
+        # At the top: ssh keeps the first value it reads for an option,
+        # so a `Host *` further down can't override these.
+        text = block + ("\n" + text if text else "")
+    _write_private(path, text)
+    return path
+
+
 # ── setup, in the user's terminal ───────────────────────────────────────
 
-async def _first_contact(cfg: dict) -> tuple[str, str, str, list[str]]:
-    """Connect without a pinned key: the key, its fingerprint, the folder
-    the server opens in, and a few names there."""
-    ssh = _asyncssh()
-    async with ssh.connect(cfg["host"], **_options(cfg, pinned=False)) as conn:
-        key = conn.get_server_host_key()
-        async with conn.start_sftp_client() as sftp:
-            home = await sftp.realpath(".")
-            names = sorted(n for n in await sftp.listdir(home)
-                           if n not in (".", ".."))
-    return (key.export_public_key("openssh").decode().strip(),
-            key.get_fingerprint(), home, names)
+# Key logins only, from now on. Exits 3 on a server that isn't Termux's.
+KEY_ONLY = r"""
+d="$PREFIX/etc/ssh/sshd_config.d"
+[ -n "$PREFIX" ] && [ -d "$d" ] || exit 3
+f="$d/10-key-only.conf"
+grep -qx 'PasswordAuthentication no' "$f" 2>/dev/null && exit 0
+printf '%s\n' '# indigoshell: key logins only' 'PasswordAuthentication no' \
+    'KbdInteractiveAuthentication no' > "$f" &&
+sshd -t && kill -HUP "$(cat "$PREFIX/var/run/sshd.pid")"
+"""
+AUTHORIZE = ("mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+             "cat >> ~/.ssh/authorized_keys && "
+             "chmod 600 ~/.ssh/authorized_keys")
 
 
-def _write_config(path: str, cfg: dict) -> None:
+def _write_private(path: str, text: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         os.fchmod(f.fileno(), 0o600)
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
+        f.write(text)
     os.replace(tmp, path)
 
 
-def setup(path: str | None = None) -> int:
+def _write_config(path: str, cfg: dict) -> None:
+    _write_private(path, json.dumps(cfg, indent=2) + "\n")
+
+
+def _ensure_key(path: str) -> str:
+    """This computer's key for the phone, made the first time: its
+    public half, as authorized_keys takes it."""
+    ssh = _asyncssh()
+    if os.path.exists(path):
+        key = ssh.read_private_key(path)
+    else:
+        key = ssh.generate_private_key("ssh-ed25519",
+                                       comment="indigoshell agent")
+        _write_private(path, key.export_private_key().decode())
+    pub = key.export_public_key().decode().strip()
+    if not os.path.exists(path + ".pub"):
+        with open(path + ".pub", "w") as f:
+            f.write(pub + "\n")
+    return pub
+
+
+async def _pair(cfg: dict, pub: str, ask_password) -> dict:
+    """Pin the phone's host key (into cfg), put this computer's key on
+    the phone (asking for the Termux password only when it isn't there
+    yet), turn password logins off, and look in root."""
+    ssh = _asyncssh()
+    host, port = cfg["host"], int(cfg["port"])
+    try:
+        key = await asyncio.wait_for(ssh.get_server_host_key(
+            host, port, server_host_key_algs=["ssh-ed25519"]), CONNECT_S)
+    except ssh.KeyExchangeFailed:
+        key = None
+    if key is None:
+        key = await asyncio.wait_for(ssh.get_server_host_key(host, port),
+                                     CONNECT_S)
+    if key is None:
+        raise PhoneError(f"Nothing at {host}:{port} speaks SSH.")
+    cfg["host_key"] = key.export_public_key("openssh").decode().strip()
+    opts = _options(cfg)
+    try:
+        conn = await ssh.connect(host, **opts)
+    except ssh.PermissionDenied:
+        password = ask_password()
+        async with ssh.connect(
+                host, port=port, username=cfg["user"], password=password,
+                client_keys=None, agent_path=None,
+                known_hosts=opts["known_hosts"], connect_timeout=CONNECT_S,
+                login_timeout=LOGIN_S) as first:
+            await first.run(AUTHORIZE, input=pub + "\n", check=True)
+        try:
+            conn = await ssh.connect(host, **opts)
+        except ssh.PermissionDenied:
+            raise PhoneError("The phone took the key but still turns it "
+                             "down; check ~/.ssh in Termux (chmod 700, "
+                             "authorized_keys 600).") from None
+    async with conn:
+        locked = (await conn.run(KEY_ONLY, check=False)).exit_status == 0
+        async with conn.start_sftp_client() as sftp:
+            root = cfg["root"]
+            if not await sftp.isdir(root):
+                root = await sftp.realpath(".")
+            names = sorted(n for n in await sftp.listdir(root)
+                           if n not in (".", ".."))
+    return {"fingerprint": key.get_fingerprint(), "root": root,
+            "names": names, "locked": locked}
+
+
+def setup(address: str | None = None, path: str | None = None) -> int:
     import getpass
     path = path or config_path()
     try:
-        old = _read_config(path) if os.path.exists(path) else {}
-    except PhoneError:
+        with open(path) as f:
+            old = json.load(f)
+    except (OSError, ValueError):
         old = {}
-    print("Start the SFTP server in MiXplorer (its Servers menu). It shows "
-          "an address like sftp://192.168.1.42:2222.")
     try:
-        default = f"{old['host']}:{old['port']}" if old else ""
-        text = input(f"Address{f' [{default}]' if default else ''}: ") \
-            or default
-        host, port, user = parse_address(text)
-        if port is None:
-            port = int(input("Port [2222]: ") or 2222)
-        user = input(f"User [{user or old.get('user', '')}]: ") \
-            or user or old.get("user", "")
-        hint = " (Enter keeps the saved one)" if old.get("password") else ""
-        password = getpass.getpass(f"Password{hint}: ") \
-            or old.get("password", "")
+        if address is None:
+            print("On the phone, in Termux: `pkg install openssh`, `passwd` "
+                  "(a password, used once here to put this computer's key "
+                  "on the phone), then `sshd` — or tap the uplink widget.")
+            default = old.get("host", "")
+            address = input("Phone's address"
+                            + (f" [{default}]" if default else "")
+                            + ": ") or default
+        host, port, user = parse_address(address)
     except (EOFError, KeyboardInterrupt):
         print()
         return 1
-    except (PhoneError, ValueError) as e:
+    except PhoneError as e:
         print(e)
         return 1
-    cfg = {"host": host, "port": port, "user": user, "password": password}
-    print(f"Connecting to {host}:{port} …")
+    cfg = {"host": host, "port": port or PORT, "user": user or USER,
+           "key": old.get("key") or key_path(),
+           "root": old.get("root") or ROOT}
+
+    def ask_password() -> str:
+        return getpass.getpass("Termux password (from `passwd`; used once, "
+                               "to put this computer's key on the phone): ")
+
+    print(f"Connecting to {host}:{cfg['port']} …")
     try:
-        key, fingerprint, home, names = asyncio.run(_first_contact(cfg))
+        pub = _ensure_key(cfg["key"])
+        got = asyncio.run(_pair(cfg, pub, ask_password))
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 1
     except PhoneError as e:
         print(e)
         return 1
     except _asyncssh().PermissionDenied:
-        print("The phone turned down that user or password — check them "
-              "in MiXplorer's SFTP server settings.")
+        print("The phone turned down that password: set one in Termux with "
+              "`passwd` and try again.")
         return 1
     except Exception as e:     # noqa: BLE001 - shown to the user as is
         print(f"Couldn't connect: {type(e).__name__}: {e}")
         return 1
-    if old.get("host_key") and old["host_key"] != key:
-        print("Note: this is a different key from the one saved before.")
-    cfg["host_key"] = key
+    if (old.get("host_key") and old.get("port") == cfg["port"]
+            and old["host_key"] != cfg["host_key"]):
+        print("Note: the phone shows a different key from the one saved "
+              "before.")
+    cfg["root"] = got["root"]
     _write_config(path, cfg)
+    ssh_config = _write_ssh_files(cfg)
+    names = got["names"]
     shown = ", ".join(names[:12]) + (" …" if len(names) > 12 else "")
-    print(f"Connected. The phone's key is {fingerprint}; only a server "
-          f"with this key will be trusted as the phone.\n"
-          f"It opens in {home}: {shown or '(empty)'}\n"
-          f"Saved to {path}.")
+    print(f"Paired. The phone's key is {got['fingerprint']}; only a server "
+          "with this key is trusted as the phone.\n"
+          "Password logins on the phone are "
+          + ("off." if got["locked"] else "still on (this isn't Termux?).")
+          + f"\nFiles start in {got['root']}: {shown or '(empty)'}\n"
+          f"Saved to {path}; `ssh {SSH_HOST}` is set up in {ssh_config}.")
     return 0
 
 
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "setup":
-        return setup()
+        return setup(argv[2] if len(argv) > 2 else None)
     if cmd == "do":
         return asyncio.run(_do())
-    print(f"usage: {SET_UP}")
+    if cmd == "proxy":
+        return proxy()
+    print(f"usage: {SET_UP} [address]")
     return 2
 
 

@@ -31,14 +31,17 @@ The package, by job:
                      line of each call
     spotify.py       the Spotify app and Web API, with its own sign-in
     wiz.py           WiZ lights on the LAN: discovery, scenes, names
-    phone.py         the user's phone over SFTP (MiXplorer's server)
+    phone.py         the user's phone over Termux's SSH server: its files,
+                     and the `ssh phone` host (pairing, finding it)
     firefox.py       `Firefox`: the shell's end of the INDIGO bridge
                      add-on (extension/) and its native host
                      (browser_host.py) — the everyday Firefox, no port
     workspace/       the agent's starting files: its notebook
                      (CLAUDE.md, including how you want to be shown
-                     things), its report skill (steps, page template)
-                     and new-skill: how it builds itself new abilities,
+                     things), its report skill (steps, page template),
+                     its phone skill (the Termux:API commands over
+                     `ssh phone`) and new-skill: how it builds itself
+                     new abilities,
                      each a skill folder with uv scripts, nothing
                      installed outside it
     seed.py          puts those in its workspace when missing — never

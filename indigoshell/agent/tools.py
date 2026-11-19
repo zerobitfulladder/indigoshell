@@ -33,10 +33,13 @@ workspace, skip a song). Nothing here clicks or types for you.
     browser_*           the everyday Firefox, with the user's sign-ins:
                         tabs, reading pages, clicking, filling forms,
                         keys, uploading files, JavaScript, screenshots
-    phone_files         folders on the user's phone, over Wi-Fi (MiXplorer's
-                        SFTP server, when the user has it on)
+    phone_files         folders on the user's phone, over Wi-Fi (Termux's
+                        SSH server, while the user has its uplink on)
     phone_pull          copy from the phone to this computer
     phone_push          copy from this computer to the phone
+                        (the rest of the phone — texts, calls, notifications,
+                        location, camera — is `ssh phone` in Bash, taught by
+                        the workspace's phone skill)
     progress            how the long commands running now are getting on,
                         as the call's progress bars show them
 
@@ -89,10 +92,13 @@ page (sending it on WhatsApp, attaching it to a mail), run JavaScript \
 in a page, and screenshot a tab. Prefer them to fetching a page yourself when the user \
 means something in their browser or behind their sign-in. Outside \
 Firefox, you cannot click or type on the user's behalf. The user's \
-phone is reachable over Wi-Fi while its SFTP server is on in \
-MiXplorer: `phone_files` lists and searches its folders, `phone_pull` \
-copies files from it to this computer, `phone_push` sends files to \
-it. Screenshots include the call overlay in the top-right \
+Android phone is reachable over Wi-Fi while its uplink (Termux's SSH \
+server) is on: `phone_files` lists and searches its folders, \
+`phone_pull` copies files from it to this computer, `phone_push` sends \
+files to it, and `ssh phone '<command>'` in Bash runs a command on it \
+— texts, the call log, contacts, notifications, location, battery, \
+camera, torch, volume, speaking aloud and more; the `phone` skill has \
+the commands. Screenshots include the call overlay in the top-right \
 corner. The first line the user sends in each call comes with a note of \
 what was on their desktop when they opened it (workspace, focused \
 window, Firefox tab, what is playing, highlighted text), and a \
@@ -475,7 +481,7 @@ class ShellTools:
 
     # ── phone ───────────────────────────────────────────────────────────
     def _phone_tools(self) -> list:
-        """Files on the user's phone, over SFTP — agent/phone.py."""
+        """Files on the user's phone, over Termux's SFTP — agent/phone.py."""
         from claude_agent_sdk import tool
         phone = self.phone
 
@@ -486,15 +492,14 @@ class ShellTools:
 
         @tool("phone_files",
               "List a folder on the user's phone, or search it. path: a "
-              "folder, relative to where the phone's server opens (usually "
-              "internal storage: DCIM/Camera, Download, Pictures/"
-              "Screenshots, Documents, ...) or absolute; empty for that "
-              "root. pattern: match file names (*.pdf, *invoice*). depth: "
+              "folder, relative to the phone's internal storage "
+              "(DCIM/Camera, Download, Pictures/Screenshots, Documents, "
+              "...) or absolute; empty for internal storage itself. pattern: match file names (*.pdf, *invoice*). depth: "
               f"how many folders down to look (0 = just this one, max "
               f"{DEPTH_MAX}). newest: newest first; 'the photo I just "
               f"took' is DCIM/Camera, newest, limit 1. limit: entries "
-              f"(default {LIST_DEFAULT}, max {LIST_MAX}). Works only while "
-              "the user has MiXplorer's SFTP server on.",
+              f"(default {LIST_DEFAULT}, max {LIST_MAX}). Works while the "
+              "phone's uplink is on.",
               {"type": "object", "properties": {
                   "path": {"type": "string"},
                   "pattern": {"type": "string"},

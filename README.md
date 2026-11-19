@@ -95,8 +95,11 @@ account from the `claude` in your terminal.
   Firefox, signed in as you — tabs, pages read as text with every link,
   field and button numbered, clicks, typing, forms, file uploads (send
   a file on WhatsApp, attach it to a mail), JavaScript in the page,
-  screenshots of a tab; and your phone over Wi-Fi — its folders
-  listed and searched, files pulled to this computer or pushed to it.
+  screenshots of a tab; and your Android phone over Wi-Fi — its
+  folders listed and searched, files pulled to this computer or pushed
+  to it, and the phone itself through Termux: texts read and sent, the
+  call log, contacts, the notifications on it, where it is, its camera,
+  torch, volume and voice.
 
   <img src="docs/media/call-music.png" width="100%"
        alt="Asked for music that sounds like rain on neon, the agent searching Spotify and queueing Vangelis">
@@ -177,14 +180,39 @@ Then restart Firefox. The add-on's toolbar button shows whether it is
 connected to the shell; press **Allow JavaScript** there once for the
 tool that runs scripts in a page.
 
-The phone tools speak SFTP to the server in the phone's file manager
-(MiXplorer's, from its Servers menu; any SFTP server works). Start it,
-then pair once — it asks for the address the server shows and its
-password, and pins the server's key, so files only ever go to that
-phone, wherever DHCP puts it:
+The phone runs [Termux](https://f-droid.org/packages/com.termux/) with
+Termux:API and Termux:Widget, all three from the same source (F-Droid).
+In Termux: `pkg install openssh termux-api`, `termux-setup-storage`,
+`passwd`, then `sshd`; grant Termux:API its permissions (SMS, call log,
+contacts, location, notification access, ...). Then pair once from
+here — it asks for the phone's address, uses the Termux password once
+to install this computer's key, turns password logins off, pins the
+phone's host key, and adds a `phone` host to `~/.ssh/config` that finds
+the phone wherever DHCP puts it:
 
 ```bash
 .venv/bin/python -m indigoshell.agent.phone setup
+```
+
+After that `ssh phone '<command>'` works for you and the agent alike.
+To switch the phone's server on and off with one tap, put a script
+like this in Termux's `~/.shortcuts/tasks/uplink` and add the
+Termux:Widget widget: it starts `sshd`, holds a wake lock, and pins a
+notification whose button stops it again.
+
+```sh
+#!/data/data/com.termux/files/usr/bin/sh
+pidf=$PREFIX/var/run/sshd.pid
+me=$HOME/.shortcuts/tasks/uplink
+running() { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; }
+on()  { running || sshd; termux-wake-lock
+        termux-notification --id uplink --ongoing --alert-once \
+          --title "◢◤ UPLINK HOT" --content "ICE down · port 8022 open" \
+          --button1 SEVER --button1-action "$me off"; }
+off() { termux-notification-remove uplink; termux-wake-unlock
+        running && kill "$(cat "$pidf")"
+        pkill -f "$PREFIX/libexec/sshd-session"; }
+case "$1" in on) on ;; off) off ;; *) if running; then off; else on; fi ;; esac
 ```
 
 ## Showcase
@@ -332,7 +360,7 @@ indigoshell/
     spotify.py      ─ the Spotify app (MPRIS) and Web API, with sign-in
     wiz.py          ─ WiZ lights on the LAN: discovery, scenes, names
     firefox.py      ─ the everyday Firefox, via the INDIGO bridge add-on
-    phone.py        ─ the phone's files over SFTP: pairing, finding it
+    phone.py        ─ the phone over Termux SSH: files, `ssh phone`, pairing
     browser_host.py ─ that add-on's native messaging host
     extension/      ─ the add-on: page reader, clicks, forms, JavaScript
     prompts.py      ─ the call protocol and the persona
@@ -341,7 +369,7 @@ indigoshell/
     progress.py     ─ long commands' progress, over a datagram socket
     watch.py        ─ the wrappers that read yt-dlp/ffmpeg/curl/rsync output
     seed.py         ─ the agent's workspace: notebook, skills, palette
-    workspace/      ─ the starting notebook and skills (report, new-skill)
+    workspace/      ─ the starting notebook and skills (report, phone, new-skill)
     ui/             ─ call.py (keys, layout), agent_plate.py, you_plate.py,
                       choice.py (GREENLIGHT / SCRUB), bars.py (progress),
                       chip.py, status.py, frame.py (turn clock), reveal.py
