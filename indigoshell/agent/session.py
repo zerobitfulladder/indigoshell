@@ -86,6 +86,13 @@ RESUME_WITHIN_S = 6 * 3600
 # Hang up the CLI process after this long with no call open and no turn
 # running. It holds a few hundred MB; the next dial resumes the session.
 IDLE_DISCONNECT_S = 15 * 60
+# The longest single line we accept from the CLI's stdout. The SDK's
+# default is 1MB, and one message over it ends the stream for good: the
+# turn dies and the CLI is hung up. Reading a phone photo crosses it —
+# the CLI downscales it to ~660KB of base64, then sends that twice in
+# one message (the tool result, and `tool_use_result` beside it). This
+# is only a ceiling; nothing is allocated up front.
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 # Everything the agent did this turn, so the overlay can expand it.
 ACTIVITY_KEEP = 80
 
@@ -687,6 +694,7 @@ class Agent:
             # .claude/settings.json, which can still add rules of its own.
             settings=json.dumps({"permissions": {"ask": list(self.ask)}}),
             include_partial_messages=True,
+            max_buffer_size=MAX_MESSAGE_BYTES,
             thinking={"type": "adaptive", "display": "summarized"},
             model=self.model,
             effort=self.effort,
