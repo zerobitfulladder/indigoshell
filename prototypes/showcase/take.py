@@ -58,6 +58,10 @@ BAR_Y = H - 21
 PARK = (1180, BAR_Y)                # the bar's empty middle
 CENTRE = (W // 2, H // 2)
 OUT = Path.home() / "Videos" / "indigoshell-showcase"
+# The checkout, as nvim's :cd types it on camera (~/... under home).
+REPO = Path(__file__).resolve().parents[2]
+REPO_TYPED = (f"~/{REPO.relative_to(Path.home())}"
+              if REPO.is_relative_to(Path.home()) else str(REPO))
 
 # The player, floated: a little over a quarter of the screen, and short
 # enough to clear the system panel that opens bottom-left.
@@ -245,7 +249,7 @@ class Take:
         self.ids["nvim"] = self.launch("nvim")
         self.hold(0.6)                  # nvim and its plugins load
         self.expect_focus("nvim")
-        self.s.type(":cd ~/Projects/indigoshell\n", cps=COMMAND_CPS)
+        self.s.type(f":cd {REPO_TYPED}\n", cps=COMMAND_CPS)
         self.hold(0.15)
         self.mark("tree")
         self.s.type("\\e", cps=COMMAND_CPS)
