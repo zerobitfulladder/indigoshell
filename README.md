@@ -49,6 +49,15 @@ account from the `claude` in your terminal.
   wants you — an answer blinks twice, a question blinks until answered.
   While a turn runs, the agent's frame is redrawn clockwise as a turn
   clock, one lap a minute.
+- **Model and effort on its header.** `Ctrl+M` switches the model on
+  the live conversation and `Ctrl+T` the effort. The header names the
+  model by the version the API reports for it — `opus 5.5`, never a
+  guess — and the effort by street name: idle, stock, boost, overclock,
+  redline (low to max).
+- **Talk over it.** A line sent while it works goes in at once and
+  shows in its plate, in your colour, where you sent it. The agent
+  reads it at its next step — a running command finishes untouched —
+  and folds it into the task. `Ctrl+C` stops it now instead.
 - **It hangs up on long jobs and calls back.** For anything slow it
   says what it's about to do and hangs up; a status chip in the corner
   keeps working, and rings when the work is done. Escape hangs up from
@@ -58,13 +67,14 @@ account from the `claude` in your terminal.
        alt="Hung up: the status chip spinning through a system update, then calling back with the result">
 
 - **Long commands show how far they've got.** A download, a transcode or
-  one of its own multi-stage scripts gets a progress bar under the step
-  that runs it: how much is done, how fast, how long is left, and which
-  stage of the pipeline it's on. Hung up, the bar moves to the status
-  chip. yt-dlp, ffmpeg, curl and rsync report by themselves, through
-  small wrappers on the agent's PATH, which also trim their progress
-  spam to one line in the agent's context. Its own scripts report with
-  a ten-line function, and the agent can ask where a job is up to.
+  one of its skills' multi-stage scripts (below) gets a progress bar
+  under the step that runs it: how much is done, how fast, how long is
+  left, and which stage of the pipeline it's on. Hung up, the bar moves
+  to the status chip. yt-dlp, ffmpeg, curl and rsync report by
+  themselves, through small wrappers on the agent's PATH, which also
+  trim their progress spam to one line in the agent's context. Its own
+  scripts report with a ten-line function, and the agent can ask where
+  a job is up to.
 
 - **It asks before going root.** Claude Code's auto mode judges every
   other call, letting routine work through and blocking what looks
@@ -107,6 +117,16 @@ account from the `claude` in your terminal.
   your rules for working on it — and Claude Code's memory holds what it
   learns about you. Tell it on a call to do things differently and it
   edits its own notebook.
+- **It learns new tricks.** Ask it to set up a way to do something —
+  "from now on, when I send a reel, transcribe it" — and it builds
+  itself a skill: a folder in its workspace with a `SKILL.md` and, when
+  the job needs code, a self-contained `uv` script, nothing installed
+  anywhere else. Transcribing videos with Whisper and finding a song's
+  lyrics started that way, built on a call. A skill's script reports
+  each stage as it goes, so its run shows the steps on its progress
+  bar — download, audio, model, transcribe, write — and they follow to
+  the status chip when it hangs up. Each skill is one line in the
+  agent's context until it is used.
 - **A hologram, glitches and all.** The plates and chips share one
   raster on the screen's pixel grid; every few seconds a scan band runs
   down the whole call and the image tears as it passes. Replies decode
@@ -118,7 +138,7 @@ account from the `claude` in your terminal.
 | `Esc` | hang up (the work carries on) |
 | `Ctrl+C` | copy the selection; with none, stop the task |
 | `Ctrl+N` · `Ctrl+H` | a new conversation · past ones, to resume |
-| `Ctrl+M` · `Ctrl+T` | next model (opus, sonnet, haiku, fable) · effort |
+| `Ctrl+M` · `Ctrl+T` | next model (opus, sonnet, haiku, fable) · effort (idle … redline) |
 | `Ctrl+O` | every step of the turn |
 | `A` `D` | greenlight (allow), scrub (deny) |
 | `PgUp` `PgDn` | scroll a long reply |
@@ -315,11 +335,14 @@ indigoshell/
     browser_host.py ─ that add-on's native messaging host
     extension/      ─ the add-on: page reader, clicks, forms, JavaScript
     prompts.py      ─ the call protocol and the persona
-    permissions.py  ─ the commands that always ask
+    permissions.py  ─ the root commands that still ask
     activity.py     ─ one line per step, approvals, tool formatting
-    seed.py         ─ the agent's workspace: notebook, report skill, palette
-    workspace/      ─ the starting notebook and report skill
+    progress.py     ─ long commands' progress, over a datagram socket
+    watch.py        ─ the wrappers that read yt-dlp/ffmpeg/curl/rsync output
+    seed.py         ─ the agent's workspace: notebook, skills, palette
+    workspace/      ─ the starting notebook and skills (report, new-skill)
     ui/             ─ call.py (keys, layout), agent_plate.py, you_plate.py,
+                      choice.py (GREENLIGHT / SCRUB), bars.py (progress),
                       chip.py, status.py, frame.py (turn clock), reveal.py
                       (decode), holo.py (raster + glitch scan), rows.py
   backend/
