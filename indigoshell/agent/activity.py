@@ -36,6 +36,9 @@ class Activity:
     failed: bool = False
     sub: bool = False    # inside a subagent
     tool_id: str = ""
+    tool: str = ""       # the tool's name, for a tool call
+    command: str = ""    # a Bash call's command, as the agent wrote it
+    summary: str = ""    # what its progress came to: "51.0 MB in 0:16"
     id: int = field(default_factory=lambda: next(_ids))
     at: float = field(default_factory=time.monotonic)
 

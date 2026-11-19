@@ -56,7 +56,7 @@ it after (about 0.2 s). Nothing appears next to the script.
 - A package without a build for the system Python (3.14): pin
   `requires-python = "==3.12.*"`; uv fetches that Python by itself.
 - Interface: arguments in; the result (a path, or short text) on stdout;
-  progress and errors on stderr; a non-zero exit on failure. Scratch
+  errors on stderr, progress through `report` (below); a non-zero exit on failure. Scratch
   files in a temp dir removed at exit.
 - The script sets up its own environment, so running it stays one line.
   CUDA libraries from pip (nvidia-* packages) are not on the loader path,
@@ -65,6 +65,53 @@ it after (about 0.2 s). Nothing appears next to the script.
 - Big downloads (models) stay in their usual cache (Hugging Face:
   `~/.cache/huggingface/hub`). Check it first; some are already there.
 - GPU: CUDA, RTX 3060 with 6 GB, shared with the desktop.
+
+## Progress on the call
+
+A job that takes more than a few seconds shows its progress on the call,
+as a bar under the step that runs it. yt-dlp, ffmpeg, curl and rsync do
+that by themselves when run as commands. A script reports its own with
+this function, pasted in as it is (standard library only; outside the
+shell it does nothing, and it never blocks or fails):
+
+```python
+import json, os, socket, time
+
+_progress = [None, 0.0]
+
+
+def report(**fields):
+    """Progress on the call. stages=[...] once, stage="..." as each one
+    starts, done=/total= with unit="B" (bytes), "s" (seconds of media),
+    "%" or "" (items), text="..." for a short status line."""
+    path = os.environ.get("INDIGO_PROGRESS")
+    if not path:
+        return
+    now = time.monotonic()
+    if set(fields) <= {"done", "total", "unit"} and now - _progress[1] < 0.1 \
+            and fields.get("done") != fields.get("total"):
+        return
+    _progress[1] = now
+    try:
+        if _progress[0] is None:
+            _progress[0] = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            _progress[0].setblocking(False)
+        _progress[0].sendto(json.dumps(fields).encode(), path)
+    except OSError:
+        pass
+```
+
+- A pipeline names its stages once,
+  `report(label="transcribe", stages=["download", "audio", "transcribe"])`,
+  then `report(stage="audio")` as each one starts. A new stage clears
+  the bar.
+- Numbers where they are known: bytes from a download (yt-dlp's
+  `progress_hooks`), seconds of media done out of its length, items out
+  of a total. A stage without them shows as busy; an ffmpeg run inside
+  it fills the bar by itself.
+- `text=` is for one fact worth seeing ("Turkish, 9:48 long"), not a log.
+- Progress goes through `report`, not prints: stderr is for errors and
+  what you need to read afterwards.
 
 ## Logins and keys
 

@@ -48,6 +48,7 @@ import sys
 import time
 
 from ..core import paths, state
+from .watch import Reporter
 
 log = logging.getLogger(__name__)
 
@@ -305,7 +306,8 @@ class _Remote:
                 # An existing folder as the target means "into it", so an
                 # overwrite names the parent and lets the copy add the name.
                 await self.sftp.get(src, to if overwrite else local,
-                                    recurse=is_dir, preserve=True)
+                                    recurse=is_dir, preserve=True,
+                                    progress_handler=_progress())
                 _tidy(local)
                 items.append([self.shown(src), local, _local_size(local),
                               is_dir])
@@ -335,7 +337,8 @@ class _Remote:
             is_dir = os.path.isdir(local)
             # No preserve: Android storage refuses chmod, which would
             # abort the copy part-way.
-            await self.sftp.put(local, folder, recurse=is_dir)
+            await self.sftp.put(local, folder, recurse=is_dir,
+                                progress_handler=_progress())
             items.append([local, self.shown(dst), _local_size(local),
                           is_dir])
         return {"to": self.shown(folder), "items": items, "exists": there,
@@ -411,6 +414,30 @@ async def _serve(request: dict) -> dict:
                 "error": f"{type(e).__name__}: {e}"}
 
 
+# How far a copy has got, for the call's progress bar: each file by
+# name, its bytes as they go (agent/progress.py).
+_REPORT = Reporter()
+
+
+def _progress():
+    """asyncssh's progress_handler for one copy, file by file."""
+    named: set[str] = set()
+
+    def handler(src, _dst, done: int, total: int) -> None:
+        if not _REPORT:
+            return
+        path = src.decode(errors="replace") if isinstance(src, bytes) \
+            else str(src)
+        name = posixpath.basename(path.rstrip("/")) or path
+        if name not in named:
+            named.add(name)
+            _REPORT.send(label=name, done=done, total=total or None,
+                         unit="B")
+        else:
+            _REPORT.send(done=done, total=total or None, unit="B")
+    return handler
+
+
 async def _do() -> int:
     try:
         request = json.loads(sys.stdin.read())
@@ -418,6 +445,7 @@ async def _do() -> int:
         print(json.dumps({"ok": False, "error": f"bad request: {e}"}))
         return 2
     print(json.dumps(await _serve(request)))
+    _REPORT.flush()
     return 0
 
 
@@ -428,6 +456,8 @@ class Phone:
 
     def __init__(self, config: str | None = None) -> None:
         self.config = config or config_path()
+        # agent/progress.py's Jobs, when the call shows transfers' bars.
+        self.progress = None
 
     def _remembered(self) -> list[str]:
         got = state.get(STATE_KEY)
@@ -444,6 +474,8 @@ class Phone:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join(
             p for p in (root, env.get("PYTHONPATH")) if p)
+        if self.progress is not None:
+            env.update(self.progress.child_env())
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-W", "ignore::RuntimeWarning",
             "-m", __name__, "do", env=env,

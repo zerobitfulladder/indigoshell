@@ -14,6 +14,12 @@ The package, by job:
     permissions.py   `ASK_FIRST`: what always asks you, on top of auto mode
     activity.py      the agent's steps and questions, as the overlay
                      shows them
+    progress.py      `Jobs`: how far its long commands have got. A socket
+                     the commands report to ($INDIGO_PROGRESS), each job
+                     matched to the step that started it, and the shims
+                     that put yt-dlp, ffmpeg, curl and rsync under...
+    watch.py         ...the wrapper that reads their progress; and
+                     `Reporter`, the sending end (standard library only)
     tools.py         `ShellTools`: the desktop as tools — screenshots,
                      opening links and files (brought forward on their
                      workspace), apps, workspaces, the clipboard,
@@ -41,6 +47,7 @@ The package, by job:
     ui/chip.py       the CALL chip
     ui/agent_plate.py, ui/you_plate.py
                      the two lines of the call
+    ui/bars.py       progress bars: under a step, and on the status chip
     ui/call.py       `CallHost`: the call window and its keys
     ui/status.py     `CallStatus` + `CallRouter`: the corner chip while a
                      hung-up call works or rings

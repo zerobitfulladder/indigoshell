@@ -1,7 +1,7 @@
 """The agent's plate: the turn as it happened — what it says (rendered
 Markdown, selectable) and, between its words, the steps it ran
-(expandable), in order — and the list of past conversations when that
-is open."""
+(expandable), in order, a long one with its progress bar under it — and
+the list of past conversations when that is open."""
 
 import time
 from typing import Callable
@@ -12,15 +12,16 @@ from ... import shapes, text, theme
 from ...widgets.base import Size, Widget
 from ...services import clipboard
 from ..session import DEFAULT_EFFORT, Agent
+from .bars import Bars
 from .frame import TRACE_BLEED, Trace
 from .reveal import Reveal
 from .style import (ACT_ROWS_ALL, ACT_ROWS_BUSY, ACT_ROWS_IDLE, ACT_SIZE,
-                    AGENT_FILL, ASK_ACCENT, BODY_SIZE, CLICK_S, COPIED_FPS,
-                    COPIED_S, CORNERS, DOTS_PER_S, FAIL_ACCENT, HISTORY_ROWS,
-                    MAX_BODY_ROWS, NAME_SIZE, OUT_ROWS, OUT_ROWS_FULL, PAD_X,
-                    PAD_Y, PLATE_W, STATUS_WORDS, TAG_SIZE, TOOL_FG,
-                    accent_of, ago, clock_text, line_h, paint_heading,
-                    paint_plate)
+                    AGENT_ACCENT, AGENT_FILL, ASK_ACCENT, BODY_SIZE, CLICK_S,
+                    COPIED_FPS, COPIED_S, CORNERS, DOTS_PER_S, FAIL_ACCENT,
+                    HISTORY_ROWS, MAX_BODY_ROWS, NAME_SIZE, OUT_ROWS,
+                    OUT_ROWS_FULL, PAD_X, PAD_Y, PLATE_W, STATUS_WORDS,
+                    TAG_SIZE, TOOL_FG, accent_of, ago, clock_text, line_h,
+                    paint_heading, paint_plate)
 from .rows import Row, code_rows, highlight, markdown_rows, paint_line, text_rows
 
 
@@ -55,6 +56,7 @@ class AgentPlate(Widget):
         self._built_key: tuple | None = None
         self._body: list[Row] = []  # the whole turn, before scrolling
         self.trace = Trace()        # the turn clock on the frame
+        self.bars = Bars()          # long commands' progress
         self._copied_until = 0.0
         self._dragging = False
         self._press: tuple[float, float] = (0.0, 0.0)
@@ -79,9 +81,11 @@ class AgentPlate(Widget):
         # Everything here that moves is drawn from the time: the trace
         # round the frame (and with it the turn clock and the thinking
         # dots, for as long as a turn runs), the reply decoding, and the
-        # "copied" tag waiting to come down.
+        # "copied" tag waiting to come down; and progress bars filling.
         return max(self.trace.fps(self.agent), self.reveal.fps(),
-                   COPIED_FPS if self._copied() else 0)
+                   COPIED_FPS if self._copied() else 0,
+                   self.bars.fps([r.job for r in self._built
+                                  if r.kind == "job"]))
 
     def _copied(self) -> bool:
         return time.monotonic() < self._copied_until
@@ -101,6 +105,7 @@ class AgentPlate(Widget):
                 sum(1 for x in acts if x.result is not None),
                 self.show_all, tuple(sorted(self.expanded)),
                 tuple(sorted(self.full_output)), self.scroll, self.width,
+                a.jobs.shape(),
                 None if self.history is None
                 else (len(self.history), self.hist_sel, self.hist_top))
 
@@ -165,6 +170,9 @@ class AgentPlate(Widget):
             else:
                 items.append([act])
         items += parts[i:]
+        # Long commands from before this turn, or that no step claimed,
+        # still running in the background: their bars come last.
+        loose = a.loose_jobs()
 
         rows: list[Row] = []
         for n, item in enumerate(items):
@@ -176,6 +184,11 @@ class AgentPlate(Widget):
             else:
                 key, _after, said = item
                 rows += markdown_rows(said, w, key)
+        if loose:
+            if rows:
+                rows.append(Row("gap", 6))
+            for job in loose:
+                rows += self._job_rows(job, loose=True)
         self.reveal.track(a, rows)
         if a.phase == "speaking" and items and not isinstance(items[-1], list):
             for row in reversed(rows):
@@ -253,7 +266,11 @@ class AgentPlate(Widget):
         all of them after Ctrl+O. The run still going shows a few more."""
         keep = ACT_ROWS_ALL if self.show_all else (
             ACT_ROWS_BUSY if current else ACT_ROWS_IDLE)
-        shown = acts[-keep:]
+        # A step with a bar running stays in sight, however many came
+        # after it (a download left going in the background).
+        a = self.agent
+        shown = [x for x in acts[:-keep] if a.job_of(x) is not None] \
+            + acts[-keep:]
         hidden = len(acts) - len(shown)
         rows: list[Row] = []
         lh = line_h(ACT_SIZE) + 3
@@ -269,6 +286,9 @@ class AgentPlate(Widget):
             rows.append(Row("act", lh, x=cell * 2, size=ACT_SIZE,
                             key=f"a{act.id}", src=act.text, start=0,
                             end=len(act.text), act=act))
+            job = a.job_of(act)
+            if job is not None:
+                rows += self._job_rows(job)
             if act.id not in self.expanded:
                 continue
             rows += self._code_rows(f"d{act.id}", act.detail or act.text, w,
@@ -292,6 +312,18 @@ class AgentPlate(Widget):
                                  label=f"… {more} more lines"
                                  + ("" if full else " — click")))
             rows += lines
+        return rows
+
+    def _job_rows(self, job, loose: bool = False) -> list[Row]:
+        """A job's bar, and the line of its stages and status if it has
+        one. Indented under its step; one with no step gets a mark of
+        its own where a step's would be."""
+        lh = line_h(ACT_SIZE) + 3
+        x = text.advance(ACT_SIZE) * 2
+        rows = [Row("job", lh, x=x, size=ACT_SIZE, job=job,
+                    label="⟳" if loose else "")]
+        if job.stages or job.stage or job.text:
+            rows.append(Row("jobinfo", lh, x=x, size=ACT_SIZE, job=job))
         return rows
 
     def _history_rows(self) -> list[Row]:
@@ -564,6 +596,14 @@ class AgentPlate(Widget):
                 self._paint_header(canvas, box, accent)
             elif kind == "act":
                 self._paint_act(canvas, box, row, sel)
+            elif kind == "job":
+                if row.label:
+                    self._glyph(canvas, box, row.label, theme.BASE_MUTED)
+                self.bars.paint_row(canvas, box, row.job, left + row.x,
+                                    AGENT_ACCENT)
+            elif kind == "jobinfo":
+                self.bars.paint_info(canvas, box, row.job, left + row.x,
+                                     AGENT_ACCENT)
             elif kind == "think":
                 dots = int((time.monotonic() - a.turn_started)
                            * DOTS_PER_S) % 4
@@ -672,7 +712,15 @@ class AgentPlate(Widget):
         fg = color if live else (theme.CYAN_MID if act.kind == "tool"
                                  else theme.BASE_MUTED)
         x = box.left() + row.x
-        shown = text.ellipsize(act.text, ACT_SIZE, box.right() - x)
+        right = box.right()
+        if act.summary:
+            # What its progress came to, at the end of its line.
+            sw = text.measure(act.summary, ACT_SIZE)
+            text.draw(canvas, act.summary, right - sw,
+                      text.baseline_in(box, ACT_SIZE), ACT_SIZE,
+                      theme.color(theme.BASE_MUTED))
+            right -= sw + 16
+        shown = text.ellipsize(act.text, ACT_SIZE, right - x)
         if sel is not None:
             self._highlight(canvas, box, row, sel, len(shown))
         text.draw(canvas, shown, x, text.baseline_in(box, ACT_SIZE),

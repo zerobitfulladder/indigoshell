@@ -1,5 +1,7 @@
 """While a hung-up call works or rings: `call-status`, a small plate
-and chip in the corner, and `CallRouter`, the service that shows it."""
+and chip in the corner, and `CallRouter`, the service that shows it.
+A long command's progress takes the plate's second line while it runs,
+so the plate keeps its size (a resize costs the shell a slow frame)."""
 
 import math
 import time
@@ -9,12 +11,13 @@ import skia
 from ... import markdown, text, theme
 from ...widgets.base import Size, Widget
 from ..session import Agent
+from .bars import Bars
 from .call import CALL_WINDOW
 from .chip import Chip
 from .frame import TRACE_BLEED, Trace
 from .holo import Projection
-from .style import (ACT_SIZE, AGENT_FILL, CHIP_SM, GAP, PAD_X, PAD_Y,
-                    RING_FOR_S, SPIN, STATUS_W, STATUS_WORDS, TAG_SIZE,
+from .style import (ACT_SIZE, AGENT_ACCENT, AGENT_FILL, CHIP_SM, GAP, PAD_X,
+                    PAD_Y, RING_FOR_S, SPIN, STATUS_W, STATUS_WORDS, TAG_SIZE,
                     TOOL_FG, UNBOUNDED, accent_of, clock_text, line_h,
                     paint_heading, paint_plate, plate_path)
 
@@ -36,6 +39,7 @@ class CallStatus(Widget):
         self.chip = Chip(CHIP_SM, self._look, lambda: agent.ring_started)
         self.trace = Trace()        # the turn clock, as on the call's frame
         self.projection = Projection()   # as on the call
+        self.bars = Bars()
         self._was_busy = False
         self._unsub = None
         self._size: tuple[int, int] | None = None
@@ -67,7 +71,19 @@ class CallStatus(Widget):
         # turn runs. A ring only has to be seen ending: asking for frames
         # until it does gets the plate the window's last repaint at that
         # moment, with "missed call" on it as the chip goes dim.
-        return self.trace.fps(self.agent) or (1 if self._fresh() else 0)
+        job = self._job()
+        return max(self.trace.fps(self.agent) or (1 if self._fresh() else 0),
+                   self.bars.fps([job] if job is not None else []))
+
+    def _job(self):
+        """The job whose bar the plate shows: the newest still running,
+        or one just finished. A ring or a question takes the line."""
+        a = self.agent
+        if a.ringing is not None or a.approval is not None:
+            return None
+        jobs = a.jobs.shown()
+        live = [j for j in jobs if j.live]
+        return max(live or jobs, key=lambda j: j.id) if jobs else None
 
     def attach(self, window) -> None:
         super().attach(window)
@@ -138,6 +154,8 @@ class CallStatus(Widget):
             last = a.activity[-1].text if a.activity else (
                 "thinking" if a.phase == "thinking" else a.message)
             return STATUS_WORDS.get(a.phase, a.phase), last or ""
+        if self._job() is not None:
+            return "running", ""
         return "on the line", ""
 
     def paint(self, canvas: skia.Canvas) -> None:
@@ -161,10 +179,14 @@ class CallStatus(Widget):
                       theme.color(theme.YELLOW_DIM))
         line = skia.Rect.MakeXYWH(x, head.bottom(), right - x,
                                   line_h(ACT_SIZE) + 2)
-        color = TOOL_FG if a.busy and not a.ringing else theme.HUD_FG
-        text.draw(canvas, text.ellipsize(detail, ACT_SIZE, right - x), x,
-                  text.baseline_in(line, ACT_SIZE), ACT_SIZE,
-                  theme.color(color))
+        job = self._job()
+        if job is not None:
+            self.bars.paint_compact(canvas, line, job, AGENT_ACCENT)
+        else:
+            color = TOOL_FG if a.busy and not a.ringing else theme.HUD_FG
+            text.draw(canvas, text.ellipsize(detail, ACT_SIZE, right - x), x,
+                      text.baseline_in(line, ACT_SIZE), ACT_SIZE,
+                      theme.color(color))
         self.chip.paint(canvas)
         self.projection.paint(canvas)
 
@@ -214,7 +236,8 @@ class CallRouter:
         a = self.agent
         want = (not a.call_open and self.call not in d.instances
                 and (a.busy or a.ringing is not None
-                     or a.approval is not None))
+                     or a.approval is not None
+                     or bool(a.jobs.shown())))   # a command left running
         have = self.status in d.instances
         if want and not have:
             d.open(self.status)

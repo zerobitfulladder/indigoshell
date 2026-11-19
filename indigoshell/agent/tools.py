@@ -36,6 +36,8 @@ workspace, skip a song). Nothing here clicks or types for you.
                         SFTP server, when the user has it on)
     phone_pull          copy from the phone to this computer
     phone_push          copy from this computer to the phone
+    progress            how the long commands running now are getting on,
+                        as the call's progress bars show them
 
 What each Spotify tool needs — nothing, the app's credentials, or the
 user's sign-in — is set out in agent/spotify.py; how the lights are
@@ -379,9 +381,23 @@ class ShellTools:
             ok = clipboard.copy(str(args.get("text", "")))
             return _text("Copied.") if ok else _error("xclip is missing")
 
+        @tool("progress",
+              "How the long commands running now are getting on, as the "
+              "user sees them on the call: each one's stage, how far it "
+              "is (bytes, media time or items), its speed and the time "
+              "left. yt-dlp, ffmpeg, curl, rsync, phone transfers and "
+              "skill scripts that report show up here. Use it when the "
+              "user asks how far along something is, or to check on a "
+              "background command without reading its output.", {})
+        async def progress(args):
+            return _text(agent.jobs.describe()
+                         or "Nothing is reporting progress right now.")
+
+        # The phone's transfers report into the same bars.
+        self.phone.progress = agent.jobs
         tools = [screenshot, notify, open_, launch_app, list_windows,
                  switch_workspace, focus_window, read_clipboard,
-                 write_clipboard]
+                 write_clipboard, progress]
         return (tools + self._spotify_tools(agent) + self._light_tools()
                 + self._browser_tools() + self._phone_tools())
 

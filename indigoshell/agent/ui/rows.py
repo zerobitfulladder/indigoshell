@@ -6,6 +6,7 @@ on. Markdown replies, code blocks and tool output are all built from
 these and painted by `paint_line`."""
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import skia
 
@@ -79,6 +80,7 @@ class Row:
     bullet: str = ""
     bullet_x: float = 0.0
     act: Activity | None = None
+    job: Any = None            # a progress row's job (agent/progress.py)
     label: str = ""            # for non-source rows (more, notes)
     cursor: bool = False
 

@@ -18,6 +18,7 @@ code that reuses the theme, font and shapes so they are honest previews.
 | `call.png` | the real call overlay at 1x over a blurred stand-in desktop: answered, working, thinking, speaking, asking, not signed in; the status chip working, ringing, asking, missed |
 | `call_looks*.png`, `gif/call_look_*.gif`, `gif/call_reveal_*.gif` | looks proposed for the call (brackets, tags, trace, sections, signal, open line) and ways for a reply to arrive; brackets + trace + the decode reveal were built |
 | `call_holo.png`, `gif/call_holo*.gif` | the built hologram: the raster, and the scan glitching down the call and the status chip |
+| `call_progress.png` | progress bars from the real widgets: a download, a skill's pipeline, a busy stage, a step's summary, a background job, the status chip |
 
 Animated versions of the panel transitions are in `gif/`: one looping
 30fps GIF per effect (open, hold, close, pause) and `panel_all.gif`
@@ -32,6 +33,7 @@ Regenerate from this folder:
     PYTHONPATH=../.. ../../.venv/bin/python render_call.py
     PYTHONPATH=../.. ../../.venv/bin/python render_call_looks.py   # needs ffmpeg
     PYTHONPATH=../.. ../../.venv/bin/python render_call_holo.py    # needs ffmpeg
+    PYTHONPATH=../.. ../../.venv/bin/python render_call_progress.py
     PYTHONPATH=../.. ../../.venv/bin/python readme_call.py         # the README's call media, into docs/media
 
 The panel effects are prototype SkSL inside `render_panels.py`; a chosen

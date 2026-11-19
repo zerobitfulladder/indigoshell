@@ -57,6 +57,15 @@ account from the `claude` in your terminal.
   <img src="docs/media/call-status.gif" width="460"
        alt="Hung up: the status chip spinning through a system update, then calling back with the result">
 
+- **Long commands show how far they've got.** A download, a transcode or
+  one of its own multi-stage scripts gets a progress bar under the step
+  that runs it: how much is done, how fast, how long is left, and which
+  stage of the pipeline it's on. Hung up, the bar moves to the status
+  chip. yt-dlp, ffmpeg, curl and rsync report by themselves, through
+  small wrappers on the agent's PATH, which also trim their progress
+  spam to one line in the agent's context. Its own scripts report with
+  a ten-line function, and the agent can ask where a job is up to.
+
 - **It asks before anything destructive.** Routine calls run in Claude
   Code's auto mode; `rm`, `sudo`, `kill`, `git push` and their
   kin stop and ask on the call — `Y` once, `A` always, `N` no.

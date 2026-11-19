@@ -7,9 +7,12 @@ and the GPU the shell itself runs on, and are run by hand —
     .venv/bin/python tests/clock.py           the frame clock alone
     .venv/bin/python tests/call.py            the call overlay, fuzzed
     .venv/bin/python tests/call_status.py     the hung-up status chip
+    .venv/bin/python tests/call_progress.py   progress bars on the call
     .venv/bin/python tests/spawn.py           spawn timing (shows a panel)
 
 Each prints what it checked and exits non-zero if something failed.
+`tests/progress.py` needs no display: it runs yt-dlp, ffmpeg, curl and
+rsync through the progress shims.
 Nothing appears on screen, `spawn.py` aside: the windows are
 override-redirect, past the right edge of the screen, and take no grabs.
 The shell can be running meanwhile. The tests never touch its socket,

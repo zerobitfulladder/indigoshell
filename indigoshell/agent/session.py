@@ -36,6 +36,11 @@ would no longer match the results that come back.
 before long work with one line about what it is doing; the overlay
 closes and the work goes on. A turn that ends while the call is closed
 rings — `ringing` is set — and answering shows the result.
+
+**Progress.** `jobs` hears how far the agent's long commands have got
+(agent/progress.py): its Claude Code process is started with the
+socket's path and the shims on its PATH, and each job is matched to the
+step that started it, so the overlay can draw its bar under that step.
 """
 
 import asyncio
@@ -52,6 +57,7 @@ from ..core import paths, state
 from .activity import (RESULT_KEEP, Activity, Approval, approval_detail,
                        describe_tool, home_path, result_text, tool_detail)
 from .permissions import ASK_FIRST
+from .progress import Job, Jobs, runs_command
 from .prompts import CALL_PROTOCOL, DEFAULT_PERSONA
 from .seed import seed
 
@@ -138,6 +144,10 @@ class Agent:
         self.call_open = False
         self.ringing: str | None = None     # "done" | "ask" | "error"
         self.ring_started = 0.0
+        # How far its long commands have got, for the bars.
+        self.jobs = Jobs()
+        self.jobs.claim = self._claim_job
+        self.jobs.subscribe(self._on_job)
 
         self._listeners: list[Callable[[str], None]] = []
         self._client = None
@@ -158,7 +168,8 @@ class Agent:
 
     # ── service hooks ───────────────────────────────────────────────────
     def start(self) -> None:
-        """Nothing to do until the first call — the CLI spawns on dial."""
+        """Listen for progress; the CLI itself spawns on the first dial."""
+        self.jobs.start()
         saved = state.get("agent.session")
         if isinstance(saved, dict) and saved.get("id") and not self._stale():
             self._resume = saved["id"]
@@ -172,6 +183,7 @@ class Agent:
             self.effort = state.get("agent.effort")
 
     def stop(self) -> None:
+        self.jobs.stop()
         if self._stop is not None:
             self._stop.set()
         if self._idle_handle is not None:
@@ -539,6 +551,7 @@ class Agent:
         self.phase = "dialing"
         self._emit()
         seed(self.workspace)
+        self.jobs.refresh()
 
         client = ClaudeSDKClient(self._options())
         t0 = time.monotonic()
@@ -655,7 +668,7 @@ class Agent:
             prompt += "\n\n" + self.persona
         return ClaudeAgentOptions(
             cwd=self.workspace,
-            env={"CLAUDE_CONFIG_DIR": self.config_dir},
+            env={"CLAUDE_CONFIG_DIR": self.config_dir, **self.jobs.env()},
             system_prompt={"type": "preset", "preset": "claude_code",
                            "append": prompt},
             mcp_servers=servers,
@@ -804,7 +817,9 @@ class Agent:
         self.activity.append(Activity(
             "tool", ("↳ " if sub else "") + describe_tool(block.name, args),
             detail=tool_detail(block.name, args), sub=sub,
-            tool_id=block.id))
+            tool_id=block.id, tool=block.name,
+            command=str(args.get("command") or "")
+            if block.name == "Bash" else ""))
         if self.phase != "asking":
             self.phase = "working"
         self._emit()
@@ -821,6 +836,46 @@ class Agent:
                 act.failed = bool(block.is_error)
                 self._emit()
                 return
+
+    # ── progress ────────────────────────────────────────────────────────
+    def _claim_job(self, job: Job) -> str:
+        """The step a job that just started reporting belongs to: the
+        Bash call whose command its shell runs (one in the background
+        too), or, for a helper of the shell's, the shell tool running."""
+        steps = [a for a in self.activity if a.kind == "tool" and a.tool_id]
+        if job.under == "cli":
+            for act in reversed(steps):
+                if act.tool == "Bash" and runs_command(job.cmdline,
+                                                       act.command):
+                    return act.tool_id
+            running = [a for a in steps if a.tool == "Bash"
+                       and a.result is None]
+            return running[0].tool_id if len(running) == 1 else ""
+        if job.under == "shell":
+            running = [a for a in steps if a.result is None
+                       and a.tool.startswith("mcp__shell__")]
+            return running[-1].tool_id if running else ""
+        return ""
+
+    def _on_job(self, event: str, job: Job) -> None:
+        if event == "end" and job.step and job.visible():
+            # Its bar goes; what it came to stays on its step.
+            for act in self.activity:
+                if act.tool_id == job.step:
+                    act.summary = job.summary()
+        self._emit("progress")
+
+    def job_of(self, act: Activity) -> Job | None:
+        """The running job a step's bar shows, if it has one on show."""
+        job = self.jobs.by_step(act.tool_id)
+        return job if job is not None and job.live and job.visible() \
+            else None
+
+    def loose_jobs(self) -> list[Job]:
+        """Jobs on show with no step of this turn to sit under: a
+        background command from an earlier turn, or one nothing claimed."""
+        steps = {a.tool_id for a in self.activity if a.tool_id}
+        return [j for j in self.jobs.shown() if j.step not in steps]
 
     def _said(self) -> str:
         """The reply so far: every text block this turn, in order."""

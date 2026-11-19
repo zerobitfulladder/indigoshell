@@ -18,6 +18,13 @@ enjoy) go in the agent's memory instead. Each fact lives in one place.
   .claude/skills/ the way the `new-skill` skill says: Python as uv
   scripts with their packages declared inline. Never pip install or
   create venvs; ask before pacman or yay.
+- Long commands show their progress on the call by themselves:
+  yt-dlp, ffmpeg, curl and rsync run through shims that read it
+  (`which yt-dlp` names the shim; that is expected), and skill
+  scripts report it (new-skill says how). For a long download or
+  transcode, don't silence the progress (-q, --no-progress, -s,
+  -nostats) to save output: the shims pass on only its last line.
+  The `progress` tool says how far each one has got.
 
 ## Showing things
 How the user wants to be shown things. When they ask for it done
