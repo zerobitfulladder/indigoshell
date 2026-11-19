@@ -49,6 +49,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import time
 from collections import deque
 from typing import Any, Callable
@@ -68,8 +69,23 @@ log = logging.getLogger(__name__)
 # credits rather than the plan's included limits, depending on the plan.
 MODELS = ("opus", "sonnet", "haiku", "fable")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# What the call calls them: chrome pushed harder. The CLI flag and the
+# saved state keep the real levels.
+EFFORT_NAMES = {"low": "idle", "medium": "stock", "high": "boost",
+                "xhigh": "overclock", "max": "redline"}
 # Claude Code's own default for the current models, when none is set.
 DEFAULT_EFFORT = "medium"
+
+# "claude-opus-5-5" (or "claude-haiku-4-5-20251001", "...[1m]"): the
+# line and its version. Aliases and older id shapes don't match.
+_MODEL_ID = re.compile(r"claude-([a-z]+)-(\d+(?:-\d{1,2})?)(?:-\d{8})?"
+                       r"(?:\[\w+\])?")
+
+
+def model_version(model_id: str | None) -> tuple[str, str] | None:
+    """("opus", "5.5") for "claude-opus-5-5"; None for anything else."""
+    m = _MODEL_ID.fullmatch(model_id or "")
+    return (m.group(1), m.group(2).replace("-", ".")) if m else None
 
 # Environment that outranks a subscription login (Claude Code's
 # authentication precedence), so dialing with any of it set would bill
@@ -121,6 +137,10 @@ class Agent:
         self.persona = persona
         self.model = model
         self.effort = effort
+        # The version each model line last answered as, from what the
+        # API reports ({"opus": "5.5"}), and the line that answered last.
+        self.versions: dict[str, str] = {}
+        self.served: str | None = None
         # "auto": Claude Code's classifier approves routine tool calls
         # and blocks risky ones (telling the model why); `ask` rules still
         # come to the overlay. "default" asks for anything that changes
@@ -193,6 +213,10 @@ class Agent:
             self.model = state.get("agent.model")
         if state.get("agent.effort") in EFFORTS:
             self.effort = state.get("agent.effort")
+        versions = state.get("agent.versions")
+        if isinstance(versions, dict):
+            self.versions = {k: v for k, v in versions.items()
+                             if isinstance(k, str) and isinstance(v, str)}
 
     def stop(self) -> None:
         self.jobs.stop()
@@ -301,7 +325,8 @@ class Agent:
             self._emit()
 
     def answer(self, decision: str) -> None:
-        """Resolve the pending approval: "allow", "always" or "deny"."""
+        """Resolve the pending approval: "allow" or "deny". There is no
+        "always": what asks is only the few root rules, each worth a look."""
         if self.approval is not None:
             self._resolve(self.approval, decision)
 
@@ -332,7 +357,7 @@ class Agent:
         current = self.model if self.model in MODELS else MODELS[0]
         self.model = MODELS[(MODELS.index(current) + step) % len(MODELS)]
         state.set("agent.model", self.model)
-        note = f"model: {self.model}"
+        note = f"model: {self.model_label()}"
         if self.model == "fable":
             note += " — may draw on usage credits"
         self.activity.append(Activity("info", note))
@@ -355,10 +380,40 @@ class Agent:
         self.effort = EFFORTS[(EFFORTS.index(current) + step) % len(EFFORTS)]
         state.set("agent.effort", self.effort)
         self.activity.append(Activity(
-            "info", f"effort: {self.effort}"
+            "info", f"effort: {self.effort_label()} ({self.effort})"
             + (" — from the next task" if self.busy else "")))
         self._restart_for_options()
         self._emit()
+
+    def model_label(self) -> str:
+        """The model as the call shows it, "opus 5.5". The version is
+        the one the API last reported for that line, never a guess, so
+        a line that hasn't answered yet shows bare ("sonnet")."""
+        line = self.model or self.served
+        if not line:
+            return "default"
+        version = self.versions.get(line)
+        return f"{line} {version}" if version else line
+
+    def effort_label(self) -> str:
+        """The effort as the call shows it: "overclock" for xhigh."""
+        effort = self.effort or DEFAULT_EFFORT
+        return EFFORT_NAMES.get(effort, effort)
+
+    def _learn_model(self, model_id: str | None) -> None:
+        """Note the line and version of a model that answered (or that
+        the CLI started with), for `model_label`."""
+        found = model_version(model_id)
+        if found is None:
+            return
+        line, version = found
+        changed = self.served != line or self.versions.get(line) != version
+        self.served = line
+        if self.versions.get(line) != version:
+            self.versions = {**self.versions, line: version}
+            state.set("agent.versions", self.versions)
+        if changed:
+            self._emit()
 
     def _restart_for_options(self) -> None:
         if self._client is None or self._stop is None:
@@ -760,7 +815,6 @@ class Agent:
             tool=name,
             title=getattr(ctx, "title", None) or f"use {name}",
             detail=approval_detail(name, args),
-            suggestions=list(getattr(ctx, "suggestions", None) or []),
             future=loop.create_future(),
         )
         self.approval = approval
@@ -777,10 +831,8 @@ class Agent:
                 self.phase = prev_phase if prev_phase != "asking" else "working"
             self._emit()
         verdict, interrupt = decision
-        if verdict in ("allow", "always"):
-            return PermissionResultAllow(
-                updated_permissions=approval.suggestions
-                if verdict == "always" and approval.suggestions else None)
+        if verdict == "allow":
+            return PermissionResultAllow()
         return PermissionResultDeny(
             message="The user declined this over the call.",
             interrupt=interrupt)
@@ -808,6 +860,8 @@ class Agent:
                 self._set_error(text.strip() or msg.error.replace("_", " "))
                 self._emit()
                 return
+            if msg.parent_tool_use_id is None:      # not a subagent's
+                self._learn_model(msg.model)
             for block in msg.content:
                 if isinstance(block, ToolUseBlock):
                     self._on_tool(block, sub=msg.parent_tool_use_id is not None)
@@ -825,6 +879,7 @@ class Agent:
                     self._session = sid
                 log.debug("agent init: model %s, %s", msg.data.get("model"),
                           msg.data.get("apiKeySource"))
+                self._learn_model(msg.data.get("model"))
         elif isinstance(msg, RateLimitEvent):
             info = msg.rate_limit_info
             if getattr(info, "status", "") in ("allowed_warning", "rejected"):

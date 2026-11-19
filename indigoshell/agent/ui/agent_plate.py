@@ -11,8 +11,9 @@ import skia
 from ... import shapes, text, theme
 from ...widgets.base import Size, Widget
 from ...services import clipboard
-from ..session import DEFAULT_EFFORT, Agent
+from ..session import Agent
 from .bars import Bars
+from .choice import CHOICE_GAP, CHOICE_H, Choice
 from .frame import TRACE_BLEED, Trace
 from .reveal import Reveal
 from .style import (ACT_ROWS_ALL, ACT_ROWS_BUSY, ACT_ROWS_IDLE, ACT_SIZE,
@@ -57,6 +58,12 @@ class AgentPlate(Widget):
         self._body: list[Row] = []  # the whole turn, before scrolling
         self.trace = Trace()        # the turn clock on the frame
         self.bars = Bars()          # long commands' progress
+        # The answers to a question, placed in its keys row (`_layout`).
+        pick = lambda verdict: self.agent.answer(verdict)    # noqa: E731
+        self.choices = (
+            Choice("GREENLIGHT", "allow", theme.LIME_BRIGHT, pick),
+            Choice("SCRUB", "deny", theme.ERROR, pick),
+        )
         self._copied_until = 0.0
         self._dragging = False
         self._press: tuple[float, float] = (0.0, 0.0)
@@ -138,7 +145,7 @@ class AgentPlate(Widget):
             rows += self._text_rows("ap-t", ap.title, BODY_SIZE, w,
                                     theme.HUD_FG_BRIGHT)[:2]
             rows += self._code_rows("ap-d", ap.detail, w, ASK_ACCENT)[:6]
-            rows.append(Row("keys", line_h(ACT_SIZE) + 10, size=ACT_SIZE))
+            rows.append(Row("keys", CHOICE_H + 12))
         elif a.phase == "error" and a.error:
             if body:
                 rows.append(Row("rule", 11))
@@ -380,12 +387,27 @@ class AgentPlate(Widget):
                 self.history = None
                 self.relayout()
 
+    def children(self):
+        return self.choices
+
     def _layout(self) -> list[tuple[Row, float]]:
         y = self.rect.top() + PAD_Y
         out = []
+        keys = None
         for row in self._build():
             out.append((row, y))
+            if row.kind == "keys":
+                keys = y
             y += row.h
+        # The answer buttons follow their row, so hover and clicks find
+        # them wherever it is; with no question they are nowhere.
+        if keys is None:
+            for c in self.choices:
+                c.hide()
+        else:
+            x = self.rect.left() + PAD_X
+            for c in self.choices:
+                x = c.place(x, keys + 8) + CHOICE_GAP
         return out
 
     def measure(self, avail: Size) -> Size:
@@ -633,7 +655,7 @@ class AgentPlate(Widget):
                           text.baseline_in(box, row.size), row.size,
                           theme.color(color))
             elif kind == "keys":
-                self._paint_keys(canvas, box)
+                self._paint_keys(canvas)
             elif kind == "session":
                 self._paint_session(canvas, box, int(row.label), accent)
 
@@ -682,7 +704,7 @@ class AgentPlate(Widget):
         tag_base = text.baseline_in(box, TAG_SIZE)
         # Right side: the model and effort (Ctrl+M / Ctrl+T), and the turn
         # clock before them while it works.
-        setting = f"{a.model or 'default'} · {a.effort or DEFAULT_EFFORT}"
+        setting = f"{a.model_label()} · {a.effort_label()}"
         x = box.right() - text.measure(setting, TAG_SIZE)
         text.draw(canvas, setting, x, tag_base, TAG_SIZE,
                   theme.color(theme.BASE_MUTED))
@@ -735,13 +757,6 @@ class AgentPlate(Widget):
         else:
             paint_line(canvas, box, row, sel, accent)
 
-    def _paint_keys(self, canvas, box) -> None:
-        x = box.left()
-        base = text.baseline_in(box, ACT_SIZE)
-        for key, word in (("Y", "allow"), ("A", "always"), ("N", "deny")):
-            text.draw(canvas, f"[{key}]", x, base, ACT_SIZE,
-                      theme.color(ASK_ACCENT), bold=True)
-            x += text.measure(f"[{key}]", ACT_SIZE, bold=True) + 6
-            text.draw(canvas, word, x, base, ACT_SIZE,
-                      theme.color(theme.HUD_FG))
-            x += text.measure(word, ACT_SIZE) + 22
+    def _paint_keys(self, canvas) -> None:
+        for c in self.choices:
+            c.paint(canvas)

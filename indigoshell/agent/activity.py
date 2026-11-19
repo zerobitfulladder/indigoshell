@@ -51,7 +51,6 @@ class Approval:
     tool: str
     title: str
     detail: str
-    suggestions: list
     future: asyncio.Future
 
 

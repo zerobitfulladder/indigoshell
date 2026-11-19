@@ -160,7 +160,7 @@ def main():
             activity=[Activity("note", "Switching power saving off for Home.")],
             approval=Approval(tool="Bash", title="Run a command",
                               detail="nmcli connection modify Home 802-11-wireless.powersave 2",
-                              suggestions=[], future=Done())))),
+                              future=Done())))),
         ("not signed in", call(agent_in(
             phase="error", error="Not signed in on the shell's account.",
             hint="CLAUDE_CONFIG_DIR=~/.config/indigoshell/claude claude auth login"))),
@@ -177,7 +177,7 @@ def main():
             ring_started=now,
             approval=Approval(tool="Bash", title="Run a command",
                               detail="sudo systemctl restart bluetooth",
-                              suggestions=[], future=Done())))),
+                              future=Done())))),
         ("missed call", status(agent_in(
             phase="idle", ringing="done", ring_started=now - 300,
             message="Done. 214 packages updated, nothing needs a reboot."))),

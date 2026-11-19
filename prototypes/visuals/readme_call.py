@@ -199,6 +199,7 @@ def save(path: str, img: skia.Image) -> None:
 
 def agent() -> Agent:
     a = Agent(name="INDIGO", model="opus", effort="medium")
+    a.versions = {"opus": "5.5"}        # as if it had answered once
     a.phase = "idle"
     return a
 
@@ -298,10 +299,11 @@ def scene_call() -> None:
 
 
 def scene_ask() -> None:
-    NOW[0] = 7000.0
+    SHOT = 7000.0
+    NOW[0] = SHOT - 3.0     # the reply lands 3s before the shot, revealed
     a = agent()
     a.heard = "patch the deck. everything."
-    a.busy, a.phase, a.turn_started = True, "working", NOW[0] - 9
+    a.busy, a.phase, a.turn_started = True, "working", SHOT - 9
     a.activity.extend([
         bash("checkupdates | wc -l", "143", 1),
         bash("checkupdates | grep -E '^(linux|nvidia)'",
@@ -312,10 +314,12 @@ def scene_ask() -> None:
     loop = asyncio.new_event_loop()
     a.approval = Approval(tool="Bash", title="Run a command",
                           detail="sudo pacman -Syu --noconfirm",
-                          suggestions=[], future=loop.create_future())
-    a.ring_started = NOW[0] - 0.05      # the blink's lit half
+                          future=loop.create_future())
     host = place(CallHost(a))
     host._on_agent("update")
+    tick(host)
+    NOW[0] = SHOT
+    a.ring_started = NOW[0] - 0.05      # the blink's lit half
     host.projection.epoch = NOW[0] - 4.0        # between passes
     tick(host)
     W, H = int(host.rect.width()) + 2 * MARGIN, int(host._natural()) + 2 * MARGIN

@@ -66,9 +66,10 @@ account from the `claude` in your terminal.
   spam to one line in the agent's context. Its own scripts report with
   a ten-line function, and the agent can ask where a job is up to.
 
-- **It asks before anything destructive.** Routine calls run in Claude
-  Code's auto mode; `rm`, `sudo`, `kill`, `git push` and their
-  kin stop and ask on the call — `Y` once, `A` always, `N` no.
+- **It asks before going root.** Claude Code's auto mode judges every
+  other call, letting routine work through and blocking what looks
+  risky; `sudo`, `doas`, `pkexec` and `su` stop and ask on the call —
+  click GREENLIGHT or SCRUB (or press `A` / `D`), every time.
 
   <img src="docs/media/call-ask.png" width="100%"
        alt="The agent asking for the ok to run sudo pacman -Syu, its frame and chip turned yellow">
@@ -119,7 +120,7 @@ account from the `claude` in your terminal.
 | `Ctrl+N` · `Ctrl+H` | a new conversation · past ones, to resume |
 | `Ctrl+M` · `Ctrl+T` | next model (opus, sonnet, haiku, fable) · effort |
 | `Ctrl+O` | every step of the turn |
-| `Y` `A` `N` | allow, always allow, deny |
+| `A` `D` | greenlight (allow), scrub (deny) |
 | `PgUp` `PgDn` | scroll a long reply |
 
 Setting it up takes the SDK (the `call` extra) and one sign-in into the

@@ -88,9 +88,7 @@ class YouPlate(Widget):
         box = skia.Rect.MakeXYWH(x, y, right - x, hh)
         paint_heading(canvas, box, NAME_SIZE, (("YOU", YOU_ACCENT, True),))
         hint = "⏎ send   ^H history   ^N new   esc hang up"
-        if a.approval is not None and not self.input.text:
-            hint = "Y / A / N to answer"
-        elif a.busy:
+        if a.busy:
             hint = "⏎ queue   ^C stop   esc hang up"
         w = text.measure(hint, TAG_SIZE)
         text.draw(canvas, hint, right - w, text.baseline_in(box, TAG_SIZE),

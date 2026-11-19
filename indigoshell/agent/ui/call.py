@@ -44,7 +44,7 @@ since neither window is alive to do it while it is closed.
 
 Keys in the call:
     type / Return       say a line (queued if the agent is mid-task)
-    Y / A / N           allow, always allow, deny — while it asks and
+    A / D               greenlight (allow), scrub (deny) — while it asks and
                         the line you are typing is empty
     Ctrl+C              copy the selection; with none, stop the task
     Ctrl+O              every step of the turn, or just the last few
@@ -54,8 +54,9 @@ Keys in the call:
     Ctrl+N              a new conversation, from scratch (also Ctrl+L)
     Ctrl+M              next model: opus, sonnet, haiku, fable (Shift:
                         back). Switches the live conversation.
-    Ctrl+T              next effort: low, medium, high, xhigh, max
-                        (Shift: back). Reconnects, keeping the context.
+    Ctrl+T              next effort: idle, stock, boost, overclock,
+                        redline (low, medium, high, xhigh, max; Shift:
+                        back). Reconnects, keeping the context.
     Escape              hang up (the work carries on)
 
 One conversation runs at a time and carries over between calls — hang
@@ -331,7 +332,7 @@ class CallHost(Widget):
 
     def hit(self, x: float, y: float) -> Widget | None:
         if self.agent_plate.rect.contains(x, y):
-            return self.agent_plate
+            return self.agent_plate.hit(x, y)     # or an answer button
         if self.rect.contains(x, y):
             self.agent.acknowledge()    # a click anywhere on the call
         return None
@@ -391,7 +392,7 @@ class CallHost(Widget):
                 self._fit()
             return True
         if a.approval is not None and not field_.text and ev.text:
-            choice = {"y": "allow", "a": "always", "n": "deny"}.get(
+            choice = {"a": "allow", "d": "deny"}.get(
                 ev.text.lower())
             if choice is not None:
                 a.answer(choice)
