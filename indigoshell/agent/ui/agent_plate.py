@@ -21,8 +21,8 @@ from .style import (ACT_ROWS_ALL, ACT_ROWS_BUSY, ACT_ROWS_IDLE, ACT_SIZE,
                     COPIED_FPS, COPIED_S, CORNERS, DOTS_PER_S, FAIL_ACCENT,
                     HISTORY_ROWS, MAX_BODY_ROWS, NAME_SIZE, OUT_ROWS,
                     OUT_ROWS_FULL, PAD_X, PAD_Y, PLATE_W, STATUS_WORDS,
-                    TAG_SIZE, TOOL_FG, accent_of, ago, clock_text, line_h,
-                    paint_heading, paint_plate)
+                    TAG_SIZE, TOOL_FG, YOU_ACCENT, accent_of, ago, clock_text,
+                    line_h, paint_heading, paint_plate)
 from .rows import Row, code_rows, highlight, markdown_rows, paint_line, text_rows
 
 
@@ -188,6 +188,11 @@ class AgentPlate(Widget):
             if isinstance(item, list):
                 rows += self._step_rows(item, w,
                                         current=a.busy and n == len(items) - 1)
+            elif item[0].startswith("y"):       # a line typed mid-turn
+                key, _after, said = item
+                rows += text_rows(key, said, BODY_SIZE, w, YOU_ACCENT,
+                                  x=text.advance(ACT_SIZE) * 1.5,
+                                  bar=YOU_ACCENT)
             else:
                 key, _after, said = item
                 rows += markdown_rows(said, w, key)
@@ -199,7 +204,7 @@ class AgentPlate(Widget):
         self.reveal.track(a, rows)
         if a.phase == "speaking" and items and not isinstance(items[-1], list):
             for row in reversed(rows):
-                if row.kind == "line":
+                if row.kind == "line" and row.key.startswith("m"):
                     row.cursor = True
                     break
         return rows

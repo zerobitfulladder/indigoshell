@@ -27,10 +27,15 @@ group alive from `connect()` to `disconnect()` and must be connected and
 disconnected from the same task. `_run()` is that task; the UI only
 calls the plain methods below, which queue work for it.
 
-**Turns.** One prompt at a time: a line typed while the agent is busy
-waits in `queued` and goes out when the turn ends. Sending it mid-turn
-would let the CLI fold it into the running turn, and the turn count
-would no longer match the results that come back.
+**Turns.** A line typed while the agent works goes out at once. Claude
+Code reads it at the agent's next step (after the running command,
+which it leaves alone) and folds it into the turn, or answers it in a
+turn of its own straight after. Every line goes with a uuid of its own,
+and each result lists the uuids it took in (`user_message_uuids`), so
+the overlay stays busy until all of them are answered (`_pending`) and
+shows the whole run as one turn. Only while the CLI is still dialing do
+lines wait in `queued`. (Probed on CLI 2.1.326: a message sent during
+an 8s sleep left it running its full 8s, and one reply answered both.)
 
 **Hanging up.** The agent gets one tool of ours, `hang_up`. It calls it
 before long work with one line about what it is doing; the overlay
@@ -51,6 +56,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from collections import deque
 from typing import Any, Callable
 
@@ -188,6 +194,13 @@ class Agent:
         # overlay can show text and steps in the order they happened.
         self._segments: list[str] = []
         self._seg_after: list[int] = []
+        # Which entries are the user's, typed mid-turn, and which agent
+        # entry the streaming text goes to: a line typed while a block
+        # is still arriving shows after that block, not inside it.
+        self._seg_you: list[bool] = []
+        self._open_seg: int | None = None
+        # The uuids of lines sent that no result has taken in yet.
+        self._pending: list[str] = []
         self._restart_after_turn = False
         self._interrupted = False
         self._redial = False
@@ -297,21 +310,38 @@ class Agent:
         line = line.strip()
         if not line:
             return
-        if self.busy or self._client is None:
-            # Mid-turn, or still dialing: it goes out when the line is
-            # free. Only an absent CLI needs dialing — calling dial()
-            # mid-turn could only fail a preflight and wreck the turn.
+        if self._client is None:
+            # Still dialing: it goes out once the CLI is there.
             self.queued.append(line)
-            if self._client is None:
-                self.dial()
+            self.dial()
             self._emit()
             return
+        if self.busy:
+            self._send_now(line)
+            return
         self._begin_turn(line)
+
+    def _send_now(self, line: str) -> None:
+        """A line typed mid-turn: out at once, and into the turn's story
+        where it was typed (see Turns, above)."""
+        self._segments.append(line)
+        self._seg_you.append(True)
+        self._seg_after.append(self.activity[-1].id if self.activity else 0)
+        self._post(line)
+        self._emit()
+
+    def _post(self, line: str) -> None:
+        # The uuid is pending before the send even starts: a result that
+        # lands meanwhile must not end the turn on the overlay.
+        uid = str(uuid.uuid4())
+        self._pending.append(uid)
+        asyncio.get_running_loop().create_task(self._send(line, uid))
 
     def interrupt(self) -> None:
         if self.approval is not None:
             self._resolve(self.approval, "deny", interrupt=True)
         self.queued.clear()
+        self._pending.clear()
         if self.busy and self._client is not None:
             self._interrupted = True
             asyncio.get_running_loop().create_task(self._safe_interrupt())
@@ -535,13 +565,29 @@ class Agent:
         self.turn_started = time.monotonic()
         self.phase = "thinking"
         self._schedule_idle()
-        asyncio.get_running_loop().create_task(self._send(line))
+        self._pending.clear()
+        self._post(line)
         self._emit()
 
     def _end_turn(self, result: Any) -> None:
-        self.busy = False
         if self.approval is not None:       # a turn cannot end mid-ask,
             self._resolve(self.approval, "deny")   # but never leave one
+        taken: set[str | None] = set(
+            getattr(result, "user_message_uuids", None) or ())
+        taken.add(getattr(result, "user_message_uuid", None))
+        self._pending = [u for u in self._pending if u not in taken]
+        if self._pending and not getattr(result, "is_error", False):
+            # A line typed mid-turn that this turn did not take in gets a
+            # turn of its own, straight after: on the overlay it is all
+            # one turn, still working.
+            if getattr(result, "session_id", None):
+                self._session = result.session_id
+            self._open_seg = None
+            self.phase = "thinking"
+            self._emit()
+            return
+        self._pending.clear()
+        self.busy = False
         if getattr(result, "is_error", False):
             text = (result.result or "").strip() or "the call dropped"
             if not self.error:
@@ -695,15 +741,23 @@ class Agent:
             self._set_error(f"the line dropped: {e}")
             self._emit()
 
-    async def _send(self, line: str) -> None:
+    async def _send(self, line: str, uid: str) -> None:
         client = self._client
         if client is None:
+            self._pending = [u for u in self._pending if u != uid]
             self.queued.insert(0, line)
             self.busy = False
             self.dial()
             return
+        message = {"type": "user", "parent_tool_use_id": None,
+                   "session_id": "default", "uuid": uid,
+                   "message": {"role": "user",
+                               "content": await self._with_note(line)}}
+
+        async def one():
+            yield message
         try:
-            await client.query(await self._with_note(line))
+            await client.query(one())
         except Exception as e:
             log.exception("agent send failed")
             self.busy = False
@@ -778,10 +832,10 @@ class Agent:
             stderr=lambda line: log.debug("claude: %s", line.rstrip()),
         )
 
-    async def _with_note(self, line: str):
-        """What goes out for `line`: the line alone, or — the first line
-        of a call — the line and, as a second text block of the same
-        message, the note of the desktop as the call opened.
+    async def _with_note(self, line: str) -> str | list[dict]:
+        """The content that goes out for `line`: the line alone, or — the
+        first line of a call — the line and, as a second text block of
+        the same message, the note of the desktop as the call opened.
 
         In the message rather than in a UserPromptSubmit hook's
         additionalContext: Claude Code persists hook context over ~10KB
@@ -798,13 +852,8 @@ class Agent:
             return line
         if not note:
             return line
-
-        async def one():
-            yield {"type": "user", "parent_tool_use_id": None,
-                   "message": {"role": "user", "content": [
-                       {"type": "text", "text": line},
-                       {"type": "text", "text": note}]}}
-        return one()
+        return [{"type": "text", "text": line},
+                {"type": "text", "text": note}]
 
     # ── permission prompts ──────────────────────────────────────────────
     async def _can_use_tool(self, name: str, args: dict, ctx) -> Any:
@@ -910,9 +959,11 @@ class Agent:
             delta = ev.get("delta") or {}
             dtype = delta.get("type")
             if dtype == "text_delta":
-                if not self._segments:
+                seg = self._open_seg
+                if seg is None:
                     self._new_segment("")
-                self._segments[-1] += delta.get("text", "")
+                    seg = len(self._segments) - 1
+                self._segments[seg] += delta.get("text", "")
                 self.message = self._said()
                 self.phase = "speaking"
                 self._emit()
@@ -989,28 +1040,37 @@ class Agent:
         return [j for j in self.jobs.shown() if j.step not in steps]
 
     def _said(self) -> str:
-        """The reply so far: every text block this turn, in order."""
-        return "\n\n".join(s.strip() for s in self._segments if s.strip())
+        """The reply so far: every text block this turn, in order (the
+        lines the user typed mid-turn are not part of it)."""
+        return "\n\n".join(s.strip() for s, you in zip(self._segments,
+                                                        self._seg_you)
+                           if s.strip() and not you)
 
     def _new_segment(self, value: str) -> None:
         self._segments.append(value)
+        self._seg_you.append(False)
         self._seg_after.append(self.activity[-1].id if self.activity else 0)
+        self._open_seg = len(self._segments) - 1
 
     def _clear_said(self) -> None:
         self.message = ""
         self._segments = []
         self._seg_after = []
+        self._seg_you = []
+        self._open_seg = None
 
     def said_parts(self) -> list[tuple[str, float, str]]:
-        """The reply as it was said, for showing between the steps: one
-        (key, after, text) per text block, `after` being the id of the
-        last step before it. A reply with no blocks behind it (a resumed
-        conversation's last answer, a result given only at the end) is
-        one part after every step."""
-        parts = [(f"m{i}_", float(after), s.strip())
-                 for i, (s, after) in enumerate(zip(self._segments,
-                                                    self._seg_after))
+        """The turn's words as they came, for showing between the steps:
+        one (key, after, text) per text block of the agent ("m" keys) or
+        line the user typed mid-turn ("y" keys), `after` being the id of
+        the last step before it. A reply with no blocks behind it (a
+        resumed conversation's last answer, a result given only at the
+        end) is one part after every step."""
+        parts = [(f"{'y' if you else 'm'}{i}_", float(after), s.strip())
+                 for i, (s, after, you) in enumerate(zip(
+                     self._segments, self._seg_after, self._seg_you))
                  if s.strip()]
-        if not parts and self.message.strip():
-            parts = [("m", float("inf"), self.message.strip())]
+        if not any(k.startswith("m") for k, _, _ in parts) \
+                and self.message.strip():
+            parts.append(("m", float("inf"), self.message.strip()))
         return parts

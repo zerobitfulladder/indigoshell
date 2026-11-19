@@ -43,7 +43,8 @@ answers. `CallRouter` (a SERVICES entry) opens and closes that chip,
 since neither window is alive to do it while it is closed.
 
 Keys in the call:
-    type / Return       say a line (queued if the agent is mid-task)
+    type / Return       say a line; mid-task it goes in at once and the
+                        agent reads it at its next step
     A / D               greenlight (allow), scrub (deny) — while it asks and
                         the line you are typing is empty
     Ctrl+C              copy the selection; with none, stop the task

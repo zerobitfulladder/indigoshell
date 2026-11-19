@@ -114,7 +114,7 @@ account from the `claude` in your terminal.
 
 | Key | In the call |
 |---|---|
-| `Return` | send — or, while it works, queue the next line |
+| `Return` | send — even while it works: it reads the line at its next step |
 | `Esc` | hang up (the work carries on) |
 | `Ctrl+C` | copy the selection; with none, stop the task |
 | `Ctrl+N` · `Ctrl+H` | a new conversation · past ones, to resume |

@@ -89,7 +89,7 @@ class YouPlate(Widget):
         paint_heading(canvas, box, NAME_SIZE, (("YOU", YOU_ACCENT, True),))
         hint = "⏎ send   ^H history   ^N new   esc hang up"
         if a.busy:
-            hint = "⏎ queue   ^C stop   esc hang up"
+            hint = "⏎ send   ^C stop   esc hang up"
         w = text.measure(hint, TAG_SIZE)
         text.draw(canvas, hint, right - w, text.baseline_in(box, TAG_SIZE),
                   TAG_SIZE, theme.color(theme.BASE_MUTED))
