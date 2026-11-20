@@ -100,8 +100,8 @@ PANEL_SPAWN = ScanLock(duration=0.22, band_px=36.0, tear_px=29.0, split_px=17.0,
 #
 #     CLAUDE_CONFIG_DIR=~/.config/indigoshell/claude claude auth login
 #
-# `persona` is the voice (agent/prompts.py has the default: a netrunner
-# on the line, street slang and all). `model="opus"` follows the newest
+# `persona` tells it the tone you enjoy (agent/prompts.py has the default:
+# a love of cyberpunk and its street slang). `model="opus"` follows the newest
 # Opus; `effort` defaults to Claude Code's own. `permission_mode="auto"`
 # (the default) lets a classifier approve routine tool calls; the ones in
 # `agent/permissions.py` (rm, sudo, kill, ...) still ask on the call.
