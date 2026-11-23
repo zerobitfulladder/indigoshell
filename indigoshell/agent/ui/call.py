@@ -19,7 +19,9 @@ side of it:
 The frames are the toasts' and the launcher's: 2px, opaque, beveled at
 the same corners, with the toast's `// NAME tag` heading. Each speaker
 owns one colour throughout — frame, chip, name and a tint in the plate:
-magenta for you, violet for the agent.
+magenta for you, violet for the agent. A call to the hub's agent
+(remote.py), which speaks in two voices, takes the name and colour of
+the voice of the turn on show.
 
 What the agent is *doing* (tool calls, narration between them, its
 thinking) sits above a rule in small type; what it *says* sits below it,
@@ -52,6 +54,10 @@ Keys in the call:
     PageUp / PageDown   scroll a long reply (the wheel too)
     Ctrl+H              past conversations: Up/Down, Return to go back
                         to one, Escape or Ctrl+H to leave the list
+    Ctrl+D              the hub's devices (a call to the hub only): which
+                        are online or when last seen, their connections,
+                        the hands each lends, which wake by push. Escape
+                        or Ctrl+D to leave the list
     Ctrl+N              a new conversation, from scratch (also Ctrl+L)
     Ctrl+M              next model: opus, sonnet, haiku, fable (Shift:
                         back). Switches the live conversation.
@@ -119,7 +125,7 @@ class CallHost(Widget):
         self.agent_plate.touched = agent.acknowledge
         self.you_plate = YouPlate(agent)
         self.agent_chip = Chip(CHIP, self._agent_look, self._blink_since,
-                               tint=own_accent(agent))
+                               tint=lambda: own_accent(agent))
         self.you_chip = Chip(CHIP, lambda: (YOU_ACCENT, "YOU", "still"),
                              tint=YOU_ACCENT)
         # The plates and chips are one hologram; its scan glitches down
@@ -235,7 +241,8 @@ class CallHost(Widget):
         # (they animate on their own clocks otherwise).
         self.agent_plate.invalidate()
         a = self.agent
-        you_key = (a.busy, a.heard, tuple(a.queued), a.approval is None)
+        you_key = (a.busy, a.heard, getattr(a, "heard_on", None),
+                   tuple(a.queued), a.approval is None)
         if you_key != self._you_key:
             self._you_key = you_key
             self.you_plate.invalidate()
@@ -352,6 +359,9 @@ class CallHost(Widget):
             if plate.history is not None:   # back out of the list first
                 plate.close_history()
                 return True
+            if plate.show_devices:
+                plate.close_devices()
+                return True
             return False                    # the window closes: hang up
         a.acknowledge()                     # any key: you are back
         if self._close_handle is not None:  # typing keeps the line open
@@ -392,6 +402,9 @@ class CallHost(Widget):
         if letter == "h":
             if not a.busy:
                 plate.open_history()
+            return True
+        if letter == "d" and plate.has_devices():
+            plate.toggle_devices()
             return True
         if letter in ("l", "n"):
             if a.new_conversation():

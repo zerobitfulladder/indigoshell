@@ -2,6 +2,7 @@
 turning while the agent works, blinking when it wants you."""
 
 import time
+from typing import Callable
 
 import skia
 
@@ -24,16 +25,22 @@ class Chip(Widget):
     """
 
     def __init__(self, size: int, look, ring_since=None, *,
-                 tint: str = AGENT_ACCENT) -> None:
+                 tint: str | Callable[[], str] = AGENT_ACCENT) -> None:
         super().__init__()
         self.size = size
         self.look = look
         # Whose chip: its fill keeps that speaker's tint whatever the
-        # accent is doing (yellow while asking, red ringing or down).
-        self.tint = tint
+        # accent is doing (yellow while asking, red ringing or down). A
+        # function for a speaker whose colour changes: the hub's agent
+        # speaks in two voices.
+        self._tint = tint
         self.ring_since = ring_since or (lambda: 0.0)
         self.angle = -90.0
         self._kick_left = 0.0
+
+    @property
+    def tint(self) -> str:
+        return self._tint() if callable(self._tint) else self._tint
 
     def _offset(self) -> float:
         """Degrees from the nearest rest angle (the arcs are symmetric,

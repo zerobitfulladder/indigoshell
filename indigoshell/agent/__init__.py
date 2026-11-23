@@ -35,6 +35,10 @@ The package, by job:
                      and the `ssh phone` host (pairing, finding it)
     connections.py   where those three keep settings and keys:
                      ~/.config/indigoshell/connections/<name>/
+    remote.py        `RemoteAgent`: a call to the agent on the hub
+                     (lilac, on a Raspberry Pi), read like `Agent`
+    hands.py         `Hands`: the tools this machine lends the hub's
+                     agent, and the calls to them
     firefox.py       `Firefox`: the shell's end of the INDIGO bridge
                      add-on (extension/) and its native host
                      (browser_host.py) — the everyday Firefox, no port
@@ -75,11 +79,16 @@ this machine. Wiring it into a config:
     WINDOWS = [..., WindowSpec(name=CALL_WINDOW, content=CallHost(AGENT), ...),
                WindowSpec(name=STATUS_WINDOW, content=CallStatus(AGENT), ...)]
 
-A second call can talk to an agent on another machine: `RemoteAgent`
-(remote.py) reads like `Agent`, from the remote's events over a
-command's stdin and stdout (`ssh host bridge`). It gets its own
+A second call can talk to the agent on the hub, one mind with two
+voices: `RemoteAgent` (remote.py) reads like `Agent`, from the hub's
+events over a WebSocket with TLS, says its lines in its `voice`, and
+lends the hub this machine's `hands` (hands.py). It gets its own
 CallHost (with its own `draft_key`), CallStatus (`call=` its window,
-`side=` its screen edge) and CallRouter (`call=`, `status=`).
+`side=` its screen edge) and CallRouter (`call=`, `status=`):
+
+    LILAC = RemoteAgent(voice="lilac", endpoints=[...],
+                        tls={"ca": ..., "cert": ..., "key": ...},
+                        hands=laptop_hands())
 """
 
 from .firefox import Firefox

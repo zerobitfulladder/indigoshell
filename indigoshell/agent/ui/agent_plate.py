@@ -1,7 +1,8 @@
 """The agent's plate: the turn as it happened — what it says (rendered
 Markdown, selectable) and, between its words, the steps it ran
 (expandable), in order, a long one with its progress bar under it — and
-the list of past conversations when that is open."""
+the list of past conversations, or of the hub's devices, when that is
+open."""
 
 import time
 from typing import Callable
@@ -53,6 +54,9 @@ class AgentPlate(Widget):
         self.history: list | None = None
         self.hist_sel = 0
         self.hist_top = 0
+        # The hub's devices, while that list is open (Ctrl+D; a call to
+        # the hub only). Read live from the agent, which keeps it.
+        self.show_devices = False
         self.reveal = Reveal()      # how reply text arrives
         self._built: list[Row] = []
         self._built_key: tuple | None = None
@@ -74,6 +78,7 @@ class AgentPlate(Widget):
 
     def reset(self) -> None:
         self.history = None
+        self.show_devices = False
         self.scroll = 0
         self.show_all = False
         self.expanded.clear()
@@ -108,6 +113,7 @@ class AgentPlate(Widget):
         is read live at paint time instead."""
         a = self.agent
         acts = a.activity
+        devices = self._devices() if self.show_devices else None
         return (a.message, a.phase, a.busy, bool(a.thought), id(a.approval),
                 a.error, a.hint, len(acts), id(acts[-1]) if acts else None,
                 sum(1 for x in acts if x.result is not None),
@@ -115,7 +121,10 @@ class AgentPlate(Widget):
                 tuple(sorted(self.full_output)), self.scroll, self.width,
                 a.jobs.shape(),
                 None if self.history is None
-                else (len(self.history), self.hist_sel, self.hist_top))
+                else (len(self.history), self.hist_sel, self.hist_top),
+                # The colour the reply's Markdown is drawn in: the voice's.
+                own_accent(a),
+                None if devices is None else (id(devices), len(devices)))
 
     def _build(self) -> list[Row]:
         key = self._build_key()
@@ -130,6 +139,9 @@ class AgentPlate(Widget):
         if self.history is not None:
             self._body = []
             return rows + self._history_rows()
+        if self.show_devices:
+            self._body = []
+            return rows + self._device_rows()
 
         body = self._turn_rows(w)
         if a.busy and a.phase == "thinking":
@@ -360,7 +372,50 @@ class AgentPlate(Widget):
                         color=theme.BASE_MUTED))
         return rows
 
+    # ── the hub's devices ───────────────────────────────────────────────
+    def has_devices(self) -> bool:
+        """Whether the agent keeps a device list (the hub's does)."""
+        return getattr(self.agent, "devices", None) is not None
+
+    def _devices(self) -> list:
+        return getattr(self.agent, "devices", None) or []
+
+    def _device_rows(self) -> list[Row]:
+        """Two lines a device: whether it is online, and what it has
+        connected and lends."""
+        lh = line_h(BODY_SIZE) + 6
+        devices = self._devices()
+        rows: list[Row] = []
+        if not devices:
+            rows.append(Row("note", lh, label="no devices heard of yet"
+                            if getattr(self.agent, "connected", False)
+                            else "not on the line", color=theme.BASE_MUTED))
+        cell = text.advance(ACT_SIZE)
+        for i in range(len(devices)):
+            if i:
+                rows.append(Row("gap", 4))
+            rows.append(Row("device", lh, label=str(i)))
+            rows.append(Row("devinfo", line_h(ACT_SIZE) + 3, x=cell * 2,
+                            size=ACT_SIZE, label=str(i)))
+        rows.append(Row("note", line_h(ACT_SIZE) + 8, size=ACT_SIZE,
+                        label="^D or esc close list",
+                        color=theme.BASE_MUTED))
+        return rows
+
+    def toggle_devices(self) -> None:
+        self.show_devices = not self.show_devices
+        if self.show_devices:
+            self.history = None
+            self.anchor = self.focus = None
+        self.relayout()
+
+    def close_devices(self) -> None:
+        self.show_devices = False
+        self.relayout()
+
+    # ── past conversations ──────────────────────────────────────────────
     def open_history(self) -> None:
+        self.show_devices = False
         self.history = self.agent.lines()
         current = self.agent.session_id
         self.hist_sel = next((i for i, s in enumerate(self.history)
@@ -664,6 +719,10 @@ class AgentPlate(Widget):
                 self._paint_keys(canvas)
             elif kind == "session":
                 self._paint_session(canvas, box, int(row.label), accent)
+            elif kind == "device":
+                self._paint_device(canvas, box, int(row.label), accent)
+            elif kind == "devinfo":
+                self._paint_devinfo(canvas, box, row)
 
     def _paint_session(self, canvas, box, index: int, accent) -> None:
         info = self.history[index]
@@ -693,12 +752,69 @@ class AgentPlate(Widget):
                   text.baseline_in(box, ACT_SIZE), ACT_SIZE,
                   theme.color(theme.BASE_MUTED))
 
+    def _device(self, index: int) -> dict | None:
+        devices = self._devices()
+        return devices[index] if 0 <= index < len(devices) else None
+
+    def _paint_device(self, canvas, box, index: int, accent) -> None:
+        """● laptop  this one                                  online"""
+        d = self._device(index)
+        if d is None:
+            return
+        base = text.baseline_in(box, BODY_SIZE)
+        online = d["online"]
+        if online:
+            when, when_color = "online", theme.LIME_BRIGHT
+        elif d["last_seen"]:
+            when, when_color = f"seen {ago(d['last_seen'])}", theme.BASE_MUTED
+        else:
+            when, when_color = "never seen", theme.BASE_MUTED
+        text.draw(canvas, "●" if online else "○", box.left(), base, BODY_SIZE,
+                  theme.color(theme.LIME_BRIGHT if online
+                              else theme.BASE_MUTED), bold=True)
+        x = box.left() + text.advance(BODY_SIZE) * 2
+        name = d["name"]
+        text.draw(canvas, name, x, base, BODY_SIZE,
+                  theme.color(theme.HUD_FG_BRIGHT if online
+                              else theme.HUD_FG), bold=True)
+        if name == getattr(self.agent, "device", None):
+            x += text.measure(name + "  ", BODY_SIZE, bold=True)
+            text.draw(canvas, "this one", x, text.baseline_in(box, ACT_SIZE),
+                      ACT_SIZE, theme.color(accent))
+        tw = text.measure(when, ACT_SIZE)
+        text.draw(canvas, when, box.right() - tw,
+                  text.baseline_in(box, ACT_SIZE), ACT_SIZE,
+                  theme.color(when_color))
+
+    def _paint_devinfo(self, canvas, box, row: Row) -> None:
+        """Its connections, its hands, and whether it wakes by push."""
+        d = self._device(int(row.label))
+        if d is None:
+            return
+        parts = []
+        if d["clients"]:
+            parts.append("connected: " + ", ".join(d["clients"]))
+        parts.append("hands: " + ", ".join(d["hands"]) if d["hands"]
+                     else "no hands")
+        if d["wakes"]:
+            parts.append("wakes by push")
+        x = box.left() + row.x
+        text.draw(canvas, text.ellipsize("  ·  ".join(parts), ACT_SIZE,
+                                         box.right() - x),
+                  x, text.baseline_in(box, ACT_SIZE), ACT_SIZE,
+                  theme.color(theme.HUD_FG))
+
     def _paint_header(self, canvas, box, accent) -> None:
         a = self.agent
         if self.history is not None:
             paint_heading(canvas, box, NAME_SIZE,
                           (("LINES", accent, True),
                            ("past conversations", theme.BASE_MUTED, False)))
+            return
+        if self.show_devices:
+            paint_heading(canvas, box, NAME_SIZE,
+                          (("DEVICES", accent, True),
+                           ("on the hub", theme.BASE_MUTED, False)))
             return
         if self._copied():
             tag = ("copied", accent, True)

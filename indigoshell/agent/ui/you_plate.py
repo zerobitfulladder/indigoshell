@@ -86,10 +86,17 @@ class YouPlate(Widget):
 
         hh = line_h(NAME_SIZE, True) + 6
         box = skia.Rect.MakeXYWH(x, y, right - x, hh)
-        paint_heading(canvas, box, NAME_SIZE, (("YOU", YOU_ACCENT, True),))
-        hint = "⏎ send   ^H history   ^N new   esc hang up"
+        # The hub's conversation is shared: a line asked on another of
+        # your devices says which.
+        on = getattr(a, "heard_on", None)
+        paint_heading(canvas, box, NAME_SIZE,
+                      (("YOU", YOU_ACCENT, True),
+                       (f"on {on}" if on else "", theme.BASE_MUTED, False)))
+        devices = "^D devices   " if getattr(a, "devices", None) is not None \
+            else ""
+        hint = f"⏎ send   ^H history   {devices}^N new   esc hang up"
         if a.busy:
-            hint = "⏎ send   ^C stop   esc hang up"
+            hint = f"⏎ send   ^C stop   {devices}esc hang up"
         w = text.measure(hint, TAG_SIZE)
         text.draw(canvas, hint, right - w, text.baseline_in(box, TAG_SIZE),
                   TAG_SIZE, theme.color(theme.BASE_MUTED))

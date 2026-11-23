@@ -75,7 +75,8 @@ YOU_FILL = plate_fill(YOU_ACCENT)
 
 def own_accent(agent) -> str:
     """The agent's own colour: violet for the desktop's, or the `accent`
-    an agent brings (a remote one, `RemoteAgent`)."""
+    an agent brings (the hub's, `RemoteAgent`: the colour of the voice
+    of the turn on show, so read it each time)."""
     return getattr(agent, "accent", None) or AGENT_ACCENT
 
 

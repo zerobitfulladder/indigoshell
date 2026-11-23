@@ -42,7 +42,7 @@ class CallStatus(Widget):
         self.call = call
         self.side = side
         self.chip = Chip(CHIP_SM, self._look, lambda: agent.ring_started,
-                         tint=own_accent(agent))
+                         tint=lambda: own_accent(agent))
         self.trace = Trace()        # the turn clock, as on the call's frame
         self.projection = Projection()   # as on the call
         self.bars = Bars()
