@@ -33,7 +33,8 @@ reached or doesn't answer. The hub keeps the last ended turn unseen
 until a screen reports it `seen`: this call does when it shows it (the
 call open as it ends, opened later, or the ring answered), and rings on
 reconnecting for one meant for this device that came while the line was
-down. When another screen reports it seen, the ring stops. `ring_line`
+down; so does an open question meant for it. When another screen
+reports a turn seen, the ring stops. `ring_line`
 is the notification the agent wrote for it, for the corner chip.
 
 **Devices:** `devices` is the hub's device list (who is online, when the
@@ -494,16 +495,27 @@ class RemoteAgent:
                            if s.strip() and not you)
 
     def _show_view(self, view: dict) -> None:
-        """Replace the turn on show with the hub's account of it."""
+        """Replace the turn on show with the hub's account of it. Its
+        turn number and its reply block by block, so that a turn still
+        running carries on where it is: later events join that turn, and
+        a block still streaming grows on the end of its own text."""
         self._clear_turn()
         self._local_turn = self._turn_ours = False
+        self._turn = view.get("turn")
         self.heard = str(view.get("line") or "")
         self.heard_on = None
-        self.message = str(view.get("text") or "")
         self.shown_voice = str(view.get("voice") or self.voice)
         for step in view.get("steps") or []:
             if isinstance(step, dict):
                 self._add_step(step)
+        # The order of the reply's blocks among the steps isn't told:
+        # the reply goes after them, as it mostly ends a turn.
+        for block in view.get("blocks") or []:
+            if isinstance(block, dict) and block.get("block") is not None:
+                self._seg_map[block["block"]] = self._new_segment(
+                    str(block.get("text") or ""))
+        self._open_seg = None
+        self.message = str(view.get("text") or "") or self._said()
 
     def _add_step(self, ev: dict) -> None:
         detail = str(ev.get("detail") or "")
@@ -774,6 +786,9 @@ class RemoteAgent:
     def _on_event(self, ev: dict) -> None:
         kind = ev.get("type")
         event = "change"
+        if kind in ("thinking", "text", "step", "step_done", "working") \
+                and self._turn is None:
+            self._turn = ev.get("turn")     # the turn on show, joined
         if kind == "state":
             self._apply_state(ev)
         elif kind == "line":
@@ -833,6 +848,12 @@ class RemoteAgent:
                 title=str(ev.get("title") or "a question"),
                 detail=str(ev.get("detail") or ""),
                 future=asyncio.get_running_loop().create_future())
+            # Who is rung for it, once the hub has decided: a call that
+            # comes back with the question still open rings if it is one.
+            to = ev.get("to")
+            if not self.call_open and isinstance(to, list) \
+                    and self._for_me(to):
+                self._ring("ask")
         elif kind == "answered":
             if self._ask_id is None or str(ev.get("id")) == self._ask_id:
                 self.approval = None
