@@ -21,7 +21,7 @@ import time
 import skia
 
 from ... import theme
-from .style import AGENT_FILL, FRAME_W, frame_inset, plate_path
+from .style import FRAME_W, fill_of, frame_inset, plate_path
 
 TRACE_LAP_S = 60.0          # one lap of the frame per minute of the turn
 TRACE_FINISH_S = 0.45       # the closing sweep when the answer lands
@@ -102,7 +102,7 @@ class Trace:
         border = plate_path(r, inset=frame_inset())
         measure = skia.PathMeasure(border, False)
         length = measure.getLength()
-        dim = theme.lerp(accent, AGENT_FILL[0], TRACE_DIM)
+        dim = theme.lerp(accent, fill_of(agent)[0], TRACE_DIM)
         canvas.drawPath(border, _stroke(dim))
         if lap % 2 == 0:            # even laps draw the frame in...
             lo, hi = 0.0, f * length + (length - f * length) * done

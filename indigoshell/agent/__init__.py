@@ -74,13 +74,20 @@ this machine. Wiring it into a config:
     SERVICES = [..., FIREFOX, AGENT, CallRouter(AGENT)]
     WINDOWS = [..., WindowSpec(name=CALL_WINDOW, content=CallHost(AGENT), ...),
                WindowSpec(name=STATUS_WINDOW, content=CallStatus(AGENT), ...)]
+
+A second call can talk to an agent on another machine: `RemoteAgent`
+(remote.py) reads like `Agent`, from the remote's events over a
+command's stdin and stdout (`ssh host bridge`). It gets its own
+CallHost (with its own `draft_key`), CallStatus (`call=` its window,
+`side=` its screen edge) and CallRouter (`call=`, `status=`).
 """
 
 from .firefox import Firefox
 from .session import Agent
+from .remote import RemoteAgent
 from .tools import ShellTools
 from .ui.call import CALL_WINDOW, CallHost
 from .ui.status import STATUS_WINDOW, CallRouter, CallStatus
 
-__all__ = ["Agent", "ShellTools", "Firefox", "CallHost", "CallStatus",
-           "CallRouter", "CALL_WINDOW", "STATUS_WINDOW"]
+__all__ = ["Agent", "RemoteAgent", "ShellTools", "Firefox", "CallHost",
+           "CallStatus", "CallRouter", "CALL_WINDOW", "STATUS_WINDOW"]

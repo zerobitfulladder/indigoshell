@@ -84,7 +84,7 @@ from .chip import Chip
 from ...widgets.holo import Projection
 from .style import (CHIP, GAP, HANGUP_CLOSE_S, HISTORY_ROWS, MAX_BODY_ROWS,
                     NUDGE_S, PLATE_W, ROW_GAP, SPIN, UNBOUNDED, YOU_ACCENT,
-                    accent_of, plate_path)
+                    accent_of, own_accent, plate_path)
 from .you_plate import YouPlate
 
 
@@ -103,17 +103,23 @@ BOTTOM_CLEAR = theme.BAR_HEIGHT + 24
 
 
 class CallHost(Widget):
-    """Both lines of the call, right-aligned, and the keys that drive it."""
+    """Both lines of the call, right-aligned, and the keys that drive it.
 
-    def __init__(self, agent: Agent) -> None:
+    `agent` is the desktop's `Agent` or a `RemoteAgent` (agent/remote.py),
+    which reads the same; each call keeps its unsent line under its own
+    `draft_key`."""
+
+    def __init__(self, agent: Agent, *, draft_key: str = DRAFT_KEY) -> None:
         super().__init__()
         self.agent = agent
+        self.draft_key = draft_key
         self.agent_plate = AgentPlate(agent)
         self.agent_plate.relayout = self._fit
         self.agent_plate.link_clicked = self._open_link
         self.agent_plate.touched = agent.acknowledge
         self.you_plate = YouPlate(agent)
-        self.agent_chip = Chip(CHIP, self._agent_look, self._blink_since)
+        self.agent_chip = Chip(CHIP, self._agent_look, self._blink_since,
+                               tint=own_accent(agent))
         self.you_chip = Chip(CHIP, lambda: (YOU_ACCENT, "YOU", "still"),
                              tint=YOU_ACCENT)
         # The plates and chips are one hologram; its scan glitches down
@@ -165,7 +171,7 @@ class CallHost(Widget):
         # in the state file too, so a reload of the shell keeps it.
         field_ = self.you_plate.input
         if not field_.text:
-            draft = state.get(DRAFT_KEY)
+            draft = state.get(self.draft_key)
             if isinstance(draft, str) and draft:
                 field_.set_text(draft)
         self._was_busy = self.agent.busy
@@ -185,7 +191,7 @@ class CallHost(Widget):
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
-        state.set(DRAFT_KEY, self.you_plate.input.text)
+        state.set(self.draft_key, self.you_plate.input.text)
         super().detach()
         self.agent.set_call_open(False)
 

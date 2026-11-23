@@ -17,12 +17,13 @@ from .choice import CHOICE_GAP, CHOICE_H, Choice
 from .frame import TRACE_BLEED, Trace
 from .reveal import Reveal
 from .style import (ACT_ROWS_ALL, ACT_ROWS_BUSY, ACT_ROWS_IDLE, ACT_SIZE,
-                    AGENT_ACCENT, AGENT_FILL, ASK_ACCENT, BODY_SIZE, CLICK_S,
+                    ASK_ACCENT, BODY_SIZE, CLICK_S,
                     COPIED_FPS, COPIED_S, CORNERS, DOTS_PER_S, FAIL_ACCENT,
                     HISTORY_ROWS, MAX_BODY_ROWS, NAME_SIZE, OUT_ROWS,
                     OUT_ROWS_FULL, PAD_X, PAD_Y, PLATE_W, STATUS_WORDS,
                     TAG_SIZE, TOOL_FG, YOU_ACCENT, accent_of, ago, clock_text,
-                    line_h, paint_heading, paint_plate)
+                    fill_of, line_h, own_accent, paint_heading,
+                    paint_plate)
 from .rows import Row, code_rows, highlight, markdown_rows, paint_line, text_rows
 
 
@@ -195,7 +196,7 @@ class AgentPlate(Widget):
                                   bar=YOU_ACCENT)
             else:
                 key, _after, said = item
-                rows += markdown_rows(said, w, key)
+                rows += markdown_rows(said, w, key, own_accent(a))
         if loose:
             if rows:
                 rows.append(Row("gap", 6))
@@ -605,7 +606,7 @@ class AgentPlate(Widget):
     def paint(self, canvas: skia.Canvas) -> None:
         a = self.agent
         accent = accent_of(a)
-        paint_plate(canvas, self.rect, accent, AGENT_FILL)
+        paint_plate(canvas, self.rect, accent, fill_of(a))
         self.trace.paint(canvas, self.rect, a, accent)
         laid = self._layout()
         order = self._order(laid)
@@ -627,20 +628,20 @@ class AgentPlate(Widget):
                 if row.label:
                     self._glyph(canvas, box, row.label, theme.BASE_MUTED)
                 self.bars.paint_row(canvas, box, row.job, left + row.x,
-                                    AGENT_ACCENT)
+                                    own_accent(a))
             elif kind == "jobinfo":
                 self.bars.paint_info(canvas, box, row.job, left + row.x,
-                                     AGENT_ACCENT)
+                                     own_accent(a))
             elif kind == "think":
                 dots = int((time.monotonic() - a.turn_started)
                            * DOTS_PER_S) % 4
                 tail = a.thought.strip().splitlines()[-1] if a.thought.strip() \
                     else "thinking" + "." * dots
-                self._glyph(canvas, box, "∴", theme.VIOLET_BRIGHT)
+                self._glyph(canvas, box, "∴", own_accent(a))
                 x = left + text.advance(ACT_SIZE) * 2
                 text.draw(canvas, text.ellipsize(tail, ACT_SIZE, right - x),
                           x, text.baseline_in(box, ACT_SIZE), ACT_SIZE,
-                          theme.color(theme.VIOLET_BRIGHT))
+                          theme.color(own_accent(a)))
             elif kind == "rule":
                 p = skia.Paint(AntiAlias=False)
                 p.setColor(theme.color(accent, 0.35))

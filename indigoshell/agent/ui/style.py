@@ -71,6 +71,23 @@ def plate_fill(accent: str) -> tuple[str, float]:
 
 AGENT_FILL = plate_fill(AGENT_ACCENT)
 YOU_FILL = plate_fill(YOU_ACCENT)
+
+
+def own_accent(agent) -> str:
+    """The agent's own colour: violet for the desktop's, or the `accent`
+    an agent brings (a remote one, `RemoteAgent`)."""
+    return getattr(agent, "accent", None) or AGENT_ACCENT
+
+
+_FILLS: dict[str, tuple[str, float]] = {AGENT_ACCENT: AGENT_FILL}
+
+
+def fill_of(agent) -> tuple[str, float]:
+    """The agent's plate fill, tinted with its own colour."""
+    accent = own_accent(agent)
+    if accent not in _FILLS:
+        _FILLS[accent] = plate_fill(accent)
+    return _FILLS[accent]
 SLASH_FG = theme.NOTIF_SEPARATOR_FG     # the toasts' cyan `//`
 ASK_ACCENT = theme.YELLOW_BRIGHT
 FAIL_ACCENT = theme.ERROR
@@ -238,7 +255,7 @@ def accent_of(agent) -> str:
         return RING_ACCENT
     if agent.phase == "error":
         return FAIL_ACCENT
-    return AGENT_ACCENT
+    return own_accent(agent)
 
 
 def blink_on(elapsed: float) -> bool:

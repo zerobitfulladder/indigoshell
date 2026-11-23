@@ -16,9 +16,9 @@ from .call import CALL_WINDOW
 from .chip import Chip
 from .frame import TRACE_BLEED, Trace
 from ...widgets.holo import Projection
-from .style import (ACT_SIZE, AGENT_ACCENT, AGENT_FILL, CHIP_SM, GAP, PAD_X,
-                    PAD_Y, RING_FOR_S, SPIN, STATUS_W, STATUS_WORDS, TAG_SIZE,
-                    TOOL_FG, UNBOUNDED, accent_of, clock_text, line_h,
+from .style import (ACT_SIZE, CHIP_SM, GAP, PAD_X, PAD_Y, RING_FOR_S, SPIN,
+                    STATUS_W, STATUS_WORDS, TAG_SIZE, TOOL_FG, UNBOUNDED,
+                    accent_of, clock_text, fill_of, line_h, own_accent,
                     paint_heading, paint_plate, plate_path)
 
 
@@ -27,16 +27,22 @@ STATUS_WINDOW = "call-status"
 
 # ── the chip shown while a closed call works or rings ───────────────────
 class CallStatus(Widget):
-    """`call-status`: a one-line plate and a small chip. Click answers;
-    right-click silences a ring without answering."""
+    """`call-status`: a one-line plate and a small chip. Click answers
+    (opens the `call` window); right-click silences a ring without
+    answering. The chip sits against the screen edge: `side` is the
+    screen edge the window is anchored to, "right" or "left"."""
 
     def __init__(self, agent: Agent, *, answer_hint: str = "mod+a to answer",
-                 width: int = STATUS_W) -> None:
+                 width: int = STATUS_W, call: str = CALL_WINDOW,
+                 side: str = "right") -> None:
         super().__init__()
         self.agent = agent
         self.answer_hint = answer_hint
         self.width = width
-        self.chip = Chip(CHIP_SM, self._look, lambda: agent.ring_started)
+        self.call = call
+        self.side = side
+        self.chip = Chip(CHIP_SM, self._look, lambda: agent.ring_started,
+                         tint=own_accent(agent))
         self.trace = Trace()        # the turn clock, as on the call's frame
         self.projection = Projection()   # as on the call
         self.bars = Bars()
@@ -115,16 +121,19 @@ class CallStatus(Widget):
         return Size(self.width, h)
 
     def arrange(self, rect: skia.Rect) -> None:
-        # Chip on the right, against the screen edge — unlike the open
+        # Chip against the screen edge — on the right unlike the open
         # call, where the agent's chip sits left of its plate.
         self.rect = rect
         h = rect.height()
-        self.chip.arrange(skia.Rect.MakeXYWH(rect.right() - h, rect.top(),
-                                             h, h))
+        x = rect.left() if self.side == "left" else rect.right() - h
+        self.chip.arrange(skia.Rect.MakeXYWH(x, rect.top(), h, h))
         self.projection.arrange(rect)
 
     def _plate_rect(self) -> skia.Rect:
         r = self.rect
+        if self.side == "left":
+            return skia.Rect.MakeLTRB(r.left() + r.height() + GAP, r.top(),
+                                      r.right(), r.bottom())
         right = r.right() - r.height() - GAP
         return skia.Rect.MakeLTRB(r.left(), r.top(), right, r.bottom())
 
@@ -162,7 +171,7 @@ class CallStatus(Widget):
         a = self.agent
         accent = accent_of(a)
         pr = self._plate_rect()
-        paint_plate(canvas, pr, accent, AGENT_FILL)
+        paint_plate(canvas, pr, accent, fill_of(a))
         self.trace.paint(canvas, pr, a, accent)
         x = pr.left() + PAD_X - 4
         right = pr.right() - PAD_X
@@ -181,7 +190,7 @@ class CallStatus(Widget):
                                   line_h(ACT_SIZE) + 2)
         job = self._job()
         if job is not None:
-            self.bars.paint_compact(canvas, line, job, AGENT_ACCENT)
+            self.bars.paint_compact(canvas, line, job, own_accent(a))
         else:
             color = TOOL_FG if a.busy and not a.ringing else theme.HUD_FG
             text.draw(canvas, text.ellipsize(detail, ACT_SIZE, right - x), x,
@@ -197,7 +206,7 @@ class CallStatus(Widget):
     def click(self, button: int, x: float = 0.0, y: float = 0.0) -> bool:
         from ...core.daemon import get_daemon
         if button == 1:
-            get_daemon().open(CALL_WINDOW)
+            get_daemon().open(self.call)
             return True
         if button == 3 and self.agent.ringing is not None \
                 and self.agent.approval is None:

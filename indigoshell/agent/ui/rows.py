@@ -110,7 +110,8 @@ def code_rows(key: str, value: str, w: float, bar: str,
             for s, e in hard_spans(value, cols)]
 
 
-def markdown_rows(message: str, w: float, prefix: str = "m") -> list[Row]:
+def markdown_rows(message: str, w: float, prefix: str = "m",
+                  accent: str = AGENT_ACCENT) -> list[Row]:
     """Rows for a Markdown reply, `w` px wide, selectable by block.
     Wide characters get their second cell before parsing, so the
     spans' offsets already count it. Each block's key is `prefix` and
@@ -130,7 +131,7 @@ def markdown_rows(message: str, w: float, prefix: str = "m") -> list[Row]:
             if out and out[-1].kind != "gap":
                 out.append(Row("gap", 4))
             out += text_rows(key, b.text, BODY_SIZE, w,
-                                   AGENT_ACCENT, spans=b.spans, bold=True)
+                                   accent, spans=b.spans, bold=True)
         elif b.kind == "li":
             indent = b.level * 2 * cell
             bw = (len(b.bullet) + 1) * cell
