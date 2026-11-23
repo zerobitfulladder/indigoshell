@@ -155,7 +155,9 @@ class CallStatus(Widget):
             word = "calling back" if self._fresh() else "missed call"
             if a.ringing == "error":
                 word = "line dropped"
-            first = (a.error if a.phase == "error" else a.message) or ""
+            # A remote agent's own words for the ring, if it wrote some.
+            first = getattr(a, "ring_line", None) or (
+                (a.error if a.phase == "error" else a.message) or "")
             blocks = markdown.parse(first.strip()) if first.strip() else []
             preview = next((b.text for b in blocks if b.text.strip()), "")
             return word, preview or self.answer_hint

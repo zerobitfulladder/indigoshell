@@ -20,13 +20,15 @@ the call is closed still rings. It comes back by itself when either
 machine was away, with a growing pause between tries; opening the call
 or saying a line cuts the pause short.
 
-**Ringing is ours**, as for the desktop's agent: the remote only says a
-turn ended or asks. A turn started from another of the remote's clients
-(a terminal, the phone) doesn't ring here; one started from this call,
-or by the remote agent itself, does. The remote keeps its last result
-unseen until a client reports it seen: this call does when it shows it
-(the call open, or answered), and rings for one that ended while the
-line was down. When another device reports it seen, the ring stops.
+**The remote says who rings** (its `ring` event: the clients to ring,
+"*" for all): what was asked from this call rings here, what was asked
+from another device rings there, and here too if that device can't be
+reached or doesn't answer. The remote keeps its last result unseen until
+a client reports it seen: this call does when it shows it (the call
+open, or answered), and rings on reconnecting for one meant for it that
+came while the line was down. When another device reports it seen, the
+ring stops. `ring_line` is the notification the remote agent wrote for
+it, for the corner chip.
 
 What only the desktop's agent has stays empty here: the glance at the
 desktop, the progress bars of long commands (`jobs`), the desktop tools.
@@ -252,6 +254,7 @@ class RemoteAgent:
         self.call_open = False
         self.ringing: str | None = None     # "done" | "ask" | "error"
         self.ring_started = 0.0
+        self.ring_line: str | None = None   # the remote's words for it
         self.connected = False
         self.via = ""                   # the address the line is on
 
@@ -453,12 +456,22 @@ class RemoteAgent:
                                                         self._seg_you)
                            if s.strip() and not you)
 
-    def _ring(self, why: str, result_id=None) -> None:
+    def _ring(self, why: str, result_id=None, line: str | None = None) -> None:
         self.ringing = why
         self.ring_started = time.monotonic()
+        self.ring_line = line
         if why != "ask":
             self._ring_id = result_id
         self._emit("ring")
+
+    @staticmethod
+    def _for_me(to) -> bool:
+        return to is None or "*" in to or CLIENT in to
+
+    @staticmethod
+    def _line(ev: dict) -> str | None:
+        title, text = ev.get("title"), ev.get("text")
+        return " — ".join(p for p in (title, text) if p) or None
 
     def _answered(self) -> None:
         """The user saw the result rung for: tell the remote, so other
@@ -629,9 +642,9 @@ class RemoteAgent:
                 # A result that came while the line was down.
                 if self.call_open:
                     self._send({"type": "seen", "id": unseen.get("id")})
-                elif unseen.get("source") in (None, CLIENT):
+                elif self._for_me(unseen.get("to")):
                     self._ring("done" if unseen.get("ok") else "error",
-                               unseen.get("id"))
+                               unseen.get("id"), self._line(unseen))
             if self.queued:                 # said while the line was down
                 if not self.busy:
                     self._begin_turn(self.queued[0])
@@ -692,8 +705,6 @@ class RemoteAgent:
                 title=str(ev.get("title") or "a question"),
                 detail=str(ev.get("detail") or ""),
                 future=asyncio.get_running_loop().create_future())
-            if not self.call_open:
-                self._ring("ask")
         elif kind == "ask_done":
             if ev.get("id") == self._ask_id:
                 self.approval = None
@@ -710,14 +721,21 @@ class RemoteAgent:
                 self.phase = "error"
                 self.error = ev.get("error") or "the turn failed"
                 self.hint = ev.get("hint")
-            ours = self._turn_source in (None, CLIENT)
             if self.call_open or self._interrupted:
                 # Seen as it happened, or stopped on purpose.
                 self._send({"type": "seen", "id": ev.get("id")})
-            elif ours:
-                self._ring("done" if ev.get("ok") else "error", ev.get("id"))
             self._turn_source = None
             self._send({"type": "sessions"})
+        elif kind == "ring":
+            if self._for_me(ev.get("to")):
+                if ev.get("kind") == "ask":
+                    if not self.call_open and self.approval is not None:
+                        self._ring("ask", line=self._line(ev))
+                elif self.call_open:
+                    self._send({"type": "seen", "id": ev.get("id")})
+                else:
+                    self._ring("done" if ev.get("ok") else "error",
+                               ev.get("id"), self._line(ev))
         elif kind == "seen":
             # Another device (or this one) showed the result: stop ringing.
             if self.ringing in ("done", "error") and (
