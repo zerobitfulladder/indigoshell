@@ -222,13 +222,19 @@ class CallRouter:
 
     A SERVICES entry: neither window is alive to decide this while it is
     closed, so something outside them has to watch the agent.
+
+    `show_working=False` keeps the corner empty while the agent works with
+    its call closed: only a ring or a question shows it. For an agent on
+    its own machine (a `RemoteAgent`), whose work needs no watching here.
     """
 
     def __init__(self, agent: Agent, *, call: str = CALL_WINDOW,
-                 status: str = STATUS_WINDOW) -> None:
+                 status: str = STATUS_WINDOW,
+                 show_working: bool = True) -> None:
         self.agent = agent
         self.call = call
         self.status = status
+        self.show_working = show_working
         self._unsub = None
 
     def start(self) -> None:
@@ -243,10 +249,11 @@ class CallRouter:
         from ...core.daemon import get_daemon
         d = get_daemon()
         a = self.agent
+        working = self.show_working and (
+            a.busy or bool(a.jobs.shown()))     # a command left running
         want = (not a.call_open and self.call not in d.instances
-                and (a.busy or a.ringing is not None
-                     or a.approval is not None
-                     or bool(a.jobs.shown())))   # a command left running
+                and (working or a.ringing is not None
+                     or a.approval is not None))
         have = self.status in d.instances
         if want and not have:
             d.open(self.status)
