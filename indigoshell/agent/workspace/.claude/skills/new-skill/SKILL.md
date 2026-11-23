@@ -15,8 +15,10 @@ call, and remove it by deleting the folder.
 ```
 .claude/skills/<name>/
   SKILL.md       front matter (name, description), then how to use it
-  <name>.py      the work, when it needs code
-  ...            anything else it reads: templates, word lists
+  tools/         the code you write for it: scripts, helpers to paste
+                 into browser_js, a page it shows, templates
+  data/          what it collects or learns: past results, a history,
+                 the user's preferences for it. Its tools write here.
 ```
 
 - `<name>`: short, lowercase, hyphens: `transcribe`, `pdf-merge`.
@@ -25,8 +27,12 @@ call, and remove it by deleting the folder.
 - SKILL.md is for you on a later call: the command to run, what comes
   out, where it goes, how to show it, failures you have seen and their
   fixes. Keep it short. Facts about the machine go in CLAUDE.md, not here.
-- A job that only strings together installed command-line tools needs no
-  script: put the commands in SKILL.md, or a short `<name>.sh`.
+- Only the parts it needs: a job that only strings together installed
+  command-line tools has no tools/ (the commands go in SKILL.md), and a
+  job that keeps nothing between runs has no data/.
+- Scripts find data/ from their own place,
+  `Path(__file__).resolve().parent.parent / "data"`, not from a path
+  written into them.
 
 ## Code: uv scripts
 
@@ -40,7 +46,7 @@ Python, with its packages declared at the top of the file:
 ```
 
 Run it from the workspace:
-`uv run --script .claude/skills/<name>/<name>.py ARGS`. uv builds the
+`uv run --script .claude/skills/<name>/tools/<name>.py ARGS`. uv builds the
 environment once in its cache (`~/.cache/uv/environments-v2/`) and reuses
 it after (about 0.2 s). Nothing appears next to the script.
 
@@ -115,9 +121,9 @@ def report(**fields):
 
 ## Logins and keys
 
-Never put them in the skill folder or on a command line. If a job needs
-the user's login (a site's cookies from Firefox, an API key), ask how
-they want it handled before using it.
+Never put them in the skill folder (data/ included) or on a command
+line. If a job needs the user's login (a site's cookies from Firefox, an
+API key), ask how they want it handled before using it.
 
 ## Building it
 
@@ -139,11 +145,16 @@ the next one. Until then, read its SKILL.md and follow it.
 When the user wants an ability to work differently ("save them as
 .txt", "use the small model"), change its SKILL.md or script: that is
 where the preference lives, so later calls follow it. Removing an
-ability means deleting its folder (that asks the user).
+ability means deleting its folder, data/ included.
 
-## One-off jobs
+## One-off jobs and projects
 
 A job wanted once doesn't need a skill. If it needs packages, use
 `uv run --with <pkg> python <script>` with the script in a temp dir, not
 the workspace. If it took real setup, offer at the end, in one line, to
 keep it as a skill.
+
+Something you build that isn't a repeatable job (an analysis to run
+again on new data, a small page or app for the user) gets its own folder
+in `projects/` in the workspace, with a short NOTES.md saying what it is
+and how to run it. Never create folders among the user's own projects.

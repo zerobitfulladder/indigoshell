@@ -6,15 +6,15 @@
 
 - **The catalogue** (Web API, the app's own token — the client
   credentials flow): search, and anything public. Needs `client_id` and
-  `client_secret` in `~/.config/indigoshell/spotify.json`, from an app
-  registered at developer.spotify.com.
+  `client_secret` in `~/.config/indigoshell/connections/spotify/config.json`,
+  from an app registered at developer.spotify.com.
 
 - **The account** (Web API as the user — the authorization code flow):
   playlists, the queue, liked songs, top and recent tracks, playback on
   any device. Needs a one-time sign-in, `login()`, which opens Spotify's
   own approval page and catches the reply on 127.0.0.1 — so the app's
   settings must list `REDIRECT_URI` (or the `redirect_uri` set in
-  spotify.json) as a redirect URI. The tokens are kept in
+  that config.json) as a redirect URI. The tokens are kept in
   `~/.local/state/indigoshell/spotify_token.json`, readable only by the
   user, and refreshed as they expire. Queueing and playback control
   through the API need Spotify Premium.
@@ -34,6 +34,7 @@ import time
 import urllib.parse
 
 from ..core import paths
+from . import connections
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ ACCOUNTS = "https://accounts.spotify.com"
 # listed under Redirect URIs in the app's settings; this one is the one
 # spotify_player's app already registers, so a single Spotify app serves
 # both. spotify_player only listens on it while it signs in itself.
-# Override with "redirect_uri" in spotify.json.
+# Override with "redirect_uri" in connections/spotify/config.json.
 REDIRECT_URI = "http://127.0.0.1:8989/login"
 LOGIN_TIMEOUT_S = 240
 APP = "spotify"                 # the desktop client's MPRIS name
@@ -108,8 +109,8 @@ async def _run(argv: list[str], timeout: float = 10.0) -> tuple[int, str]:
 class Spotify:
     def __init__(self, *, credentials: str | None = None,
                  tokens: str | None = None) -> None:
-        self.credentials = credentials or os.path.join(paths.config_dir(),
-                                                       "spotify.json")
+        self.credentials = credentials or connections.path("spotify",
+                                                           "config.json")
         self.tokens = tokens or os.path.join(paths.state_dir(),
                                              "spotify_token.json")
         self._app_token: tuple[str, float] | None = None

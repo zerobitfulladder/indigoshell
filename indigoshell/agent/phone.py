@@ -27,14 +27,15 @@ Termux (`pkg install openssh`, `passwd`, `sshd`):
 (Messages that tell the user to run it name this checkout and this
 interpreter, worked out at run time: see `SET_UP`.) It asks for the
 phone's address, makes this computer a key
-(~/.config/indigoshell/phone_ed25519) and, the first time, asks for the
-Termux password once to put the key on the phone, so the password never
-passes through the agent; then it turns password logins off there. It
-pins the server's host key and writes `~/.config/indigoshell/phone.json`
-(0600):
+(~/.config/indigoshell/connections/phone/key) and, the first time, asks
+for the Termux password once to put the key on the phone, so the
+password never passes through the agent; then it turns password logins
+off there. It
+pins the server's host key and writes
+`~/.config/indigoshell/connections/phone/config.json` (0600):
 
     {"host": "192.168.1.42", "port": 8022, "user": "termux",
-     "key": "/home/me/.config/indigoshell/phone_ed25519",
+     "key": "/home/me/.config/indigoshell/connections/phone/key",
      "host_key": "ssh-ed25519 AAAA...", "root": "/storage/emulated/0"}
 
 and the `phone` block in ~/.ssh/config, with its own known_hosts.
@@ -44,7 +45,7 @@ phone's address can change (DHCP). Each connection tries the last
 address that answered (state key `agent.phone`) and the configured one,
 then every host on the local subnets with the port open; only a server
 holding the pinned key counts. `proxy` does the same for ssh, and keeps
-phone.json's host current.
+config.json's host current.
 
 **Paths** are the phone's: relative ones start in `root`, internal
 storage (DCIM, Download, Pictures, ...), and listings give paths that
@@ -67,7 +68,8 @@ import stat
 import sys
 import time
 
-from ..core import paths, state
+from ..core import state
+from . import connections
 from .watch import Reporter
 
 log = logging.getLogger(__name__)
@@ -122,17 +124,17 @@ class PhoneError(Exception):
 
 
 def config_path() -> str:
-    return os.path.join(paths.config_dir(), "phone.json")
+    return connections.path("phone", "config.json")
 
 
 def key_path() -> str:
     """This computer's key for the phone (and its .pub)."""
-    return os.path.join(paths.config_dir(), "phone_ed25519")
+    return connections.path("phone", "key")
 
 
 def known_hosts_path() -> str:
     """The phone's host key, for `ssh phone`."""
-    return os.path.join(paths.config_dir(), "phone_known_hosts")
+    return connections.path("phone", "known_hosts")
 
 
 
@@ -742,6 +744,39 @@ def _write_ssh_files(cfg: dict) -> str:
     return path
 
 
+def follow_moves(moved: dict[str, str]) -> None:
+    """After `connections.tidy()` moved the phone's files ({old: new}):
+    point config.json's key, and the `phone` block in ~/.ssh/config, at
+    their new places. The rest of the block stays as setup wrote it."""
+    try:
+        with open(config_path()) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        cfg = None
+    if isinstance(cfg, dict) and cfg.get("key") in moved:
+        cfg["key"] = moved[cfg["key"]]
+        _write_config(config_path(), cfg)
+    path = os.path.join(os.path.expanduser("~/.ssh"), "config")
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return
+    start, end = text.find(BEGIN), text.find(END)
+    if start == -1 or end < start:
+        return
+    lines = text[start:end].split("\n")
+    for i, line in enumerate(lines):
+        words = line.split()
+        if (len(words) == 2 and words[0] in ("IdentityFile",
+                                              "UserKnownHostsFile")
+                and words[1] in moved):
+            lines[i] = line.replace(words[1], moved[words[1]])
+    block = "\n".join(lines)
+    if block != text[start:end]:
+        _write_private(path, text[:start] + block + text[end:])
+
+
 # ── setup, in the user's terminal ───────────────────────────────────────
 
 # Key logins only, from now on. Exits 3 on a server that isn't Termux's.
@@ -838,6 +873,7 @@ async def _pair(cfg: dict, pub: str, ask_password) -> dict:
 
 def setup(address: str | None = None, path: str | None = None) -> int:
     import getpass
+    connections.tidy()
     path = path or config_path()
     try:
         with open(path) as f:

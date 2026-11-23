@@ -33,6 +33,8 @@ The package, by job:
     wiz.py           WiZ lights on the LAN: discovery, scenes, names
     phone.py         the user's phone over Termux's SSH server: its files,
                      and the `ssh phone` host (pairing, finding it)
+    connections.py   where those three keep settings and keys:
+                     ~/.config/indigoshell/connections/<name>/
     firefox.py       `Firefox`: the shell's end of the INDIGO bridge
                      add-on (extension/) and its native host
                      (browser_host.py) — the everyday Firefox, no port
@@ -42,8 +44,8 @@ The package, by job:
                      its phone skill (the Termux:API commands over
                      `ssh phone`) and new-skill: how it builds itself
                      new abilities,
-                     each a skill folder with uv scripts, nothing
-                     installed outside it
+                     each a skill folder (SKILL.md, tools/ with uv
+                     scripts, data/), nothing installed outside it
     seed.py          puts those in its workspace when missing — never
                      over its own copies, which it edits when you ask it
                      to work differently — and regenerates the report

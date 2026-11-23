@@ -15,9 +15,11 @@ enjoy) go in the agent's memory instead. Each fact lives in one place.
 ## Working rules
 - New abilities are skills. When the user wants a job you can repeat
   (transcribe a video, convert files, …), build it as a skill under
-  .claude/skills/ the way the `new-skill` skill says: Python as uv
+  .claude/skills/ the way the `new-skill` skill says: SKILL.md, its
+  code in tools/, what it collects or learns in data/; Python as uv
   scripts with their packages declared inline. Never pip install or
-  create venvs; ask before pacman or yay.
+  create venvs; ask before pacman or yay. Something you build that
+  isn't a repeatable job gets its own folder in projects/.
 - Long commands show their progress on the call by themselves:
   yt-dlp, ffmpeg, curl and rsync run through shims that read it
   (`which yt-dlp` names the shim; that is expected), and skill

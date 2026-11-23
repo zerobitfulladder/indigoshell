@@ -108,9 +108,9 @@ PANEL_SPAWN = ScanLock(duration=0.22, band_px=36.0, tear_px=29.0, split_px=17.0,
 # `tools` gives it the desktop (agent/tools.py): screenshots, opening
 # links and files (reports, images, videos) brought forward on their
 # workspace, apps, workspaces, the clipboard, Spotify, the WiZ lights
-# on the LAN (named in ~/.config/indigoshell/wiz.json), and your
-# everyday Firefox through the INDIGO bridge add-on — set up once with
-# `python -m indigoshell.agent.firefox install` (agent/firefox.py).
+# on the LAN (named in ~/.config/indigoshell/connections/wiz/config.json),
+# and your everyday Firefox through the INDIGO bridge add-on — set up
+# once with `python -m indigoshell.agent.firefox install` (agent/firefox.py).
 # The agent works in ~/.config/indigoshell/assistant, whose CLAUDE.md is
 # its notebook for this machine — how it shows you things included; ask
 # it on a call to work differently and it edits the notebook — and whose

@@ -61,6 +61,7 @@ from typing import Any
 import skia
 
 from ..services import clipboard, proc
+from . import connections
 from .spotify import Spotify, SpotifyError, track_line, uri as spotify_uri
 from .firefox import Firefox, FirefoxError
 from .glance import FILL_WAIT_S, Glancer, describe as describe_glance
@@ -242,6 +243,9 @@ class ShellTools:
                  lights: Wiz | None = None,
                  firefox: Firefox | None = None,
                  phone: Phone | None = None) -> None:
+        # Before the links read their paths: files of an older layout
+        # move into connections/ here.
+        connections.tidy()
         self.spotify = spotify or Spotify()
         self.lights = lights or Wiz()
         self.firefox = firefox or Firefox()

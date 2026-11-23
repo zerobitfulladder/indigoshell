@@ -16,7 +16,8 @@ address, model and white range, so a command to a known bulb is one
 round trip.
 
 **Names.** A bulb's name and room live in WiZ's cloud app, not on the
-bulb, so the shell keeps its own: `~/.config/indigoshell/wiz.json`,
+bulb, so the shell keeps its own:
+`~/.config/indigoshell/connections/wiz/config.json`,
 
     {"bulbs": {"a8bb50c0ffee": {"name": "desk", "room": "bedroom"}}}
 
@@ -34,7 +35,8 @@ import socket
 import time
 
 from .. import theme
-from ..core import paths, state
+from ..core import state
+from . import connections
 
 log = logging.getLogger(__name__)
 
@@ -222,8 +224,8 @@ class Wiz:
     """The lights: discovery, reading and setting, names."""
 
     def __init__(self, names_path: str | None = None) -> None:
-        self.names_path = names_path or os.path.join(paths.config_dir(),
-                                                     "wiz.json")
+        self.names_path = names_path or connections.path("wiz",
+                                                         "config.json")
 
     # ── names and memory ────────────────────────────────────────────────
     def _names(self) -> dict:

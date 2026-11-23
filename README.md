@@ -122,9 +122,9 @@ account from the `claude` in your terminal.
   edits its own notebook.
 - **It learns new tricks.** Ask it to set up a way to do something —
   "from now on, when I send a reel, transcribe it" — and it builds
-  itself a skill: a folder in its workspace with a `SKILL.md` and, when
-  the job needs code, a self-contained `uv` script, nothing installed
-  anywhere else. Transcribing videos with Whisper and finding a song's
+  itself a skill: a folder in its workspace with a `SKILL.md`, its code
+  in `tools/` (self-contained `uv` scripts, nothing installed anywhere
+  else) and what it collects in `data/`, like the lyrics it has found. Transcribing videos with Whisper and finding a song's
   lyrics started that way, built on a call. A skill's script reports
   each stage as it goes, so its run shows the steps on its progress
   bar — download, audio, model, transcribe, write — and they follow to
@@ -161,8 +161,9 @@ Key([MOD], "a", lazy.spawn(INDIGOSHELL + ["toggle", "call"])),
 The agent is one line of config — `Agent(name="INDIGO", model="opus",
 tools=ShellTools())` — with `persona=` for another voice. Spotify search
 and the account tools want a Spotify app's `client_id` and
-`client_secret` in `~/.config/indigoshell/spotify.json`, with
-`http://127.0.0.1:8989/login` as a redirect URI; then ask it to sign in.
+`client_secret` in `~/.config/indigoshell/connections/spotify/config.json`,
+with `http://127.0.0.1:8989/login` as a redirect URI; then ask it to
+sign in.
 
 The browser tools reach your everyday Firefox through **INDIGO
 bridge**, an add-on in this repository (`indigoshell/agent/extension/`)
@@ -361,6 +362,7 @@ indigoshell/
     wiz.py          ─ WiZ lights on the LAN: discovery, scenes, names
     firefox.py      ─ the everyday Firefox, via the INDIGO bridge add-on
     phone.py        ─ the phone over Termux SSH: files, `ssh phone`, pairing
+    connections.py  ─ their settings and keys, one folder each in connections/
     browser_host.py ─ that add-on's native messaging host
     extension/      ─ the add-on: page reader, clicks, forms, JavaScript
     prompts.py      ─ the call protocol and the persona
