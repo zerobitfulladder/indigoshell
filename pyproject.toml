@@ -35,4 +35,6 @@ indigoshell = "indigoshell.app:main"
 call = [
     "asyncssh>=2.24",
     "claude-agent-sdk>=0.2.183",
+    # RemoteAgent's channel to an agent on another machine (agent/remote.py).
+    "websockets>=15",
 ]

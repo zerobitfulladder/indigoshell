@@ -4,20 +4,29 @@
 overlay, its corner chip and `CallRouter` read one: the same attributes
 and methods, kept from a remote agent's events instead of a Claude Code
 process of our own. The first is lilac, the house agent on a Raspberry
-Pi; its repo's `lilac/protocol.py` is the reference for the protocol:
-one JSON object per line over the stdin and stdout of a command,
-usually `ssh <host> <bridge>`, so the SSH key is the login.
+Pi; its repo's `lilac/protocol.py` is the reference for the protocol
+(one JSON object per message).
+
+**Two ways to reach it.** `endpoints`: a WebSocket over TLS to the
+remote's gateway, with this machine's own certificate (`tls`: the
+remote's CA, this device's certificate and key); the addresses are tried
+in order, so the home one goes first and the public one after it. Only
+the remote's CA is trusted, and its certificate must carry the name
+`server_name`, whatever address answered. Or `command`: the protocol
+over a command's stdin and stdout, `ssh host bridge`.
 
 **The line stays up** while the shell runs, so a turn that ends while
 the call is closed still rings. It comes back by itself when either
-machine was away, with a growing pause between tries: the remote's
-firewall refuses rapid SSH connections, and every refused try restarts
-its block. Opening the call or saying a line cuts the pause short.
+machine was away, with a growing pause between tries; opening the call
+or saying a line cuts the pause short.
 
-**Ringing is ours**, as for the desktop's agent: the remote only says
-that a turn ended or asks. A turn started from another of the remote's
-clients (a terminal, its website) doesn't ring here; one started from
-this call, or by the remote agent itself, does.
+**Ringing is ours**, as for the desktop's agent: the remote only says a
+turn ended or asks. A turn started from another of the remote's clients
+(a terminal, the phone) doesn't ring here; one started from this call,
+or by the remote agent itself, does. The remote keeps its last result
+unseen until a client reports it seen: this call does when it shows it
+(the call open, or answered), and rings for one that ended while the
+line was down. When another device reports it seen, the ring stops.
 
 What only the desktop's agent has stays empty here: the glance at the
 desktop, the progress bars of long commands (`jobs`), the desktop tools.
@@ -28,9 +37,11 @@ import contextlib
 import json
 import logging
 import os
+import ssl
 import time
 from collections import deque
 from typing import Callable
+from urllib.parse import urlsplit
 
 from .activity import Activity, Approval
 from .session import (ACTIVITY_KEEP, DEFAULT_EFFORT, EFFORT_NAMES, EFFORTS,
@@ -45,8 +56,123 @@ RETRY_MIN_S = 5.0
 RETRY_MAX_S = 120.0
 # A line that held this long was healthy: the next try comes quickly.
 HEALTHY_S = 60.0
+# How long to give the first address (home) and the others (away).
+HOME_TIMEOUT_S = 3.0
+AWAY_TIMEOUT_S = 10.0
+PING_S = 20
 
 
+# ── the two ways to reach the remote ────────────────────────────────────
+class _PipeLink:
+    """The protocol over a command's stdin and stdout."""
+
+    def __init__(self, proc: asyncio.subprocess.Process) -> None:
+        self.proc = proc
+        self.error = ""
+        self._stderr = asyncio.get_running_loop().create_task(self._errors())
+
+    @classmethod
+    async def open(cls, command: list[str]) -> "_PipeLink":
+        proc = await asyncio.create_subprocess_exec(
+            *command, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            limit=MAX_LINE, start_new_session=True)
+        return cls(proc)
+
+    async def _errors(self) -> None:
+        assert self.proc.stderr is not None
+        while line := await self.proc.stderr.readline():
+            text = line.decode(errors="replace").strip()
+            if text:
+                self.error = text
+
+    async def recv(self) -> str | None:
+        assert self.proc.stdout is not None
+        line = await self.proc.stdout.readline()
+        return line.decode() if line else None
+
+    async def send(self, text: str) -> None:
+        assert self.proc.stdin is not None
+        self.proc.stdin.write((text + "\n").encode())
+        await self.proc.stdin.drain()
+
+    async def close(self) -> None:
+        if self.proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                self.proc.terminate()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self.proc.wait(), 3)
+        with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(self._stderr, 1)
+
+
+class _WsLink:
+    """The protocol over a WebSocket with TLS: one message per object."""
+
+    def __init__(self, ws, url: str) -> None:
+        self.ws = ws
+        self.url = url
+        self.error = ""
+
+    @classmethod
+    async def open(cls, endpoints: list[str], tls: dict,
+                   server_name: str) -> "_WsLink":
+        from websockets.asyncio.client import connect
+        from websockets.exceptions import WebSocketException
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_verify_locations(os.path.expanduser(tls["ca"]))
+        ctx.load_cert_chain(os.path.expanduser(tls["cert"]),
+                            os.path.expanduser(tls["key"]))
+        problems = []
+        for i, url in enumerate(endpoints):
+            try:
+                ws = await connect(
+                    url, ssl=ctx, server_hostname=server_name,
+                    open_timeout=HOME_TIMEOUT_S if i == 0 else AWAY_TIMEOUT_S,
+                    max_size=MAX_LINE, compression=None,
+                    ping_interval=PING_S, ping_timeout=PING_S)
+                return cls(ws, url)
+            except (OSError, asyncio.TimeoutError, ssl.SSLError,
+                    WebSocketException) as e:
+                problems.append(f"{urlsplit(url).hostname}: {_why(e)}")
+        raise ConnectionError("; ".join(problems))
+
+    async def recv(self) -> str | None:
+        from websockets.exceptions import ConnectionClosed
+        try:
+            message = await self.ws.recv()
+        except ConnectionClosed as e:
+            rcvd = e.rcvd
+            if rcvd is not None and rcvd.code == 4403:
+                self.error = "the gateway doesn't know this device"
+            elif rcvd is not None and rcvd.reason:
+                self.error = rcvd.reason
+            return None
+        return message if isinstance(message, str) else message.decode()
+
+    async def send(self, text: str) -> None:
+        await self.ws.send(text)
+
+    async def close(self) -> None:
+        with contextlib.suppress(Exception):
+            await self.ws.close()
+
+
+def _why(e: BaseException) -> str:
+    if isinstance(e, asyncio.TimeoutError):
+        return "no answer"
+    if isinstance(e, ConnectionRefusedError):
+        return "refused"
+    if isinstance(e, ssl.SSLCertVerificationError):
+        return "not lilac's certificate"
+    if isinstance(e, OSError) and e.strerror:
+        return e.strerror.lower()
+    return str(e) or type(e).__name__
+
+
+# ── what the call reads ─────────────────────────────────────────────────
 class _NoJobs:
     """No progress bars for a remote agent's commands."""
 
@@ -76,16 +202,27 @@ class RemoteAgent:
     """An agent on another machine, read like the desktop's `Agent`.
 
     A SERVICES entry (it needs the loop for its line), with a `CallHost`
-    and a `CallStatus` of its own and a `CallRouter` watching it.
-    `command` reaches the remote's protocol on stdin and stdout;
-    `accent` is its colour on the call.
+    and a `CallStatus` of its own and a `CallRouter` watching it. Give it
+    `endpoints` and `tls` (or `command`); `accent` is its colour on the
+    call.
     """
 
-    def __init__(self, *, name: str, command: list[str] | tuple[str, ...],
+    def __init__(self, *, name: str,
+                 endpoints: list[str] | None = None,
+                 tls: dict | None = None, server_name: str = "lilac",
+                 command: list[str] | tuple[str, ...] | None = None,
                  accent: str | None = None,
                  workspace: str | None = None) -> None:
+        if bool(endpoints) == bool(command):
+            raise ValueError("give RemoteAgent endpoints (with tls) or a "
+                             "command, not both")
+        if endpoints and not tls:
+            raise ValueError("endpoints need tls: {ca, cert, key}")
         self.name = name
-        self.command = list(command)
+        self.endpoints = list(endpoints or [])
+        self.tls = dict(tls or {})
+        self.server_name = server_name
+        self.command = list(command or [])
         self.accent = accent
         # Where a relative link in a reply would be opened from.
         self.workspace = workspace or os.path.expanduser("~")
@@ -116,9 +253,11 @@ class RemoteAgent:
         self.ringing: str | None = None     # "done" | "ask" | "error"
         self.ring_started = 0.0
         self.connected = False
+        self.via = ""                   # the address the line is on
 
         self._listeners: list[Callable[[str], None]] = []
         self._ask_id: str | None = None
+        self._ring_id = None            # the remote's id of the result rung
         self._segments: list[str] = []
         self._seg_after: list[int] = []
         self._seg_you: list[bool] = []
@@ -130,11 +269,11 @@ class RemoteAgent:
         self._local_turn = False        # started here, not yet confirmed
         self._interrupted = False
         self._task: asyncio.Task | None = None
-        self._proc: asyncio.subprocess.Process | None = None
-        self._writer: asyncio.StreamWriter | None = None
+        self._link = None
+        self._outbox: asyncio.Queue | None = None
         self._wake: asyncio.Event | None = None
         self._stopping = False
-        self._stderr_tail = ""
+        self._why_down = ""
 
     # ── service hooks ───────────────────────────────────────────────────
     def start(self) -> None:
@@ -143,9 +282,10 @@ class RemoteAgent:
 
     def stop(self) -> None:
         self._stopping = True
-        if self._proc is not None and self._proc.returncode is None:
+        if isinstance(self._link, _PipeLink) \
+                and self._link.proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
-                self._proc.terminate()
+                self._link.proc.terminate()
         if self._task is not None:
             self._task.cancel()
 
@@ -168,6 +308,8 @@ class RemoteAgent:
             return
         self.call_open = value
         if value:
+            # Opening shows the last result: that answers a ring.
+            self._answered()
             self.ringing = None
             self.dial()
         elif self.approval is not None:
@@ -213,6 +355,7 @@ class RemoteAgent:
 
     def acknowledge(self) -> None:
         if self.ringing in ("done", "error"):
+            self._answered()
             self.ringing = None
             self._emit()
 
@@ -310,20 +453,25 @@ class RemoteAgent:
                                                         self._seg_you)
                            if s.strip() and not you)
 
-    def _ring(self, why: str) -> None:
+    def _ring(self, why: str, result_id=None) -> None:
         self.ringing = why
         self.ring_started = time.monotonic()
+        if why != "ask":
+            self._ring_id = result_id
         self._emit("ring")
+
+    def _answered(self) -> None:
+        """The user saw the result rung for: tell the remote, so other
+        devices stop ringing for it too."""
+        if self._ring_id is not None:
+            self._send({"type": "seen", "id": self._ring_id})
+            self._ring_id = None
 
     # ── the line ────────────────────────────────────────────────────────
     def _send(self, message: dict) -> bool:
-        writer = self._writer
-        if writer is None or writer.is_closing():
+        if self._outbox is None:
             return False
-        try:
-            writer.write((json.dumps(message) + "\n").encode())
-        except (ConnectionError, RuntimeError):
-            return False
+        self._outbox.put_nowait(json.dumps(message))
         return True
 
     def _poke(self) -> None:
@@ -339,7 +487,11 @@ class RemoteAgent:
                 await self._session()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except ConnectionError as e:
+                self._why_down = str(e)
+                log.info("%s: can't reach it: %s", self.name, e)
+            except Exception as e:
+                self._why_down = str(e)
                 log.exception("%s: the line failed", self.name)
             self._lost()
             if self._stopping:
@@ -356,57 +508,61 @@ class RemoteAgent:
             self._wake.clear()
             pause = min(pause * 2, RETRY_MAX_S)
 
+    async def _open(self):
+        if self.endpoints:
+            link = await _WsLink.open(self.endpoints, self.tls,
+                                      self.server_name)
+            self.via = urlsplit(link.url).hostname or link.url
+            return link
+        link = await _PipeLink.open(self.command)
+        self.via = self.command[0]
+        return link
+
     async def _session(self) -> None:
-        proc = await asyncio.create_subprocess_exec(
-            *self.command, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            limit=MAX_LINE, start_new_session=True)
-        self._proc = proc
-        assert proc.stdin is not None and proc.stdout is not None
-        self._writer = proc.stdin
-        self._stderr_tail = ""
-        stderr = asyncio.get_running_loop().create_task(self._read_stderr(proc))
+        self._why_down = ""
+        link = await self._open()
+        self._link = link
+        outbox: asyncio.Queue = asyncio.Queue()
+        self._outbox = outbox
+
+        async def write() -> None:
+            while True:
+                await link.send(await outbox.get())
+
+        writer = asyncio.get_running_loop().create_task(write())
         try:
             self._send({"type": "hello", "client": CLIENT})
             self._send({"type": "sessions"})
             if self.call_open:
                 self._send({"type": "dial"})
-            while line := await proc.stdout.readline():
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    log.warning("%s: not a protocol line: %r", self.name,
-                                line[:200])
-                    continue
-                if isinstance(event, dict):
+            while (text := await link.recv()) is not None:
+                for line in text.splitlines():
+                    if not line.strip():
+                        continue
                     try:
-                        self._on_event(event)
-                    except Exception:
-                        log.exception("%s: event %r failed", self.name,
-                                      event.get("type"))
+                        event = json.loads(line)
+                    except ValueError:
+                        log.warning("%s: not a protocol message: %r",
+                                    self.name, line[:200])
+                        continue
+                    if isinstance(event, dict):
+                        try:
+                            self._on_event(event)
+                        except Exception:
+                            log.exception("%s: event %r failed", self.name,
+                                          event.get("type"))
+            self._why_down = link.error
         finally:
-            self._writer = None
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.terminate()
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(proc.wait(), 3)
-            with contextlib.suppress(asyncio.TimeoutError,
-                                     asyncio.CancelledError):
-                await asyncio.wait_for(stderr, 1)
-
-    async def _read_stderr(self, proc) -> None:
-        while line := await proc.stderr.readline():
-            text = line.decode(errors="replace").strip()
-            if text:
-                self._stderr_tail = text
-                log.debug("%s: %s", self.name, text)
+            self._outbox = None
+            self._link = None
+            writer.cancel()
+            await link.close()
 
     def _lost(self) -> None:
-        was_connected = self.connected
+        if self.connected:
+            log.info("%s: the line dropped%s", self.name,
+                     f" ({self._why_down})" if self._why_down else "")
         self.connected = False
-        if was_connected:
-            log.info("%s: the line dropped", self.name)
         if self.busy:
             # Its end won't reach us now; the remote keeps working, and
             # the next hello shows where it got to.
@@ -416,7 +572,7 @@ class RemoteAgent:
         if self.ringing == "ask":
             self.ringing = None
         self.phase = "error"
-        why = self._stderr_tail
+        why = self._why_down
         self.error = f"Can't reach {self.name.lower()}" + (f": {why}"
                                                             if why else ".")
         self.hint = None
@@ -458,8 +614,8 @@ class RemoteAgent:
         event = "change"
         if kind == "hello":
             self.connected = True
-            log.info("%s: on the line (protocol %s)", self.name,
-                     ev.get("protocol"))
+            log.info("%s: on the line via %s (protocol %s)", self.name,
+                     self.via, ev.get("protocol"))
             self._apply_state(ev.get("state") or {})
             if self.busy or not self._local_turn:
                 self._show_turn(ev.get("turn") or {})
@@ -468,6 +624,14 @@ class RemoteAgent:
             ask = ev.get("ask")
             if ask:
                 self._on_event({"type": "ask", **ask})
+            unseen = ev.get("unseen")
+            if isinstance(unseen, dict) and not self.busy:
+                # A result that came while the line was down.
+                if self.call_open:
+                    self._send({"type": "seen", "id": unseen.get("id")})
+                elif unseen.get("source") in (None, CLIENT):
+                    self._ring("done" if unseen.get("ok") else "error",
+                               unseen.get("id"))
             if self.queued:                 # said while the line was down
                 if not self.busy:
                     self._begin_turn(self.queued[0])
@@ -547,10 +711,19 @@ class RemoteAgent:
                 self.error = ev.get("error") or "the turn failed"
                 self.hint = ev.get("hint")
             ours = self._turn_source in (None, CLIENT)
-            if not self.call_open and not self._interrupted and ours:
-                self._ring("done" if ev.get("ok") else "error")
+            if self.call_open or self._interrupted:
+                # Seen as it happened, or stopped on purpose.
+                self._send({"type": "seen", "id": ev.get("id")})
+            elif ours:
+                self._ring("done" if ev.get("ok") else "error", ev.get("id"))
             self._turn_source = None
             self._send({"type": "sessions"})
+        elif kind == "seen":
+            # Another device (or this one) showed the result: stop ringing.
+            if self.ringing in ("done", "error") and (
+                    self._ring_id is None or ev.get("id") == self._ring_id):
+                self.ringing = None
+                self._ring_id = None
         elif kind == "notice":
             self.activity.append(Activity("info", str(ev.get("text") or "")))
         elif kind == "turn_view":
