@@ -86,7 +86,9 @@ and Ctrl+T ask with a Qt dialog of the browser's own, Ctrl+M does
 nothing.
 
 Single instance: the running browser also listens at
-`instance_socket_path()`, guarded by an flock on `instance_lock_path()`.
+`instance_socket_path()`, guarded by an flock on `instance_lock_path()`,
+one of each per profile (profiles.py: a named profile's browser is
+another single instance, beside the default one).
 A second invocation sends {"type": "open", "urls": [url, ...]} (an
 empty list asks for a new window) and waits for {"type": "ok"}; a
 request it cannot take is answered {"type": "error", "error": str}.
@@ -132,9 +134,12 @@ focus or changing the workspace; `open` and `tabs` work on any.
                -> {"windows": [{"window": id, "xid": <X window, or null>,
                                 "single": bool, "focused": bool,
                                 "tabs": [TAB, ...]}, ...],
-                   "focused": <the focused window's id, or null>}
+                   "focused": <the focused window's id, or null>,
+                   "headless": bool, "profile": <its name, or null for
+                                                 the default one>}
                `single`: a page's popup or the inspector (one page, takes
                no tabs). `xid` is the window manager's id for the window.
+               `headless`: Flux runs with no screen ("Headless", below).
     open       {"url": str, "window"?: id | "agent", "background"?: bool,
                 "voice"?: str}
                A new tab at the end of that window (a main one), or of
@@ -263,8 +268,24 @@ focus or changing the workspace; `open` and `tabs` work on any.
                read them ("page"; a cross-origin image without CORS it
                may not), else the part of the screen it covers ("screen";
                a selected image is drawn tinted there).
+               Headless, the window is the one named, else the most
+               recently used, never focused, and the result says
+               {"headless": true}; `xid` fails (no X window), and `image`
+               is only ever the selection's (no mouse pointer).
 
-**Frames.** `read` reads the page's frames too (iframes, frames, an
+**Headless.** `--headless` (browser/qt/__main__.py) runs Flux with no
+screen: Qt's offscreen platform, drawn in software. Its windows exist and
+render (screenshots, reads and acting work as on screen), but no one
+sees them: no line to the shell (no `announce`, no top bar, no fallback
+line, no placing; the agent's own window shows at once), no window has
+focus, no window has an X window (`xid` null), the page effects are
+never made, audio is muted, and what would ask the user is answered at
+once: a permission request denied, a page's dialog outside the agent's
+session dismissed (an alert accepted; a confirm, a prompt and the
+question before leaving a page answered no), a file chooser outside an
+upload given nothing, no address dialog, fullscreen refused. Its last
+window closing does not end it (a service's browser waits for the next
+`open`); SIGTERM does. `read` reads the page's frames too (iframes, frames, an
 <object>'s page; same-origin and cross-origin, nested), through Qt's
 QWebEngineFrame (6.8 on; with an older Qt, frames are not read): each
 in its own isolated world, as the page is. A frame's document is named
@@ -548,29 +569,33 @@ from indigoshell.applink import protocol as _link
 from indigoshell.applink.protocol import (  # noqa: F401  (part of this module's API)
     ANNOUNCE, ATTACHED, RESTARTING, SOCKET_ENV, TYPE, WID, decode, encode, message,
     socket_path)
+from indigoshell.browser import profiles
 from indigoshell.core.naming import APP, env
 from indigoshell.core.paths import runtime_dir
 
-KIND = "flux"                   # the app kind Flux announces
+KIND = "flux"                  # the app kind Flux announces
 
 # ── where ───────────────────────────────────────────────────────────────
 INSTANCE_SOCKET_ENV = env("BROWSER_SOCKET")
 
 
-def instance_socket_path() -> str:
-    """Where the running browser takes URLs from later invocations."""
-    return os.environ.get(INSTANCE_SOCKET_ENV) or os.path.join(
+def instance_socket_path(profile: str | None = None) -> str:
+    """Where the running browser takes URLs from later invocations; a
+    named profile's browser (profiles.py) at the same with "-NAME"
+    before ".sock"."""
+    default = os.environ.get(INSTANCE_SOCKET_ENV) or os.path.join(
         runtime_dir(), f"{APP}-browser-{os.getuid()}.sock")
+    return profiles.socket_path(default, profile)
 
 
-def instance_lock_path() -> str:
-    return instance_socket_path() + ".lock"
+def instance_lock_path(profile: str | None = None) -> str:
+    return instance_socket_path(profile) + ".lock"
 
 
-def control_socket_path() -> str:
+def control_socket_path(profile: str | None = None) -> str:
     """Where the running browser takes the agent's requests: the same
     socket (one per browser process)."""
-    return instance_socket_path()
+    return instance_socket_path(profile)
 
 
 # ── names ───────────────────────────────────────────────────────────────

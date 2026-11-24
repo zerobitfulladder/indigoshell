@@ -109,6 +109,13 @@ windows (`release_tab`, `insert_tab`; app.py `move_tab`): a borrowed
 tab's origin is kept in `borrowed`, by tab id, and when the agent's
 window closes it gives those tabs back (app.py `give_back`) before
 anything else.
+
+Headless (the browser's `headless`, protocol.py "Headless"): the window
+is drawn in memory, and nobody sees it. Its line to the shell is off
+(link.py: no announce, no fallback line), the agent's window shows at
+once with no placing, its pages are muted, and what would ask the user
+is answered here at once: a permission request denied, no address
+dialog, fullscreen refused (the page keeps its viewport).
 """
 
 import html
@@ -154,8 +161,15 @@ class ClosedTab:
 
 
 def history_bytes(page) -> QByteArray:
+    """The page's back/forward history, streamed; empty where this
+    PySide cannot stream it (measured on 6.12 only; the tab then comes
+    back at its address alone), so closing a tab never fails over it."""
     data = QByteArray()
-    QDataStream(data, QIODevice.OpenModeFlag.WriteOnly) << page.history()
+    try:
+        QDataStream(data, QIODevice.OpenModeFlag.WriteOnly) << page.history()
+    except (TypeError, NotImplementedError) as e:
+        log.debug("a closed tab's history not kept: %s", e)
+        return QByteArray()
     return data
 
 # The fallback line's look, the top bar's colours. These mirror the
@@ -327,7 +341,7 @@ class Window(QWidget):
 
         # The shell shows the tabs and host in its top bar when one has
         # this window; the line says them when none does.
-        self.link = ShellLink(self.winId, single, self, agent=agent)
+        self.link = ShellLink(self.winId, single, self, agent=agent, off=browser.headless)
         self.link.attached_changed.connect(self.refresh)
         self.link.attached_changed.connect(self._on_attached)
         self.link.down.connect(self._on_shell_down)
@@ -348,6 +362,11 @@ class Window(QWidget):
         or `near`'s (link.py `place`); with no answer within applink's
         PLACE_WAIT_S, shown anyway, where the window manager puts it."""
         if self._place_timer is not None or self.isVisible():
+            return
+        if self.browser.headless:
+            log.info("%s window %d shown (headless: no workspace to place it on)",
+                     "the agent's" if self.agent else "a popup of the agent's", self.id)
+            self.show()                 # nobody sees it: no workspace to choose
             return
         self.ready = False
         self.winId()                    # the native window, made and not mapped
@@ -382,7 +401,7 @@ class Window(QWidget):
                 at: int | None = None) -> Tab:
         tab = Tab(self.profile, self)
         tab.page.watch = self.browser.watch
-        if self.browser.unattended:
+        if self.browser.unattended or self.browser.headless:
             tab.page.setAudioMuted(True)
         at = self._insert(tab, at)
         if url is not None:
@@ -524,7 +543,8 @@ class Window(QWidget):
         entry = closed.pop()
         here = entry.window is self and shiboken6.isValid(self)
         tab = self.add_tab(at=min(entry.index, len(self.tabs)) if here else None)
-        QDataStream(entry.history, QIODevice.OpenModeFlag.ReadOnly) >> tab.page.history()
+        if not entry.history.isEmpty():
+            QDataStream(entry.history, QIODevice.OpenModeFlag.ReadOnly) >> tab.page.history()
         if tab.page.history().count() == 0:
             tab.page.load(entry.url)        # no history to give back: the address
         log.info("reopened a closed tab at %d", self.tabs.index(tab))
@@ -753,8 +773,9 @@ class Window(QWidget):
 
     # ── the address dialog (when no shell asks for it) ──────────────────
     def prompt_address(self, where: str, text: str) -> None:
-        if self.browser.unattended:
-            log.debug("unattended: no address dialog")
+        if self.browser.unattended or self.browser.headless:
+            log.debug("%s: no address dialog",
+                      "headless" if self.browser.headless else "unattended")
             return
         if self.prompt is not None and shiboken6.isValid(self.prompt):
             self.prompt.raise_()
@@ -939,6 +960,9 @@ class Window(QWidget):
         return self.browser.main_window()
 
     def on_fullscreen(self, tab: Tab, request) -> None:
+        if self.browser.headless:
+            request.reject()            # no screen to fill; the page keeps its viewport
+            return
         request.accept()
         if request.toggleOn():
             if tab is not self.current_tab() and tab in self.tabs:
@@ -965,8 +989,10 @@ class Window(QWidget):
     def on_permission(self, tab: Tab, permission) -> None:
         what = permission.permissionType().name
         origin = permission.origin().toString()
-        if self.browser.unattended:
-            log.info("permission denied (unattended run): %s %s", origin, what)
+        if self.browser.unattended or self.browser.headless:
+            log.info("permission denied (%s): %s %s",
+                     "headless: no one to ask" if self.browser.headless else "unattended run",
+                     origin, what)
             permission.deny()
             return
         # Temporary: a plain Qt question until the shell asks for it. The

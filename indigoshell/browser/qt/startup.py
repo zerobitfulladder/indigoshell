@@ -1,8 +1,29 @@
-"""What has to be settled before the QApplication exists: Chromium's
-command line, and where the Widevine module is.
+"""What has to be settled before the QApplication exists: the platform,
+Chromium's command line, and where the Widevine module is.
 
-Pure Python. QtWebEngine reads `QTWEBENGINE_CHROMIUM_FLAGS` once, when
-the first web engine object is made, so all of this runs first.
+Pure Python. Qt reads its platform's variables when the application is
+made and QtWebEngine reads `QTWEBENGINE_CHROMIUM_FLAGS` once, when the
+first web engine object is made, so all of this runs first.
+
+The platform (`settle_platform`, from __main__'s flags):
+
+- `--headless`: no screen at all (a Raspberry Pi in a cupboard). Qt's
+  offscreen platform (`QT_QPA_PLATFORM=offscreen`, whatever the
+  environment said), Qt Quick's software scene graph and Chromium
+  without its GPU process, as below: windows exist and are drawn in
+  memory, and `QWidget.grab()` gives their pixels. Nothing in it needs
+  OpenGL, X or a GPU, so it starts the same on a machine that has none.
+- `--software-gl`: a window on a screen, drawn without the GPU: no
+  OpenGL from the X server at all (`QT_XCB_GL_INTEGRATION=none`), Qt
+  Quick's software scene graph (`QT_QUICK_BACKEND=software`) and
+  Chromium's `--disable-gpu`. For a window shown over `ssh -X`, where
+  the X server is another machine's and GLX either fails or is not
+  offered. Qt finds by itself that MIT-SHM does not reach a remote X
+  server and does without it.
+
+Either one leaves a variable the environment already set as it is,
+except the headless platform, and turns off the page effects (they
+need a GPU scene graph).
 
 Flags added to whatever the environment already has:
 
@@ -46,6 +67,7 @@ WIDEVINE_ENV = env("BROWSER_WIDEVINE")
 WIDEVINE_SO = "libwidevinecdm.so"
 DARK = "--blink-settings=preferredColorScheme=0"
 NO_SMOOTH = "--disable-smooth-scrolling"
+NO_GPU = "--disable-gpu"
 
 
 def firefox_roots() -> list[Path]:
@@ -128,10 +150,22 @@ def resolve_widevine(own_dir: Path | None = None,
     return copied
 
 
-def chromium_flags(existing: str, widevine: Path | None) -> str:
-    """`existing` with ours appended; a widevine path already there wins."""
+def settle_platform(*, headless: bool = False, software: bool = False) -> None:
+    """The platform's variables for `--headless` or `--software-gl` (the
+    module docstring); nothing for neither."""
+    if headless:
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    elif software:
+        os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
+    if headless or software:
+        os.environ.setdefault("QT_QUICK_BACKEND", "software")
+
+
+def chromium_flags(existing: str, widevine: Path | None, *, software: bool = False) -> str:
+    """`existing` with ours appended; a widevine path already there wins.
+    `software`: Chromium without its GPU process too."""
     flags = existing.split()
-    for flag in (DARK, NO_SMOOTH):
+    for flag in (DARK, NO_SMOOTH, *((NO_GPU,) if software else ())):
         if flag not in flags:
             flags.append(flag)
     if widevine is not None and not any(f.startswith("--widevine-path") for f in flags):
@@ -139,9 +173,10 @@ def chromium_flags(existing: str, widevine: Path | None) -> str:
     return " ".join(flags)
 
 
-def apply_flags() -> Path | None:
-    """Settle Widevine and write the flags into the environment. Returns
-    the Widevine module in use."""
+def apply_flags(*, software: bool = False) -> Path | None:
+    """Settle Widevine and write the flags into the environment (with
+    `software`, headless or --software-gl, no GPU). Returns the Widevine
+    module in use."""
     existing = os.environ.get(FLAGS_ENV, "")
     widevine = None
     if "--widevine-path" not in existing:
@@ -149,5 +184,5 @@ def apply_flags() -> Path | None:
         if widevine is None:
             log.info("no Widevine module: protected streams (Netflix and the like) "
                      "will not play")
-    os.environ[FLAGS_ENV] = chromium_flags(existing, widevine)
+    os.environ[FLAGS_ENV] = chromium_flags(existing, widevine, software=software)
     return widevine

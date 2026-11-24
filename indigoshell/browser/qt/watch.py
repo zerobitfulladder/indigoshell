@@ -46,6 +46,10 @@ agent's session there, or goes on with it (`begin`). While it drives:
   the paths an `upload` armed for that page, once (`arm_files`), and
   nothing otherwise while the agent drives the tab; outside a session it
   is the user's, Qt's own dialog.
+- Headless (protocol.py "Headless"), outside a session there is no user
+  to give either to: a dialog is answered at once (`UNSEEN`: an alert
+  accepted, the question before leaving a page answered "leave", a
+  confirm and a prompt answered no), and a file chooser gets nothing.
 
 Ends: QUIET_S after the last request on the tab ended (requests that
 read keep it going but never start one; a held dialog holds the clock),
@@ -103,6 +107,12 @@ INPUT = frozenset({
 # What the user does to a tab: the clock of a pause starts again.
 DOING = frozenset({T.KeyPress, T.MouseButtonPress, T.MouseButtonDblClick, T.Wheel,
                    T.InputMethod, T.TouchBegin})
+
+# Headless, a dialog outside the agent's session: answered at once, as
+# nobody could. Leaving is let through (a page that asks must not keep
+# the agent from going on); what a page asks yes or no to is answered no.
+UNSEEN = {"alert": (True, ""), "beforeunload": (True, ""), "confirm": (False, ""),
+          "prompt": (False, "")}
 
 
 class Held:
@@ -596,9 +606,14 @@ class Watch(QObject):
     def hold_dialog(self, page, kind: str, message: str, default: str) -> tuple | None:
         """The page's dialog, held for the agent while it drives the tab:
         (accepted, text) once answered; None when it is the user's (no
-        session, or given to them meanwhile)."""
+        session, or given to them meanwhile). Headless, with no session,
+        answered at once (UNSEEN)."""
         s = self.sessions.get(page.id)
         if s is None or s.state != "driving" or s.dialog is not None:
+            if self.browser.headless:
+                log.info("tab %d: %s %s dialog answered at once (headless, no one to ask)",
+                         page.id, "an" if kind[0] in "aeiou" else "a", kind)
+                return UNSEEN.get(kind, (False, ""))
             return None
         held = Held(kind, message, default)
         s.dialog = held
@@ -676,7 +691,7 @@ class Watch(QObject):
         otherwise (refused, said in the next answer; Chromium then empties
         the field, as it does for the user's Cancel: Qt names no files the
         field held to give back); None when it is the user's (Qt's own
-        dialog)."""
+        dialog), and nothing headless, where there is no user to ask."""
         paths = self._armed.pop(page.id, None)
         if paths is not None:
             if mode not in ("FileSelectOpen", "FileSelectOpenMultiple"):
@@ -694,6 +709,10 @@ class Watch(QObject):
             return []
         s = self.sessions.get(page.id)
         if s is None or s.state != "driving":
+            if self.browser.headless:
+                log.info("tab %d: a file chooser got nothing (headless, no one to ask)",
+                         page.id)
+                return []
             return None
         s.notes.append(protocol.FILES_REFUSED)
         log.info("tab %d: a file chooser refused (the agent drives it)", page.id)

@@ -24,6 +24,11 @@ after the announce, on whichever connection comes first); `placed`
 carries the answer, a workspace index or None. The window waits for it
 at most applink's PLACE_WAIT_S and then shows anyway: no shell, a shell
 restarting, or one too old to answer.
+
+Off (`off`: a headless browser, protocol.py "Headless"): no line at all.
+It never connects, never says the window's state itself (`fallback`
+stays false: no line over the page, which would move it), and is never
+asked to place a window (window.py shows it at once).
 """
 
 import logging
@@ -49,8 +54,10 @@ class ShellLink(QObject):
     down = Signal()             # a connection attempt failed, or the line dropped
     placed = Signal(object)     # the answer to `place`: a workspace index, or None
 
-    def __init__(self, wid_of, single: bool, parent=None, agent: str | None = None) -> None:
+    def __init__(self, wid_of, single: bool, parent=None, agent: str | None = None,
+                 off: bool = False) -> None:
         super().__init__(parent)
+        self.off = off              # headless: no line to a shell, ever
         self.wid_of = wid_of        # asked at connect time, once the window exists
         self.single = single
         self.agent = agent          # the voice whose own window this is (its announce says)
@@ -79,7 +86,7 @@ class ShellLink(QObject):
         self.away.timeout.connect(self._away_too_long)
 
     def start(self) -> None:
-        if not self._started:
+        if not self._started and not self.off:
             self._started = True
             self._update_fallback()
             self._connect()
@@ -118,6 +125,8 @@ class ShellLink(QObject):
         """Ask the shell to put the window, not yet shown, on a workspace
         (`with_wid`'s, else an empty one): `placed` answers. Starts the
         line when it has not started (the window is not shown yet)."""
+        if self.off:
+            return
         self._place = link_protocol.place(with_wid)
         if self.connected():
             self._send(self._place)

@@ -33,6 +33,9 @@ The browser is the only writer, and replaces the file whole (a temporary
 file renamed over it). It keeps whatever else the file holds (entries it
 cannot use, keys it does not know) when it writes, and it does not write
 over a file it cannot parse: a typo in a hand edit is reported, not lost.
+
+Both are the default profile's; a named profile (profiles.py) has its
+own of each beside them, which the shell's launcher does not read.
 """
 
 import ipaddress
@@ -47,7 +50,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote_plus, urlsplit, urlunsplit
 
-from indigoshell.core.paths import config_dir, data_dir
+from indigoshell.browser import profiles
 from indigoshell.fuzzy import fold
 
 log = logging.getLogger(__name__)
@@ -174,8 +177,10 @@ _FRECENCY_SQL = ("visits * CASE WHEN :now - last < 3600 THEN 4.0 "
 
 
 # ── history ─────────────────────────────────────────────────────────────
-def history_path() -> Path:
-    return Path(data_dir()) / "browser-history.sqlite"
+def history_path(profile: str | None = None) -> Path:
+    """The default profile's history; a named profile's (profiles.py)
+    beside it."""
+    return Path(profiles.history_path(profile))
 
 
 _SCHEMA = """
@@ -407,8 +412,10 @@ def _like(ch: str) -> str:
 
 
 # ── bookmarks ───────────────────────────────────────────────────────────
-def bookmarks_path() -> Path:
-    return Path(config_dir()) / "browser" / "bookmarks.json"
+def bookmarks_path(profile: str | None = None) -> Path:
+    """The default profile's bookmarks; a named profile's (profiles.py)
+    beside them."""
+    return Path(profiles.bookmarks_path(profile))
 
 
 class BookmarksBroken(Exception):

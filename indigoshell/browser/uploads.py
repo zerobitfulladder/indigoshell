@@ -28,8 +28,9 @@ The places (`places()`), each under the home:
 and, where the XDG directories are set elsewhere, the same under them
 ($XDG_DATA_HOME/keyrings, $XDG_DATA_HOME/rbw, $XDG_CACHE_HOME/rbw,
 $XDG_CONFIG_HOME/rbw, $XDG_CONFIG_HOME/mozilla); the shell's own data
-directory (Flux's profile with its cookies, its history, everything
-else the shell keeps there), Flux's cache, and the shell's connections
+directory (Flux's profiles with their cookies, their history,
+everything else the shell keeps there), Flux's caches (every profile's,
+browser/profiles.py), and the shell's connections
 (`<config_dir>/connections`).
 
 The names (`secret_name`): `id_*` not ending in `.pub` (id_rsa,
@@ -39,6 +40,7 @@ keeps a sign-in), in any case.
 Everything else under the home, and under /tmp, may go.
 """
 
+import glob
 import os
 import stat
 
@@ -88,6 +90,9 @@ def places(home_dir: str | None = None) -> list[tuple[str, str]]:
     out += [(data_dir(), "the shell's data (Flux's profile, cookies and history)"),
             (os.path.join(cache_dir(), "browser"), "Flux's cache"),
             (os.path.join(config_dir(), "connections"), "the shell's connections")]
+    # The caches of Flux's other profiles (profiles.py: browser-NAME).
+    out += [(path, "Flux's cache") for path in sorted(glob.glob(
+        os.path.join(glob.escape(cache_dir()), "browser-*")))]
     return out
 
 

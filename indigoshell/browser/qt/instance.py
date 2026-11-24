@@ -6,7 +6,8 @@ Qt or Chromium.
 
 The running browser holds an flock on `protocol.instance_lock_path()`
 for its whole life and listens on `protocol.instance_socket_path()`
-(control.ControlServer, which also takes the agent's requests). Between
+(control.ControlServer, which also takes the agent's requests), each
+its profile's (browser/profiles.py: one browser per profile). Between
 taking the lock and listening it spends a second or so starting
 QtWebEngine; a hand-off made meanwhile keeps trying until it is
 listening.
@@ -26,11 +27,11 @@ class HandoffFailed(RuntimeError):
     pass
 
 
-def try_lock() -> int | None:
-    """The instance lock's fd if we are now the browser, None if another
-    process is. The fd stays open for the process's life (it is not
-    inherited: Python opens files close-on-exec)."""
-    path = protocol.instance_lock_path()
+def try_lock(profile: str | None = None) -> int | None:
+    """The instance lock's fd if we are now `profile`'s browser, None if
+    another process is. The fd stays open for the process's life (it is
+    not inherited: Python opens files close-on-exec)."""
+    path = protocol.instance_lock_path(profile)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -43,11 +44,11 @@ def try_lock() -> int | None:
     return fd
 
 
-def _send(urls: list[str], timeout: float) -> dict:
+def _send(urls: list[str], timeout: float, profile: str | None = None) -> dict:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     try:
-        s.connect(protocol.instance_socket_path())
+        s.connect(protocol.instance_socket_path(profile))
         s.sendall(protocol.encode(protocol.open_urls(urls)))
         data = b""
         while b"\n" not in data:
@@ -60,18 +61,19 @@ def _send(urls: list[str], timeout: float) -> dict:
     return protocol.decode(data.split(b"\n", 1)[0]) or {}
 
 
-def claim_or_hand_off(urls: list[str], timeout: float = HANDOFF_TIMEOUT) -> int | None:
-    """Become the browser (returns the lock fd), or give `urls` to the one
-    running (returns None). Raises HandoffFailed if neither works out
-    within `timeout`: a browser holds the lock but never answers."""
+def claim_or_hand_off(urls: list[str], timeout: float = HANDOFF_TIMEOUT, *,
+                      profile: str | None = None) -> int | None:
+    """Become `profile`'s browser (returns the lock fd), or give `urls` to
+    the one running (returns None). Raises HandoffFailed if neither works
+    out within `timeout`: a browser holds the lock but never answers."""
     deadline = time.monotonic() + timeout
     last = None
     while True:
-        fd = try_lock()
+        fd = try_lock(profile)
         if fd is not None:
             return fd
         try:
-            reply = _send(urls, timeout=max(0.5, deadline - time.monotonic()))
+            reply = _send(urls, timeout=max(0.5, deadline - time.monotonic()), profile=profile)
             if reply.get(protocol.TYPE) == protocol.OK:
                 return None
             last = f"answered {reply!r}"

@@ -13,7 +13,8 @@
    and tooltips stay quick to show.
 3. The profile, the per-site identity, the history and bookmarks
    (browser/places.py), the control socket (control.py: later
-   invocations' URLs, and the agent's requests).
+   invocations' URLs, and the agent's requests), each the named
+   profile's when there is one (browser/profiles.py).
 4. The windows for the URLs given; none at all with `no_window` (the
    agent's start, browser/control.py `ensure_running`: its first
    request opens one).
@@ -37,11 +38,17 @@ folder, and recorded for the agent (`download_list`, newest first, the
 last protocol.DOWNLOADS_KEPT of this run) with the tab that started
 each.
 
+Headless (`headless`, protocol.py "Headless"; startup.py settled the
+platform): every window and page as on screen, drawn in memory, and
+what needs a screen or a person degrades (window.py, watch.py,
+control.py say how). The page effects are off, as with --software-gl.
+
 The end: Ctrl+C or SIGTERM quits the event loop, and so does the last
-window closing; the log says which (logs.py) before every window (and
-so every page) is deleted, deferred deletions flushed, and only then
-the profile. The other order makes Qt warn that the profile was
-released under a live page.
+window closing (not headless: a service waits for its next window); the
+log says which (logs.py) before every window (and so every page) is
+deleted, deferred deletions flushed, and only then the profile. The
+other order makes Qt warn that the profile was released under a live
+page.
 """
 
 import logging
@@ -61,7 +68,7 @@ from PySide6.QtWidgets import QApplication
 from indigoshell.browser import places, protocol
 from indigoshell.core.naming import APP
 
-from . import logs, startup
+from . import effects, logs, startup
 from .bookmarks import Bookmarks
 from .control import ControlServer
 from .identity import Identity
@@ -132,14 +139,16 @@ class SignalWake:
 
 # ── the process-wide state ──────────────────────────────────────────────
 class Browser(QObject):
-    def __init__(self, profile, *, unattended: bool = False,
-                 sites: Path | None = None) -> None:
+    def __init__(self, profile, *, unattended: bool = False, headless: bool = False,
+                 name: str | None = None, sites: Path | None = None) -> None:
         super().__init__()
-        self.profile = profile
+        self.profile = profile                  # the QWebEngineProfile
+        self.profile_name = name                # browser/profiles.py; None: the default one
         self.unattended = unattended
+        self.headless = headless                # no screen (protocol.py, "Headless")
         self.identity = Identity(profile, sites)
-        self.history = places.History()
-        self.bookmarks = Bookmarks(self)
+        self.history = places.History(places.history_path(name))
+        self.bookmarks = Bookmarks(self, places.bookmarks_path(name))
         self.bookmarks.changed.connect(self._bookmarks_changed)
         self.watch = Watch(self)                # the agent driving tabs (watch.py)
         self.windows: list[Window] = []         # open ones, most recently used first
@@ -153,8 +162,9 @@ class Browser(QObject):
         profile.downloadRequested.connect(self.on_download)
 
     def listen(self, path: str | None = None) -> None:
-        """The control socket: hand-offs and the agent's requests."""
-        self.server = ControlServer(self, path)
+        """The control socket: hand-offs and the agent's requests (the
+        profile's socket unless `path`)."""
+        self.server = ControlServer(self, path or protocol.control_socket_path(self.profile_name))
 
     # ── windows ─────────────────────────────────────────────────────────
     def new_window(self, *, single: bool = False, dialog: bool = False, agent: str | None = None,
@@ -307,7 +317,7 @@ class Browser(QObject):
         for i, url in enumerate(urls):
             window.add_tab(to_url(url), background=i > 0)
         window.show()
-        if not self.unattended:         # its window refuses focus on purpose
+        if not (self.unattended or self.headless):  # refuses focus on purpose; no screen
             window.raise_()
             window.activateWindow()
         return window
@@ -446,16 +456,23 @@ class Browser(QObject):
 
 
 def main(urls: list[str], *, unattended: bool = False, lock: int | None = None,
-         no_window: bool = False) -> int:
-    log.info("starting: pid %d, Qt %s%s%s", os.getpid(), qVersion(),
+         no_window: bool = False, headless: bool = False, software: bool = False,
+         profile: str | None = None) -> int:
+    log.info("starting: pid %d, Qt %s%s%s%s%s", os.getpid(), qVersion(),
+             f", profile {profile}" if profile else "",
+             ", headless" if headless else ", drawn in software" if software else "",
              ", unattended" if unattended else "",
              ", no window" if no_window and not urls else "")
-    widevine = startup.apply_flags()
+    widevine = startup.apply_flags(software=headless or software)
     app = make_application()
-    profile = make_profile()
-    log.info("profile in %s%s", profile.persistentStoragePath(),
+    if headless:
+        app.setQuitOnLastWindowClosed(False)    # a service: SIGTERM ends it
+    if headless or software:
+        effects.turn_off("drawn in software", quiet=True)
+    web_profile = make_profile(profile)
+    log.info("profile in %s%s", web_profile.persistentStoragePath(),
              f"; Widevine {widevine}" if widevine else "")
-    browser = Browser(profile, unattended=unattended)
+    browser = Browser(web_profile, unattended=unattended, headless=headless, name=profile)
     browser.listen()
     if urls or not no_window:
         browser.open_urls(urls)
@@ -472,7 +489,7 @@ def main(urls: list[str], *, unattended: bool = False, lock: int | None = None,
     log.info("ending: %s", why)
     browser.shutdown()
     shiboken6.delete(browser)
-    shiboken6.delete(profile)
+    shiboken6.delete(web_profile)
     del wake
     log.info("ended cleanly (exit code %d)", code)
     return code

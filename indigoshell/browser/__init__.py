@@ -34,15 +34,24 @@ own, so it is usable alone.
 `places.py` is the other module both halves use: what a typed line
 means, the history (SQLite in the data dir, written by the browser,
 read by the launcher) and the bookmarks (bookmarks.json in the config
-dir, likewise).
+dir, likewise). `profiles.py` names a profile's places: the default
+one's, and those of a Flux run with `--profile NAME` beside it.
+
+Headless (`--headless`, protocol.py "Headless"): Flux with no screen,
+for a machine with no display (a Raspberry Pi lending the agent its
+own Flux): drawn in memory, no line to the shell, nothing that asks the
+user; the control socket works as on screen.
 
 The agent's hands. The browser's single-instance socket is also its
 control socket (`protocol.py` has every request; `qt/control.py` the
 browser's side): the hub's agent lists, opens, switches, reads and
 screenshots tabs through it, with `control.py` as the client (pure
 asyncio; it starts the browser when none runs) and `hands.py` as the
-tools the laptop lends (`browser_hands()`). `control.look()` is the
-call's: what the user is looking at in the browser, as content blocks.
+tools the laptop lends (`browser_hands()`; another machine lends its
+own Flux's the same way, `browser_hands(profile=..., headless=True)`,
+with PySide6 and none of the shell's own dependencies there).
+`control.look()` is the call's: what the user is looking at in the
+browser, as content blocks.
 The agent also has a Flux window of its own, placed by the shell on a
 workspace the user is not looking at, where it borrows the user's tabs
 and returns them (protocol.py, "Alone"); it shows the user local files,
@@ -51,9 +60,11 @@ lists.
 
 The two halves must stay apart: nothing under `browser/qt/` imports
 xcffib, skia or a shell module that does (only the pure ones: `core/`'s,
-`fuzzy`, `applink.protocol`, and `protocol`, `places`, `uploads` and
-`desktop` here), and nothing the daemon imports pulls in PySide6: `context.py`
-takes only `protocol` and `places` from this package, `control.py` only
-`protocol` (and `desktop` and `services.proc` to start the browser),
-and `hands.py` `control`, `protocol` and the agent's `hands`.
+`fuzzy`, `applink.protocol`, and `protocol`, `places`, `profiles`,
+`uploads` and `desktop` here), and nothing the daemon imports pulls in
+PySide6: `context.py` takes only `protocol` and `places` from this
+package, `control.py` only `protocol` and `profiles` (and `desktop` and
+`services.proc` to start the browser), and `hands.py` `control`,
+`protocol` and `profiles`, and the agent's `hands` only when
+`browser_hands()` is called.
 """

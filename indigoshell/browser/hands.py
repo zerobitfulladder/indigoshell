@@ -5,6 +5,13 @@
 control socket (control.py; protocol.py has the requests) and returns
 content blocks.
 
+Another machine lends them the same way, for a Flux of its own:
+`browser_hands(profile="pi", headless=True)` talks to the browser of the
+profile "pi" (profiles.py: its own socket; browser_open starts it,
+headless where there is no display), and says so in the descriptions:
+headless, no one sees its windows, so nothing in them is about the
+user's screen, focus or workspaces. The tool shapes are the same.
+
     browser_tabs        the windows and tabs, with their ids
     browser_open        an address in a new tab (Flux started if need be),
                         waited for
@@ -62,14 +69,29 @@ refs), that full-page tiles scroll the page and how their offsets map,
 and what the JavaScript hand's guard keeps out and what it does not (it
 is no sandbox: the code acts as the page, signed in as the user).
 
-Daemon side: no PySide6, nothing from browser/qt.
+Daemon side: no PySide6, nothing from browser/qt. Nor the agent
+package at import time, nor anything of the shell's beyond the pure
+modules (control.py, protocol.py, profiles.py, core's naming and paths):
+a machine with none of xcffib, skia, dbus-fast or psutil imports this
+(a Raspberry Pi's device process). The hands are made of the agent's
+`Hand` and raise its `HandError` (agent/hands.py), imported when
+`browser_hands()` is called; a caller that has its own (or cannot import
+the agent package there) gives them: `browser_hands(hand=..., error=...)`.
+Inside, the hands raise this module's HandError, which the lent tool
+turns into the given one.
 """
 
-import dataclasses
+from __future__ import annotations
 
-from indigoshell.agent.hands import Call, Hand, HandError, text_block
-from indigoshell.browser import control, protocol
+import contextvars
+import dataclasses
+from typing import TYPE_CHECKING
+
+from indigoshell.browser import control, profiles, protocol
 from indigoshell.browser.control import ControlError, NotRunning
+
+if TYPE_CHECKING:
+    from indigoshell.agent.hands import Call
 
 LOAD_S = 30.0               # what open and go wait for the page by default
 SLOW_S = 120.0              # how long the hub waits for the slow hands
@@ -109,6 +131,65 @@ UPLOAD_REFUSED = ("Files from secret places are refused: ~/.ssh, ~/.gnupg, the k
                   "go.")
 
 
+@dataclasses.dataclass(frozen=True)
+class _Words:
+    """What the descriptions say that depends on whether a screen shows
+    Flux: the laptop's Flux, or a headless one (`HEADLESS`)."""
+    flux: str = FLUX
+    windows: str = ("most recently used first; which one has the user's focus; the X window "
+                    "id that laptop_windows and laptop_focus use")
+    watched: str = WATCHED
+    alone: str = ALONE
+    agent_window: str = ("your own window, made the first time on an empty workspace the user "
+                         "is not looking at")
+    look: str = ("What the user is looking at in Flux now: the window with their focus (or the "
+                 "one that had it last), its current tab's address and title, and the text they "
+                 "have selected there. `screenshot`: true adds the tab as shown; `image`: true "
+                 "adds the image in their selection, or else under the mouse pointer. Changes "
+                 "nothing the user sees.")
+    switch: str = (", but never raises the window, moves the focus or changes the user's "
+                   "workspace")
+    here: str = "on this laptop"
+    borrow_made: str = "(made the first time, on an empty workspace the user is not looking at)"
+    borrow_away: str = ("While it is away it is gone from the user's window: browser_return it "
+                        "as soon as you are done. Never switch the user's workspace to look at "
+                        "it.")
+    show: str = ("Shows the user a local file you made: an HTML report (with the images and "
+                 "stylesheets it links beside it), a PDF or an image, opened as a new tab in the "
+                 "user's own window (the one they used last), as its current tab, so they see it "
+                 "when they look at Flux; the window is not raised or focused and their "
+                 "workspace stays.")
+    unseen: str = ""
+
+
+HEADLESS = _Words(
+    flux=("Flux is the user's own web browser, here running headless (no screen: nobody sees "
+          "its windows), signed in to their accounts as them."),
+    windows="most recently used first; headless, none has focus or an X window",
+    watched=("Flux marks the tab as yours while you act, until you release it (or 10 s after "
+             "your last request on it); headless, nobody watches it or takes it over."),
+    alone=("Window \"agent\" is a Flux window of your own, to keep what is yours to do apart "
+           "from the other windows' tabs; headless, no window is on any screen, so there is no "
+           "view of the user's to keep it from."),
+    agent_window="your own window, made the first time",
+    switch="",
+    look=("Headless, nobody looks at Flux: this gives its most recently used window's current "
+          "tab, its address and title, and the text selected there. `screenshot`: true adds the "
+          "tab as drawn; `image`: true adds the image in the selection (there is no mouse "
+          "pointer). Changes nothing."),
+    here="on this machine",
+    borrow_made="(made the first time)",
+    borrow_away=("While it is away it is gone from its window: browser_return it as soon as you "
+                 "are done."),
+    show=("Opens a local file you made (an HTML report with the images and stylesheets it "
+          "links beside it, a PDF or an image) as a new tab of the most recently used window, "
+          "as its current tab; headless, nobody sees it there, but you can read and screenshot "
+          "it."),
+    unseen=(" Headless, a dialog a page opens while you are not acting on it is answered at once "
+            "(an alert accepted, a confirm or a prompt answered no): nobody could see it."),
+)
+
+
 def _schema(properties: dict, required: tuple = ()) -> dict:
     return {"type": "object", "properties": properties, "required": list(required),
             "additionalProperties": False}
@@ -125,13 +206,48 @@ WAIT_S = {"type": "number", "minimum": 0, "maximum": SLOW_S,
 STRINGS = {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}
 
 
-def _hand(name: str, description: str, run, schema: dict,
-          timeout: float | None = None) -> Hand:
-    """A Hand; its `timeout` only where the dataclass has one."""
+class HandError(Exception):
+    """A hand that could not do its job: its words go to the agent (as
+    the `error` browser_hands was given, the agent's HandError)."""
+
+
+def text_block(value: str) -> dict:
+    return {"type": "text", "text": value}
+
+
+@dataclasses.dataclass(frozen=True)
+class _Target:
+    """Which Flux a set of hands drives."""
+    profile: str | None = None
+    headless: bool = False
+
+
+# The Flux the running hand is for: set by the tool `browser_hands` lent.
+_target: contextvars.ContextVar[_Target] = contextvars.ContextVar("flux", default=_Target())
+
+
+def _lend(kit: tuple, target: _Target, name: str, description: str, run, schema: dict,
+          timeout: float | None = None):
+    """A `Hand` of the kit's (its `timeout` only where the class has
+    one) whose run drives `target` and raises the kit's HandError."""
+    hand, error = kit
+
+    async def lent(call):
+        token = _target.set(target)
+        try:
+            return await run(call)
+        except HandError as e:
+            if error is HandError:
+                raise
+            raise error(str(e)) from None
+        finally:
+            _target.reset(token)
     kw = {}
-    if timeout is not None and "timeout" in {f.name for f in dataclasses.fields(Hand)}:
+    fields = ({f.name for f in dataclasses.fields(hand)} if dataclasses.is_dataclass(hand)
+              else {"timeout"})
+    if timeout is not None and "timeout" in fields:
         kw["timeout"] = timeout
-    return Hand(name, description, run, schema, **kw)
+    return hand(name, description, lent, schema, **kw)
 
 
 def _within(call: Call) -> float:
@@ -148,9 +264,16 @@ def _tab(call: Call) -> int:
     return value
 
 
+async def _connection(start: bool = False) -> control.Control:
+    """The kept connection to the Flux the hand is for (NotRunning)."""
+    target = _target.get()
+    return await control.shared(start=start, profile=target.profile,
+                                headless=True if target.headless else None)
+
+
 async def _flux(start: bool = False) -> control.Control:
     try:
-        return await control.shared(start=start)
+        return await _connection(start)
     except NotRunning as e:
         if start:
             raise HandError(f"Flux did not start: {e}") from None
@@ -187,22 +310,27 @@ def _seconds(call: Call, key: str, default: float, top: float) -> float:
 # ── the hands ───────────────────────────────────────────────────────────
 async def _tabs(call: Call) -> list[dict]:
     try:
-        flux = await control.shared(start=False)
+        flux = await _connection()
     except NotRunning:
         return [text_block("Flux is not running: no windows. browser_open starts it.")]
     try:
-        windows = await flux.tabs(within=_within(call))
+        result = await flux.request("tabs", within=_within(call))
     except ControlError as e:
         raise HandError(str(e)) from None
+    windows = [control.WindowInfo.of(w) for w in result.get("windows") or ()]
+    headless = bool(result.get("headless"))
+    running = "Flux is running headless (no screen)" if headless else "Flux is running"
     if not windows:
-        return [text_block("Flux is running with no windows. browser_open opens one.")]
-    lines = [f"Flux: {len(windows)} window(s), most recently used first. (Titles are "
+        return [text_block(f"{running} with no windows. browser_open opens one.")]
+    lines = [f"Flux{' (headless: no screen, nobody sees it)' if headless else ''}: "
+             f"{len(windows)} window(s), most recently used first. (Titles are "
              "the sites' own words.)"]
     for w in windows:
         about = []
         if w.agent:
-            about.append(f"{protocol.voice_name(w.agent)}'s own window, on a workspace of its "
-                         "own" + (": yours" if w.agent == protocol.voice_id(_voice(call)) else ""))
+            about.append(f"{protocol.voice_name(w.agent)}'s own window"
+                         + ("" if headless else ", on a workspace of its own")
+                         + (": yours" if w.agent == protocol.voice_id(_voice(call)) else ""))
         if w.focused:
             about.append("has the user's focus")
         if w.single:
@@ -459,7 +587,7 @@ def _tiles(shot: dict) -> list[dict]:
 
 async def _look(call: Call) -> list[dict]:
     try:
-        flux = await control.shared(start=False)
+        flux = await _connection()
     except NotRunning:
         return [text_block("Flux is not running: the user is not looking at it.")]
     try:
@@ -469,7 +597,8 @@ async def _look(call: Call) -> list[dict]:
         raise HandError(str(e)) from None
     blocks = control.look_blocks(result)
     if call.args.get("image") and not result.get("image"):
-        blocks.append(text_block("No image in the selection or under the mouse pointer."))
+        blocks.append(text_block("No image in the selection." if result.get("headless") else
+                                 "No image in the selection or under the mouse pointer."))
     return blocks
 
 
@@ -784,7 +913,7 @@ async def _downloads(call: Call) -> list[dict]:
     if wanted is not None and not protocol.is_id(wanted):
         raise HandError("`wait` must be a download id from browser_downloads")
     try:
-        flux = await control.shared(start=False)
+        flux = await _connection()
     except NotRunning:
         return [text_block("Flux is not running: no downloads.")]
     try:
@@ -836,24 +965,40 @@ async def _js(call: Call) -> list[dict]:
     return _acted(done, did, words)
 
 
-def browser_hands() -> list[Hand]:
-    """Flux's hands, in the order they are lent."""
+def browser_hands(profile: str | None = None, *, headless: bool = False,
+                  hand: type | None = None, error: type | None = None) -> list:
+    """Flux's hands, in the order they are lent: for the default
+    profile's Flux, or `profile`'s; `headless`, described as a browser no
+    one sees (and started so). `hand`, `error`: the Hand class and the
+    HandError the lent tools are made of and raise, the agent's
+    (agent/hands.py, imported now) when not given."""
+    if hand is None or error is None:
+        try:
+            from indigoshell.agent.hands import Hand as AgentHand, HandError as AgentError
+        except ImportError as e:
+            raise ImportError(f"Flux's hands are made of the agent's Hand and HandError, and "
+                              f"indigoshell.agent does not import here ({e}): give them, "
+                              "browser_hands(hand=..., error=...)") from e
+        hand, error = hand or AgentHand, error or AgentError
+    target = _Target(profiles.check(profile), bool(headless))
+    w = HEADLESS if headless else _Words()
+
+    def _hand(*args, **kw):
+        return _lend((hand, error), target, *args, **kw)
     return [
         _hand("browser_tabs",
-              f"{FLUX} Lists its windows (most recently used first; which one has the "
-              "user's focus; the X window id that laptop_windows and laptop_focus use) "
+              f"{w.flux} Lists its windows ({w.windows}) "
               "and their tabs: the tab id, title, address, whether it is loading, and "
               "which tab is current (showing) in its window. Tab ids last as long as the "
               "tab, even if it moves to another window.",
               _tabs, _schema({})),
         _hand("browser_open",
-              f"{FLUX} Opens an address (or words to search for) in a new tab at the end "
-              "of `window` (an id from browser_tabs, or \"agent\": your own window, made the "
-              "first time on an empty workspace the user is not looking at) or of the user's "
-              "most recently used window, and makes it that window's current tab unless "
+              f"{w.flux} Opens an address (or words to search for) in a new tab at the end "
+              f"of `window` (an id from browser_tabs, or \"agent\": {w.agent_window}) or of the "
+              "user's most recently used window, and makes it that window's current tab unless "
               f"`background`. Starts Flux if it isn't running. Waits up to `wait_s` seconds "
               f"(default {LOAD_S:g}; 0: not at all) for the page to load, and answers the new "
-              f"tab's id, title and address. {ALONE} {KEPT}",
+              f"tab's id, title and address. {w.alone} {KEPT}",
               _open, _schema({"url": {"type": "string"},
                               "window": {"anyOf": [{"type": "integer"},
                                                    {"type": "string",
@@ -863,17 +1008,15 @@ def browser_hands() -> list[Hand]:
                                          "maximum": SLOW_S}}, ("url",)),
               timeout=SLOW_S),
         _hand("browser_switch",
-              f"{FLUX} Makes a tab the current (showing) tab of its window. Reading, "
+              f"{w.flux} Makes a tab the current (showing) tab of its window. Reading, "
               "screenshots, navigating and closing only work on a tab that is current in "
-              "its window, so switch to it first. This changes what that window shows, "
-              "but never raises the window, moves the focus or changes the user's "
-              "workspace.",
+              f"its window, so switch to it first. This changes what that window shows{w.switch}.",
               _switch, _schema({"tab": TAB}, ("tab",))),
         _hand("browser_close",
-              f"{FLUX} Closes a tab; its window closes with its last tab. {SHOWING}",
+              f"{w.flux} Closes a tab; its window closes with its last tab. {SHOWING}",
               _close, _schema({"tab": TAB}, ("tab",))),
         _hand("browser_go",
-              f"{FLUX} Navigates a tab: to `url` (an address, or words to search for), or "
+              f"{w.flux} Navigates a tab: to `url` (an address, or words to search for), or "
               "`action` back, forward or reload. Waits up to `wait_s` seconds (default "
               f"{LOAD_S:g}) for the load and answers where the tab is now. {SHOWING}",
               _go, _schema({"tab": TAB, "url": {"type": "string"},
@@ -882,7 +1025,7 @@ def browser_hands() -> list[Hand]:
                            ("tab",)),
               timeout=SLOW_S),
         _hand("browser_wait",
-              f"{FLUX} Waits until a tab has finished loading; or, with `selector`, until "
+              f"{w.flux} Waits until a tab has finished loading; or, with `selector`, until "
               "a CSS selector matches an element; or, with `text`, until that text is on "
               "the page (as shown, case-sensitive). At most `timeout` seconds (default "
               f"{protocol.WAIT_DEFAULT_S:g}, up to {protocol.WAIT_MAX_S:g}); an error says "
@@ -894,7 +1037,7 @@ def browser_hands() -> list[Hand]:
                                           "maximum": protocol.WAIT_MAX_S}}, ("tab",)),
               timeout=protocol.WAIT_MAX_S + 10),
         _hand("browser_read",
-              f"{FLUX} Reads the page in a tab. {SHOWING} `what`: 'outline' (default: the "
+              f"{w.flux} Reads the page in a tab. {SHOWING} `what`: 'outline' (default: the "
               "page's meaningful elements, one per line with a numbered ref, e.g. "
               "[12] button \"Sign in\", [13] textbox \"Email\" = \"…\", [14] link "
               "\"Orders\" -> /orders, under headings and landmarks: read this to act), "
@@ -922,7 +1065,7 @@ def browser_hands() -> list[Hand]:
                               "hidden": {"type": "boolean"}}, ("tab",)),
               timeout=SLOW_S),
         _hand("browser_screenshot",
-              f"{FLUX} A PNG of the visible part of a tab's page as it is now, scaled "
+              f"{w.flux} A PNG of the visible part of a tab's page as it is now, scaled "
               f"down to at most {protocol.SHOT_MAX_SIDE} px on its long side. `full`: true "
               f"gives the whole page from its top instead, as up to {protocol.SHOT_TILES_MAX} "
               "viewport-high tiles, each with its offset in the page (Flux scrolls the page "
@@ -934,15 +1077,11 @@ def browser_hands() -> list[Hand]:
               _screenshot, _schema({"tab": TAB, "full": {"type": "boolean"}}, ("tab",)),
               timeout=SLOW_S),
         _hand("browser_look",
-              f"{FLUX} What the user is looking at in Flux now: the window with their "
-              "focus (or the one that had it last), its current tab's address and title, "
-              "and the text they have selected there. `screenshot`: true adds the tab as "
-              "shown; `image`: true adds the image in their selection, or else under the "
-              f"mouse pointer. Changes nothing the user sees. {SITE}",
+              f"{w.flux} {w.look} {SITE}",
               _look, _schema({"screenshot": {"type": "boolean"},
                               "image": {"type": "boolean"}})),
         _hand("browser_click",
-              f"{FLUX} Clicks an element (`ref`) or a point, with real mouse input the page "
+              f"{w.flux} Clicks an element (`ref`) or a point, with real mouse input the page "
               "takes as the user's. The element is scrolled into view and clicked in the "
               "middle of its visible part; if something else covers it, nothing is clicked "
               "and the answer names what covers it. `button`: left (default) or middle; "
@@ -950,54 +1089,54 @@ def browser_hands() -> list[Hand]:
               "browser_select) and date or colour pickers (use browser_fill) are refused. The "
               "answer says whether a navigation started (and waits up to `wait_s` for it), "
               f"tabs it opened, and a dialog the page opened. {REFS} {POINT} {SHOWING} "
-              f"{WATCHED} {SITE}",
+              f"{w.watched} {SITE}",
               _click, _schema({"tab": TAB, "ref": REF, "x": XY, "y": XY,
                                "button": {"type": "string", "enum": list(protocol.BUTTONS)},
                                "double": {"type": "boolean"}, "wait_s": WAIT_S}, ("tab",)),
               timeout=SLOW_S),
         _hand("browser_type",
-              f"{FLUX} Types `text` with real key presses: into the text field `ref` (focused, "
+              f"{w.flux} Types `text` with real key presses: into the text field `ref` (focused, "
               "the caret at its end), at a point (clicked first), or into whatever has focus. "
               "`clear`: empty the field first; `submit`: press Enter after. A newline in "
               "`text` is Enter and a tab is Tab. Any letters (Turkish too) arrive as typed; "
               f"a text longer than {protocol.TYPE_KEYS_MAX} characters goes in as one input. "
               "Passwords may be typed; their value is never read back. "
-              f"{REFS} {POINT} {SHOWING} {WATCHED} {SITE}",
+              f"{REFS} {POINT} {SHOWING} {w.watched} {SITE}",
               _type, _schema({"tab": TAB, "text": {"type": "string"}, "ref": REF, "x": XY,
                               "y": XY, "clear": {"type": "boolean"},
                               "submit": {"type": "boolean"}, "wait_s": WAIT_S},
                              ("tab", "text")),
               timeout=SLOW_S),
         _hand("browser_key",
-              f"{FLUX} Presses a key or a shortcut in the page, to what has focus: "
+              f"{w.flux} Presses a key or a shortcut in the page, to what has focus: "
               "Enter, Escape, Tab, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, "
               "End, PageUp, PageDown, F1-F12, one character, or with modifiers: ctrl+a, "
               f"shift+Tab, alt+ArrowLeft. `count`: that many times (up to "
-              f"{protocol.KEY_COUNT_MAX}). {SHOWING} {WATCHED} {SITE}",
+              f"{protocol.KEY_COUNT_MAX}). {SHOWING} {w.watched} {SITE}",
               _key, _schema({"tab": TAB, "key": {"type": "string"},
                              "count": {"type": "integer", "minimum": 1,
                                        "maximum": protocol.KEY_COUNT_MAX},
                              "wait_s": WAIT_S}, ("tab", "key")),
               timeout=SLOW_S),
         _hand("browser_select",
-              f"{FLUX} Chooses an option of a <select> (`ref`), by its `value` or its visible "
+              f"{w.flux} Chooses an option of a <select> (`ref`), by its `value` or its visible "
               "`label` (a list of them for a multiple select), without opening its popup; the "
-              f"page gets input and change events. {REFS} {SHOWING} {WATCHED} {SITE}",
+              f"page gets input and change events. {REFS} {SHOWING} {w.watched} {SITE}",
               _select, _schema({"tab": TAB, "ref": REF, "value": STRINGS, "label": STRINGS},
                                ("tab", "ref"))),
         _hand("browser_scroll",
-              f"{FLUX} Scrolls with real wheel turns: `dy` pixels down (negative: up), `dx` "
+              f"{w.flux} Scrolls with real wheel turns: `dy` pixels down (negative: up), `dx` "
               "right, over the element `ref`, a point, or the middle of the page; or `to`: an "
               "element's ref, scrolled into view. Answers where the page is scrolled to. "
-              f"{REFS} {POINT} {SHOWING} {WATCHED} {SITE}",
+              f"{REFS} {POINT} {SHOWING} {w.watched} {SITE}",
               _scroll, _schema({"tab": TAB, "dy": {"type": "number"}, "dx": {"type": "number"},
                                 "ref": REF, "x": XY, "y": XY, "to": REF}, ("tab",))),
         _hand("browser_fill",
-              f"{FLUX} Fills several form fields at once, each `{{ref, value}}`: a text field "
+              f"{w.flux} Fills several form fields at once, each `{{ref, value}}`: a text field "
               "is emptied and typed into (a string), a checkbox or radio set to true or false "
               "by clicking it, a <select> chosen by value or label, a date, time, colour or "
               "range field set to a value (2024-05-01, 13:30, #ff0000). The answer says which "
-              f"failed and why. It does not submit. {REFS} {SHOWING} {WATCHED} {SITE}",
+              f"failed and why. It does not submit. {REFS} {SHOWING} {w.watched} {SITE}",
               _fill, _schema({"tab": TAB, "fields": {
                   "type": "array", "minItems": 1, "items": _schema(
                       {"ref": REF, "value": {"anyOf": [
@@ -1006,31 +1145,31 @@ def browser_hands() -> list[Hand]:
                       ("ref", "value"))}}, ("tab", "fields")),
               timeout=SLOW_S),
         _hand("browser_hover",
-              f"{FLUX} Moves the pointer over an element (`ref`) or a point, as for a menu that "
-              f"opens on hover; nothing is clicked. {REFS} {POINT} {SHOWING} {WATCHED} {SITE}",
+              f"{w.flux} Moves the pointer over an element (`ref`) or a point, as for a menu that "
+              f"opens on hover; nothing is clicked. {REFS} {POINT} {SHOWING} {w.watched} {SITE}",
               _hover, _schema({"tab": TAB, "ref": REF, "x": XY, "y": XY}, ("tab",))),
         _hand("browser_dialog",
-              f"{FLUX} Answers the dialog the page opened while you act (an alert, a confirm, "
+              f"{w.flux} Answers the dialog the page opened while you act (an alert, a confirm, "
               "a prompt, or the question before leaving a page): `accept` true (OK, leave) or "
               "false (cancel, stay), and `text` for a prompt's answer. Until it is answered "
               "the page is stuck and other actions are refused; unanswered for "
-              f"{protocol.DIALOG_S:g} s it is dismissed. {SHOWING} {WATCHED} {SITE}",
+              f"{protocol.DIALOG_S:g} s it is dismissed.{w.unseen} {SHOWING} {w.watched} {SITE}",
               _dialog, _schema({"tab": TAB, "accept": {"type": "boolean"},
                                 "text": {"type": "string"}, "wait_s": WAIT_S},
                                ("tab", "accept")),
               timeout=SLOW_S),
         _hand("browser_release",
-              f"{FLUX} Lets go of a tab you were acting on (or all of them, with no `tab`): "
+              f"{w.flux} Lets go of a tab you were acting on (or all of them, with no `tab`): "
               "the user's input reaches it again and your mark goes. Do it when you are done "
               f"acting; it also happens {protocol.QUIET_S:g} s after your last request on the "
               "tab.",
               _release, _schema({"tab": TAB})),
         _hand("browser_upload",
-              f"{FLUX} Gives a page's file field files, as if the user had picked them in its "
+              f"{w.flux} Gives a page's file field files, as if the user had picked them in its "
               "file dialog (no dialog opens): `ref` is the file field (from browser_read; a "
               "hidden one shows with `hidden`: true) or the button that opens the page's file "
-              "picker; `paths` are the files' absolute paths on this laptop. "
-              f"{UPLOAD_REFUSED} {REFS} {SHOWING} {WATCHED} {SITE}",
+              f"picker; `paths` are the files' absolute paths {w.here}. "
+              f"{UPLOAD_REFUSED} {REFS} {SHOWING} {w.watched} {SITE}",
               _upload, _schema({"tab": TAB, "ref": REF,
                                 "paths": {"type": "array", "minItems": 1,
                                           "maxItems": protocol.UPLOAD_PATHS_MAX,
@@ -1038,17 +1177,15 @@ def browser_hands() -> list[Hand]:
                                 "wait_s": WAIT_S}, ("tab", "ref", "paths")),
               timeout=SLOW_S),
         _hand("browser_borrow",
-              f"{FLUX} Moves a tab of the user's into your own window (made the first time, on "
-              "an empty workspace the user is not looking at) as its current tab, with "
+              f"{w.flux} Moves a tab of the user's into your own window {w.borrow_made} as its "
+              "current tab, with "
               "everything in it: a half-typed form, the scroll, the page's state, the sign-in. "
               "Any tab of the user's windows may be borrowed, also one that is not showing in "
               "its window: borrowing is how you work on such a tab without changing what the "
-              "user sees. Not one the user took over. While it is away it is gone from the "
-              "user's window: browser_return it as soon as you are done. Never switch the "
-              f"user's workspace to look at it. {ALONE} {KEPT}",
+              f"user sees. Not one the user took over. {w.borrow_away} {w.alone} {KEPT}",
               _borrow, _schema({"tab": TAB}, ("tab",)), timeout=SLOW_S),
         _hand("browser_return",
-              f"{FLUX} Hands a tab of your own window to the user: a borrowed tab goes back to "
+              f"{w.flux} Hands a tab of your own window to the user: a borrowed tab goes back to "
               "its window at its old place (or, that window gone, to the user's most recently "
               "used window), a tab you opened yourself to the end of the user's most recently "
               "used window. In the background there, unless `show`: then it becomes that "
@@ -1056,15 +1193,11 @@ def browser_hands() -> list[Hand]:
               "ends; your window closes with its last tab. Return every tab you borrowed.",
               _return, _schema({"tab": TAB, "show": {"type": "boolean"}}, ("tab",))),
         _hand("browser_show",
-              f"{FLUX} Shows the user a local file you made: an HTML report (with the images "
-              "and stylesheets it links beside it), a PDF or an image, opened as a new tab in "
-              "the user's own window (the one they used last), as its current tab, so they see "
-              "it when they look at Flux; the window is not raised or focused and their "
-              "workspace stays. `path`: the file's absolute path, or a file:// URL. A path "
+              f"{w.flux} {w.show} `path`: the file's absolute path, or a file:// URL. A path "
               "that is not a file is refused.",
               _show, _schema({"path": {"type": "string"}}, ("path",)), timeout=SLOW_S),
         _hand("browser_downloads",
-              f"{FLUX} Lists Flux's downloads in this run, newest first: id, file name and the "
+              f"{w.flux} Lists Flux's downloads in this run, newest first: id, file name and the "
               "path it was saved at, state (running, done, failed, cancelled), how far, the "
               "site it came from, the tab that started it. With `wait` (a download id): waits "
               f"until that one has finished, at most `timeout` seconds (default "
@@ -1075,7 +1208,7 @@ def browser_hands() -> list[Hand]:
                                                "maximum": protocol.WAIT_MAX_S}}),
               timeout=protocol.WAIT_MAX_S + 10),
         _hand("browser_js",
-              f"{FLUX} Runs your JavaScript in a tab's page (its main frame), in a script world of "
+              f"{w.flux} Runs your JavaScript in a tab's page (its main frame), in a script world of "
               "its own that the page's scripts cannot see. `code` is one line taken as an "
               "expression (document.title), or the body of an async function: `return` the "
               "answer; `await` works, and a promise is awaited up to `timeout` seconds "
@@ -1091,7 +1224,7 @@ def browser_hands() -> list[Hand]:
               "so its requests carry the user's sign-in, and it can change the page, click and "
               "submit; do only what the user asked. Never try to get around the guard. A loop "
               "that never ends hangs the page until the user closes the tab: keep loops "
-              f"bounded. Counts as acting. {SHOWING} {WATCHED} {SITE}",
+              f"bounded. Counts as acting. {SHOWING} {w.watched} {SITE}",
               _js, _schema({"tab": TAB, "code": {"type": "string"},
                             "timeout": {"type": "number", "minimum": 0,
                                         "maximum": protocol.JS_TIMEOUT_MAX_S},

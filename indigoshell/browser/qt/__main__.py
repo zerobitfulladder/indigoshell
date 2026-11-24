@@ -12,9 +12,21 @@ window; no URL asks it for a new window) and exits.
                      first request opens one (browser/control.py,
                      `ensure_running`). With a browser already running,
                      exit at once and hand it nothing.
+    --headless       no screen: Qt's offscreen platform, drawn in software
+                     (startup.py), no line to the shell, nothing that asks
+                     the user (protocol.py, "Headless"); its last window
+                     closing does not end it. With --no-window: a service
+                     for the agent, as on a Raspberry Pi with no display.
+    --software-gl    a window drawn without the GPU, for a screen that is
+                     another machine's (`ssh -X`): startup.py
+    --profile NAME   a browser of the profile NAME, beside the default one:
+                     its own storage, cache, history, bookmarks, log and
+                     socket (browser/profiles.py). Hand-offs go to that
+                     profile's browser.
     --log-level L    debug, info, warning, error (default: $<APP>_LOG_LEVEL or info);
-                     the log is <state_dir>/browser.log, and the terminal
-                     when stderr is one (logs.py)
+                     the log is <state_dir>/browser.log (browser-NAME.log
+                     for a profile), and the terminal when stderr is one
+                     (logs.py)
     --install        put Flux, the browser's entry, in the launcher
                      (browser/desktop.py) and exit
 
@@ -24,7 +36,8 @@ still exits without loading Qt.
 
 Environment (besides the XDG directories):
     <APP>_BROWSER_SOCKET     the single-instance and control socket (its lock is
-                             <socket>.lock)
+                             <socket>.lock); a profile's is this with -NAME
+                             before .sock
     <APP>_APPS_SOCKET        where the shell listens for its apps (applink)
     <APP>_BROWSER_WIDEVINE   a libwidevinecdm.so to use, or "off"
 """
@@ -34,10 +47,11 @@ import logging
 import os
 import sys
 
+from indigoshell.browser import profiles
 from indigoshell.core import log as shell_log
 from indigoshell.core.naming import APP
 
-from . import instance, logs
+from . import instance, logs, startup
 
 log = logging.getLogger(f"{APP}.browser.qt")
 
@@ -48,6 +62,13 @@ def _absolute(arg: str) -> str:
     if "://" not in arg and os.path.exists(arg):
         return "file://" + os.path.abspath(arg)
     return arg
+
+
+def _profile(text: str) -> str:
+    try:
+        return profiles.check(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
 
 
 def main(argv: list[str], prog: str | None = None) -> int:
@@ -63,6 +84,13 @@ def main(argv: list[str], prog: str | None = None) -> int:
     parser.add_argument("--no-window", action="store_true",
                         help="with no URL, open no window: only listen (for the agent); "
                              "with a browser running, do nothing")
+    parser.add_argument("--headless", action="store_true",
+                        help="no screen: offscreen and in software, no shell, nothing asks "
+                             "the user; stays running with no window")
+    parser.add_argument("--software-gl", action="store_true",
+                        help="draw the windows without the GPU (a screen over ssh -X)")
+    parser.add_argument("--profile", type=_profile, metavar="NAME",
+                        help="the profile NAME's browser, beside the default one")
     parser.add_argument("--log-level", choices=shell_log.LEVELS)
     parser.add_argument("--install", action="store_true",
                         help="put Flux, the browser's entry, in the launcher "
@@ -72,19 +100,19 @@ def main(argv: list[str], prog: str | None = None) -> int:
     if args.install:
         from indigoshell.browser import desktop      # pure: no Qt
         return desktop.main()
-    logs.setup(args.log_level)
+    logs.setup(args.log_level, args.profile)
 
     urls = [_absolute(u) for u in args.url]
     if args.no_window and not urls:
         # Started for the agent: a running browser (or one starting) is
         # all it wants, and a hand-off of nothing would open a window.
-        lock = instance.try_lock()
+        lock = instance.try_lock(args.profile)
         if lock is None:
             log.info("a browser is running already; --no-window leaves it be")
             return 0
     else:
         try:
-            lock = instance.claim_or_hand_off(urls)
+            lock = instance.claim_or_hand_off(urls, profile=args.profile)
         except instance.HandoffFailed as e:
             log.error("%s", e)
             return 1
@@ -93,8 +121,10 @@ def main(argv: list[str], prog: str | None = None) -> int:
                      f"{len(urls)} URL(s)" if urls else "a new window")
             return 0
 
+    startup.settle_platform(headless=args.headless, software=args.software_gl)
     from . import app          # Qt and Chromium load here, and only here
-    return app.main(urls, unattended=args.unattended, lock=lock, no_window=args.no_window)
+    return app.main(urls, unattended=args.unattended, lock=lock, no_window=args.no_window,
+                    headless=args.headless, software=args.software_gl, profile=args.profile)
 
 
 if __name__ == "__main__":

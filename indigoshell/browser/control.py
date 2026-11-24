@@ -18,10 +18,18 @@ first"). One that runs past its `timeout`, or whose task is cancelled,
 is cancelled in Flux too. `NotRunning`: no browser listens.
 
 `ensure_running()` starts Flux when none runs, the way the launcher
-starts apps (services/proc.py `launch`: detached, in a scope of its
-own), as `<the CLI> browser --no-window` (desktop.py's command): no
-window until a request opens one. A Flux that is starting meanwhile, the
-user's or another start's, is the one it then connects to.
+starts apps (services/proc.py `launch`: detached with `setsid`, in a
+systemd scope of its own where a user manager runs, plainly where none
+does), as `<the CLI> browser --no-window` (desktop.py's command: this
+Python and the repository's main.py, found at run time, unless the CLI
+on PATH is what runs): no window until a request opens one. A Flux that
+is starting meanwhile, the user's or another start's, is the one it then
+connects to. Where there is no display (no $DISPLAY, no
+$WAYLAND_DISPLAY) it starts it `--headless`, unless told otherwise.
+
+Profiles (profiles.py): every function that finds Flux takes `profile`,
+the name of the browser to talk to (its own socket), None for the
+default one; `ensure_running` starts that profile's.
 
 The acting requests (`click`, `type_text`, `key`, `select`, `scroll`,
 `fill`, `hover`, `dialog`, `upload`, `js`, `release`) carry the agent's
@@ -41,17 +49,22 @@ content blocks to send with their words, or nothing when Flux is not
 running or no Flux window has had focus. It never starts Flux and
 changes nothing on screen.
 
-`shared()` keeps one connection open for the hands (hands.py), made
-again when it dropped.
+`shared()` keeps one connection open for the hands (hands.py), per
+profile, made again when it dropped.
+
+Pure means more than no Qt here: this module and hands.py import on a
+machine with PySide6 and none of the shell's own dependencies (xcffib,
+skia, dbus-fast, psutil), a Raspberry Pi lending Flux's hands.
 """
 
 import asyncio
 import itertools
 import logging
+import os
 import weakref
 from dataclasses import dataclass, field
 
-from indigoshell.browser import protocol
+from indigoshell.browser import profiles, protocol
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +110,7 @@ class TabInfo:
 @dataclass(frozen=True)
 class WindowInfo:
     window: int
-    xid: int | None
+    xid: int | None                     # None headless
     single: bool
     focused: bool
     tabs: tuple[TabInfo, ...]
@@ -355,9 +368,11 @@ class Control:
 
 
 # ── finding Flux ────────────────────────────────────────────────────────
-async def connect(path: str | None = None, timeout: float = CONNECT_S) -> Control:
-    """A connection to the running Flux; NotRunning when none listens."""
-    path = path or protocol.control_socket_path()
+async def connect(path: str | None = None, timeout: float = CONNECT_S, *,
+                  profile: str | None = None) -> Control:
+    """A connection to the running Flux (`profile`'s, unless `path`);
+    NotRunning when none listens."""
+    path = path or protocol.control_socket_path(profile)
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_unix_connection(path, limit=LINE_LIMIT), timeout)
@@ -366,57 +381,71 @@ async def connect(path: str | None = None, timeout: float = CONNECT_S) -> Contro
     return Control(reader, writer)
 
 
-def start_command() -> list[str]:
+def no_display() -> bool:
+    """No screen to show a window on: Flux starts headless here."""
+    return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def start_command(profile: str | None = None, headless: bool = False) -> list[str]:
     """How `ensure_running` starts Flux: the launcher entry's command
-    (desktop.py), with no window."""
+    (desktop.py), with no window; `headless`, and `profile`'s."""
     from indigoshell.browser import desktop
-    return [*desktop.exec_command(), "browser", "--no-window"]
+    return [*desktop.exec_command(), "browser", "--no-window",
+            *(["--headless"] if headless else []),
+            *(["--profile", profiles.check(profile)] if profile else [])]
 
 
-def _launch() -> None:
+def _launch(profile: str | None = None, headless: bool = False) -> None:
     from indigoshell.browser import desktop
     from indigoshell.services import proc
-    proc.launch(start_command(), app_id=desktop.DESKTOP_ID.removesuffix(".desktop"))
+    proc.launch(start_command(profile, headless),
+                app_id=desktop.DESKTOP_ID.removesuffix(".desktop"))
 
 
-async def ensure_running(timeout: float = START_S) -> Control:
-    """A connection to Flux, started first (with no window) when it is
-    not running. Its socket is the default one (`<APP>_BROWSER_SOCKET`
-    when set, which the started browser inherits)."""
+async def ensure_running(timeout: float = START_S, *, profile: str | None = None,
+                         headless: bool | None = None) -> Control:
+    """A connection to `profile`'s Flux (None: the default one), started
+    first (with no window) when it is not running: `headless` when it
+    says so, or when it is None and there is no display. Its socket is
+    the profile's (from `<APP>_BROWSER_SOCKET` when set, which the
+    started browser inherits)."""
     try:
-        return await connect()
+        return await connect(profile=profile)
     except NotRunning:
         pass
-    log.info("Flux is not running; starting it")
-    _launch()
+    if headless is None:
+        headless = no_display()
+    log.info("Flux%s is not running; starting it%s", f" ({profile})" if profile else "",
+             " headless" if headless else "")
+    _launch(profile, headless)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:
         await asyncio.sleep(0.1)
         try:
-            return await connect()
+            return await connect(profile=profile)
         except NotRunning:
             if loop.time() >= deadline:
-                from indigoshell.core.paths import state_dir
                 raise NotRunning(f"Flux did not start within {timeout:g} s (its log is "
-                                 f"browser.log in {state_dir()})") from None
+                                 f"{profiles.log_path(profile)})") from None
 
 
-# Per event loop: [a lock, the connection or None].
-_shared: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, list]" = \
+# Per event loop: profile -> [a lock, the connection or None].
+_shared: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict]" = \
     weakref.WeakKeyDictionary()
 
 
-async def shared(*, start: bool = True) -> Control:
-    """One connection kept for this event loop's requests; made again
-    (and Flux started, with `start`) when it dropped."""
+async def shared(*, start: bool = True, profile: str | None = None,
+                 headless: bool | None = None) -> Control:
+    """One connection to `profile`'s Flux kept for this event loop's
+    requests; made again (and Flux started, with `start`: `headless` as
+    ensure_running takes it) when it dropped."""
     loop = asyncio.get_running_loop()
-    entry = _shared.get(loop)
-    if entry is None:
-        entry = _shared[loop] = [asyncio.Lock(), None]
+    entry = _shared.setdefault(loop, {}).setdefault(profile, [asyncio.Lock(), None])
     async with entry[0]:
         if entry[1] is None or entry[1].closed:
-            entry[1] = await (ensure_running() if start else connect())
+            entry[1] = await (ensure_running(profile=profile, headless=headless) if start
+                              else connect(profile=profile))
         return entry[1]
 
 
@@ -439,7 +468,8 @@ def look_blocks(result: dict) -> list[dict]:
     """A `look` result as content blocks: a text block (the window, the
     tab, the selection marked as the site's words), then the screenshot
     and the image when there are."""
-    focus = ("the window has focus" if result.get("focused") else
+    focus = ("headless: no one looks at it; its most recently used window"
+             if result.get("headless") else "the window has focus" if result.get("focused") else
              f"the window last had focus {result['unfocused_for']:.0f} s ago"
              if result.get("unfocused_for") is not None else "the window does not have focus")
     lines = [f"In Flux, the user's browser ({focus}): tab {result.get('tab')} of window "

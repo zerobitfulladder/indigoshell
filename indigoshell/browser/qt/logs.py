@@ -1,4 +1,5 @@
-"""The browser's log: `<state_dir>/browser.log`.
+"""The browser's log: `<state_dir>/browser.log` (a named profile's,
+`<state_dir>/browser-NAME.log`: browser/profiles.py).
 
 Pure Python, set up before anything else (`__main__`), so a hand-off to
 a running browser logs here too without loading Qt.
@@ -26,27 +27,26 @@ What it holds besides the browser's own lines:
 
 import faulthandler
 import logging
-import os
 import sys
 import threading
 
+from indigoshell.browser import profiles
 from indigoshell.core import log as shell_log
-from indigoshell.core.paths import state_dir
 
 log = logging.getLogger(__name__.rsplit(".", 1)[0])
 
-FILE = "browser.log"
+FILE = "browser.log"            # the default profile's, in <state_dir>
 
 _crash_file = None              # faulthandler's own handle on the file, kept open
 
 
-def path() -> str:
-    return os.path.join(state_dir(), FILE)
+def path(profile: str | None = None) -> str:
+    return profiles.log_path(profile)
 
 
-def setup(level: str | None = None) -> None:
+def setup(level: str | None = None, profile: str | None = None) -> None:
     """The file, the terminal when stderr is one, and the hooks."""
-    target = path()
+    target = path(profile)
     shell_log.setup(level, target, stderr=_tty(sys.stderr))
     install_hooks()
     _crash_trace(target)

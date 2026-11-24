@@ -1,10 +1,17 @@
-"""The browser's one persistent profile.
+"""The browser's persistent profile.
 
 Storage in $XDG_DATA_HOME/<APP>/browser, cache in
 $XDG_CACHE_HOME/<APP>/browser, storage name "browser", cookies always
 kept: exactly what the prototype (prototypes/browser/gauntlet.py) made,
 so sign-ins made there carry over. Permissions a site was granted are
-stored on disk with it.
+stored on disk with it. A named profile (`--profile NAME`,
+browser/profiles.py) is the same in browser-NAME, storage name
+"browser-NAME": one per browser process.
+
+Qt: QWebEngineProfileBuilder (6.9) makes the profile with its storage
+settled before it exists. Without it (6.8, the Pi's Debian) the profile
+is made by its storage name and the same settings are set on it at
+once, before any page uses it, which is when the docs ask for them.
 
 Every page of every window lives in this profile. It has to outlive
 them: deleting it under a live page makes Qt complain ("Release of
@@ -12,14 +19,13 @@ profile requested but WebEnginePage still not deleted"), so app.py
 deletes the windows first.
 """
 
-import os
+from PySide6 import QtWebEngineCore
+from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript, QWebEngineSettings
 
-from PySide6.QtWebEngineCore import (QWebEngineProfile, QWebEngineProfileBuilder,
-                                     QWebEngineScript, QWebEngineSettings)
+from indigoshell.browser import profiles
 
-from indigoshell.core.paths import cache_dir, data_dir
-
-NAME = "browser"
+NAME = profiles.BASE            # the default profile's storage name
+Builder = getattr(QtWebEngineCore, "QWebEngineProfileBuilder", None)    # Qt 6.9 on
 
 # Pages' scrollbars in the shell's colours: the bar's background for the
 # track, the launcher's thumb cyan for the thumb (theme.BAR_BG,
@@ -80,23 +86,31 @@ def install_scrollbars(profile: QWebEngineProfile) -> None:
     scripts.insert(script)
 
 
-def storage_path() -> str:
-    return os.path.join(data_dir(), NAME)
+def storage_path(name: str | None = None) -> str:
+    return profiles.storage_path(name)
 
 
-def cache_path() -> str:
-    return os.path.join(cache_dir(), NAME)
+def cache_path(name: str | None = None) -> str:
+    return profiles.cache_path(name)
 
 
-def make_profile() -> QWebEngineProfile:
-    builder = QWebEngineProfileBuilder()
-    builder.setPersistentStoragePath(storage_path())
-    builder.setCachePath(cache_path())
-    builder.setPersistentCookiesPolicy(
-        QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
-    builder.setPersistentPermissionsPolicy(
-        QWebEngineProfile.PersistentPermissionsPolicy.StoreOnDisk)
-    profile = builder.createProfile(NAME)
+def make_profile(name: str | None = None) -> QWebEngineProfile:
+    """The profile `name` (None: the default one), its storage settled."""
+    cookies = QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+    permissions = QWebEngineProfile.PersistentPermissionsPolicy.StoreOnDisk
+    if Builder is not None:
+        builder = Builder()
+        builder.setPersistentStoragePath(storage_path(name))
+        builder.setCachePath(cache_path(name))
+        builder.setPersistentCookiesPolicy(cookies)
+        builder.setPersistentPermissionsPolicy(permissions)
+        profile = builder.createProfile(profiles.stem(name))
+    else:
+        profile = QWebEngineProfile(profiles.stem(name))
+        profile.setPersistentStoragePath(storage_path(name))
+        profile.setCachePath(cache_path(name))
+        profile.setPersistentCookiesPolicy(cookies)
+        profile.setPersistentPermissionsPolicy(permissions)
 
     settings = profile.settings()
     A = QWebEngineSettings.WebAttribute
