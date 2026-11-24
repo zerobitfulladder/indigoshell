@@ -13,8 +13,6 @@ returns text, or a PNG for a screenshot.
     focus             bring a window forward, or show a workspace
     launch            start an app by name
     read_clipboard / write_clipboard
-    spotify           the desktop app, over MPRIS: what is playing,
-                      play, pause, skip, or play a link
     run               a shell command as the user (bash -lc)
     job_start / job_status / job_output / job_cancel
                       a long command in the background (`Jobs`): it
@@ -27,16 +25,18 @@ returns text, or a PNG for a screenshot.
                       ~/.cache/lilac/skills/
 
 **Root asks first.** A command (or a job) that mentions sudo, doas,
-pkexec, su or run0 asks the user in the call (Allow / Deny, rung if the call is
-closed), and no answer before the hub gives up is a no. Root needs no
-password on this laptop, so that question is the gate: commands that
-weren't allowed also run with those five shadowed on their PATH, so a
-script that calls one by name is refused rather than let through.
+pkexec, su or run0 asks the user in the call (Allow / Deny, rung if the
+call is closed), and no answer before the hub gives up is a no. Root
+needs no password on this laptop, so that question is the gate:
+commands that weren't allowed also run with those five shadowed on
+their PATH, so a script that calls one by name is refused rather than
+let through.
 
-What stays with the shell's own agent: the screenshot from before the
-call opened (glance.py), progress bars, toasts, the Firefox bridge (the
-shell's own browser gets its agent side later), the lights (the hub's,
-later) and the phone (LilacDeck's hands).
+Not lent here: the shell's old agent's screenshot from before the call
+opened (glance.py), progress bars and toasts; the Firefox bridge (the
+shell's own browser gets its agent side later); music and the lights,
+which are the hub's own (Spotify's Web API reaches the laptop's Spotify
+app too); and the phone (LilacDeck's hands).
 """
 
 import asyncio
@@ -322,54 +322,6 @@ WRITE_CLIPBOARD = Hand(
     "Put text on the clipboard, for the user to paste.",
     _write_clipboard,
     _schema({"text": {"type": "string"}}, ("text",)))
-
-
-# ── Spotify, the desktop app ────────────────────────────────────────────
-def spotify_hand(spotify=None) -> Hand:
-    from .spotify import Spotify, uri as spotify_uri
-    sp = spotify or Spotify()
-
-    async def run(call: Call) -> list[dict]:
-        action = call.args.get("action") or "status"
-        if action != "status":
-            if not await sp.app_start():
-                raise HandError("Spotify didn't start")
-            if action == "play" and call.args.get("uri"):
-                target = spotify_uri(str(call.args["uri"]))
-                if target is None:
-                    raise HandError("not a spotify: URI or an "
-                                    "open.spotify.com link")
-                rc, out = await sp.app("open", target)
-            else:
-                rc, out = await sp.app({"toggle": "play-pause"}.get(
-                    action, action))
-            if rc != 0:
-                raise HandError(out or f"{action} failed")
-            await asyncio.sleep(0.4)
-        if not await sp.app_running():
-            return _texts("Spotify isn't running.")
-        rc, out = await sp.app("metadata", "--format",
-                               "{{status}}\t{{artist}}\t{{title}}\t{{album}}")
-        parts = out.split("\t")
-        if rc != 0 or len(parts) < 3:
-            return _texts(f"Spotify is open; nothing is loaded ({out}).")
-        status, artist, title = parts[:3]
-        album = parts[3] if len(parts) > 3 else ""
-        return _texts(f"{status}: {title} by {artist}"
-                      + (f" ({album})" if album else ""))
-
-    return Hand(
-        "spotify",
-        "The Spotify desktop app (playing through the laptop's speakers): "
-        "action 'status' (what is playing; the default), 'play', 'pause', "
-        "'toggle', 'next' or 'previous'. With 'play', uri (a spotify: URI "
-        "or an open.spotify.com link to a track, album, playlist, artist "
-        "or episode) plays that instead. Starts the app if needed.",
-        run,
-        _schema({"action": {"type": "string",
-                            "enum": ["status", "play", "pause", "toggle",
-                                     "next", "previous"]},
-                 "uri": {"type": "string"}}))
 
 
 # ── run ─────────────────────────────────────────────────────────────────
@@ -996,8 +948,7 @@ WRITE_FILE = Hand(
              "overwrite": {"type": "boolean"}}, ("path",)))
 
 
-def desktop_hands(*, spotify=None) -> list[Hand]:
+def desktop_hands() -> list[Hand]:
     """The laptop's desktop as hands, in the order they are lent."""
     return [OPEN, SCREENSHOT, WINDOWS, FOCUS, LAUNCH, READ_CLIPBOARD,
-            WRITE_CLIPBOARD, spotify_hand(spotify), RUN, READ_FILE,
-            WRITE_FILE]
+            WRITE_CLIPBOARD, RUN, READ_FILE, WRITE_FILE]
