@@ -157,6 +157,8 @@ class Site(BaseHTTPRequestHandler):
         if route.startswith("/page/"):
             name = route[len("/page/"):]
             self._send(PAGE.format(title=name, body=f"<p>{name}</p>"))
+        elif route == "/plain":
+            self._send("<!doctype html><title>Plain</title><p>no styles at all</p>")
         elif route == "/long":
             self._send(PAGE.format(title="Long", body="<p>line</p>" * 300))
         elif route == "/links":
@@ -688,6 +690,18 @@ def test_in_process() -> None:
     check("pages' scrollbars wear the shell's colours: the bar's track, the launcher's cyan thumb",
           long_ok and edge == {profile_mod.TRACK} and profile_mod.THUMB in thumb,
           f"track {edge}, thumb column {sorted(thumb)[:3]}")
+    blank_tab = w.add_tab()
+    QTest.qWait(400)
+    blank_shot = blank_tab.view.grab().toImage()
+    blank_px = {blank_shot.pixelColor(x, y).name() for x in (50, 400) for y in (50, 300)}
+    plain_ok = navigate(blank_tab, lambda: blank_tab.page.load(QUrl(url("/plain"))), title="Plain")
+    QTest.qWait(300)
+    plain_shot = blank_tab.view.grab().toImage()
+    plain_px = plain_shot.pixelColor(400, 300).name()
+    check("an empty tab shows the shell's background; a page with no styles keeps white under it",
+          blank_px == {"#050310"} and plain_ok and plain_px == "#ffffff",
+          f"empty {blank_px}, unstyled page {plain_px}")
+    w.close_tab(blank_tab)
     press(w, K.Key_F12)
     inspector = w.tabs[3].inspector
     ok = inspector is not None and wait(lambda: inspector.isVisible()) and inspector.single

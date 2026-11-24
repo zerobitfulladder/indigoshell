@@ -321,6 +321,7 @@ class Browser(QObject):
             if geometry.x() or geometry.y():
                 window.move(geometry.topLeft())
         tab = window.add_tab()
+        tab.page.opened_by_page()
         request.openIn(tab.page)
         if opener is not None and opener.agent:
             window.show_placed(near=opener)

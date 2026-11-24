@@ -74,6 +74,7 @@ import logging
 import time
 
 from PySide6.QtCore import QCoreApplication, QObject, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWebEngineCore import (QWebEngineLoadingInfo, QWebEngineNavigationRequest,
                                      QWebEnginePage)
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -118,6 +119,19 @@ def unload_message() -> str:
     return QCoreApplication.translate("QWebEnginePage", UNLOAD_MESSAGE)
 
 
+# An empty page (a new tab, a new window, before anything is loaded)
+# shows the shell's background instead of Chromium's white. Only empty
+# pages Jack made itself: a real page that sets no background keeps
+# white under it, or its default black text would be unreadable, and so
+# does a blank page a site opened and writes into (`opened_by_page`).
+BLANK_BACKGROUND = QColor("#050310")    # theme.BG
+PAGE_BACKGROUND = QColor("#ffffff")     # Chromium's own, for pages
+
+
+def _blank(url: QUrl) -> bool:
+    return url.isEmpty() or url.toString() == "about:blank"
+
+
 class Page(QWebEnginePage):
     """A page whose console goes to the log at debug level, not the
     terminal. `id` names its tab to the agent (browser/qt/control.py):
@@ -131,6 +145,19 @@ class Page(QWebEnginePage):
         self.watch = None               # the browser's Watch, once in a window
         self.in_dialog = 0              # dialogs open on it now, the user's or held
         self.after_dialog: list = []    # run once none is
+        self.from_page = False          # opened by a site (see BLANK_BACKGROUND)
+        self.setBackgroundColor(BLANK_BACKGROUND)
+        self.urlChanged.connect(self._background)
+
+    def opened_by_page(self) -> None:
+        """A site asked for this page (a link's new tab, a popup): it
+        gets the page white from the start, whatever it shows."""
+        self.from_page = True
+        self.setBackgroundColor(PAGE_BACKGROUND)
+
+    def _background(self, url: QUrl) -> None:
+        empty = _blank(url) and not self.from_page
+        self.setBackgroundColor(BLANK_BACKGROUND if empty else PAGE_BACKGROUND)
 
     def javaScriptConsoleMessage(self, level, message, line, source) -> None:
         js_log.debug("js: %s (%s:%d)", message, source, line)

@@ -875,6 +875,7 @@ class Window(QWidget):
         target = self.tab_target()
         at = target.related_position(opener)
         tab = target.add_tab(background=destination == D.InNewBackgroundTab, at=at)
+        tab.page.opened_by_page()
         request.openIn(tab.page)
         if target is not self and not target.agent:
             target.raise_()
