@@ -12,7 +12,8 @@ our own namespace follows the requested level.
 
 Default is stderr — a session daemon's stderr is captured by whatever
 started it. `--log-file` adds a rotating file for the common case where
-that's /dev/null.
+that's /dev/null. The browser (browser/qt/logs.py) always keeps its own
+file, and leaves stderr out when it is no terminal.
 """
 
 import logging
@@ -108,7 +109,15 @@ def default_level() -> str:
     return os.environ.get(env("LOG_LEVEL"), "info").lower()
 
 
-def setup(level: str | None = None, log_file: str | None = None) -> None:
+LOG_FILE_BYTES = 1 << 20        # a log file rotates at this size,
+LOG_FILE_BACKUPS = 3            # keeping this many before it
+
+
+def setup(level: str | None = None, log_file: str | None = None, *,
+          stderr: bool = True) -> None:
+    """`stderr` False leaves the terminal out (the file alone), for a
+    process whose stderr goes nowhere. A file that cannot be opened is
+    said on stderr and left out."""
     level = (level or default_level()).lower()
     if level not in LEVELS:
         level = "info"
@@ -118,17 +127,23 @@ def setup(level: str | None = None, log_file: str | None = None) -> None:
     for handler in list(root.handlers):
         root.removeHandler(handler)
 
-    stream = logging.StreamHandler(sys.stderr)
-    stream.setFormatter(_Formatter(color=_use_color(sys.stderr)))
-    root.addHandler(stream)
+    if stderr:
+        stream = logging.StreamHandler(sys.stderr)
+        stream.setFormatter(_Formatter(color=_use_color(sys.stderr)))
+        root.addHandler(stream)
 
     if log_file:
-        os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
-        rotating = logging.handlers.RotatingFileHandler(
-            log_file, maxBytes=1 << 20, backupCount=3, encoding="utf-8",
-        )
-        rotating.setFormatter(_Formatter(color=False))
-        root.addHandler(rotating)
+        try:
+            os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
+            rotating = logging.handlers.RotatingFileHandler(
+                log_file, maxBytes=LOG_FILE_BYTES, backupCount=LOG_FILE_BACKUPS,
+                encoding="utf-8",
+            )
+        except OSError as e:
+            print(f"cannot log to {log_file}: {e}", file=sys.stderr)
+        else:
+            rotating.setFormatter(_Formatter(color=False))
+            root.addHandler(rotating)
 
     # Root stays at WARNING so third-party chatter (asyncio slow-callback
     # warnings, watchdog, dbus-fast) is visible but not verbose; our own

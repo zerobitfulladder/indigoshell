@@ -17,6 +17,12 @@ Keys — readline's, where it has one:
 
 Anything else is left unconsumed, so Return, Escape, Up and Down reach
 whatever holds the field.
+
+The text can be selected whole (`select_all`), the way a browser's
+address bar holds the current address: the first character typed
+replaces it, a deleting key empties the field, Left/Home and Right/End
+drop the selection at that end. Keys the field does not take leave it
+selected.
 """
 
 from typing import Callable
@@ -35,6 +41,7 @@ BLINK_FPS = 4
 # every quarter second forever.
 BLINK_FOR_S = 10.0
 PAD_Y = 6
+SELECTION = (theme.CYAN_BRIGHT, 0.28)   # behind selected text
 
 _BACKSPACE, _DELETE, _KP_DELETE = 0xFF08, 0xFFFF, 0xFF9F
 _LEFT, _RIGHT, _HOME, _END = 0xFF51, 0xFF53, 0xFF50, 0xFF57
@@ -77,6 +84,7 @@ class TextInput(Widget):
         self.on_change = on_change
         self.text = ""
         self.caret = 0
+        self.selected_all = False
         self._scroll_x = 0.0
         self._blink_age = 0.0        # seconds since the last edit or move
         self._blink_phase = 0.0
@@ -87,13 +95,23 @@ class TextInput(Widget):
     def animation_fps(self) -> int:
         return BLINK_FPS if self._blink_age < self.blink_for else 0
 
-    def set_text(self, value: str, caret: int | None = None) -> None:
+    def set_text(self, value: str, caret: int | None = None, *,
+                 notify: bool = True) -> None:
+        """Replace the text. `notify=False` keeps `on_change` quiet, for
+        a holder that will act on the new text itself."""
         caret = len(value) if caret is None else max(0, min(caret, len(value)))
         changed = value != self.text
         self.text, self.caret = value, caret
+        self.selected_all = False
         self._wake_caret()
-        if changed and self.on_change is not None:
+        if changed and notify and self.on_change is not None:
             self.on_change(value)
+
+    def select_all(self) -> None:
+        """Select the whole text (nothing, when there is none)."""
+        self.selected_all = bool(self.text)
+        self.caret = len(self.text)
+        self._wake_caret()
 
     def clear(self) -> None:
         self.set_text("")
@@ -134,6 +152,8 @@ class TextInput(Widget):
 
     # ── input ───────────────────────────────────────────────────────────
     def key(self, ev: KeyEvent) -> bool:
+        if self.selected_all and self._key_on_selection(ev):
+            return True
         k, letter = ev.keysym, ctrl_letter(ev)
         if ev.ctrl:
             if k == _BACKSPACE or letter == "w":
@@ -174,6 +194,25 @@ class TextInput(Widget):
             return False
         return True
 
+    def _key_on_selection(self, ev: KeyEvent) -> bool:
+        """A key while the whole text is selected; False when it is not
+        one that acts on the selection (the caller then handles it, with
+        the selection still there)."""
+        k, letter = ev.keysym, ctrl_letter(ev)
+        deleting = (k in (_BACKSPACE, _DELETE, _KP_DELETE)
+                    or (ev.ctrl and letter in ("w", "u", "k")))
+        if deleting or (ev.text and not ev.ctrl):
+            self.set_text("" if deleting else ev.text)
+        elif k in (_LEFT, _KP_LEFT, _HOME, _KP_HOME) or (ev.ctrl and letter == "a"):
+            self.selected_all = False
+            self._move(0)
+        elif k in (_RIGHT, _KP_RIGHT, _END, _KP_END) or (ev.ctrl and letter == "e"):
+            self.selected_all = False
+            self._move(len(self.text))
+        else:
+            return False
+        return True
+
     # ── frame ───────────────────────────────────────────────────────────
     def animate(self, t: float) -> None:
         dt = self.tick_dt(t)
@@ -203,6 +242,13 @@ class TextInput(Widget):
         canvas.save()
         canvas.clipRect(r)
         baseline = text.baseline_in(r, self.size)
+        if self.selected_all and self.text:
+            band = skia.Paint(AntiAlias=False)
+            band.setColor(theme.color(*SELECTION))
+            canvas.drawRect(skia.Rect.MakeLTRB(
+                left - self._scroll_x, r.top() + CARET_PAD_Y,
+                left - self._scroll_x + text.measure(self.text, self.size),
+                r.bottom() - CARET_PAD_Y), band)
         if self.text:
             text.draw(canvas, self.text, left - self._scroll_x, baseline,
                       self.size, theme.color(self.color))

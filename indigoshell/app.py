@@ -6,7 +6,7 @@ import sys
 
 from .core import log as logsetup
 from .core.client import VERBS, main as client_main
-from .core.naming import APP, env
+from .core.naming import APP, CLI, env
 from .core.paths import config_dir, log_path
 
 # The daemon is imported where it is run, not here. Every keybinding
@@ -47,6 +47,13 @@ def main() -> None:
     if argv and argv[0] in VERBS:
         client_main(argv)
         return
+
+    # The browser runs here, not in the daemon: it starts (or hands its
+    # URLs to the running one) whether or not the shell is up, and the
+    # hand-off still exits before Qt is loaded.
+    if argv and argv[0] == "browser":
+        from .browser.qt.__main__ import main as browser_main
+        sys.exit(browser_main(argv[1:], prog=f"{CLI} browser"))
 
     parser = argparse.ArgumentParser(prog=APP)
     parser.add_argument("--watch", action="store_true",

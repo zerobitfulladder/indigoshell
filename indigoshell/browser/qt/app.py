@@ -1,0 +1,324 @@
+"""The browser process: start, the windows it keeps, and an orderly end.
+
+`main()` runs once __main__ holds the single-instance lock:
+
+1. startup.apply_flags(): Chromium's flags, Widevine settled. Must come
+   before any web engine object exists.
+2. The QApplication. Child widgets never become native windows
+   (AA_DontCreateNativeWidgetSiblings: a web view turned native would
+   be another X window inside ours). Its argv[0] and name make
+   the window class `<APP>-browser`. Only the browser's own windows are
+   GPU-composed, each from its creation (window.py), so a web view
+   appearing in one does not make Qt replace its X window, and menus
+   and tooltips stay quick to show.
+3. The profile, the per-site identity, the history and bookmarks
+   (browser/places.py), the control socket (control.py: later
+   invocations' URLs, and the agent's requests).
+4. The windows for the URLs given; none at all with `no_window` (the
+   agent's start, browser/control.py `ensure_running`: its first
+   request opens one).
+
+`Browser` keeps the windows, most recently used first, and is what the
+control socket, the windows and the downloads ask for "the window to
+put this in".
+
+The end: Ctrl+C or SIGTERM quits the event loop, and so does the last
+window closing; the log says which (logs.py) before every window (and
+so every page) is deleted, deferred deletions flushed, and only then
+the profile. The other order makes Qt warn that the profile was
+released under a live page.
+"""
+
+import logging
+import os
+import signal
+import socket
+from pathlib import Path
+
+import shiboken6
+from PySide6.QtCore import (QCoreApplication, QEvent, QObject, QSocketNotifier, Qt,
+                            QtMsgType, QUrl, qInstallMessageHandler, qVersion)
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtWebEngineCore import QWebEngineDownloadRequest
+from PySide6.QtWidgets import QApplication
+
+from indigoshell.browser import places, protocol
+from indigoshell.core.naming import APP
+
+from . import logs, startup
+from .bookmarks import Bookmarks
+from .control import ControlServer
+from .identity import Identity
+from .profile import make_profile
+from .tabs import to_url
+from .window import NAME, Window
+
+log = logging.getLogger(__name__)
+qt_log = logging.getLogger(f"{APP}.browser.qt.messages")
+
+
+# ── the application ─────────────────────────────────────────────────────
+_LEVELS = {QtMsgType.QtDebugMsg: logging.DEBUG, QtMsgType.QtInfoMsg: logging.INFO,
+           QtMsgType.QtWarningMsg: logging.WARNING, QtMsgType.QtCriticalMsg: logging.ERROR,
+           QtMsgType.QtFatalMsg: logging.CRITICAL}
+
+
+def _qt_message(mode, context, message) -> None:
+    level = logging.DEBUG if context.category == "js" else _LEVELS.get(mode, logging.INFO)
+    qt_log.log(level, "%s", message)
+
+
+def make_application() -> QApplication:
+    app = QApplication.instance()
+    if app is not None:
+        return app
+    # Not QT_WIDGETS_RHI: it made every top-level GPU-composed, and each
+    # new menu, tooltip or dialog then took 250-400 ms to show. Only the
+    # browser's own windows are, from their creation (window.py).
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
+    QCoreApplication.setApplicationName(NAME)
+    QGuiApplication.setDesktopFileName(NAME)
+    qInstallMessageHandler(_qt_message)
+    logs.install_hooks()            # a slot's exception: logged, and the browser goes on
+    app = QApplication([NAME])
+    app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+    return app
+
+
+class SignalWake:
+    """Ctrl+C and SIGTERM quit the event loop. Python handles a signal
+    only when it runs, and inside app.exec() it does not; the wakeup fd
+    makes the loop run a line of Python as soon as one arrives."""
+
+    def __init__(self, app: QApplication) -> None:
+        self.received: str | None = None   # the signal that ended the loop
+        self.r, self.w = socket.socketpair()
+        self.r.setblocking(False)
+        self.w.setblocking(False)
+        signal.set_wakeup_fd(self.w.fileno())
+        self.notifier = QSocketNotifier(self.r.fileno(), QSocketNotifier.Type.Read)
+        self.notifier.activated.connect(self._drain)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda num, _frame: self._quit(app, num))
+
+    def _drain(self) -> None:
+        try:
+            self.r.recv(64)
+        except OSError:
+            pass
+
+    def _quit(self, app: QApplication, num: int) -> None:
+        self.received = signal.Signals(num).name
+        log.info("%s: quitting", self.received)
+        app.quit()
+
+
+# ── the process-wide state ──────────────────────────────────────────────
+class Browser(QObject):
+    def __init__(self, profile, *, unattended: bool = False,
+                 sites: Path | None = None) -> None:
+        super().__init__()
+        self.profile = profile
+        self.unattended = unattended
+        self.identity = Identity(profile, sites)
+        self.history = places.History()
+        self.bookmarks = Bookmarks(self)
+        self.bookmarks.changed.connect(self._bookmarks_changed)
+        self.windows: list[Window] = []         # open ones, most recently used first
+        self._made: list[Window] = []           # every one made and not closed, for the end
+        self.server: ControlServer | None = None
+        self.downloads: dict[int, int | None] = {}  # id -> last percent reported
+        self._requests: list[QWebEngineDownloadRequest] = []
+        profile.downloadRequested.connect(self.on_download)
+
+    def listen(self, path: str | None = None) -> None:
+        """The control socket: hand-offs and the agent's requests."""
+        self.server = ControlServer(self, path)
+
+    # ── windows ─────────────────────────────────────────────────────────
+    def new_window(self, *, single: bool = False, dialog: bool = False) -> Window:
+        window = Window(self, single=single, dialog=dialog or (self.unattended and not single))
+        if self.unattended:
+            self._out_of_the_way(window, offset=40 * len(self.windows))
+        self.windows.insert(0, window)
+        self._made.append(window)
+        return window
+
+    def touch(self, window: Window) -> None:
+        if window in self.windows and self.windows[0] is not window:
+            self.windows.remove(window)
+            self.windows.insert(0, window)
+
+    def forget(self, window: Window) -> None:
+        """A window closed: it deletes itself (WA_DeleteOnClose); one
+        still pending at the end goes with the deferred deletions."""
+        if window in self.windows:
+            self.windows.remove(window)
+        if window in self._made:
+            self._made.remove(window)
+
+    def main_window(self) -> Window:
+        """The most recently used window that takes tabs; a new one if none."""
+        for window in self.windows:
+            if not window.single and shiboken6.isValid(window):
+                return window
+        window = self.new_window()
+        window.show()
+        return window
+
+    def _bookmarks_changed(self) -> None:
+        for window in self.windows:
+            window.refresh()
+
+    def window_of(self, page) -> Window | None:
+        for window in self.windows:
+            if any(tab.page is page for tab in window.tabs):
+                return window
+        return None
+
+    def open_urls(self, urls: list[str]) -> Window:
+        """URLs from the command line or a later invocation: tabs at the
+        end of the most recently used window, the first one shown. None
+        at all: a new window, blank, asking for an address (the shell's
+        launcher once the shell is there, or our own dialog)."""
+        if not urls:
+            window = self.new_window()
+            window.add_tab(QUrl("about:blank"))
+            window.show()
+            window.ask_address()
+            return window
+        window = self.main_window()
+        for i, url in enumerate(urls):
+            window.add_tab(to_url(url), background=i > 0)
+        window.show()
+        if not self.unattended:         # its window refuses focus on purpose
+            window.raise_()
+            window.activateWindow()
+        return window
+
+    def open_popup(self, request) -> Window:
+        """A page's request for a small window of its own (a sign-in
+        dialog): one page, floating, the size it asked for."""
+        window = self.new_window(single=True, dialog=True)
+        geometry = request.requestedGeometry()
+        if geometry.width() > 0 and geometry.height() > 0:
+            window.resize(geometry.width(), geometry.height())
+            if geometry.x() or geometry.y():
+                window.move(geometry.topLeft())
+        tab = window.add_tab()
+        request.openIn(tab.page)
+        window.show()
+        return window
+
+    def _out_of_the_way(self, window: Window, offset: int = 0) -> None:
+        """An unattended run's window: floating in the bottom-right corner,
+        never taking the keyboard."""
+        window.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus)
+        window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        window.resize(1000, 660)
+        window.move(area.right() - window.width() - 12 - offset,
+                    area.bottom() - window.height() - 12 - offset)
+
+    # ── downloads ───────────────────────────────────────────────────────
+    def on_download(self, request: QWebEngineDownloadRequest) -> None:
+        request.accept()
+        path = Path(request.downloadDirectory()) / request.downloadFileName()
+        log.info("download: %s (from %s)", path, request.url().toString())
+        self._requests.append(request)
+        self.downloads[request.id()] = None
+        request.receivedBytesChanged.connect(lambda: self._download_progress(request))
+        request.isFinishedChanged.connect(lambda: self._download_finished(request))
+        self._download_note(request, "started", 0)
+
+    def _percent(self, request) -> int | None:
+        total = request.totalBytes()
+        return int(request.receivedBytes() * 100 / total) if total > 0 else None
+
+    def _download_progress(self, request) -> None:
+        percent = self._percent(request)
+        last = self.downloads.get(request.id())
+        # A short state: every tenth, not every chunk.
+        if percent is not None and (last is None or percent // 10 > last // 10) and percent < 100:
+            self._download_note(request, "progress", percent)
+
+    def _download_finished(self, request) -> None:
+        S = QWebEngineDownloadRequest.DownloadState
+        state = request.state()
+        path = Path(request.downloadDirectory()) / request.downloadFileName()
+        if state == S.DownloadCompleted:
+            log.info("download done: %s (%d bytes)", path, request.receivedBytes())
+            self._download_note(request, "done", 100)
+        elif state == S.DownloadCancelled:
+            log.info("download cancelled: %s", path)
+            self._download_note(request, "cancelled", self._percent(request))
+        else:
+            log.warning("download failed: %s (%s)", path, request.interruptReasonString())
+            self._download_note(request, "failed", self._percent(request))
+        if request in self._requests:
+            self._requests.remove(request)
+        self.downloads.pop(request.id(), None)
+
+    def _download_note(self, request, state: str, percent: int | None) -> None:
+        self.downloads[request.id()] = percent
+        window = self.window_of(request.page()) if request.page() else None
+        window = window or next((w for w in self.windows if not w.single), None)
+        if window is None:
+            return
+        name = request.downloadFileName()
+        window.link.send(protocol.download(name, state, percent))
+        running = state in ("started", "progress")
+        window.download = (f"↓ {name}" + (f" {percent}%" if percent else "")) if running else ""
+        window.refresh()
+
+    # ── the end ─────────────────────────────────────────────────────────
+    def shutdown(self) -> None:
+        """Every page gone, before the profile goes."""
+        if self.server is not None:
+            self.server.close()
+        for window in self._made:
+            if shiboken6.isValid(window):
+                window.link.close()
+        for window in self._made:
+            if shiboken6.isValid(window):
+                shiboken6.delete(window)
+        self._made.clear()
+        self.windows.clear()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.history.close()
+
+
+def main(urls: list[str], *, unattended: bool = False, lock: int | None = None,
+         no_window: bool = False) -> int:
+    log.info("starting: pid %d, Qt %s%s%s", os.getpid(), qVersion(),
+             ", unattended" if unattended else "",
+             ", no window" if no_window and not urls else "")
+    widevine = startup.apply_flags()
+    app = make_application()
+    profile = make_profile()
+    log.info("profile in %s%s", profile.persistentStoragePath(),
+             f"; Widevine {widevine}" if widevine else "")
+    browser = Browser(profile, unattended=unattended)
+    browser.listen()
+    if urls or not no_window:
+        browser.open_urls(urls)
+    wake = SignalWake(app)
+    closed = []
+    app.lastWindowClosed.connect(lambda: closed.append(True))
+
+    code = app.exec()
+
+    # Why, said before anything else can go wrong: a log that ends
+    # without this line is a browser that did not end cleanly.
+    why = (f"{wake.received} received" if wake.received
+           else "its last window closed" if closed else "the event loop was left")
+    log.info("ending: %s", why)
+    browser.shutdown()
+    shiboken6.delete(browser)
+    shiboken6.delete(profile)
+    del wake
+    log.info("ended cleanly (exit code %d)", code)
+    return code

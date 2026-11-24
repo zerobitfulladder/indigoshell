@@ -1,0 +1,80 @@
+"""What every indigoshell app and the shell say to each other.
+
+Pure Python: imported by the apps (Qt processes) and by the daemon, so
+it imports neither toolkit.
+
+One unix stream socket connection per app window, the shell listening
+at `socket_path()` (`<APP>-apps-<uid>.sock` in the runtime directory),
+the app connecting. One JSON object per line, both ways, each with its
+`type`: a side dispatches on it, ignores a type it does not know (with
+one debug line), and ignores keys it does not use. What a kind of app
+says after its announce is its own (Jack's: browser/protocol.py).
+
+App -> shell
+    announce    {"type": "announce", "app": <kind>, "wid": <X window>, ...}
+                First on every connection, before anything else. `app`
+                names the kind, whose class on the shell's side decides
+                how the top bar draws the window and which keys the shell
+                takes from it (applink/service.py); a kind may say more
+                here (Jack: browser/protocol.py).
+
+Shell -> app
+    attached    {"type": "attached"}
+                The answer to the announce: the shell has the window. It
+                shows the window's state in its top bar while the window
+                has focus, so the app draws none of its own.
+    restarting  {"type": "restarting"}
+                Sent as the shell stops for a reload: it will be back in
+                a moment (a second or two), so an app can wait longer than
+                usual before it shows its state itself.
+"""
+
+import json
+import os
+
+from indigoshell.core.naming import APP, env
+from indigoshell.core.paths import runtime_dir
+
+SOCKET_ENV = env("APPS_SOCKET")
+
+TYPE = "type"
+APP_KEY = "app"
+WID = "wid"
+
+ANNOUNCE = "announce"
+ATTACHED = "attached"
+RESTARTING = "restarting"
+
+
+def socket_path() -> str:
+    """Where the shell listens for its apps."""
+    return os.environ.get(SOCKET_ENV) or os.path.join(
+        runtime_dir(), f"{APP}-apps-{os.getuid()}.sock")
+
+
+def encode(msg: dict) -> bytes:
+    return (json.dumps(msg, separators=(",", ":")) + "\n").encode()
+
+
+def decode(line: bytes | str) -> dict | None:
+    """One line as a message: a JSON object with a string `type`; None
+    for anything else."""
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        return None
+    return msg if isinstance(msg, dict) and isinstance(msg.get(TYPE), str) else None
+
+
+def message(type_: str, **fields) -> dict:
+    return {TYPE: type_, **fields}
+
+
+def announce(app: str, wid: int, **fields) -> dict:
+    return message(ANNOUNCE, **{APP_KEY: app, WID: int(wid)}, **fields)
+
+
+def valid_wid(wid) -> bool:
+    """Whether an announced window id can be an X window at all (X
+    resource ids are 29 bits)."""
+    return isinstance(wid, int) and not isinstance(wid, bool) and 0 < wid < 1 << 29

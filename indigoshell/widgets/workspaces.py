@@ -17,6 +17,7 @@ reply round-trip, and no polling tick to drain it.
 import logging
 
 import skia
+import xcffib.xproto as xp
 
 from .. import text as textmod, theme
 from .base import Size, Widget
@@ -95,6 +96,10 @@ class Workspaces(Widget):
 
     def _on_client_property(self, ev) -> None:
         """A watched client changed desktop or urgency."""
+        if not isinstance(ev, xp.PropertyNotifyEvent):
+            # Someone else here may select more on this window (the
+            # display merges masks per window): not ours.
+            return
         self._desktop_cache.pop(ev.window, None)
         self._urgent_cache.pop(ev.window, None)
         self._clients_dirty = True
@@ -133,7 +138,7 @@ class Workspaces(Widget):
                 urgents[xid] = urgent
             self._desktop_cache, self._urgent_cache = desktops, urgents
             for stale in self._watched - set(clients):
-                d.off(stale)
+                d.off(stale, self._on_client_property)
             self._watched &= set(clients)
             self._clients_dirty = False
 

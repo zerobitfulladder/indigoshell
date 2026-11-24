@@ -58,6 +58,44 @@ def _int_array(values):
     return (ctypes.c_int * len(values))(*values)
 
 
+# ── Xlib errors ─────────────────────────────────────────────────────────
+# EGL talks to the server over its own Xlib connection, and Xlib's
+# default error handler answers any X error by exiting the process: the
+# whole shell, for one BadDrawable. The shell's own windows are not
+# meant to provoke one, but a window going away between two of EGL's
+# calls must not take the shell with it. So an error is logged and the
+# shell carries on; Xlib's handler is process-wide, and this is the only
+# Xlib connection the shell has.
+class _XErrorEvent(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("display", ctypes.c_void_p),
+                ("resourceid", ctypes.c_ulong), ("serial", ctypes.c_ulong),
+                ("error_code", ctypes.c_ubyte), ("request_code", ctypes.c_ubyte),
+                ("minor_code", ctypes.c_ubyte)]
+
+
+_XErrorHandler = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p,
+                                  ctypes.POINTER(_XErrorEvent))
+
+xlib_errors = 0                     # every one since start, for the tests
+_xlib_seen: set[tuple[int, int, int]] = set()
+
+
+def _on_xlib_error(_dpy, event) -> int:
+    global xlib_errors
+    xlib_errors += 1
+    e = event.contents
+    kind = (e.error_code, e.request_code, e.minor_code)
+    # Each kind once at warning; a dying window can repeat it per frame.
+    level = logging.DEBUG if kind in _xlib_seen else logging.WARNING
+    _xlib_seen.add(kind)
+    log.log(level, "Xlib error %d on request %d.%d (resource 0x%x); carrying on",
+            e.error_code, e.request_code, e.minor_code, e.resourceid)
+    return 0
+
+
+_xlib_handler = _XErrorHandler(_on_xlib_error)   # kept alive: Xlib holds it
+
+
 class _Lib:
     """Lazily loaded C entry points, so importing this module on a box
     with no GL doesn't explode at import time."""
@@ -67,6 +105,7 @@ class _Lib:
         self.x11.XOpenDisplay.restype = ctypes.c_void_p
         self.x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
         self.x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        self.x11.XSetErrorHandler.restype = ctypes.c_void_p
 
         e = ctypes.CDLL("libEGL.so.1")
         e.eglGetProcAddress.restype = ctypes.c_void_p
@@ -206,6 +245,7 @@ class Backend:
         proto = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int,
                                  ctypes.c_void_p, ctypes.POINTER(ctypes.c_int))
 
+        self.lib.x11.XSetErrorHandler(_xlib_handler)
         self.xdpy = self.lib.x11.XOpenDisplay(None)
         if not self.xdpy:
             raise RuntimeError("XOpenDisplay failed")
@@ -322,18 +362,23 @@ class Backend:
         if self.context is not None:
             self.context.resetContext()
 
-    def make_current(self, surface: GLSurface) -> None:
+    def make_current(self, surface: GLSurface) -> bool:
+        """Bind `surface`. False if EGL refused (its window is gone),
+        in which case whatever was bound stays bound and recorded."""
         # `==`, not `is`: these are ctypes pointers surfacing as Python
         # ints, and equal ints are not always the same object.
         if self._current == surface.egl_surface:
-            return
-        self.lib.egl.eglMakeCurrent(self.dpy, surface.egl_surface,
-                                    surface.egl_surface, self.ctx)
+            return True
+        if not self.lib.egl.eglMakeCurrent(self.dpy, surface.egl_surface,
+                                           surface.egl_surface, self.ctx):
+            log.debug("eglMakeCurrent refused surface for 0x%x", surface.wid)
+            return False
         self._current = surface.egl_surface
         # Skia caches GL state; after a context switch it must re-read it
         # or it will issue draws against the wrong bindings.
         if self.context is not None:
             self.context.resetContext()
+        return True
 
     def offscreen(self, width: int, height: int):
         """A GPU-backed offscreen surface — the frozen content frame."""

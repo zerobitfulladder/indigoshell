@@ -100,6 +100,10 @@ class Monitor:
     name: str = ""
 
 
+# The `select` owner behind `watch_window_properties`.
+_PROPERTIES = "properties"
+
+
 def _event_window(ev) -> int | None:
     """Which window an event belongs to.
 
@@ -141,7 +145,13 @@ class Display:
         self.root = self.screen.root
 
         self._atoms: dict[str, int] = {}
-        self._handlers: dict[int, object] = {}
+        # Several handlers per window: the bar watches a client window's
+        # properties, and anything else here may watch the same window
+        # for something else.
+        self._handlers: dict[int, list] = {}
+        # What this connection selected on windows other clients own,
+        # per subscriber; see `select`.
+        self._selected: dict[int, dict[object, int]] = {}
         self._pumping = False
         self._loop = None
         self._drain_queued = False
@@ -161,6 +171,7 @@ class Display:
         self._raised_at: list[float] = []
         self._keymap: dict[int, tuple[int, ...]] | None = None
         self._mod_masks: dict[str, int] = {}
+        self._keymap_listeners: list = []
 
     # ── connection ──────────────────────────────────────────────────────
     @property
@@ -234,12 +245,69 @@ class Display:
 
     # ── event routing ───────────────────────────────────────────────────
     def on(self, wid: int, handler) -> None:
-        log.debug("routing events for window 0x%x", wid)
-        self._handlers[wid] = handler
+        """Route `wid`'s events to `handler`, besides any handler it
+        already has. The same handler twice is one."""
+        handlers = self._handlers.setdefault(wid, [])
+        if handler not in handlers:
+            log.debug("routing events for window 0x%x", wid)
+            handlers.append(handler)
 
-    def off(self, wid: int) -> None:
-        if self._handlers.pop(wid, None) is not None:
-            log.debug("stopped routing events for window 0x%x", wid)
+    def off(self, wid: int, handler=None) -> None:
+        """Stop routing `wid`'s events to `handler`, or to every handler
+        when none is named. With no handler left, the window's `select`
+        records go too: nobody here is listening any more (the server
+        keeps the mask it has, as it always did)."""
+        handlers = self._handlers.get(wid)
+        if not handlers:
+            return
+        if handler is not None:
+            if handler in handlers:
+                handlers.remove(handler)
+            if handlers:
+                return
+        del self._handlers[wid]
+        self._selected.pop(wid, None)
+        log.debug("stopped routing events for window 0x%x", wid)
+
+    def select(self, wid: int, mask: int, owner) -> None:
+        """Hear `mask`'s events from a window another client owns, on
+        behalf of `owner`.
+
+        X keeps one event mask per client per window, and setting it
+        replaces the last one, so every owner's bits are sent together
+        (as `_select_root` does for the root) and `unselect` takes back
+        one owner's without touching the rest. Unchecked: a window that
+        is already gone answers with a BadWindow that `pump` files as a
+        race, not a bug.
+        """
+        masks = self._selected.setdefault(wid, {})
+        masks[owner] = masks.get(owner, 0) | mask
+        self._send_mask(wid)
+
+    def unselect(self, wid: int, owner) -> None:
+        """Take back what `owner` selected on `wid`; the other owners'
+        bits stay selected."""
+        masks = self._selected.get(wid)
+        if masks is None or masks.pop(owner, None) is None:
+            return
+        self._send_mask(wid)
+        if not masks:
+            del self._selected[wid]
+
+    def _send_mask(self, wid: int) -> None:
+        union = 0
+        for mask in self._selected.get(wid, {}).values():
+            union |= mask
+        self.conn.core.ChangeWindowAttributes(wid, xp.CW.EventMask, [union])
+
+    def _gone_window_race(self, error) -> bool:
+        """Whether an X error is a request that crossed a window another
+        client destroyed: BadWindow or BadDrawable naming a window that
+        is not ours."""
+        if not isinstance(error, (xp.WindowError, xp.DrawableError)):
+            return False
+        wid = getattr(error, "bad_value", 0)
+        return bool(wid) and not self._ours(wid)
 
     def pump(self) -> int:
         """Drain every queued event and dispatch it. Returns the count.
@@ -265,14 +333,22 @@ class Display:
             while True:
                 try:
                     ev = self.conn.poll_for_event()
-                except xcffib.Error:
+                except xcffib.Error as e:
                     # Errors for unchecked requests arrive through the
                     # event queue, so poll_for_event raises them here —
                     # usually a window that died between our request and
                     # the server's reply (another client crashed). The
                     # connection is fine; skip it and keep draining.
-                    log.warning("X protocol error in event queue",
-                                exc_info=True)
+                    # A window another client closed under us is routine
+                    # (the bar watches every client window), so that is
+                    # quiet.
+                    if self._gone_window_race(e):
+                        log.debug("X error on window 0x%x, gone: %s "
+                                  "(request %d)", e.bad_value,
+                                  type(e).__name__, e.major_opcode)
+                    else:
+                        log.warning("X protocol error in event queue",
+                                    exc_info=True)
                     continue
                 except Exception as e:
                     raise DisplayError(f"X connection lost: {e}") from e
@@ -293,6 +369,12 @@ class Display:
             # Addressed to no window, so routing by window would drop it:
             # the keyboard mapping changed (setxkbmap, xmodmap).
             self.invalidate_keymap()
+            if ev.request != xp.Mapping.Pointer:
+                for cb in list(self._keymap_listeners):
+                    try:
+                        cb()
+                    except Exception:
+                        log.exception("keymap listener failed")
             return
         if isinstance(ev, (xcffib.randr.ScreenChangeNotifyEvent,
                            xcffib.randr.NotifyEvent)):
@@ -307,22 +389,34 @@ class Display:
                     log.exception("screen listener failed")
             return
         wid = _event_window(ev)
-        handler = self._handlers.get(wid) if wid is not None else None
-        if handler is None:
+        handlers = self._handlers.get(wid) if wid is not None else None
+        if not handlers:
             if self.on_unhandled is not None:
                 self.on_unhandled(ev)
             elif log.isEnabledFor(logging.DEBUG):
                 log.debug("unhandled %s for window %s",
                           type(ev).__name__,
                           f"0x{wid:x}" if wid is not None else "?")
-            return
-        try:
-            handler(ev)
-        except Exception:
-            # One misbehaving window must not take the event pump — and
-            # with it every other window — down with it.
-            log.exception("handler for window 0x%x raised on %s",
-                          wid, type(ev).__name__)
+        else:
+            for handler in tuple(handlers):
+                # One handler may remove another while this event is
+                # being delivered; the removed one has stopped listening.
+                if handler not in self._handlers.get(wid, ()):
+                    continue
+                try:
+                    handler(ev)
+                except Exception:
+                    # One misbehaving window must not take the event
+                    # pump — and with it every other window — down with
+                    # it.
+                    log.exception("handler for window 0x%x raised on %s",
+                                  wid, type(ev).__name__)
+        if (isinstance(ev, xp.DestroyNotifyEvent) and ev.window == wid
+                and wid != self.root):
+            # The window itself is gone (heard through its own
+            # StructureNotify): nothing more will come for it.
+            self._handlers.pop(wid, None)
+            self._selected.pop(wid, None)
 
     # ── keyboard ────────────────────────────────────────────────────────
     def keysym(self, keycode: int, state: int = 0) -> int:
@@ -390,6 +484,103 @@ class Display:
     def invalidate_keymap(self) -> None:
         self._keymap = None
 
+    def add_keymap_listener(self, callback) -> None:
+        """Call `callback()` when the server says the keyboard or modifier
+        mapping changed (MappingNotify), after the cached keymap is
+        dropped. A client that initialised XKB, as this connection does
+        for detectable auto-repeat, is not sent the core MappingNotify
+        that `setxkbmap` makes (the server leaves XKB clients out of those
+        emulated from a new keyboard description), so this covers
+        `xmodmap`-style changes, not every layout switch."""
+        if callback not in self._keymap_listeners:
+            self._keymap_listeners.append(callback)
+
+    def remove_keymap_listener(self, callback) -> None:
+        if callback in self._keymap_listeners:
+            self._keymap_listeners.remove(callback)
+
+    def keycodes(self, keysym: int) -> list[int]:
+        """The keycodes that type `keysym` with or without Shift (the
+        first two levels of the first group): what a grab of that key
+        has to name."""
+        keymap = self._keymap if self._keymap is not None else self._load_keymap()
+        return sorted(code for code, row in keymap.items() if keysym in row[:2])
+
+    def lock_combinations(self) -> list[int]:
+        """Every combination of the lock modifiers (Caps Lock, Num Lock),
+        none first. A passive grab names its modifiers exactly, so a key
+        grabbed with Control alone would not fire with Num Lock on; it is
+        grabbed once per combination instead."""
+        locks = [xp.ModMask.Lock, self.mod_mask("numlock")]
+        out = [0]
+        for bit in locks:
+            if bit and bit not in out:
+                out += [m | bit for m in out]
+        return out
+
+    def grab_keys(self, wid: int, keys: list[tuple[int, int]]) -> str | None:
+        """Passively grab each (keycode, modifiers) of `keys` on `wid`, a
+        window of any client's, the modifiers exactly. From then on such
+        a press comes to this connection instead of the window's own
+        client, and the keyboard with it until the key is let go (or
+        longer: `grab_keyboard`), whenever the X server would activate the
+        grab: `wid` is the focus window or holds it, or the focus is an
+        ancestor of `wid` (the root) and the pointer is inside it. All or
+        nothing: None when every one is grabbed; otherwise why not, with
+        none of them left grabbed: "taken" (another client grabbed one of
+        them on `wid` first: BadAccess), "gone" (no such window),
+        "refused" (any other error).
+
+        Asynchronous for both devices: nothing freezes while the shell
+        answers the press, so a shell that is slow (or stuck) never stops
+        the person's keyboard; holding it past the key's release is
+        `grab_keyboard`'s job."""
+        core = self.conn.core
+        cookies = [core.GrabKeyChecked(False, wid, mods, code,
+                                       xp.GrabMode.Async, xp.GrabMode.Async)
+                   for code, mods in keys]
+        why = None
+        for cookie in cookies:
+            try:
+                cookie.check()          # one round trip for all of them
+            except xp.AccessError:
+                why = why or "taken"
+            except xp.WindowError:
+                why = why or "gone"
+            except xcffib.Error:
+                why = why or "refused"
+        self.wake()
+        if why is not None and why != "gone":
+            self.ungrab_keys(wid, keys)
+        return why
+
+    def ungrab_keys(self, wid: int, keys: list[tuple[int, int]]) -> None:
+        """Undo `grab_keys`. Unchecked: on a window already gone the
+        BadWindow is a race `pump` keeps quiet."""
+        for code, mods in keys:
+            self.conn.core.UngrabKey(code, wid, mods)
+        self.flush()
+
+    def grab_keyboard(self, wid: int) -> bool:
+        """Take the keyboard actively, its events reported on `wid`
+        (owner_events off), until `ungrab_keyboard`. Made while a passive
+        grab (`grab_key`) holds it, this keeps it past the release of the
+        key that fired the grab, which would otherwise end it."""
+        try:
+            reply = self.conn.core.GrabKeyboard(
+                False, wid, xp.Time.CurrentTime,
+                xp.GrabMode.Async, xp.GrabMode.Async).reply()
+        except Exception:
+            log.debug("keyboard grab on 0x%x errored", wid, exc_info=True)
+            return False
+        finally:
+            self.wake()
+        return reply.status == xp.GrabStatus.Success
+
+    def ungrab_keyboard(self) -> None:
+        self.conn.core.UngrabKeyboard(xp.Time.CurrentTime)
+        self.flush()
+
     # ── root events ─────────────────────────────────────────────────────
     def add_root_listener(self, callback) -> None:
         """Subscribe to PropertyNotify on the root window.
@@ -435,10 +626,10 @@ class Display:
 
         Wrapped because a client can die between us listing it and us
         selecting on it, which is a BadWindow we simply don't care about.
+        Merged with what others here select on the same window (`select`).
         """
         try:
-            self.conn.core.ChangeWindowAttributes(
-                wid, xp.CW.EventMask, [xp.EventMask.PropertyChange])
+            self.select(wid, xp.EventMask.PropertyChange, _PROPERTIES)
         except Exception:
             log.debug("cannot watch 0x%x", wid, exc_info=True)
 

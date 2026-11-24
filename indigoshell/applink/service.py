@@ -1,0 +1,607 @@
+"""The daemon's end of the apps' line: who is connected, who has focus,
+and the keys the shell takes from them.
+
+`AppService` is a SERVICES entry. It listens at `protocol.socket_path()`
+on the daemon's loop; each connection is one app window (`Link`), which
+announces itself first (protocol.py) and is then handed to an
+`AppWindow` of its kind, from the `kinds` the service was given
+(config_default: `{"jack": browser.context.JackWindow}`). A kind the
+service does not know still gets a plain `AppWindow`: kept, answered,
+shown as nothing.
+
+Focus. The service follows the root window's `_NET_ACTIVE_WINDOW`, the
+window manager's word for which client window has the keyboard, and
+knows the app window that has it (`focused`): the one whose announced
+X window it is, or, for a dialog of an app's, the one the dialog is
+transient for. Anyone that wants to hear about it (the top bar's
+context area, applink/context.py) calls `follow`. A window manager that
+reparents would name its frame here instead of the app's window; qtile
+does not, and none other is supported.
+
+Keys. A kind's class names chords (`AppWindow.keys`: Jack's Ctrl+L,
+Ctrl+T, Ctrl+M) that the shell answers itself. On the announce the
+service grabs each on that window, passively (Display.grab_keys), once
+per combination of the lock modifiers so Caps Lock and Num Lock change
+nothing, by the keycodes the current keymap gives the key. The X server
+activates such a grab when the chord is pressed while the window is the
+focus window or holds it, or while the focus is on an ancestor of it
+(the root, when nothing has the focus) and the pointer is inside it; it
+then sends the press here instead of to the app, and every key after it
+until that key is let go. So there is no moment where the app has seen
+the chord and the shell has not: the shell has the keyboard from the
+press on. The press reaches the window's `on_key`; keys pressed while
+the shell still holds the keyboard for the window arrive on the app's
+window too (routed here by `Display.on`, for that window only) and
+reach `on_typed`. `hold_keyboard` keeps the keyboard past the chord's
+release, until whatever answers it (Jack's launcher) takes it with a
+grab of its own, or `release_keyboard`.
+
+The grabs go when the connection closes or the service stops; the X
+server drops them itself with the window. They are made again when the
+keymap changes (MappingNotify) and when the app announces again. A grab
+another client holds already on the window (BadAccess) is said once as a
+warning, and that chord is left to the app.
+
+Lifecycle. A connection that closes (the app window closed, the app
+quit, or it replaced its X window and announced again on a new
+connection) drops its `AppWindow`. `stop()` (the daemon stopping or
+reloading) closes the socket and every connection; each app shows its
+own state if the shell stays away (Jack after a few seconds, so that a
+reload, which is back sooner, never makes its page jump; a reload says
+so first, `restarting`, and the app waits longer still) and connects
+again to the next daemon.
+
+One listener per socket. Finding the socket live (another daemon), this
+service leaves it alone, says so once, and tries again every few
+seconds, taking over once it is free.
+"""
+
+import asyncio
+import logging
+import os
+import socket
+from dataclasses import dataclass
+
+import xcffib.xproto as xp
+
+from ..window import key_event
+from . import protocol
+
+log = logging.getLogger(__name__)
+
+CLAIM_RETRY_S = 5.0                 # while another shell holds the socket
+LINE_LIMIT = 1 << 20                # bytes in one message: a state with many tabs
+_KEY_PRESS = 2
+
+_CHORD_MODIFIERS = {"ctrl": xp.ModMask.Control, "shift": xp.ModMask.Shift}
+
+
+class AppWindow:
+    """One window of an indigoshell app, as the shell sees it. Each kind
+    of app subclasses this.
+
+    `content` is the widget the top bar's context area shows while this
+    window has focus (None: nothing). It is the kind's to build and keep
+    up to date; the context area attaches it to the bar window when it
+    shows it and detaches it when focus moves on.
+    """
+
+    kind = ""
+    # The chords the shell takes from this kind's windows, written like
+    # "ctrl+l" (modifiers ctrl, shift, alt, super; then one letter), each
+    # with the name `on_key` is given. Read once the window is made: an
+    # instance may set its own.
+    keys: dict[str, str] = {}
+
+    def __init__(self, link: "Link", wid: int, announce: dict) -> None:
+        self.link = link
+        self.service = link.service
+        self.wid = wid
+        self.content = None
+        self.closed = False
+
+    def on_message(self, msg: dict) -> None:
+        """Every message after the announce."""
+        log.debug("%s window 0x%x: message %r not understood", self.kind or "app",
+                  self.wid, msg.get(protocol.TYPE))
+
+    def on_key(self, name: str, key) -> None:
+        """One of `keys` (named `name`) was pressed in the window: the
+        shell has the keyboard, until that key is let go
+        (`service.hold_keyboard` keeps it longer). `key` is the press as
+        a widgets.base.KeyEvent."""
+
+    def on_typed(self, key) -> None:
+        """Another key pressed while the shell holds the keyboard for this
+        window (after `on_key`, before whatever answers it took the
+        keyboard): reported on the app's window, in the order typed."""
+
+    def send(self, msg: dict) -> None:
+        if not self.closed:
+            self.link.send(msg)
+
+    def close(self) -> None:
+        """The connection is gone: let go of anything held for the app."""
+        self.closed = True
+
+
+class Link:
+    """One connection: an app window before and after it announced."""
+
+    def __init__(self, service: "AppService", writer: asyncio.StreamWriter) -> None:
+        self.service = service
+        self.writer = writer
+        self.window: AppWindow | None = None
+        self.closed = False
+
+    def on_message(self, msg: dict) -> None:
+        if self.closed:
+            return
+        announce = msg[protocol.TYPE] == protocol.ANNOUNCE
+        if self.window is not None:
+            if announce:
+                log.debug("app window 0x%x announced again on the same connection; ignored",
+                          self.window.wid)
+            else:
+                self.window.on_message(msg)
+            return
+        if not announce:
+            log.debug("message before the announce, ignored: %r", msg[protocol.TYPE])
+            return
+        wid, kind = msg.get(protocol.WID), msg.get(protocol.APP_KEY)
+        d = self.service.display
+        if not protocol.valid_wid(wid):
+            log.warning("an app announced %r: not a window; ignored", wid)
+            return
+        if d is not None and (wid == d.root or d._ours(wid)):
+            log.warning("an app announced 0x%x, which is not its own window; ignored", wid)
+            return
+        if not isinstance(kind, str) or not kind:
+            log.warning("an app announced window 0x%x as no kind (%r); ignored", wid, kind)
+            return
+        cls = self.service.kinds.get(kind)
+        if cls is None:
+            self.service.unknown(kind)
+            cls = AppWindow
+        self.window = cls(self, wid, msg)
+        if not self.window.kind:
+            self.window.kind = kind     # a kind with no class here: named as announced
+        log.info("%s window 0x%x connected", kind, wid)
+        self.service.added(self.window)
+        self.send(protocol.message(protocol.ATTACHED))
+
+    def send(self, msg: dict) -> None:
+        if not self.closed and not self.writer.is_closing():
+            self.writer.write(protocol.encode(msg))
+
+    def close(self, reason: str) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        window, self.window = self.window, None
+        if window is not None:
+            try:
+                window.close()
+            except Exception:
+                log.exception("closing app window 0x%x failed", window.wid)
+            log.info("%s window 0x%x gone: %s", window.kind or "app", window.wid, reason)
+        if not self.writer.is_closing():
+            self.writer.close()
+        self.service.forget(self, window)
+
+
+@dataclass
+class Grabs:
+    """The keys grabbed on one app window."""
+
+    window: AppWindow
+    chords: dict[tuple[int, int], str]      # (keycode, modifiers) -> name
+    keys: list[tuple[int, int]]             # what X holds: (keycode, modifiers with locks)
+
+
+class AppService:
+    """A SERVICES entry: the socket indigoshell apps announce their
+    windows on, which of those windows has focus, and the keys the shell
+    takes from them.
+
+    `kinds` maps an app kind ("jack") to its `AppWindow` subclass.
+    `path` and `display` are for tests, which run it on a socket and an
+    X connection of their own; the daemon's are used otherwise.
+    """
+
+    def __init__(self, kinds: dict | None = None, *, path: str | None = None,
+                 display=None) -> None:
+        self.kinds = dict(kinds or {})
+        self._path = path
+        self._own_display = display
+        self.display = display
+        self.links: list[Link] = []
+        self.windows: list[AppWindow] = []          # announced, oldest first
+        self.active = 0                 # _NET_ACTIVE_WINDOW as last read
+        self.focused: AppWindow | None = None
+        self.listening = False
+        self.running = False
+        # Who hears focus move: callables taking the focused AppWindow or
+        # None. The top bar's context area, chiefly.
+        self._followers: list = []
+        # What shows the focused window: the context area tells the
+        # service where it is, for things placed against the top bar
+        # (Jack's launcher). See `bar_bottom`.
+        self.context = None
+        self.grabs: dict[int, Grabs] = {}           # by app X window
+        self._refused: set[tuple[str, str]] = set()     # (kind, chord) said once
+        self._active_atom: int | None = None
+        self._transient: dict[int, int] = {}        # active wid -> what it is transient for
+        self._unknown: set[str] = set()
+        self._sock: socket.socket | None = None
+        self._ino: int | None = None
+        self._server: asyncio.AbstractServer | None = None
+        self._task: asyncio.Task | None = None
+        self._retry: asyncio.TimerHandle | None = None
+        self._warned = False
+
+    @property
+    def path(self) -> str:
+        return self._path or protocol.socket_path()
+
+    # ── lifecycle ───────────────────────────────────────────────────────
+    def start(self) -> None:
+        if self._own_display is None:
+            from ..core.daemon import get_daemon
+            self.display = get_daemon().display
+        self.running = True
+        self._warned = False
+        if self.display is not None:
+            self.display.add_keymap_listener(self._keymap_changed)
+        self._watch_focus()
+        self._try_claim()
+
+    def stop(self) -> None:
+        self.running = False
+        if self._restarting():
+            # Back in a moment: the apps may wait for it a little longer.
+            for link in self.links:
+                link.send(protocol.message(protocol.RESTARTING))
+        if self._retry is not None:
+            self._retry.cancel()
+            self._retry = None
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        if self._server is not None:
+            self._server.close()
+            self._server = None
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None
+        if self.listening:
+            self.listening = False
+            self._unlink_ours()
+        for link in list(self.links):
+            link.close("shell stopping")
+        if self.display is not None:
+            self.display.remove_keymap_listener(self._keymap_changed)
+            self.display.flush()
+
+    @staticmethod
+    def _restarting() -> bool:
+        """Whether the daemon is stopping to re-execute itself."""
+        from ..core.daemon import get_daemon
+        try:
+            return bool(getattr(get_daemon(), "restarting", False))
+        except RuntimeError:            # no daemon: a test's own service
+            return False
+
+    def _try_claim(self) -> None:
+        self._retry = None
+        try:
+            sock = self._claim()
+        except OSError:
+            log.exception("apps: cannot listen on %s", self.path)
+            return
+        if sock is None:
+            if not self._warned:
+                self._warned = True
+                log.warning("apps: another shell is listening on %s; leaving it be, "
+                            "and taking over once it stops", self.path)
+            self._retry = asyncio.get_running_loop().call_later(
+                CLAIM_RETRY_S, self._try_claim)
+            return
+        self._sock = sock
+        self._ino = os.stat(self.path).st_ino
+        self.listening = True
+        self._task = asyncio.get_running_loop().create_task(self._serve(sock))
+        log.info("apps: listening on %s", self.path)
+
+    def _claim(self) -> socket.socket | None:
+        """The socket, bound and listening; None while another listener
+        holds it. A socket file nobody answers on is a stale one."""
+        path = self.path
+        if os.path.lexists(path):
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            probe.settimeout(0.5)
+            try:
+                probe.connect(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                os.unlink(path)         # stale: its owner is gone
+            else:
+                return None
+            finally:
+                probe.close()
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old = os.umask(0o077)           # the socket is ours alone
+        try:
+            sock.bind(path)
+        except OSError as e:
+            sock.close()
+            if e.errno == 98:           # EADDRINUSE: someone was quicker
+                return None
+            raise
+        finally:
+            os.umask(old)
+        sock.listen(16)
+        sock.setblocking(False)
+        return sock
+
+    def _unlink_ours(self) -> None:
+        """Remove the socket file, unless it is not ours any more."""
+        try:
+            if os.stat(self.path).st_ino == self._ino:
+                os.unlink(self.path)
+        except OSError:
+            pass
+
+    async def _serve(self, sock: socket.socket) -> None:
+        self._server = await asyncio.start_unix_server(
+            self._client, sock=sock, limit=LINE_LIMIT)
+        self._sock = None               # the server owns it now
+
+    async def _client(self, reader: asyncio.StreamReader,
+                      writer: asyncio.StreamWriter) -> None:
+        link = Link(self, writer)
+        self.links.append(link)
+        try:
+            while line := await reader.readline():
+                msg = protocol.decode(line)
+                if msg is None:
+                    log.debug("apps: a line that is no message, ignored")
+                    continue
+                try:
+                    link.on_message(msg)
+                except Exception:
+                    log.exception("apps: message %r failed", msg.get(protocol.TYPE))
+                if self.display is not None:
+                    self.display.flush()
+        except (ConnectionError, OSError, ValueError):
+            pass                        # a reset, or a line past LINE_LIMIT
+        finally:
+            link.close("app hung up")
+
+    # ── app windows ─────────────────────────────────────────────────────
+    def added(self, window: AppWindow) -> None:
+        self.windows.append(window)
+        self.grab_keys(window)
+        self._refocus()
+
+    def forget(self, link: Link, window: AppWindow | None) -> None:
+        if link in self.links:
+            self.links.remove(link)
+        if window is not None:
+            self.release_keys(window)
+            if window in self.windows:
+                self.windows.remove(window)
+                self._refocus()
+
+    def unknown(self, kind: str) -> None:
+        if kind not in self._unknown:
+            self._unknown.add(kind)
+            log.warning("apps: no kind %r here (kinds: %s); its windows show nothing",
+                        kind, ", ".join(self.kinds) or "none")
+
+    def window_for(self, wid: int) -> AppWindow | None:
+        """The app window announced as X window `wid`; the newest when
+        two said the same (the older one's connection is on its way
+        out)."""
+        return next((w for w in reversed(self.windows) if w.wid == wid), None)
+
+    # ── keys ────────────────────────────────────────────────────────────
+    def grab_keys(self, window: AppWindow) -> None:
+        """Grab `window.keys` on its X window, in place of what was
+        grabbed there before (by it, or by an older connection that
+        announced the same window)."""
+        d = self.display
+        if d is None or window.closed:
+            return
+        old = self.grabs.pop(window.wid, None)
+        if old is not None:
+            d.ungrab_keys(window.wid, old.keys)
+        if not window.keys:
+            if old is not None:
+                d.off(window.wid, self._on_app_event)
+            return
+        locks = d.lock_combinations()
+        chords: dict[tuple[int, int], str] = {}
+        held: list[tuple[int, int]] = []
+        for chord, name in window.keys.items():
+            parsed = self._parse(chord)
+            codes = d.keycodes(parsed[0]) if parsed else []
+            if not codes:
+                self._refuse(window.kind, chord, "no such key in this keymap" if parsed
+                             else "not a chord")
+                continue
+            keysym, mods = parsed
+            keys = [(code, mods | lock) for code in codes for lock in locks]
+            why = d.grab_keys(window.wid, keys)
+            if why == "gone":
+                log.debug("app window 0x%x gone before its keys were grabbed", window.wid)
+                break
+            if why is not None:
+                self._refuse(window.kind, chord, "another client has it on that window"
+                             if why == "taken" else why)
+                continue
+            chords.update({(code, mods): name for code in codes})
+            held += keys
+        if held:
+            self.grabs[window.wid] = Grabs(window, chords, held)
+            d.on(window.wid, self._on_app_event)
+            log.debug("%s window 0x%x: %d key grab(s) for %s", window.kind, window.wid,
+                      len(held), ", ".join(sorted(set(chords.values()))))
+        else:
+            d.off(window.wid, self._on_app_event)
+
+    def release_keys(self, window: AppWindow) -> None:
+        """Let go of the keys grabbed for `window` (not of a newer window
+        announced on the same X window since)."""
+        g = self.grabs.get(window.wid)
+        d = self.display
+        if g is None or g.window is not window or d is None:
+            return
+        del self.grabs[window.wid]
+        d.ungrab_keys(window.wid, g.keys)
+        d.off(window.wid, self._on_app_event)
+
+    def _parse(self, chord: str) -> tuple[int, int] | None:
+        """(keysym, modifiers) of a chord like "ctrl+l"; None if it is
+        not one this can grab."""
+        *mods, key = chord.lower().split("+")
+        if len(key) != 1 or not key.isalnum():
+            return None
+        mask = 0
+        for m in mods:
+            bit = _CHORD_MODIFIERS.get(m) or (self.display.mod_mask(m)
+                                              if m in ("alt", "super") else 0)
+            if not bit:
+                return None
+            mask |= bit
+        return ord(key), mask
+
+    def _refuse(self, kind: str, chord: str, why: str) -> None:
+        if (kind, chord) in self._refused:
+            log.debug("apps: %s's %s not grabbed: %s", kind, chord, why)
+            return
+        self._refused.add((kind, chord))
+        log.warning("apps: %s's %s not grabbed (%s); that key is left to the app",
+                    kind, chord, why)
+
+    def _keymap_changed(self) -> None:
+        if not self.running:
+            return
+        for g in list(self.grabs.values()):
+            self.grab_keys(g.window)
+
+    def _on_app_event(self, ev) -> None:
+        """An event on an app window the service grabbed keys on: a key
+        pressed while the shell holds the keyboard for it. Releases, and
+        whatever else someone here selected on that window, are not
+        ours."""
+        if (ev.response_type & 0x7F) != _KEY_PRESS:
+            return
+        g = self.grabs.get(ev.event)
+        if g is None or g.window.closed:
+            return
+        d = self.display
+        locks = xp.ModMask.Lock | d.mod_mask("numlock")
+        name = g.chords.get((ev.detail, ev.state & 0xFF & ~locks))
+        key = key_event(d, ev)
+        try:
+            if name is not None:
+                log.debug("%s window 0x%x: %s", g.window.kind, g.window.wid, name)
+                g.window.on_key(name, key)
+            else:
+                g.window.on_typed(key)
+        except Exception:
+            log.exception("apps: a key for %s window 0x%x failed", g.window.kind, g.window.wid)
+        d.flush()
+
+    def hold_keyboard(self, window: AppWindow) -> bool:
+        """Keep the keyboard the X server handed over with one of
+        `window`'s keys past that key's release (which ends a passive
+        grab), its keys still reported on the app's window: until
+        whatever answers the key takes the keyboard with a grab of its
+        own (this connection has one keyboard grab; a new one replaces
+        it), or `release_keyboard`."""
+        d = self.display
+        return d is not None and d.grab_keyboard(window.wid)
+
+    def release_keyboard(self) -> None:
+        """Give the keyboard back: keys go to the focused window again."""
+        if self.display is not None:
+            self.display.ungrab_keyboard()
+
+    # ── focus ───────────────────────────────────────────────────────────
+    def follow(self, callback) -> None:
+        """Call `callback(window)` whenever the focused app window changes
+        (None: the window with focus is no app's)."""
+        if callback not in self._followers:
+            self._followers.append(callback)
+
+    def unfollow(self, callback) -> None:
+        if callback in self._followers:
+            self._followers.remove(callback)
+
+    def _watch_focus(self) -> None:
+        d = self.display
+        if d is None or self._active_atom is not None:
+            return
+        self._active_atom = d.atom("_NET_ACTIVE_WINDOW")
+        d.add_root_listener(self._on_root_property)
+        self.read_active()
+
+    def _on_root_property(self, ev) -> None:
+        # The root listener stays after stop() (the display has no way to
+        # remove one); a stopped service only stops listening.
+        if self.running and getattr(ev, "atom", None) == self._active_atom:
+            self.read_active()
+
+    def read_active(self) -> None:
+        """_NET_ACTIVE_WINDOW as the root has it now."""
+        d = self.display
+        self.set_active(d.get_int(d.root, "_NET_ACTIVE_WINDOW") or 0)
+
+    def set_active(self, wid: int) -> None:
+        """The window manager says `wid` has focus now (0: none)."""
+        if wid != self.active:
+            self.active = wid
+            self._refocus()
+
+    def _refocus(self) -> None:
+        window = self._app_of(self.active) if self.active else None
+        if window is self.focused:
+            return
+        self.focused = window
+        log.debug("apps: focus on %s", f"{window.kind} 0x{window.wid:x}" if window else
+                  f"0x{self.active:x}, no app's")
+        for callback in list(self._followers):
+            try:
+                callback(window)
+            except Exception:
+                log.exception("apps: a focus follower failed")
+
+    def _app_of(self, wid: int) -> AppWindow | None:
+        window = self.window_for(wid)
+        if window is not None or self.display is None:
+            return window
+        # A dialog of an app's (Jack's address prompt, a permission
+        # question) is the app's too: one round trip, once per window.
+        parent = self._transient.get(wid)
+        if parent is None:
+            parent = self.display.get_int(wid, "WM_TRANSIENT_FOR") or 0
+            if len(self._transient) > 64:
+                self._transient.clear()
+            self._transient[wid] = parent
+        return self.window_for(parent) if parent else None
+
+    # ── the top bar ─────────────────────────────────────────────────────
+    def bar_bottom(self, x: int) -> int | None:
+        """The y (root coordinates) of the top bar's bottom edge, when the
+        bar showing the context area spans root x `x`; None when there is
+        no such bar, or it lies elsewhere (another monitor)."""
+        context = self.context
+        window = getattr(context, "window", None)
+        root = getattr(window, "content_root", None)
+        if root is None or getattr(window, "wid", None) is None:
+            return None
+        cx, cy, cw, ch = root
+        return cy + ch if cx <= x < cx + cw else None

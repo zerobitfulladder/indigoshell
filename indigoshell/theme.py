@@ -87,6 +87,9 @@ BAR_SPACING     = 20   # between top-level bar widgets
 # ── Bar window ──────────────────────────────────────────────────────────
 BAR_POSITION    = "bottom"
 BAR_HEIGHT      = 42
+# The top bar: the bottom bar's look and height. Its left is the focused
+# indigoshell app's (applink/).
+TOP_BAR_HEIGHT  = BAR_HEIGHT
 BAR_MARGIN      = 4     # horizontal gutter inside the bar window
 BAR_BG          = BASE_BLACK
 # Accent rule along the bar's outer edge. Pure decoration — it exists so

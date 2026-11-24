@@ -13,10 +13,13 @@ from .services.text_effects import Scramble
 from .widgets.base import Insets
 from .agent import (CALL_WINDOW, STATUS_WINDOW, Agent, CallHost,
                     CallRouter, CallStatus, Firefox, ShellTools)
+from .applink.context import AppContext
+from .applink.service import AppService
+from .browser.context import JackWindow
 from .widgets.clock import Clock
 from .widgets.fastfetch import Fastfetch
 from .widgets.hardware_panel import HardwarePanel
-from .widgets.launcher import Launcher
+from .widgets.launcher import LAUNCHER_WINDOW, Launcher
 from .widgets.layout import Align, Box, Brackets, Row, Spacer
 from .widgets.media import Media
 from .widgets.menu import MENU_WINDOW, MenuHost
@@ -34,7 +37,8 @@ from .window import Anchor, Layer, WindowSpec
 SYSTEM_PANEL = "system"
 HARDWARE_PANEL = "hardware"
 NETWORK_PANEL = "network"
-LAUNCHER = "launcher"
+LAUNCHER = LAUNCHER_WINDOW       # also where Jack's Ctrl+L/T/M open it
+TOP_BAR = "topbar"
 
 # Which MPRIS source the now-playing widgets follow. None watches every
 # player, which also means a browser tab counts as "playing" and starts
@@ -126,12 +130,20 @@ AGENT = Agent(name="INDIGO", model="opus",
 # Each toast is its own window, so the scan-lock spawn/despawn plays per
 # notification rather than once for the stack. The router shows the
 # call's status chip while a hung-up call works or rings back; FIREFOX
-# is the socket the browser add-on's host connects to.
+# is the socket the browser add-on's host connects to. APPS is the
+# socket the shell's own apps connect to, one line per window, and knows
+# which of their windows has focus (applink/): today Jack, the browser
+# (`indigoshell browser`), whose windows the top bar shows
+# (browser/context.py) and whose Ctrl+L, Ctrl+T, Ctrl+M open the
+# launcher. Another app kind is one more entry in `kinds`.
+APPS = AppService(kinds={"jack": JackWindow})
+
 SERVICES = [
     NotificationManager(effects=(PANEL_SPAWN,), effect_scale=0.35, holo=True),
     FIREFOX,
     AGENT,
     CallRouter(AGENT),
+    APPS,
 ]
 
 
@@ -220,6 +232,42 @@ clock_cluster = Row(
     spacing=4,
 )
 
+
+# ── The top bar ────────────────────────────────────────────────────────
+# Always there, like the bottom bar and in its look, a little thinner,
+# its space reserved the same way (and, like it, under a fullscreen
+# window: the window manager stacks a focused fullscreen window over
+# docks). Its left is the focused indigoshell app's: Jack's tabs, host
+# and load line while a Jack window has focus, nothing while any other
+# window does. `widgets` go after it, at the right; the right end itself
+# is kept for the agent, which will draw itself there when it goes to
+# the background.
+#
+# A config.py adds its own without copying the spec, by building the
+# bar again with them in place of the shipped one:
+#
+#     from indigoshell.config_default import TOP_BAR, WINDOWS, top_bar
+#     WINDOWS = [top_bar(MyWidget()) if spec.name == TOP_BAR else spec
+#                for spec in WINDOWS]
+def top_bar(*widgets, apps: AppService = APPS) -> WindowSpec:
+    return WindowSpec(
+        name=TOP_BAR,
+        layer=Layer.DOCK,
+        anchor=Anchor.TOP,
+        size=(None, theme.TOP_BAR_HEIGHT),
+        exclusive=True,
+        focusable=False,
+        background=theme.BAR_BG,
+        padding=Insets.xy(theme.BAR_MARGIN, 0),
+        autostart=True,
+        content=Row(
+            [AppContext(apps), *widgets],
+            spacing=theme.BAR_SPACING,
+            align=Align.CENTER,
+        ),
+    )
+
+
 WINDOWS = [
     WindowSpec(
         name="bar",
@@ -251,6 +299,8 @@ WINDOWS = [
             align=Align.CENTER,
         ),
     ),
+
+    top_bar(),
 
     WindowSpec(
         name=SYSTEM_PANEL,

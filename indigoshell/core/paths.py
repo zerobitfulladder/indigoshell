@@ -33,6 +33,16 @@ def state_dir() -> str:
     return os.path.join(base, APP)
 
 
+def data_dir() -> str:
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, APP)
+
+
+def cache_dir() -> str:
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, APP)
+
+
 def log_path() -> str:
     """Default `--log-file` target. Not created unless the flag is used."""
     return os.path.join(state_dir(), f"{APP}.log")

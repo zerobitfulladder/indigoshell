@@ -300,6 +300,13 @@ class Daemon:
         self._restart = True
         self.quit()
 
+    @property
+    def restarting(self) -> bool:
+        """Whether this stop is a reload (the process re-executes itself
+        once the loop is closed): a service can tell its clients it will
+        be back in a moment."""
+        return self._restart
+
     # ── X event source ──────────────────────────────────────────────────
     def _on_x_readable(self) -> None:
         assert self.display is not None
@@ -319,17 +326,24 @@ class Daemon:
             self.quit()
 
     # ── window registry ─────────────────────────────────────────────────
-    def open(self, name: str, params: dict | None = None) -> str:
+    def open(self, name: str, params: dict | None = None, *,
+             placement=None) -> str:
+        """Open a window of kind `name`. `placement` (window.Placement)
+        puts this open somewhere other than its anchor; an open window
+        given one moves there."""
         from ..window import Window
 
         spec = self.kinds.get(name)
         if spec is None:
             raise KeyError(f"unknown window kind: {name}")
         if spec.singleton and name in self.instances:
+            if placement is not None:
+                self.instances[name].place(placement)
             return name
         assert self.display is not None
         win = self._parked.pop(name, None)
         if win is not None and win.spec is spec:
+            win.placement = placement
             win.unpark()
         else:
             if win is not None:
@@ -337,6 +351,7 @@ class Daemon:
                 # window was parked; it is stale.
                 win.destroy()
             win = Window(self.display, spec, self.loop)
+            win.placement = placement
             win.create()
         win.show()
         self.instances[name] = win

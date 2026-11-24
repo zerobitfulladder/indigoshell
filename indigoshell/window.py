@@ -174,6 +174,39 @@ class WindowSpec:
         return self.override_redirect and self.layer in (Layer.DOCK, Layer.OVERLAY)
 
 
+@dataclass(frozen=True)
+class Placement:
+    """Where one open of a window goes instead of where its anchor puts
+    it: the content's top edge at `y`, centred on `x` (root coordinates),
+    kept inside the monitor that holds that point. Given to
+    `Daemon.open`, kept while the window is open, and forgotten when it
+    closes, so the next open goes by the anchor again.
+
+    `below(x, y, w, h)` drops the window from a rect: centred under it,
+    its top at the rect's bottom edge."""
+
+    x: int
+    y: int
+
+    @classmethod
+    def below(cls, x: int, y: int, w: int, h: int) -> "Placement":
+        return cls(x + w // 2, y + h)
+
+
+def key_event(display: Display, ev) -> KeyEvent:
+    """An X key press or release as a KeyEvent, through the keymap."""
+    state = ev.state
+    keysym = display.keysym(ev.detail, state)
+    ctrl = bool(state & xp.KeyButMask.Control)
+    alt = bool(state & display.mod_mask("alt"))
+    sup = bool(state & display.mod_mask("super"))
+    return KeyEvent(
+        keysym=keysym,
+        text="" if (ctrl or alt or sup) else keysym_text(keysym),
+        shift=bool(state & xp.KeyButMask.Shift),
+        ctrl=ctrl, alt=alt, super=sup)
+
+
 def _chord_is(key: KeyEvent, chord: str) -> bool:
     """Whether a key press is `chord` ("super+a"): exactly those
     modifiers held, and the key itself in either case."""
@@ -239,6 +272,8 @@ class Window:
         self._shown_sent = False
         # Hidden between opens with its content detached — see park().
         self._parked = False
+        # This open's place, when it is not the anchor's — see Placement.
+        self.placement: Placement | None = None
 
         self.gl = None               # backend.gl.Backend, or None for raster
         self.gl_surface = None
@@ -278,6 +313,8 @@ class Window:
         w = want_w if want_w is not None else mon.width - m.left - m.right
         h = want_h if want_h is not None else mon.height - m.top - m.bottom
         w, h = max(1, w), max(1, h)
+        if self.placement is not None:
+            return self._placed(w, h)
 
         a = spec.anchor
         if Anchor.LEFT in a and Anchor.RIGHT not in a:
@@ -294,6 +331,29 @@ class Window:
         else:
             y = mon.y + (mon.height - h) // 2
         return x, y, w, h
+
+    def _placed(self, w: int, h: int) -> tuple[int, int, int, int]:
+        """`placement`'s box: centred on its x, its top at its y, moved
+        back inside the monitor that holds the point. Only the content
+        is kept inside; the bleed around it may run off the edge, as it
+        does for an anchored window at the screen's edge."""
+        p = self.placement
+        monitors = self.display.monitors()
+        mon = next((m for m in monitors if m.x <= p.x < m.x + m.width
+                    and m.y <= p.y < m.y + m.height), monitors[0])
+        x = min(max(p.x - w // 2, mon.x), mon.x + max(0, mon.width - w))
+        y = min(max(p.y, mon.y), mon.y + max(0, mon.height - h))
+        return x, y, w, h
+
+    def place(self, placement: "Placement | None") -> None:
+        """Move the open window to `placement` (None: back to its anchor),
+        at the size it has."""
+        self.placement = placement
+        if self.wid is None:
+            return
+        _cx, _cy, cw, ch = self.content_root
+        self._apply_geometry(*self._compute_geometry(
+            self.display.primary_monitor(), size=(cw, ch)))
 
     def _compute_bleed(self, w: float, h: float) -> int:
         if not self.effects:
@@ -698,6 +758,14 @@ class Window:
         single shared instance that a re-opened window may already own.
         """
         self._on_dismissed = on_done
+        # The content hears first, while the tree is still this window's
+        # (a reopen may give it to another window before the despawn ends).
+        hook = getattr(self.content, "on_dismiss", None)
+        if hook is not None:
+            try:
+                hook()
+            except Exception:
+                log.exception("on_dismiss failed in %s", self.spec.name)
         if (self._transition <= 0 or not self.mapped
                 or self.loop is None or self.surface is None):
             self._finish_dismiss()
@@ -786,6 +854,10 @@ class Window:
         self._grab_retry[what] = self.loop.call_later(
             GRAB_RETRY_S, self._grab, what, since)
 
+    @property
+    def keyboard_grabbed(self) -> bool:
+        return self._kb_grabbed
+
     def _ungrab(self, what: str) -> None:
         retry = self._grab_retry.pop(what, None)
         if retry is not None:
@@ -869,6 +941,7 @@ class Window:
         self._phase = "idle"
         self._appear = 1.0
         self._shown_sent = False
+        self.placement = None           # the next open goes by the anchor
         self._hovered = self._pressed = self._dragging = None
         self._damage = None
         self._damage_all = True
@@ -1611,16 +1684,7 @@ class Window:
             self._set_hover(None)
 
     def _key_event(self, ev) -> KeyEvent:
-        d, state = self.display, ev.state
-        keysym = d.keysym(ev.detail, state)
-        ctrl = bool(state & xp.KeyButMask.Control)
-        alt = bool(state & d.mod_mask("alt"))
-        sup = bool(state & d.mod_mask("super"))
-        return KeyEvent(
-            keysym=keysym,
-            text="" if (ctrl or alt or sup) else keysym_text(keysym),
-            shift=bool(state & xp.KeyButMask.Shift),
-            ctrl=ctrl, alt=alt, super=sup)
+        return key_event(self.display, ev)
 
     def _dismissing(self) -> bool:
         # Keys are dropped only while dismissing: the exit pass runs over
