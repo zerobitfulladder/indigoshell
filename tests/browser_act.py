@@ -117,7 +117,8 @@ def shell_side(path: str) -> None:
     from indigoshell import theme
     from indigoshell.applink.service import AppService
     from flux import protocol
-    from indigoshell.applink.flux import TAB_CURRENT_FG, TAB_FG, FluxWindow, agent_color
+    from indigoshell.applink.flux import (NUMBER_CURRENT_FG, TAB_CURRENT_FG, TAB_FG, FluxWindow,
+                                          agent_color)
     from indigoshell.widgets.base import Size
 
     given = json.loads(Path(path).read_text())
@@ -178,11 +179,10 @@ def shell_side(path: str) -> None:
         tabs = j.content.tabs.layout()
         row = []
         colours = {"lilac": lilac, "indigo": indigo, "paused": paused_lilac,
-                   "strong": TAB_CURRENT_FG, "muted": TAB_FG}
+                   "strong": TAB_CURRENT_FG, "muted": TAB_FG, "cyan": NUMBER_CURRENT_FG}
         for t in tabs:
-            x0, nw, w = int(t["x"]), t["number_w"], t["w"]
-            number = img[:, x0:int(x0 + nw)]
-            title = img[:, int(x0 + nw):int(x0 + w) + 1]
+            number = img[6:36, int(t["number_x"]):int(t["number_x"] + t["number_w"]) + 1]
+            title = img[6:34, int(t["x"]):int(t["x"] + t["w"]) + 1]
             n = {k: count(number, c, 10) for k, c in colours.items()}
             ti = {k: count(title, c, 10) for k, c in colours.items()}
             row.append({"number": max(n, key=n.get) if max(n.values()) > 8 else None,
@@ -1312,17 +1312,17 @@ def test_shell_side() -> None:
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     def seen(case):
         return [(t["number"], t["title"]) for t in out[case]]
-    check("no hold: the current tab's number and title strong, the others muted",
-          seen("none") == [("strong", "strong"), ("muted", "muted"), ("muted", "muted")],
+    check("no hold: the current tab's number cyan and its title strong, the others muted",
+          seen("none") == [("cyan", "strong"), ("muted", "muted"), ("muted", "muted")],
           f"{seen('none')}")
-    check("Lilac driving tab 2 (not the current one): its number in Lilac's colour, its title "
-          "still muted; the others as ever",
-          seen("driving") == [("strong", "strong"), ("lilac", "muted"), ("muted", "muted")],
+    check("Lilac driving tab 2 (not the current one): its number (and its brackets) in Lilac's "
+          "colour, its title still muted; the others as ever",
+          seen("driving") == [("cyan", "strong"), ("lilac", "muted"), ("muted", "muted")],
           f"{seen('driving')}")
     check("Indigo driving the current tab: its number in Indigo's colour, its title strong",
           seen("indigo")[0] == ("indigo", "strong"), f"{seen('indigo')}")
     check("paused (the user took over): the number in Lilac dimmed, told apart from Lilac and "
-          "from the muted tabs", seen("paused") == [("strong", "strong"), ("paused", "muted"),
+          "from the muted tabs", seen("paused") == [("cyan", "strong"), ("paused", "muted"),
                                                     ("muted", "muted")],
           f"{seen('paused')} {out['paused'][1]['counts']}")
     check("an older browser's state (no agent): good, no hold; a malformed agent refused",

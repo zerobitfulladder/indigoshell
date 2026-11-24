@@ -20,12 +20,18 @@
 3. Flux: the repository's desktop file, its install into a scratch
    data dir, and the launcher's own catalog code finding, showing and
    launching it, and rescanning when it appears.
-4. Flux's content for the top bar, painted off screen and read back as
-   pixels: the tabs (the current one strong, the rest muted, long titles
-   shortened with an ellipsis to fit), the host with the not-secure
-   padlock and the bookmark glyph, find while typing (the caret) and
-   while stepping (none), "no matches" in the error colour, the load
-   line along the bottom edge.
+4. Flux's content for the top bar, painted off screen on the bar's rule
+   and read back as pixels: the tabs in equal slots (the current one
+   risen out of the rule, its title strong and its number cyan in
+   brackets; the rest muted; long titles cut with an ellipsis to their
+   slot; the run around the current tab when even the narrowest slots do
+   not fit), the host with the not-secure padlock and the bookmark glyph,
+   find risen as one tab while typing (the caret) and while stepping
+   (none), "no matches" in the error colour, the current tab's load
+   lighting its outline, a comet on the rule under a tab behind that
+   loads, hover; the motion (a switch sliding the raised part, a close
+   wiping the tab out before the others slide; the clock asked for
+   frames only while something moves).
 5. The app service on a socket of its own: the announce and the answer
    both ways (Flux; an app kind it does not know; an announce naming no
    kind; windows that are no window; lines that are no message, types
@@ -551,9 +557,11 @@ def rgb_of(image):
                          alphaType=skia.kUnpremul_AlphaType)[..., :3].astype("int16")
 
 
-def paint(widget, w: int, h: int):
-    """`widget` laid out in w x h on the bar's background and painted
-    off screen (CPU raster), as RGB."""
+def paint(widget, w: int, h: int, *, rule: bool = False, settle: bool = True):
+    """`widget` laid out in w x h on the bar's background (with `rule`,
+    and the top bar's rule along the bottom edge, as its window draws it)
+    and painted off screen (CPU raster), as RGB; with `settle`, whatever
+    in it moves (Flux's tabs) at rest first."""
     import skia
 
     from indigoshell import theme
@@ -561,8 +569,17 @@ def paint(widget, w: int, h: int):
     surface = skia.Surface(w, h)
     canvas = surface.getCanvas()
     canvas.clear(theme.color(theme.BAR_BG))
+    if rule:
+        line = skia.Paint()
+        line.setColor(theme.color(theme.BAR_RULE))
+        canvas.drawRect(skia.Rect.MakeXYWH(0, h - theme.BAR_RULE_THICK, w,
+                                           theme.BAR_RULE_THICK), line)
     widget.measure(Size(w, h))
     widget.arrange(skia.Rect.MakeWH(w, h))
+    if settle:
+        for each in widget.walk():
+            if hasattr(each, "settle"):
+                each.settle()
     widget.paint(canvas)
     return rgb_of(surface.makeImageSnapshot())
 
@@ -592,10 +609,11 @@ def hex_rgb(hex_: str) -> tuple[int, int, int]:
 
 
 def flux_state(titles, current=0, *, host="127.0.0.1", secure=False, loading=False,
-               progress=100, bookmarked=False, find=None) -> dict:
+               progress=100, bookmarked=False, find=None, ids=None) -> dict:
     from flux import protocol
-    tabs = [protocol.tab(t, host, loading and i == current, id_=101 + i)
-            for i, t in enumerate(titles)]
+    ids = ids or [101 + i for i in range(len(titles))]
+    tabs = [protocol.tab(t, host, loading and i == current, id_=n)
+            for i, (t, n) in enumerate(zip(titles, ids))]
     return protocol.state(tabs, current, progress, secure, url=f"http://{host}/",
                           bookmarked=bookmarked, find=find)
 
@@ -603,14 +621,19 @@ def flux_state(titles, current=0, *, host="127.0.0.1", secure=False, loading=Fal
 # ── 4. Flux's content ───────────────────────────────────────────────────
 
 def test_content(scratch: Path) -> None:
+    import types
+
     from indigoshell import theme
+    from indigoshell.applink import flux as flux_mod
+    from indigoshell.applink.flux import (BRACKET_FG, COMET_FPS, FIND_COUNT_FG, FIND_QUERY_FG,
+                                          HOST_FG, INSECURE_FG, MOTION_FPS, NO_MATCHES_FG,
+                                          NUMBER_CURRENT_FG, NUMBER_FG, RULE, RULE_BRIGHT,
+                                          SLOT_MIN, SLOT_W, SWITCH_S, TAB_CURRENT_FG, TAB_FG,
+                                          TAB_HOVER_FG, WIPE_S, FluxWindow, fit_slots)
     from indigoshell.applink.service import AppService
     from flux import protocol
-    from indigoshell.applink.flux import (FIND_FG, HOST_FG, INSECURE_FG, SLOT_MIN, SLOT_W,
-                                             FluxWindow, NO_MATCHES_FG, PROGRESS_FG,
-                                             PROGRESS_THICK, TAB_CURRENT_FG, TAB_FG, fit_slots)
 
-    section("4. Flux's content for the top bar, painted off screen")
+    section("4. Flux's content for the top bar, painted off screen on the bar's rule")
     service = AppService({"flux": FluxWindow}, path="/nonexistent")
     W, H = 1600, theme.TOP_BAR_HEIGHT
 
@@ -620,35 +643,55 @@ def test_content(scratch: Path) -> None:
         j.content.attach(host)
         return j, host
 
-    def in_rect(img, x, w):
-        return img[:, max(0, int(x)):int(x + w) + 1]
+    def in_rect(img, x, w, top=6, bottom=34):
+        """Columns x..x+w, rows top..bottom: a title's or a number's band,
+        clear of the rule and the raised top."""
+        return img[top:bottom, max(0, int(x)):int(x + w) + 1]
+
+    def rows_at(img, x, top, bottom):
+        return img[top:bottom, int(x):int(x) + 1]
 
     j, host = flux()
+    tl = j.content.tabs
     j.on_message(flux_state(["Alpha", "Beta", "Gamma"]))
-    img = paint(j.content, W, H)
+    img = paint(j.content, W, H, rule=True)
     save(scratch / "content-tabs.png", img)
-    tabs = j.content.tabs.layout()
+    tabs = tl.layout()
     strong = [count_color(in_rect(img, t["x"], t["w"]), TAB_CURRENT_FG) for t in tabs]
     muted = [count_color(in_rect(img, t["x"], t["w"]), TAB_FG) for t in tabs]
+    numbers = [count_color(in_rect(img, t["number_x"], t["number_w"], 12, 32), c, 30)
+               for t, c in zip(tabs, (NUMBER_CURRENT_FG, NUMBER_FG, NUMBER_FG))]
+    brackets = [count_color(in_rect(img, t["number_x"], t["number_w"], 12, 33), BRACKET_FG, 20)
+                for t in tabs]
     slots = [(t["slot_x"], t["slot_w"]) for t in tabs]
-    check("three tabs from the left, numbered, each in a slot of the same width: the current "
-          "one in the strong colour, the rest muted",
-          [t["text"] for t in tabs] == ["1 Alpha", "2 Beta", "3 Gamma"]
+    check("three tabs from the left, each in a slot of the same width: the current one's title "
+          "strong, its number cyan in corner brackets; the others' titles and numbers muted, "
+          "no brackets", [t["text"] for t in tabs] == ["1 Alpha", "2 Beta", "3 Gamma"]
           and tabs[0]["slot_x"] < 8 and all(w == SLOT_W for _x, w in slots)
           and slots[1][0] - slots[0][0] == slots[2][0] - slots[1][0] > SLOT_W
-          and strong[0] > 20 and muted[0] < 5
-          and all(m > 20 for m in muted[1:]) and all(v < 5 for v in strong[1:]),
-          f"strong {strong}, muted {muted}")
+          and strong[0] > 20 and muted[0] < 5 and all(m > 20 for m in muted[1:])
+          and all(v < 5 for v in strong[1:]) and all(n > 8 for n in numbers)
+          and brackets[0] > 12 and brackets[1] == brackets[2] == 0,
+          f"strong {strong}, muted {muted}, numbers {numbers}, brackets {brackets}")
+    x0, w0 = slots[0]
+    leg = count_color(rows_at(img, x0 + 1, 6, 38), RULE, 30)
+    under = count_color(img[H - 2:, int(x0 + 8):int(x0 + w0 - 8)], RULE, 30)
+    beside = count_color(img[H - 2:, int(slots[1][0] + 8):int(slots[1][0] + w0 - 8)], RULE, 30)
+    top_ = count_color(img[4:6, int(x0 + 8):int(x0 + w0 - 12)], RULE, 30)
+    check("the current tab risen out of the bar's rule: its left edge and its top drawn in the "
+          "rule's colour, the rule open under it, there under the others",
+          leg >= 30 and top_ > (w0 - 20) and under == 0 and beside > 2 * (w0 - 20),
+          f"leg {leg}, top {top_}, under it {under}, beside {beside}")
     h = j.content.host.layout()
-    mark = count_color(in_rect(img, h["x"] - h["mark_w"], h["mark_w"] - 1), INSECURE_FG)
-    hpx = count_color(in_rect(img, h["x"], h["w"]), HOST_FG)
+    mark = count_color(in_rect(img, h["x"] - h["mark_w"], h["mark_w"] - 1, 0, 34), INSECURE_FG)
+    hpx = count_color(in_rect(img, h["x"], h["w"], 0, 34), HOST_FG)
     check("the host at the right end, after the open padlock (plain http) in the error colour",
           h["text"] == "127.0.0.1" and not h["secure"] and h["mark_w"] > 0 and mark > 10
           and hpx > 20 and h["x"] + h["w"] > W - 20 and h["bookmark_w"] == 0,
           f"{h['text']!r} ends at {h['x'] + h['w']:.0f} of {W}; padlock px {mark}, host px {hpx}")
-    line = count_color(img[-PROGRESS_THICK:], PROGRESS_FG, 6)
-    check("no load line while nothing loads", line == 0 and j.content.progress is None,
-          f"{line} px")
+    bright = count_color(img, RULE_BRIGHT, 30)
+    check("nothing loading: nothing bright on the rule", bright == 0 and tl.progress is None,
+          f"{bright} px")
 
     host.damaged.clear()
     j.on_message(flux_state(["Alpha", "Beta", "Gamma"]))
@@ -662,8 +705,8 @@ def test_content(scratch: Path) -> None:
     j.on_message(flux_state(titles, 5))
     img = paint(j.content, 900, H)
     save(scratch / "content-many.png", img)
-    tabs = j.content.tabs.layout()
-    room = j.content.tabs.rect
+    tabs = tl.layout()
+    room = tl.rect
     numbered = all(t["text"].startswith(str(t["index"] + 1)) for t in tabs)
     ends = max(t["slot_x"] + t["slot_w"] for t in tabs)
     inside = all(t["x"] + t["w"] <= t["slot_x"] + t["slot_w"] for t in tabs)
@@ -694,7 +737,7 @@ def test_content(scratch: Path) -> None:
     j.on_message(flux_state(["Alpha"], secure=True, host="example.org", bookmarked=True))
     img = paint(j.content, W, H)
     h = j.content.host.layout()
-    glyph = count_color(in_rect(img, h["bookmark_x"], h["bookmark_w"] - 1), HOST_FG)
+    glyph = count_color(in_rect(img, h["bookmark_x"], h["bookmark_w"] - 1, 0, 34), HOST_FG)
     check("a bookmarked page over https: the bookmark glyph before the host, no padlock",
           h["bookmarked"] and h["bookmark_w"] > 0 and glyph > 15 and h["mark_w"] == 0
           and h["text"] == "example.org", f"glyph px {glyph}")
@@ -702,18 +745,22 @@ def test_content(scratch: Path) -> None:
 
     def find_line(f):
         j.on_message(flux_state(["Alpha", "Beta"], find=f))
-        img_ = paint(j.content, W, H)
-        return img_, {p["role"]: p for p in j.content.tabs.layout()}
+        img_ = paint(j.content, W, H, rule=True)
+        return img_, {p["role"]: p for p in tl.layout()}
 
     img, parts = find_line(protocol.find("cats", 3, 12, True))
     save(scratch / "content-find-typing.png", img)
-    q, label, count = parts.get("query", {}), parts.get("label", {}), parts.get("count", {})
-    check("find while typing: `find  cats▏  3/12`, the query strong, the rest muted; the tabs "
-          "gone", label.get("text") == "find" and q.get("text") == "cats▏"
-          and count.get("text") == "3/12"
-          and count_color(in_rect(img, q["x"], q["w"]), TAB_CURRENT_FG) > 20
-          and count_color(in_rect(img, label["x"], label["w"]), FIND_FG) > 10
-          and count_color(in_rect(img, count["x"], count["w"]), FIND_FG) > 10,
+    q, mark_, count_ = parts.get("query", {}), parts.get("mark", {}), parts.get("count", {})
+    end = count_.get("x", 0) + count_.get("w", 0) + 12
+    check("find while typing: risen as one tab in the tabs' place, the search mark in the "
+          "bracketed spot, `cats▏` strong, `3/12` small and cyan; the rule open under it",
+          mark_.get("text") == flux_mod.SEARCH_MARK and q.get("text") == "cats▏"
+          and count_.get("text") == "3/12"
+          and count_color(in_rect(img, q["x"], q["w"]), FIND_QUERY_FG) > 20
+          and count_color(in_rect(img, count_["x"], count_["w"]), FIND_COUNT_FG, 30) > 10
+          and count_color(rows_at(img, 1, 6, 38), RULE, 30) >= 30
+          and count_color(img[H - 2:, 8:int(end) - 8], RULE, 30) == 0
+          and count_color(img[H - 2:, int(end) + 20:int(end) + 200], RULE, 30) > 300,
           f"{[p['text'] for p in parts.values()]}")
     img, parts = find_line(protocol.find("cats", 4, 12, False))
     check("find while stepping: no caret", parts.get("query", {}).get("text") == "cats"
@@ -728,18 +775,89 @@ def test_content(scratch: Path) -> None:
     check("before the page has counted: no count", "count" not in parts)
 
     j.on_message(flux_state(["Alpha", "Beta"], loading=True, progress=40))
-    img = paint(j.content, W, H)
+    img = paint(j.content, W, H, rule=True)
     save(scratch / "content-loading.png", img)
-    rows = [count_color(img[-1 - i:H - i], PROGRESS_FG, 6) for i in range(PROGRESS_THICK)]
-    # Just above it: nothing (the text, in the same strong colour as the
-    # line, sits higher up).
-    above = count_color(img[-PROGRESS_THICK - 4:-PROGRESS_THICK], PROGRESS_FG, 6)
-    check("loading at 40%: the load line along the bottom edge, 40% of the width, nothing just "
-          "above it", all(abs(r - 0.4 * W) <= 2 for r in rows) and above == 0
-          and j.content.progress == 40, f"{rows} px in the bottom rows of {W}, {above} above")
+    x0, w0 = tl.layout()[0]["slot_x"], tl.layout()[0]["slot_w"]
+    left = count_color(rows_at(img, x0 + 1, 6, 38), RULE_BRIGHT, 30)
+    right = count_color(rows_at(img, x0 + w0 - 1, 14, 38), RULE_BRIGHT, 30)
+    check("the current tab loading at 40%: its raised outline lit from the left foot (its "
+          "left edge bright), not yet round to the right; no line of its own",
+          left >= 25 and right == 0 and tl.progress == 40 and j.content.progress == 40,
+          f"left edge {left}, right edge {right}")
     j.on_message(flux_state(["Alpha", "Beta"], loading=False, progress=100))
-    img = paint(j.content, W, H)
-    check("done: the line gone", count_color(img[-PROGRESS_THICK:], PROGRESS_FG, 6) == 0)
+    img = paint(j.content, W, H, rule=True)
+    check("done: nothing bright left", count_color(img, RULE_BRIGHT, 30) == 0)
+
+    # The rule's comet under a tab behind that loads, at a moment of its run.
+    state = flux_state(["Alpha", "Beta"])
+    state["tabs"][1]["loading"] = True
+    j.on_message(state)
+    real = flux_mod.time
+    flux_mod.time = types.SimpleNamespace(monotonic=lambda: 1000 * flux_mod.COMET_S + 0.5
+                                          * flux_mod.COMET_S)
+    try:
+        img = paint(j.content, W, H, rule=True)
+    finally:
+        flux_mod.time = real
+    save(scratch / "content-comet.png", img)
+    x1, w1 = tl.layout()[1]["slot_x"], tl.layout()[1]["slot_w"]
+    comet = count_color(img[H - 3:, int(x1):int(x1 + w1)], RULE_BRIGHT, 50)
+    elsewhere = count_color(img[H - 3:, :int(x1) - 10], RULE_BRIGHT, 50)
+    check("a tab behind loading: a comet on the rule under its slot, and only there; the bar's "
+          "clock asked for it (COMET_FPS) only while it loads",
+          comet > 20 and elsewhere == 0 and tl.animation_fps == COMET_FPS,
+          f"under it {comet}, elsewhere {elsewhere}")
+    j.on_message(flux_state(["Alpha", "Beta"]))
+    paint(j.content, W, H)
+    idle = tl.animation_fps
+
+    # Motion: a switch slides the raised part; a close wipes the tab out.
+    import time as time_
+    j.on_message(flux_state(["Alpha", "Beta", "Gamma"], 0))
+    paint(j.content, W, H)
+    j.on_message(flux_state(["Alpha", "Beta", "Gamma"], 2))
+    due = tl.animation_fps
+    paint(j.content, W, H, settle=False)
+    start = tl._raise.at(time_.monotonic())
+    moving = tl.animation_fps
+    later = tl._raise.at(time_.monotonic() + SWITCH_S)
+    check("switching: the bar's clock asked for frames at once, the raised part sliding from "
+          "the old tab to the new one over SWITCH_S, then nothing asked (idle: 0)",
+          due == moving == MOTION_FPS and start < 50 and later == 2 * tl.pitch and idle == 0,
+          f"due {due}, moving {moving}, from {start:.0f} to {later:.0f}, idle {idle}")
+    paint(j.content, W, H)
+    j.on_message(flux_state(["Alpha", "Gamma"], 0, ids=[101, 103]))
+    paint(j.content, W, H, settle=False)
+    leaving = [(i, t) for _s, i, t, _x in tl._leaving]
+    gamma = tl._glides[103]
+    now = time_.monotonic()
+    held = gamma.at(now + WIPE_S * 0.5)
+    after = gamma.at(now + WIPE_S + flux_mod.SLIDE_S)
+    check("a tab closed: it wipes out from its place (WIPE_S), and only then the ones after it "
+          "slide over to close the gap", leaving == [(1, "Beta")] and held == 2 * tl.pitch
+          and after == tl.pitch and tl.animation_fps == MOTION_FPS,
+          f"leaving {leaving}, Gamma at {held:.0f} then {after:.0f}")
+    paint(j.content, W, H)
+
+    j.on_message(flux_state(["Alpha", "Beta", "Gamma"], 0))
+    paint(j.content, W, H)
+    tl.set_hovered(True)
+    tl.motion(tl.layout()[2]["slot_x"] + 60, 20)
+    img = paint(j.content, W, H, rule=True)
+    save(scratch / "content-hover.png", img)
+    t2 = tl.layout()[2]
+    lit = count_color(in_rect(img, t2["x"], t2["w"]), TAB_HOVER_FG, 15)
+    t1 = tl.layout()[1]
+
+    def edge(t):            # the reddish pixels down a slot's left edge
+        x = int(t["slot_x"])
+        band = img[8:36, x:x + 3].astype("int32")
+        return int(((band[..., 0] > 25) & (band[..., 0] > band[..., 1] + 15)).sum())
+    ghost, plain_edge = edge(t2), edge(t1)
+    tl.set_hovered(False)
+    check("hover: the tab's title brighter, the faint shape it would rise into (none on the "
+          "others)", lit > 15 and ghost > 15 and plain_edge == 0,
+          f"title px {lit}, ghost px {ghost}, beside it {plain_edge}")
 
 
 # ── 4b. the mouse on Flux's tabs ────────────────────────────────────────
@@ -809,7 +927,7 @@ def test_mouse(scratch: Path) -> None:
     from flux import protocol
     from indigoshell import theme
     from indigoshell.applink.context import AppContext
-    from indigoshell.applink.flux import (DRAG_START_PX, MARKER_FG, SLOT_GAP, SLOT_W,
+    from indigoshell.applink.flux import (DRAG_START_PX, RULE, SLOT_GAP, SLOT_W,
                                           TAB_CURRENT_FG, TAB_HOVER_FG, TEAR_FG, TEAR_OUT_PX,
                                           FluxWindow, landing, slot_at)
     from indigoshell.applink.service import AppService
@@ -936,12 +1054,13 @@ def test_mouse(scratch: Path) -> None:
     placed = {i: x for i, x in tl.arrangement()[0]}
     img = paint_window(win, W, H)
     save(scratch / "mouse-drag.png", img)
-    mark = count_color(img[:, int(over["slot_x"]) - 1:int(over["slot_x"]) + 3], MARKER_FG, 30)
+    mark = count_color(img[30:40, int(over["slot_x"]):int(over["slot_x"]) + 2], RULE, 30)
     lift_px = count_color(img[:, int(over["x"]):int(over["x"] + SLOT_W)], TAB_CURRENT_FG, 40)
     send("release", mid(2) + 10, 22, 1)
     check("a press moved less than the threshold is still a click; past it the tab lifts (the "
           "keyboard taken once, for Escape), follows the pointer, the others make room where it "
-          "lands, a marker there; let go: `move` to that place, the keyboard given back",
+          "lands, ticks rising from the rule there; let go: `move` to that place, the keyboard "
+          "given back",
           still and lifted is not None and lifted["to"] == 0 and display.grabs == 1
           and over["to"] == 2 and placed == {1: 0, 2: pitch, 3: 3 * pitch}
           and mark > 4 and lift_px > 20
@@ -976,12 +1095,12 @@ def test_mouse(scratch: Path) -> None:
     others = sorted(x for _i, x in tl.arrangement()[0])
     img = paint_window(win, W, H)
     save(scratch / "mouse-tear-out.png", img)
-    cue = count_color(img, TEAR_FG, 30)
+    cue = count_color(img[:, int(far["x"] + SLOT_W):int(far["x"] + SLOT_W) + 120], TEAR_FG, 30)
     win.x, win.y = 100, 7
     send("release", mid(1) + 20, H + TEAR_OUT_PX + 5, 1)
     win.x = win.y = 0
     check("dragged below the bar: within TEAR_OUT_PX still a move; past it the others close up, "
-          "no marker, the new-window mark by the lifted tab; let go: `detach`, with where "
+          "no ticks, NEW WINDOW by the lifted tab; let go: `detach`, with where "
           "(root coordinates, a hint)", near["out"] is False and far["out"] is True
           and others == [0, pitch, 2 * pitch] and cue > 10
           and since(n) == [{"type": "tab", "tab": 102},
@@ -1141,6 +1260,9 @@ def paint_window(win, w: int, h: int):
     surface = skia.Surface(w, h)
     canvas = surface.getCanvas()
     canvas.clear(theme.color(theme.BAR_BG))
+    for each in win.content.walk():
+        if hasattr(each, "settle"):
+            each.settle()
     win.content.paint(canvas)
     return rgb_of(surface.makeImageSnapshot())
 
@@ -1841,11 +1963,13 @@ def test_spec(scratch: Path) -> None:
           top.anchor == Anchor.TOP and top.size == (None, theme.TOP_BAR_HEIGHT) == bar.size
           and bar.size == (None, theme.BAR_HEIGHT) and top.layer == Layer.DOCK
           and top.exclusive and not top.focusable and top.margin == bar.margin)
-    check("the bottom bar's look: its background, gutter, rule (none: the bottom bar draws none "
-          "either) and font size; managed like it (not override-redirect, so no keep_above: "
-          "the window manager stacks it, and a focused fullscreen window over it)",
-          (top.background, top.padding, top.rule, top.rule_thick, top.rule_glow)
-          == (bar.background, bar.padding, bar.rule, bar.rule_thick, bar.rule_glow)
+    check("the bottom bar's look: its background, gutter and font size, and the theme's bar rule "
+          "along its bottom edge (which the bottom bar does without); managed like it (not "
+          "override-redirect, so no keep_above: the window manager stacks it, and a focused "
+          "fullscreen window over it)",
+          (top.background, top.padding) == (bar.background, bar.padding)
+          and (top.rule, top.rule_thick, top.rule_glow)
+          == (theme.BAR_RULE, theme.BAR_RULE_THICK, theme.BAR_RULE_GLOW) and bar.rule is None
           and not top.override_redirect and not top.keep_above and top.sticky == bar.sticky,
           f"rule {top.rule!r}")
     first = list(top.content.children())[0]
@@ -1918,17 +2042,22 @@ def test_spec(scratch: Path) -> None:
     save(scratch / "topbar-whole.png", img)
     ctx, label, chip = list(spec.content.children())
     h = jw.content.host.layout()
-    check("the whole bar off screen: Flux's tabs from the left, its host just before the user's "
-          "widget, the widget at the right end, the load line under the context area only",
-          ctx.shown is jw.content and jw.content.tabs.layout()[0]["slot_x"] < 10
+    first_slot = jw.content.tabs.layout()[0]
+    sx, sw = int(first_slot["slot_x"]), int(first_slot["slot_w"])
+    rule_row = img[-1:]
+    check("the whole bar off screen: Flux's tabs from the left, the current one risen out of the "
+          "bar's rule (open under it, its outline lit by the load), its host just before the "
+          "user's widget, the widget at the right end, the rule along the bottom edge under all "
+          "of it", ctx.shown is jw.content and sx < 10
           and h["x"] + h["w"] <= label.rect.left() and label.rect.right() >= W - 10
           and count_color(img[:, int(label.rect.left()):], theme.CYAN_BRIGHT) > 20
-          and count_color(img[:, :int(ctx.rect.left()) + 10], TAB_CURRENT_FG) > 0
-          and count_color(img[-1:, int(label.rect.left()):], theme.BAR_RULE, 6) == 0
-          and abs(count_color(img[-1:], theme.BAR_RULE, 6) - 0.5 * ctx.rect.width()) <= 2,
+          and count_color(img[6:34, :int(ctx.rect.left()) + sw], TAB_CURRENT_FG) > 20
+          and count_color(rule_row[:, sx + 8:sx + sw - 8], theme.BAR_RULE, 6) == 0
+          and count_color(img[6:38, sx + 1:sx + 2], theme.MAGENTA_BLOOM, 30) >= 20
+          and count_color(rule_row[:, sx + sw + 10:], theme.BAR_RULE, 6) >= W - sx - sw - 12,
           f"context {ctx.rect.width():.0f} px, label at {label.rect.left():.0f}")
-    check("the bar's background everywhere else (no rule)",
-          share_of(img[:3], hex_rgb(theme.BAR_BG)) > 0.98)
+    check("the bar's background above the rule's glow",
+          share_of(img[:3], hex_rgb(theme.BAR_BG)) > 0.9)
     check("the agent chip last in the row, empty with no agent configured: no width and no "
           "gap (with one it is always there; agent/ui/status.py, tests/agent_chip.py)",
           type(chip).__name__ == "AgentChip" and chip.collapsed and chip.rect.width() == 0)

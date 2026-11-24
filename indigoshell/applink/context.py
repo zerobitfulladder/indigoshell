@@ -3,7 +3,7 @@
 `AppContext` is a widget for a bar's row (config_default's `top_bar`).
 It takes all the room the row leaves it and fills it with the focused
 app window's own `content` (service.AppWindow), which that window's kind
-draws: Flux's tabs, host and load line (applink/flux.py). When the
+draws: Flux's tabs and host (applink/flux.py). When the
 window with focus is no app's, it is empty: the bar's background.
 
 Focus moving swaps the content: the one shown is attached to the bar's
