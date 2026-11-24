@@ -332,14 +332,14 @@ ABOUT = Hand(
 
 def laptop_hands() -> Hands:
     """What the laptop lends the hub's agent: `about`, the desktop and
-    its background jobs (laptop.py), and Jack, the user's browser
+    its background jobs (laptop.py), and Flux, the user's browser
     (browser/hands.py), when that is here."""
     from .laptop import Jobs, desktop_hands
     jobs = Jobs()
     try:
         from ..browser.hands import browser_hands
     except ImportError as e:
-        log.warning("Jack's hands aren't lent: %s", e)
+        log.warning("Flux's hands aren't lent: %s", e)
         browser = []
     else:
         browser = browser_hands()

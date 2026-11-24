@@ -41,7 +41,7 @@ reports a turn seen, the ring stops. `ring_line`
 is the notification the agent wrote for it, for the corner chip.
 
 **Look and shown things:** a line can carry what the user is looking at
-(`say(..., attach=)`, the call's Look: Jack's tab, the selection, a
+(`say(..., attach=)`, the call's Look: Flux's tab, the selection, a
 screenshot), and the agent can show a picture or a file in the chat
 (`shown`): it takes its place in the turn's story where it arrives, and
 its bytes come only when asked for (`want_media`, `fetch_media`: the

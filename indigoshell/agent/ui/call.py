@@ -62,7 +62,7 @@ Keys in the call:
                         call to the hub only; shown in your plate's
                         heading, and remembered)
     Ctrl+L              Look (a call to the hub only): your next line
-                        carries what you are looking at in Jack, your
+                        carries what you are looking at in Flux, your
                         browser: the tab, the selection, the picture in it
                         or under the pointer. A chip over your line says
                         what; Ctrl+L again, or Escape with the line empty,
@@ -114,16 +114,16 @@ log = logging.getLogger(__name__)
 
 CALL_WINDOW = "call"
 DRAFT_KEY = "agent.draft"       # your unsent line, between calls
-LOOK_NOTE_S = 4.0               # "Jack isn't open" stays this long
+LOOK_NOTE_S = 4.0               # "Flux isn't open" stays this long
 LOOK_WAIT_S = 4.0               # a line waits this long for its Look
 
 
 @dataclass
 class _Look:
-    """What the next line will carry (Ctrl+L): Jack's answer, once in."""
+    """What the next line will carry (Ctrl+L): Flux's answer, once in."""
 
     screenshot: bool
-    blocks: list | None = None      # None while Jack is asked
+    blocks: list | None = None      # None while Flux is asked
     note: str = ""                  # why there is nothing
     task: asyncio.Task | None = field(default=None, repr=False)
 
@@ -140,7 +140,7 @@ def look_label(blocks: list) -> str:
     texts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
     head = texts[0].splitlines()[0] if texts and texts[0] else ""
     m = re.search(r'"(.*)" at (\S*)\s*$', head)
-    title = (m.group(1) or m.group(2)) if m else "Jack's tab"
+    title = (m.group(1) or m.group(2)) if m else "Flux's tab"
     words = f"looking at: {title}"
     if any(t.startswith("The tab as shown") for t in texts):
         words += " + screenshot"
@@ -236,7 +236,7 @@ class CallHost(Widget):
                 field_.set_text(draft)
         self._was_busy = self.agent.busy
         self._nudge_t0 = 0.0
-        # The window that had focus as the call opened: Look asks Jack
+        # The window that had focus as the call opened: Look asks Flux
         # about that one. The call takes no focus (it grabs the keyboard),
         # so this is still the window the user was in.
         try:
@@ -387,29 +387,29 @@ class CallHost(Widget):
 
     def _toggle_look(self, screenshot: bool) -> None:
         """Ctrl+L (Shift: with a screenshot): the next line carries what
-        you are looking at in Jack; again, the chip goes."""
+        you are looking at in Flux; again, the chip goes."""
         if self._look is not None and self._look.screenshot == screenshot:
             self._drop_look()
             return
         self._drop_look()
         look = self._look = _Look(screenshot)
         look.task = asyncio.get_running_loop().create_task(
-            self._ask_jack(look))
+            self._ask_flux(look))
         self._show_look()
 
-    async def _ask_jack(self, look: _Look) -> None:
+    async def _ask_flux(self, look: _Look) -> None:
         try:
-            from ...browser.control import look as jack_look
+            from ...browser.control import look as flux_look
         except ImportError:
-            blocks, note = [], "Jack isn't here"
+            blocks, note = [], "Flux isn't here"
         else:
             try:
-                blocks = await jack_look(screenshot=look.screenshot,
+                blocks = await flux_look(screenshot=look.screenshot,
                                          image=True, xid=self._look_xid)
             except Exception:
                 log.exception("look failed")
                 blocks = []
-            note = "Jack isn't open"
+            note = "Flux isn't open"
         look.blocks, look.note = list(blocks or []), note
         if self._look is not look:
             return                          # dropped meanwhile
@@ -423,7 +423,7 @@ class CallHost(Widget):
 
     def _say(self, line: str) -> None:
         """Say a line, with the Look if there is one (waiting a moment
-        for Jack's answer if it isn't in yet)."""
+        for Flux's answer if it isn't in yet)."""
         look, self._look = self._look, None
         if look is not None:
             self.you_plate.look_chip = None
