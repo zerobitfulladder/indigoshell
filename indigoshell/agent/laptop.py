@@ -3,7 +3,8 @@
 The desktop's own tools (tools.py, the shell's agent's) adapted to the
 hub: the same helpers and services, each tool a `Hand` the hub hands its
 agent as `laptop_<name>`. Every hand answers within the hub's call
-timeout (60 s) and returns text, or a PNG for a screenshot.
+timeout (a minute, or what the hand declares: `run` takes ten) and
+returns text, or a PNG for a screenshot.
 
     open              a link or a file in its usual program, brought
                       forward on its workspace
@@ -61,6 +62,7 @@ bring_forward = desk.bring_forward
 SHOT_MAX_SIDE = 1568        # long side of a screenshot, as the model sees it
 CLIPBOARD_MAX = 20000       # characters
 RUN_DEFAULT_S = 120.0
+RUN_MAX_S = 600             # what `run` asks the hub to wait for it
 OUTPUT_MAX = 30 * 1024      # bytes of a command's output: half head, half tail
 FILE_MAX = 10 * 1024 * 1024
 ROOT = ("sudo", "doas", "pkexec", "su", "run0")
@@ -501,14 +503,16 @@ RUN = Hand(
     "(default: the home folder). Returns its output (stdout and stderr "
     f"together, the first and last {OUTPUT_MAX // 2048} kB of it if longer) "
     "and its exit code. timeout in seconds (default "
-    f"{RUN_DEFAULT_S:g}); a command can't run longer than the hub waits for "
-    "a laptop tool (about a minute), and is stopped then, so start longer "
-    "work in the background (setsid … > log 2>&1 &) and check on it. "
+    f"{RUN_DEFAULT_S:g}, at most about {RUN_MAX_S // 60} minutes); a "
+    "command still running then is stopped, so start longer work in the "
+    "background (setsid … > log 2>&1 &) and check on it. "
     "Anything with sudo, doas, pkexec, su or run0 in it asks the user on "
     "the laptop first.",
     _run_command,
     _schema({"command": {"type": "string"}, "cwd": {"type": "string"},
-             "timeout": {"type": "number", "minimum": 1}}, ("command",)))
+             "timeout": {"type": "number", "minimum": 1,
+                         "maximum": RUN_MAX_S}}, ("command",)),
+    timeout=RUN_MAX_S)
 
 
 # ── files ───────────────────────────────────────────────────────────────

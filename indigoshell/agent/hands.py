@@ -38,6 +38,8 @@ log = logging.getLogger(__name__)
 
 # How long a call may run when the hub doesn't say.
 DEFAULT_TIMEOUT_S = 30.0
+# The longest a hand may ask the hub to wait for its calls.
+MAX_TIMEOUT_S = 1800
 # Answer this much before the hub's own deadline, so the answer is there
 # before it gives up.
 TIMEOUT_MARGIN_S = 0.5
@@ -89,17 +91,23 @@ def no_input() -> dict:
 
 @dataclass(frozen=True)
 class Hand:
-    """One tool lent to the agent."""
+    """One tool lent to the agent. `timeout`: how long the hub waits for
+    its calls, in seconds (up to MAX_TIMEOUT_S); None leaves it to the
+    hub (a minute)."""
 
     name: str                   # lowercase letters, digits and _
     description: str
     run: Callable[[Call], Awaitable[list[dict]]]
     input: dict = field(default_factory=no_input)
+    timeout: float | None = None
 
     def lent(self) -> dict:
         """As `hello.hands` lists it."""
-        return {"name": self.name, "description": self.description,
+        lent = {"name": self.name, "description": self.description,
                 "input": self.input}
+        if self.timeout is not None:
+            lent["timeout"] = int(max(1, min(self.timeout, MAX_TIMEOUT_S)))
+        return lent
 
 
 class Hands:
