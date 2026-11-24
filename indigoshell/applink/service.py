@@ -5,7 +5,7 @@ and the keys the shell takes from them.
 on the daemon's loop; each connection is one app window (`Link`), which
 announces itself first (protocol.py) and is then handed to an
 `AppWindow` of its kind, from the `kinds` the service was given
-(config_default: `{"flux": browser.context.FluxWindow}`). A kind the
+(config_default: `{"flux": applink.flux.FluxWindow}`). A kind the
 service does not know still gets a plain `AppWindow`: kept, answered,
 shown as nothing.
 

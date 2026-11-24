@@ -483,7 +483,8 @@ class Log:
         root.addHandler(handler)
         root.addHandler(file)
         root.setLevel(logging.WARNING)
-        logging.getLogger(APP).setLevel(logging.DEBUG)
+        for _name in ("flux", APP):
+            logging.getLogger(_name).setLevel(logging.DEBUG)
 
     def messages(self, level=0, since=0):
         return [r.getMessage() for r in self.records[since:] if r.levelno >= level]

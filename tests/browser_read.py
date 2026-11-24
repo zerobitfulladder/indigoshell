@@ -458,7 +458,8 @@ def test_in_process() -> None:
     handler = logging.Handler()
     handler.emit = records.append
     logging.getLogger().addHandler(handler)
-    logging.getLogger(APP).setLevel(logging.DEBUG)
+    for _name in ("flux", APP):
+        logging.getLogger(_name).setLevel(logging.DEBUG)
 
     def wait(pred, timeout=10.0) -> bool:
         deadline = time.monotonic() + timeout

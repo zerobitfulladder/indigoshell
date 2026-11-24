@@ -216,7 +216,8 @@ class Log:
         root.addHandler(handler)
         root.addHandler(file)
         root.setLevel(logging.WARNING)
-        logging.getLogger(APP).setLevel(logging.DEBUG)
+        for _name in ("flux", APP):
+            logging.getLogger(_name).setLevel(logging.DEBUG)
 
     def said(self, words: str) -> int:
         return sum(words in r.getMessage() for r in self.records)

@@ -1,7 +1,7 @@
 """The shell's line to its own apps, and the top bar they set.
 
 An indigoshell app is a program of the shell's own that runs as a
-process of its own: Flux, the browser (`indigoshell/browser`), now;
+process of its own: Flux, the browser (flux/, its side here applink/flux.py), now;
 later an IDE. Each of its windows connects to the daemon over one unix
 socket and says what it is (`{"type": "announce", "app": "flux", "wid":
 <X window>}`), then keeps the shell told what it shows (protocol.py).

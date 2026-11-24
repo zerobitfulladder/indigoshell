@@ -61,7 +61,7 @@ def exec_command() -> list[str]:
     on_path = shutil.which(CLI)
     if on_path and script and os.path.realpath(on_path) == script:
         return [CLI]
-    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # flux/ sits at its root
     main_py = os.path.join(repo, "main.py")
     if os.path.isfile(main_py):
         return [sys.executable, main_py]

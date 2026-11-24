@@ -475,7 +475,8 @@ class Log:
         root.addHandler(handler)
         root.addHandler(file)
         root.setLevel(logging.WARNING)
-        logging.getLogger(APP).setLevel(logging.DEBUG)
+        for _name in ("flux", APP):
+            logging.getLogger(_name).setLevel(logging.DEBUG)
 
 
 class Client:
