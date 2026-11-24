@@ -2,9 +2,10 @@
 
 A widget-engine desktop shell for X11. One Python process draws a bar,
 its panels, its chord menus, its app launcher, its notification toasts,
-its system tray and a call overlay that puts Claude on the line — all on
-a single asyncio loop, with no toolkit, no second main loop and no
-worker threads.
+its system tray and a call overlay to an agent on another machine — all
+on a single asyncio loop, with no toolkit, no second main loop and no
+worker threads. Beside it in this checkout is Flux, the shell's own web
+browser, a process of its own on PySide6 and QtWebEngine.
 
 <p align="center">
   <img src="docs/media/hero.png" width="100%"
@@ -23,109 +24,101 @@ electric cyan, neon yellow, violet accent, deep blue-violet base.
 
 ## Agent — Claude on the line
 
-`MOD+A` calls Claude. A call overlay drops into the top-right corner,
-takes the keyboard, and on the other end is an agent that lives on the
-machine: it runs commands, reads and edits files, searches the web and
-drives the desktop, then answers in a few lines — in a netrunner's
-voice, by default.
+`MOD+A` calls the agent. A call overlay drops into the top-right corner,
+takes the keyboard, and on the other end is an agent that lives on a
+**hub**, a machine of its own (the author's is a Raspberry Pi). It
+answers in a few lines, and while it works it can reach into this
+machine: the shell lends it *hands*, tools it runs here — a shell,
+files, screenshots, windows, the clipboard and the browser.
 
 <p align="center">
   <img src="docs/media/call.gif" width="100%"
        alt="A call: a question typed and sent, the agent's commands appearing one by one under a running turn clock, its answer decoding in as it streams, then a scan band glitching down the whole call">
 </p>
 
-Underneath it is [Claude Code](https://claude.com/claude-code), driven
-through the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python),
-so it runs on a Claude subscription rather than an API key — and from a
-config directory of its own, so it can be signed in to a different
-account from the `claude` in your terminal.
+The hub is a separate project, not in this repository: what is here is
+the shell's side of the call. It talks to the hub over a WebSocket with
+mutual TLS ([`agent/remote.py`](indigoshell/agent/remote.py)), and with
+no hub to talk to there is no call — the shipped config has none until
+a `config.py` adds it (below). On the hub the agent is Claude, run
+through Claude Code: one mind with two voices, Indigo and Lilac, and
+one conversation shared with the other devices connected to it.
 
 - **A call, not a chat window.** Your plate on top, the agent's below,
   each with its chip. What it *does* shows as one-line steps, kept apart
   from what it *says*; click a step for the whole command and its
   output. Replies render Markdown with clickable links, and any of it
   can be selected and copied.
+- **Two voices.** `Ctrl+S` switches who answers your next line, Indigo
+  or Lilac, and the call remembers the pick. The turn on show may be in
+  the other voice — asked from another device, or before a switch — and
+  the agent's plate and chip take that voice's name and colour, which
+  are the hub's.
 - **Chips you read at a glance.** Arcs turning: working. Blinking: it
   wants you — an answer blinks twice, a question blinks until answered.
   While a turn runs, the agent's frame is redrawn clockwise as a turn
   clock, one lap a minute.
 - **Model and effort on its header.** `Ctrl+M` switches the model on
-  the live conversation and `Ctrl+T` the effort. The header names the
-  model by the version the API reports for it — `opus 5.5`, never a
-  guess — and the effort by street name: idle, stock, boost, overclock,
-  redline (low to max).
+  the live conversation and `Ctrl+T` the effort; the hub keeps the real
+  settings. The header names the model as the hub reports it —
+  `opus 5.5`, never a guess — and the effort by street name: idle,
+  stock, boost, overclock, redline (low to max).
 - **Talk over it.** A line sent while it works goes in at once and
-  shows in its plate, in your colour, where you sent it. The agent
-  reads it at its next step — a running command finishes untouched —
-  and folds it into the task. `Ctrl+C` stops it now instead.
+  shows in its plate, in your colour, where you sent it; the agent reads
+  it at its next step and folds it into the task. `Ctrl+C` stops it now
+  instead. A line said while the hub is out of reach waits, and goes
+  when the line is back.
 - **It hangs up on long jobs and calls back.** For anything slow it
-  says what it's about to do and hangs up; a status chip in the corner
-  keeps working, and rings when the work is done. Escape hangs up from
-  your side — the work carries on either way.
-
-  <img src="docs/media/call-status.gif" width="460"
-       alt="Hung up: the status chip spinning through a system update, then calling back with the result">
-
-- **Long commands show how far they've got.** A download, a transcode or
-  one of its skills' multi-stage scripts (below) gets a progress bar
-  under the step that runs it: how much is done, how fast, how long is
-  left, and which stage of the pipeline it's on. Hung up, the bar moves
-  to the status chip. yt-dlp, ffmpeg, curl and rsync report by
-  themselves, through small wrappers on the agent's PATH, which also
-  trim their progress spam to one line in the agent's context. Its own
-  scripts report with a ten-line function, and the agent can ask where
-  a job is up to.
-
-- **It asks before going root.** Claude Code's auto mode judges every
-  other call, letting routine work through and blocking what looks
-  risky; `sudo`, `doas`, `pkexec` and `su` stop and ask on the call —
-  click GREENLIGHT or SCRUB (or press `A` / `D`), every time.
+  says what it's about to do and hangs up. The agent's chip at the
+  right end of the top bar keeps naming the step it is on while its arcs
+  turn, and when the work is done it turns red and blinks until you
+  answer: a click opens the call, a right-click silences it, and a ring
+  seen on another screen stops here too. Escape hangs up from your
+  side — the work carries on either way.
+- **It asks before going root.** A command or background job it runs
+  here that mentions `sudo`, `doas`, `pkexec`, `su` or `run0` stops and
+  asks on the call — click GREENLIGHT or SCRUB (or press `A` / `D`),
+  every time; no answer before the hub gives up is a no. Commands that
+  weren't allowed run with those five shadowed on their PATH, so a
+  script that calls one by name is refused rather than let through. The
+  hub's own questions ask the same way.
 
   <img src="docs/media/call-ask.png" width="100%"
        alt="The agent asking for the ok to run sudo pacman -Syu, its frame and chip turned yellow">
 
-- **The desktop is its toolkit.** An in-process MCP server gives it the
-  shell's reach: screenshots; opening links and files in their own app
-  and bringing that window forward on its workspace; notifications;
-  apps, workspaces and windows; the clipboard; Spotify — the official
-  app over MPRIS, plus the Web API for search, the queue, playlists and
-  your library; WiZ lights, found on the local network with no cloud
-  account — colours, whites, brightness and their built-in scenes, by
-  the names and rooms you give them on a call; and your everyday
-  Firefox, signed in as you — tabs, pages read as text with every link,
-  field and button numbered, clicks, typing, forms, file uploads (send
-  a file on WhatsApp, attach it to a mail), JavaScript in the page,
-  screenshots of a tab.
-
-  <img src="docs/media/call-music.png" width="100%"
-       alt="Asked for music that sounds like rain on neon, the agent searching Spotify and queueing Vangelis">
-
-- **It knows what "this" is.** The moment you open the call, before
-  the overlay shows, the shell notes the workspace, the focused window,
-  Firefox's tab in front, what is playing, and the text you have
-  highlighted (whole, with which app it is in and how long ago), and
-  sends that with your first line. It also keeps a screenshot of that
-  moment, without the call on it, for the agent to look at only if it
-  needs to.
-
-- **Reports, not walls of text.** Anything long becomes an offline HTML
-  report in the shell's own palette, opened in the browser; images and
-  videos open in their apps.
-- **It keeps notes.** `~/.config/indigoshell/assistant/CLAUDE.md` is
-  its notebook for the machine — hardware, setup, fixes that worked,
-  your rules for working on it — and Claude Code's memory holds what it
-  learns about you. Tell it on a call to do things differently and it
-  edits its own notebook.
-- **It learns new tricks.** Ask it to set up a way to do something —
-  "from now on, when I send a reel, transcribe it" — and it builds
-  itself a skill: a folder in its workspace with a `SKILL.md`, its code
-  in `tools/` (self-contained `uv` scripts, nothing installed anywhere
-  else) and what it collects in `data/`, like the lyrics it has found. Transcribing videos with Whisper and finding a song's
-  lyrics started that way, built on a call. A skill's script reports
-  each stage as it goes, so its run shows the steps on its progress
-  bar — download, audio, model, transcribe, write — and they follow to
-  the status chip when it hangs up. Each skill is one line in the
-  agent's context until it is used.
+- **This machine's hands.** What the laptop lends (`laptop_hands()`,
+  [`agent/laptop.py`](indigoshell/agent/laptop.py)): opening a link or
+  a file in its usual program, brought forward on its workspace;
+  screenshots of the screen, one monitor or one window; the workspaces
+  and their windows, focusing one, starting an app by name; the
+  clipboard, and the text you highlighted last; a shell as you
+  (`bash -lc`); background jobs that outlive the call, the line to the
+  hub and a reload of the shell, and tell the hub when they end; reading
+  and writing files; and its uptime, load, memory and battery. The hub
+  gives them to its agent as `<device>_<name>`.
+- **Your browser too.** With [Flux](#flux--the-browser) here, the
+  laptop also lends Flux's hands ([`flux/hands.py`](flux/hands.py)):
+  tabs, pages read as an outline with numbered refs or as an article,
+  clicks, typing, forms, file uploads, screenshots of a tab, downloads,
+  and JavaScript in the page behind Flux's guard. It acts signed in as
+  you, with no question asked; Flux never hands it a password field's
+  value and leaves a site's permission prompts to you. While it drives a
+  tab, Flux draws its hold in the voice's colour and locks your input
+  out; a key from you takes the tab back. What is its to do alone
+  happens in a Flux window of its own, on a workspace you aren't looking
+  at, where it borrows a tab and returns it when done.
+- **Look.** `Ctrl+L` makes your next line carry what you are looking at
+  in Flux — the tab, the selection, the picture in it or under the
+  pointer — named on a chip over your line. `Ctrl+Shift+L` adds a
+  screenshot of the tab. `Ctrl+L` again, or Escape on an empty line,
+  takes it off.
+- **It shows you things.** A picture the agent shows lands in its
+  reply, scaled to the column, its caption under it; a file shows as one
+  line, with its name and size. Click one, or press `Ctrl+F` for the
+  turn's last, and it is saved to `~/Downloads` and opened in its usual
+  program.
+- **The hub's devices.** `Ctrl+D` lists them: which are online or when
+  each was last seen, their connections, and the hands each lends.
 - **A hologram, glitches and all.** The plates and chips share one
   raster on the screen's pixel grid; every few seconds a scan band runs
   down the whole call and the image tears as it passes. Replies decode
@@ -136,46 +129,53 @@ account from the `claude` in your terminal.
 | `Return` | send — even while it works: it reads the line at its next step |
 | `Esc` | hang up (the work carries on) |
 | `Ctrl+C` | copy the selection; with none, stop the task |
+| `Ctrl+S` | who answers your next line: Indigo or Lilac |
+| `Ctrl+L` · `Ctrl+Shift+L` | Look: your next line carries Flux's tab · and a screenshot of it |
+| `Ctrl+F` | open the last picture or file the agent showed |
 | `Ctrl+N` · `Ctrl+H` | a new conversation · past ones, to resume |
+| `Ctrl+D` | the hub's devices |
 | `Ctrl+M` · `Ctrl+T` | next model (opus, sonnet, haiku, fable) · effort (idle … redline) |
 | `Ctrl+O` | every step of the turn |
 | `A` `D` | greenlight (allow), scrub (deny) |
 | `PgUp` `PgDn` | scroll a long reply |
 
-Setting it up takes the SDK (the `call` extra) and one sign-in into the
-agent's own config directory; until then the call says what is missing:
+Setting it up takes a hub, the `call` extra — only `websockets` — and
+a certificate and key for this machine that the hub accepts. Which hub,
+with which certificates, is each machine's to say, so the shipped
+config has no call; a `config.py` adds it with `call(hub)`:
 
 ```bash
-uv pip install 'claude-agent-sdk>=0.2.183'
-CLAUDE_CONFIG_DIR=~/.config/indigoshell/claude claude auth login
+uv pip install 'websockets>=15'
 ```
+
+```python
+# ~/.config/indigoshell/config.py
+from indigoshell.agent import RemoteAgent, laptop_hands
+from indigoshell.config_default import (MENUS, SCREEN, SERVICES,
+                                        STARTUP, WINDOWS, call)
+
+HUB = RemoteAgent(voice="indigo", endpoints=["wss://hub.lan:443"],
+                  tls={"ca": ..., "cert": ..., "key": ...},
+                  hands=laptop_hands())
+CALL, CALL_SERVICES = call(HUB)
+WINDOWS = [*WINDOWS, CALL]
+SERVICES = [*SERVICES, *CALL_SERVICES]
+```
+
+`voice` answers until `Ctrl+S` switches it. `tls` names three PEM
+files — the hub's CA, this machine's certificate and its key — and only
+that CA is trusted; the hub's certificate must carry the name given as
+`server_name`, whatever address answered. `endpoints` are tried in
+order, so the home address goes first and a public one after it.
+`hands` is what this machine lends; leave it out and it lends none. The
+line stays up while the shell runs, so a turn that ends with the call
+closed still rings, and it comes back by itself when either machine was
+away; until it is up, the call says it can't reach the hub, and why.
+Then bind the call:
 
 ```python
 Key([MOD], "a", lazy.spawn(INDIGOSHELL + ["toggle", "call"])),
 ```
-
-The agent is one line of config — `Agent(name="INDIGO", model="opus",
-tools=ShellTools())` — with `persona=` for another voice. Spotify search
-and the account tools want a Spotify app's `client_id` and
-`client_secret` in `~/.config/indigoshell/connections/spotify/config.json`,
-with `http://127.0.0.1:8989/login` as a redirect URI; then ask it to
-sign in.
-
-The browser tools reach your everyday Firefox through **INDIGO
-bridge**, an add-on in this repository (`indigoshell/agent/extension/`)
-that talks to the shell over native messaging — no debugging port, so
-sites see an ordinary browser. Arch builds Firefox to load unsigned
-add-ons from the system extension folder, so no Mozilla account or
-signing is involved; one command links the add-on there, registers its
-host and sets two Firefox preferences (it asks for `sudo` once):
-
-```bash
-.venv/bin/python -m indigoshell.agent.firefox install
-```
-
-Then restart Firefox. The add-on's toolbar button shows whether it is
-connected to the shell; press **Allow JavaScript** there once for the
-tool that runs scripts in a page.
 
 ## Showcase
 
@@ -201,6 +201,12 @@ size, cut to the song's beats.
 
   <img src="docs/media/bar.png" width="100%"
        alt="The bar, left half above right half: INDIGO tag, workspaces and a lyric line; meters, network, now playing, volume and clock">
+
+- **Top bar** — a thinner second dock along the top. Its left is the
+  focused indigoshell app's — [Flux](#flux--the-browser)'s tabs, host
+  and load line while a Flux window has focus, nothing while any other
+  window does — and its right end the agent's chip, when a call is
+  configured.
 
 - **Widgets** — plain at rest, animated when something happens:
   - **workspaces**, each a stack of bars for its window count, an urgent
@@ -259,7 +265,8 @@ size, cut to the song's beats.
   history that lifts the apps actually used. Type straight away — keys
   pressed during the spawn animation are kept. Shift+Return runs the
   query as a command line. Apps start in their own systemd scope,
-  detached from the shell, so a reload never takes them down.
+  detached from the shell, so a reload never takes them down. The same
+  window answers Flux's address and bookmark keys.
 
   <img src="docs/media/launcher.gif" width="560"
        alt="The launcher opening, nvim typed and Neovim picked">
@@ -297,6 +304,42 @@ size, cut to the song's beats.
 - **Hot reload** — `--watch` re-execs on `.py` change, or
   `indigoshell reload` over the control socket.
 
+## Flux — the browser
+
+Flux is the shell's own web browser: a program of its own beside the
+shell in this checkout ([`flux/`](flux/)), on PySide6 and QtWebEngine
+(Chromium). One window holds many pages as tabs, and there is one Flux
+per profile: a second invocation hands its URLs to the running one.
+
+```bash
+indigoshell browser [url ...]   # or from the checkout: python -m flux [url ...]
+indigoshell browser --install   # its entry in the launcher, "Flux"
+```
+
+The shell takes it in through `applink/`, its line to its own apps
+([`applink/flux.py`](indigoshell/applink/flux.py)): while a Flux window
+has focus, the top bar shows its tabs, the page's host and a load line,
+drawn with the shell's own text, and the shell answers its `Ctrl+L`,
+`Ctrl+T` and `Ctrl+M` with the launcher — addresses from Flux's history
+and bookmarks, or the window's bookmark actions. Either side can start,
+stop or restart at any time. With no shell Flux writes the same into a
+line at its window's top and asks for addresses with a dialog of its
+own, so it is usable alone.
+
+Its own keys: `Alt+1`…`Alt+9` go to a tab and `Alt+Shift+1`…`9` move
+the current one there, `Ctrl+W` closes a tab and `Ctrl+Shift+T` reopens
+the one closed last, `Ctrl+F` finds in the page, `F12` opens the
+inspector.
+
+`--profile NAME` runs a Flux of its own beside the default one, with
+its own storage, history, bookmarks and socket; `--headless` runs one
+with no screen, for a machine with no display. Its single-instance
+socket is also its control socket, which is how the agent drives it
+(above). Flux imports only the shell's pure modules
+([`tests/flux_imports.py`](tests/flux_imports.py) checks it), so it
+needs none of the shell's own dependencies — only PySide6 with
+QtWebEngine, from the distro ([Dependencies](#dependencies)).
+
 ## Architecture
 
 ```text
@@ -313,29 +356,31 @@ indigoshell/
                       Aberration, ColorSplit (SkSL)
   plugin.py         ─ plugin contract: Menu, Item
   markdown.py       ─ Markdown to plain text + spans, for mono-grid wrapping
-  config_default.py ─ the shipped bar, panels, menus, services and the call
-  agent/            ─ Claude on a call (see Agent, above)
-    session.py      ─ the conversation: Claude Code via the Agent SDK,
-                      turns, approvals, hang-up and ring-back, sessions
-    tools.py        ─ the desktop as an in-process MCP server
-    glance.py       ─ the desktop as the call opened: window, highlight, screen
-    spotify.py      ─ the Spotify app (MPRIS) and Web API, with sign-in
-    wiz.py          ─ WiZ lights on the LAN: discovery, scenes, names
-    firefox.py      ─ the everyday Firefox, via the INDIGO bridge add-on
-    connections.py  ─ their settings and keys, one folder each in connections/
-    browser_host.py ─ that add-on's native messaging host
-    extension/      ─ the add-on: page reader, clicks, forms, JavaScript
-    prompts.py      ─ the call protocol and the persona
-    permissions.py  ─ the root commands that still ask
-    activity.py     ─ one line per step, approvals, tool formatting
-    progress.py     ─ long commands' progress, over a datagram socket
-    watch.py        ─ the wrappers that read yt-dlp/ffmpeg/curl/rsync output
-    seed.py         ─ the agent's workspace: notebook, skills, palette
-    workspace/      ─ the starting notebook and skills (report, new-skill)
+  config_default.py ─ the shipped bars, panels, menus and services; call(hub)
+  agent/            ─ the call: the shell's side of the agent on a hub
+                      (see Agent, above)
+    remote.py       ─ RemoteAgent: the line to the hub (WebSocket, mutual
+                      TLS), turns, questions, ring-backs, voices, history
+    activity.py     ─ the agent's steps and questions, as the call shows them
+    hands.py        ─ Hands: the tools this machine lends, and their calls
+    laptop.py       ─ the desktop as those tools: open, screenshot, windows,
+                      apps, clipboard, shell, background jobs, files
+    desk.py         ─ what those and the call share: running a program,
+                      qtile, opening a link or a file on its workspace
+    progress.py     ─ long commands' progress, over a datagram socket (the
+                      call draws the bars; nothing on the hub reports yet)
+    watch.py        ─ the reporting end; the yt-dlp/ffmpeg/curl/rsync wrapper
     ui/             ─ call.py (keys, layout), agent_plate.py, you_plate.py,
                       choice.py (GREENLIGHT / SCRUB), bars.py (progress),
-                      chip.py, status.py, frame.py (turn clock), reveal.py
-                      (decode), rows.py
+                      chip.py, status.py (the top bar's AgentChip), frame.py
+                      (turn clock), reveal.py (decode), media.py (pictures
+                      and files shown), rows.py, style.py
+  applink/          ─ the shell's line to its own apps, and the top bar they set
+    protocol.py     ─ one unix socket, one JSON object per line (pure)
+    service.py      ─ AppService: who is connected, who has focus, grabbed keys
+    context.py      ─ the top bar's area for the focused app
+    flux.py         ─ Flux's tabs, host and load line; the launcher for its
+                      Ctrl+L, Ctrl+T, Ctrl+M
   backend/
     x11.py          ─ the process's single xcffib connection + event pump
     gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback
@@ -343,6 +388,7 @@ indigoshell/
     daemon.py       ─ the loop: windows, services, IPC, signals, reload
     ipc.py          ─ control socket (line-delimited JSON over AF_UNIX)
     client.py       ─ the CLI side of that socket
+    hands.py        ─ what a tool lent to the hub's agent is (pure; Flux's too)
     registry.py     ─ plugin discovery, shipped then user, later winning
     naming.py       ─ APP / CLI / env prefix, derived from the package
     paths.py        ─ socket, lock, config, state and log locations
@@ -362,6 +408,8 @@ indigoshell/
     beat.py         ─ cava bands + aubio beat detection, both lazy
     sysinfo.py      ─ 1Hz CPU/RAM sampler, direct-sysfs temperature
     apps.py         ─ installed-app catalog, ranked search, launch history
+    modes.py        ─ launcher modes: lists shown in place of the apps
+    addresses.py    ─ the address mode for Flux: its history and bookmarks
     desktop_entry.py─ .desktop parsing, visibility, Exec -> argv
     icons.py        ─ icon theme lookup (indexed once) and loading
     proc.py         ─ run / fire / launch / subscribe, all coroutines
@@ -376,6 +424,17 @@ indigoshell/
     launcher.py       text_input.py
     holo.py           the hologram: raster + glitch scan, on the call and on
                       every `WindowSpec(holo=True)` panel
+flux/               ─ Flux, the browser (see Flux, above): its own process
+  __main__.py       ─ python -m flux [url ...]
+  protocol.py       ─ what Flux and the shell say; the control requests
+  places.py         ─ what a typed line means, history (SQLite), bookmarks
+  profiles.py       ─ the default profile's places, and --profile NAME's
+  control.py        ─ the control socket's client (pure asyncio)
+  hands.py          ─ Flux as hands for the hub's agent
+  uploads.py        ─ the places an upload never comes from
+  desktop.py        ─ its launcher entry (--install)
+  qt/               ─ the browser process: PySide6 + QtWebEngine, windows,
+                      tabs, keys, the agent's requests, the line to the shell
 prototypes/
   visuals/          ─ offline design sheets and GIFs, from the real widgets
   showcase/         ─ the scripted demo: XTEST input, staging, recording,
@@ -395,7 +454,9 @@ prototypes/
   exclusive zone) is borrowed from Wayland's layer-shell.
 - **Names derive from the package.** `core/naming.py` reads `APP` from
   `__package__`, and the daemon name, socket, config dir, state file,
-  log file and `INDIGOSHELL_*` env vars all follow it.
+  log file and `INDIGOSHELL_*` env vars all follow it. Flux, a package
+  of its own, keeps the shell's names for its places, sockets and env
+  vars.
 - **All subprocess work goes through
   [`services/proc.py`](indigoshell/services/proc.py)** — `run`, `fire`,
   `launch`, `subscribe`, every one a coroutine. Anything the user starts
@@ -437,6 +498,9 @@ indigoshell close <window>      indigoshell ping
 indigoshell toggle <window>     indigoshell reload
 indigoshell menu <menu>         indigoshell kill
 ```
+
+`indigoshell browser [url ...]` is the one that isn't a client: it runs
+Flux in a process of its own, whether or not the daemon is up.
 
 ### Window manager integration
 
@@ -485,9 +549,12 @@ WINDOWS = [
 ```
 
 [`config_default.py`](indigoshell/config_default.py) is the worked
-example: eight windows — the bar, three panels, the chord menu, the
-launcher, and the call with its status chip — the widget set, and the
-reasoning behind the numbers.
+example: seven windows — the two bars, three panels, the chord menu and
+the launcher — the widget set, and the reasoning behind the numbers. It
+has no call: `call(hub)` there builds the call's window and the
+services it needs, for a config to add ([Agent](#agent--claude-on-the-line)),
+and `top_bar(*widgets)` builds the top bar again with widgets of your
+own at its right.
 
 ### Plugins
 
@@ -525,16 +592,21 @@ uses both to restore the output you chose last.
 | `INDIGOSHELL_GPU=0` | force the CPU raster path |
 | `INDIGOSHELL_DPI` | point-to-pixel scaling (default 96) |
 | `INDIGOSHELL_FORCE_COLOR` | keep ANSI colors when stderr isn't a tty |
+| `INDIGOSHELL_APPS_SOCKET` | where the shell listens for its apps (Flux) |
+| `INDIGOSHELL_BROWSER_SOCKET` | Flux's single-instance and control socket |
+| `INDIGOSHELL_BROWSER_WIDEVINE` | Flux: a `libwidevinecdm.so` to use, or `off` |
 
-Runtime files: `$XDG_RUNTIME_DIR/indigoshell-$UID.{sock,lock}`, state in
+Runtime files: `$XDG_RUNTIME_DIR/indigoshell-$UID.{sock,lock}`, and
+beside them the apps' line (`indigoshell-apps-$UID.sock`) and Flux's
+(`indigoshell-browser-$UID.sock`); state in
 `$XDG_STATE_HOME/indigoshell/state.json`.
 
 ## Dependencies
 
 Python (declared in `pyproject.toml`, needs 3.14+): `xcffib`,
 `skia-python`, `dbus-fast`, `psutil`, `watchdog`; and, for the call
-only, `claude-agent-sdk` (the `call` extra), which brings its own
-Claude Code.
+only, `websockets` (the `call` extra), the line to the hub. Flux needs
+none of these, only PySide6 with QtWebEngine (below).
 
 On `PATH`, each optional — the widget or menu that needs one degrades
 rather than failing:
@@ -550,12 +622,13 @@ rather than failing:
 | `pactl` | volume widget, audio menu |
 | `xrandr`, `setxkbmap` | display and layout menus |
 | `tuned-adm`, `optimus-manager` | profile and graphics menus |
-| `setsid` (util-linux) | launcher: detaches the apps it starts |
+| `setsid` (util-linux) | launcher: detaches the apps it starts; the agent's background jobs |
 | `systemd-run` + a user manager | launcher: one scope per app; skipped without |
 | `kitty` | launcher: `Terminal=true` apps (the `terminal=` option) |
-| `xclip` | copying from the call; the agent's clipboard tool; the highlighted text it is sent |
-| `xdg-open`, `xdg-mime` | the agent's `open` tool, links clicked in a reply |
+| `xclip` | copying from the call; the agent's clipboard hands |
+| `xdg-open`, `xdg-mime` | the agent's `open` hand, links clicked in a reply |
 | ImageMagick `import` | the agent's screenshots |
+| `qtile` (`qtile cmd-obj`) | the agent's window and workspace hands; bringing what it opens forward |
 
 A Nerd Font is expected for the glyphs; `FiraCode Nerd Font Mono` is the
 theme default.
@@ -568,7 +641,14 @@ sync` resets that flag again, so `services/beat.py` falls back to
 probing `sys.base_prefix` directly — a venv rebuild costs the flag, not
 the feature.
 
+**PySide6** with QtWebEngine, for Flux, comes from the distro the same
+way (Arch: `pyside6` and `qt6-webengine`) and reaches the venv through
+the same flag. Flux has no fallback of its own: after a `uv sync`, set
+the flag again before starting it.
+
 ## Status
 
 Personal project, single-author, and shaped around one machine's
-hardware. Stable as a daily driver; the API still moves.
+hardware. Stable as a daily driver; the API still moves. The call is
+only the shell's side of an agent whose hub is a separate project, not
+in this repository.

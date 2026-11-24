@@ -23,18 +23,22 @@ dependencies = [
 # `services/beat.py` probes `sys.base_prefix` as a fallback so a rebuild
 # only costs the flag, not the feature. cava (visualiser), playerctl,
 # parec, speedtest-cli, iw and nmcli are likewise expected on PATH.
+#
+# Flux, the browser (flux/), is the same case: PySide6 with QtWebEngine
+# comes from the distro (Arch: `pyside6` and `qt6-webengine`) through
+# that same flag, and Flux has no fallback for it. Of the shell it
+# imports only modules that need none of the dependencies above
+# (tests/flux_imports.py checks), so it runs where they aren't installed.
 
 [project.scripts]
 indigoshell = "indigoshell.app:main"
 
 [project.optional-dependencies]
-# The call overlay (indigoshell/agent/): Claude through the Agent SDK,
-# which bundles its own Claude Code binary. Without it the shell runs
-# as before and the call says the SDK is missing. Install into the venv
-# with `uv pip install`, not `uv sync` — see the aubio note above.
+# The call overlay (indigoshell/agent/): RemoteAgent's line to the agent
+# on its hub, a WebSocket with TLS (agent/remote.py). Only a config that
+# adds the call needs it; without it the call says it can't reach the
+# hub, and why. Install into the venv with `uv pip install`, not
+# `uv sync` — see the aubio note above.
 call = [
-    "asyncssh>=2.24",
-    "claude-agent-sdk>=0.2.183",
-    # RemoteAgent's channel to an agent on another machine (agent/remote.py).
     "websockets>=15",
 ]

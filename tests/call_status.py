@@ -14,28 +14,26 @@ import sys
 
 import _live
 
-from indigoshell import config_default as config
 from indigoshell.agent.ui import status
-from indigoshell.agent.ui.status import STATUS_WINDOW, CallStatus
+from indigoshell.agent.ui.status import CallStatus
 
 status.RING_FOR_S = 1.2         # a ring that goes "missed" within the test
 
 
 async def main() -> int:
     display = _live.connect()
-    agent = _live.ScriptedAgent(name="INDIGO", model="opus")
+    agent = _live.ScriptedAgent(voice="indigo")
     agent.dial()
     widget = CallStatus(agent)
     _live.count_frames(widget)
     _live.count_frames(widget.chip)
-    spec = next(s for s in config.WINDOWS if s.name == STATUS_WINDOW)
+    spec = _live.status_spec(widget)
     win = None
     bad = 0
     for label in ("first open", "opened again"):
-        agent._begin_turn("update the deck")    # the call is closed: it works on
+        agent.say("update the deck")    # the call is closed: it works on
         if win is None:
-            win = _live.open_window(display,
-                                    _live.offscreen(spec, content=widget))
+            win = _live.open_window(display, _live.offscreen(spec))
         else:
             win.unpark()
             win.show()
@@ -63,7 +61,7 @@ async def main() -> int:
               f"{missed}; "
               + (f"{n}px left over at {box}" if n else "nothing left over"),
               flush=True)
-        agent.ringing = None
+        agent.acknowledge()
         done = asyncio.Event()
         win.dismiss(done.set)
         await done.wait()

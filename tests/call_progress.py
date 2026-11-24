@@ -28,8 +28,9 @@ import _live
 from indigoshell import config_default as config
 from indigoshell.agent import progress
 from indigoshell.agent.progress import Jobs
-from indigoshell.agent.ui.call import CALL_WINDOW, CallHost
-from indigoshell.agent.ui.status import STATUS_WINDOW, CallStatus
+from indigoshell.agent.ui.call import CallHost
+from indigoshell.agent.ui.status import CallStatus
+from indigoshell.core import paths
 
 progress.LINGER_S = 0.8         # a finished loose job goes within the test
 
@@ -71,19 +72,18 @@ def job_rows(plate, loose: bool) -> list:
 
 async def main() -> int:
     display = _live.connect()
-    agent = _live.ScriptedAgent(name="INDIGO", model="opus")
-    # The agent's jobs, on a socket of the test's own.
-    agent.jobs = Jobs(path=os.path.join(TMP, "p.sock"),
-                      shims=os.path.join(TMP, "shims"))
-    agent.jobs.claim = agent._claim_job
-    agent.jobs.subscribe(agent._on_job)
+    agent = _live.ScriptedAgent(voice="indigo")
+    # Jobs of its own, on a socket of the test's own (the hub reports
+    # none, so a RemoteAgent has no bars of its own to draw).
+    sock = os.path.join(paths.runtime_dir(),
+                        f"indigoshell-test-progress-{os.getpid()}.sock")
+    agent.track(Jobs(path=sock, shims=os.path.join(TMP, "shims")))
     agent.jobs.start()
     agent.dial()
 
     host = CallHost(agent)
     _live.count_frames(host.agent_plate)
-    spec = next(s for s in config.WINDOWS if s.name == CALL_WINDOW)
-    status_spec = next(s for s in config.WINDOWS if s.name == STATUS_WINDOW)
+    spec, _services = config.call(agent)
     win = None
     bad = 0
     for label in ("first open", "opened again"):
@@ -96,7 +96,7 @@ async def main() -> int:
         tag = label.replace(" ", "-")
 
         # A step whose command reports.
-        agent._begin_turn("download the clip")
+        agent.say("download the clip")
         command = f"python3 {REPORTER} clip-{tag}.webm 1.6"
         agent.tool(f"t-{tag}", command)
         proc = await start(agent, command)
@@ -144,8 +144,8 @@ async def main() -> int:
     # The status plate: a job in its second line, then gone.
     widget = CallStatus(agent)
     _live.count_frames(widget)
-    swin = _live.open_window(display, _live.offscreen(status_spec,
-                                                      content=widget))
+    swin = _live.open_window(display,
+                             _live.offscreen(_live.status_spec(widget)))
     await asyncio.sleep(0.4)
     proc = await start(agent, f"python3 {REPORTER} status.iso 2.0")
     await asyncio.sleep(1.0)

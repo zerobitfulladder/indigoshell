@@ -13,7 +13,7 @@ import skia
 from common import C, txt
 from indigoshell import theme
 from indigoshell.agent.activity import Activity, Approval
-from indigoshell.agent.session import Agent
+from indigoshell.agent.remote import RemoteAgent
 from indigoshell.widgets.base import Size, Widget
 from indigoshell.agent.ui.call import CallHost
 from indigoshell.agent.ui.status import CallStatus
@@ -82,8 +82,18 @@ def shot(host, w, h):
     return surface.makeImageSnapshot()
 
 
-def agent_in(**state) -> Agent:
-    a = Agent(name="INDIGO")
+def agent_in(**state) -> RemoteAgent:
+    """The hub's agent as the call reads it, never connected (its line
+    isn't started; the endpoints and certificates are stand-ins), with
+    `state` set on it as if the hub's events had left it so. Two keys
+    are the hub's own: `approval`, its open question, and `model_label`,
+    the model as its `state` names it ("opus 5.5")."""
+    a = RemoteAgent(voice="indigo", endpoints=["wss://hub.invalid:443"],
+                    tls={"ca": "hub-ca.pem", "cert": "device.pem",
+                         "key": "device.key"},
+                    state_key=None)
+    a._hub_ask = state.pop("approval", None)
+    a._label = state.pop("model_label", "")
     for k, v in state.items():
         setattr(a, k, v)
     return a
@@ -162,8 +172,9 @@ def main():
                               detail="nmcli connection modify Home 802-11-wireless.powersave 2",
                               future=Done())))),
         ("not signed in", call(agent_in(
-            phase="error", error="Not signed in on the shell's account.",
-            hint="CLAUDE_CONFIG_DIR=~/.config/indigoshell/claude claude auth login"))),
+            phase="error",
+            error="The agent's Claude account is not signed in.",
+            hint="ssh -t lilac lilac/.venv/bin/lilac login"))),
     ]
     small = [
         ("hung up, working", status(agent_in(

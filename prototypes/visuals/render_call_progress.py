@@ -12,8 +12,28 @@ import skia
 from common import txt
 from indigoshell import theme
 from indigoshell.agent.activity import Activity
-from indigoshell.agent.progress import Job
-from render_call import agent_in, call, status
+from indigoshell.agent.progress import Job, Jobs
+from render_call import agent_in as hub_agent, call, status
+
+
+def agent_in(**state):
+    """`render_call.agent_in`, drawing bars from jobs of its own: the hub
+    reports none, so a RemoteAgent's are an empty stand-in. Each step's
+    bar is its job's, and a job no step of the turn claims shows loose,
+    as the desktop's own agent drew them."""
+    a = hub_agent(**state)
+    a.jobs = Jobs()                     # never started: only what job() adds
+
+    def job_of(act):
+        j = a.jobs.by_step(act.tool_id)
+        return j if j is not None and j.live and j.visible() else None
+
+    def loose_jobs():
+        steps = {x.tool_id for x in a.activity if x.tool_id}
+        return [j for j in a.jobs.shown() if j.step not in steps]
+
+    a.job_of, a.loose_jobs = job_of, loose_jobs
+    return a
 
 
 def job(agent, step, *, label="", stages=(), stage="", done=None, total=None,

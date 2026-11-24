@@ -35,14 +35,14 @@ paragraph, command or output.
 The chip's arcs say what the agent wants from you. Turning: it is
 working. Blinking: it wants you — a question blinks until you answer
 it; a finished answer blinks twice and settles. Still: it is waiting
-on you. Only a closed call rings (see `call-status` below).
+on you. Only a closed call rings (the top bar's chip, below).
 
 Hanging up — Escape, an outside click, the keybinding again, or the
 agent's own `hang_up` — closes the overlay without stopping the work.
-While a closed call is busy, `call-status` shows a small chip with the
-current step; when the work is done it rings, and opening the call
-answers. `CallRouter` (a SERVICES entry) opens and closes that chip,
-since neither window is alive to do it while it is closed.
+While a closed call is busy, the top bar's agent chip (ui/status.py,
+`AgentChip`) shows what it is doing; when the work is done it rings, and
+opening the call answers. `CallRouter` (a SERVICES entry) follows the
+agent for it, since the call's window is not alive while it is closed.
 
 Keys in the call:
     type / Return       say a line; mid-task it goes in at once and the
@@ -80,11 +80,9 @@ Keys in the call:
     Escape              hang up (the work carries on)
 
 One conversation runs at a time and carries over between calls — hang
-up and call again and the agent still has the context. It starts fresh
-by itself after six idle hours. Past conversations are Claude Code
-sessions in the call's own config dir, so they can also be opened with
-`CLAUDE_CONFIG_DIR=~/.config/indigoshell/claude claude --resume` from
-the workspace.
+up and call again and the agent still has the context. The conversation
+is the hub's, shared with the other screens (the phone); its past
+conversations are the hub's list (remote.py).
 """
 
 import asyncio

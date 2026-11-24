@@ -29,7 +29,6 @@ import skia
 from common import C, txt   # also quiets logging
 from indigoshell import shapes, text, theme
 from indigoshell.agent.activity import Activity
-from indigoshell.agent.session import Agent
 from indigoshell.effects import GlitchWipe, paint_through
 from indigoshell.widgets.base import Size, Widget
 from indigoshell.agent.ui import agent_plate as ap_mod
@@ -48,7 +47,8 @@ from indigoshell.agent.ui.style import (
     UNBOUNDED, YOU_ACCENT, accent_of, blink_on, frame_inset, line_h,
     plate_fill, plate_path)
 from indigoshell.agent.ui.you_plate import YouPlate
-from render_call import FakeWindow, backdrop as dark_backdrop
+from render_call import FakeWindow, agent_in as hub_agent
+from render_call import backdrop as dark_backdrop
 
 # A clock the frames own: every widget reads time.monotonic().
 NOW = [1000.0]
@@ -156,7 +156,8 @@ def chip_alpha(chip):
     _a, _l, mode = chip.look()
     if mode == "dim":
         return 0.45
-    return 0.3 if chip._painted_dim else 1.0
+    lit = mode != "blink" or blink_on(time.monotonic() - chip.ring_since())
+    return 1.0 if lit else 0.3
 
 
 def chip_arcs(chip, c, accent, alpha):
@@ -758,11 +759,8 @@ REPLY = ("Copy that. The card is **fine**; the drops are *power saving*. "
          "- fix: `nmcli connection modify Home 802-11-wireless.powersave 2`")
 
 
-def agent_in(**state) -> Agent:
-    a = Agent(name="INDIGO", model="opus", effort="medium")
-    for k, v in state.items():
-        setattr(a, k, v)
-    return a
+def agent_in(**state):
+    return hub_agent(model="opus", effort="medium", **state)
 
 
 def working_agent():

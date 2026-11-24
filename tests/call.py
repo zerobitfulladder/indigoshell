@@ -7,7 +7,7 @@ Two parts. First the plain case that used to fail: a call opened for the
 second time, the agent running a tool and saying nothing — the trace,
 the chip and the caret must still get their frames. Then a fuzz: per
 seed, one to three turns of streamed replies (fast or slow), thinking,
-tool calls, typing and queued lines, with the loop blocked at random
+tool calls, typing and lines said mid-turn, with the loop blocked at random
 moments and the call closed and opened again between turns. After each
 turn, once every timed effect has ended, the window's surface must be
 what a full repaint draws (`_live.stale`).
@@ -22,7 +22,7 @@ import time
 import _live
 
 from indigoshell import config_default as config
-from indigoshell.agent.ui.call import CALL_WINDOW, CallHost
+from indigoshell.agent.ui.call import CallHost
 from indigoshell.widgets.base import KeyEvent
 
 RETURN = 0xFF0D
@@ -43,7 +43,7 @@ def words(rng: random.Random, n: int) -> str:
 
 
 def open_call(display, host: CallHost):
-    spec = next(s for s in config.WINDOWS if s.name == CALL_WINDOW)
+    spec, _services = config.call(host.agent)
     return _live.open_window(display, _live.offscreen(spec, content=host))
 
 
@@ -59,7 +59,7 @@ def pieces_at(host: CallHost, box: tuple) -> str:
 
 # ── a re-opened call, the agent silent ──────────────────────────────────
 async def silent_tool(display) -> bool:
-    agent = _live.ScriptedAgent(name="INDIGO", model="opus")
+    agent = _live.ScriptedAgent(voice="indigo")
     host = CallHost(agent)
     win = open_call(display, host)
     moving = {"trace": host.agent_plate, "chip": host.agent_chip,
@@ -149,7 +149,7 @@ async def turn(rng, host, agent, *, fast, stall_p, typing) -> None:
             host.key(KeyEvent(keysym=ord(ch), text=ch))
             await asyncio.sleep(rng.uniform(0.01, 0.06))
         if rng.random() < 0.5:
-            host.key(KeyEvent(keysym=RETURN))       # queued behind the turn
+            host.key(KeyEvent(keysym=RETURN))       # folded into the turn
     await reply(rng, agent, fast=fast, stall_p=stall_p)
     how = rng.random()
     if how < 0.35:
@@ -166,7 +166,7 @@ async def turn(rng, host, agent, *, fast, stall_p, typing) -> None:
 
 
 async def settle(agent) -> None:
-    while agent.busy:               # a queued line started another turn
+    while agent.busy:               # a line said as it ended started another
         await reply(random.Random(1), agent, fast=True, stall_p=0.0)
         agent.end()
     await asyncio.sleep(QUIET_S)
@@ -174,7 +174,7 @@ async def settle(agent) -> None:
 
 async def fuzz(display, seed: int) -> bool:
     rng = random.Random(seed)
-    agent = _live.ScriptedAgent(name="INDIGO", model="opus")
+    agent = _live.ScriptedAgent(voice="indigo")
     host = CallHost(agent)
     win = open_call(display, host)
     await asyncio.sleep(0.5)

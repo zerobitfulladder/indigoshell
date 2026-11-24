@@ -19,13 +19,12 @@ time.monotonic = lambda: NOW[0]
 
 from common import C  # noqa: E402  (also quiets logging)
 from indigoshell.agent.activity import Activity  # noqa: E402
-from indigoshell.agent.session import Agent  # noqa: E402
 from indigoshell.agent.ui.call import CallHost  # noqa: E402
-from indigoshell.agent.ui.holo import SCAN_EVERY_S  # noqa: E402
+from indigoshell.widgets.holo import SCAN_EVERY_S  # noqa: E402
 from indigoshell.agent.ui.status import CallStatus  # noqa: E402
 from indigoshell.agent.ui.style import UNBOUNDED  # noqa: E402
 from indigoshell.widgets.base import Size, Widget  # noqa: E402
-from render_call import FakeWindow, backdrop  # noqa: E402
+from render_call import FakeWindow, agent_in, backdrop  # noqa: E402
 
 FPS = 30
 MARGIN = 24
@@ -114,7 +113,7 @@ def encode(path, frames, w, h):
 
 def main():
     NOW[0] = 2000.0
-    agent = Agent(name="INDIGO")
+    agent = agent_in()
     agent.phase, agent.heard, agent.message = "idle", HEARD, REPLY
     agent.activity = [Activity("tool", "$ iw dev wlp0s20f3 link", id=1),
                       Activity("tool", "$ journalctl -k -g iwlwifi", id=2)]
@@ -136,7 +135,7 @@ def main():
     sheet.flushAndSubmit()
     sheet.makeImageSnapshot().save(f"{OUT}/call_holo.png", skia.kPNG)
 
-    busy = Agent(name="INDIGO")
+    busy = agent_in()
     busy.phase, busy.busy, busy.turn_started = "working", True, 2000.0 - 40
     busy.activity = [Activity("tool", "$ sudo pacman -Syu --noconfirm")]
     st, sw, sh = placed(CallStatus(busy))

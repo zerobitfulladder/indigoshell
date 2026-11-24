@@ -35,13 +35,13 @@ time.monotonic = lambda: NOW[0]
 
 from common import C  # noqa: E402  (also quiets logging)
 from indigoshell.agent.activity import Activity, Approval, describe_tool  # noqa: E402
-from indigoshell.agent.session import Agent  # noqa: E402
+from indigoshell.agent.remote import RemoteAgent  # noqa: E402
 from indigoshell.agent.ui.call import CallHost  # noqa: E402
 from indigoshell.widgets.holo import SCAN_EVERY_S  # noqa: E402
 from indigoshell.agent.ui.status import CallStatus  # noqa: E402
 from indigoshell.agent.ui.style import UNBOUNDED  # noqa: E402
 from indigoshell.widgets.base import Size, Widget  # noqa: E402
-from render_call import FakeWindow  # noqa: E402
+from render_call import FakeWindow, agent_in  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.normpath(os.path.join(HERE, "..", "..", "docs", "media"))
@@ -197,11 +197,10 @@ def save(path: str, img: skia.Image) -> None:
     print(f"wrote {path}: {img.width()}x{img.height()}")
 
 
-def agent() -> Agent:
-    a = Agent(name="INDIGO", model="opus", effort="medium")
-    a.versions = {"opus": "5.5"}        # as if it had answered once
-    a.phase = "idle"
-    return a
+def agent() -> RemoteAgent:
+    # The model as the hub names it once it has answered.
+    return agent_in(phase="idle", model="opus", effort="medium",
+                    model_label="opus 5.5")
 
 
 def bash(command: str, result: str = "", id: int = 0) -> Activity:
@@ -312,7 +311,7 @@ def scene_ask() -> None:
     a.message = ("143 packages waiting, a new kernel among them. "
                  "That's root work, so the ICE wants your say-so.")
     loop = asyncio.new_event_loop()
-    a.approval = Approval(tool="Bash", title="Run a command",
+    a._hub_ask = Approval(tool="Bash", title="Run a command",  # the hub's
                           detail="sudo pacman -Syu --noconfirm",
                           future=loop.create_future())
     host = place(CallHost(a))

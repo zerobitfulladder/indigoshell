@@ -1,8 +1,8 @@
 """The laptop's desktop, as hands for the hub's agent (hands.py).
 
-The desktop's own tools (tools.py, the shell's agent's) adapted to the
-hub: the same helpers and services, each tool a `Hand` the hub hands its
-agent as `laptop_<name>`. Every hand answers within the hub's call
+The desktop as tools for the hub: the shell's helpers (desk.py) and
+services, each tool a `Hand` (indigoshell/core/hands.py) the hub hands
+its agent as `laptop_<name>`. Every hand answers within the hub's call
 timeout (a minute, or what the hand declares: `run` takes ten) and
 returns text, or a PNG for a screenshot.
 
@@ -32,11 +32,10 @@ commands that weren't allowed also run with those five shadowed on
 their PATH, so a script that calls one by name is refused rather than
 let through.
 
-Not lent here: the shell's old agent's screenshot from before the call
-opened (glance.py), progress bars and toasts; the Firefox bridge (the
-shell's own browser gets its agent side later); music and the lights,
-which are the hub's own (Spotify's Web API reaches the laptop's Spotify
-app too); and the phone (LilacDeck's hands).
+Flux, the shell's browser, lends its own hands (flux/hands.py), which
+`laptop_hands()` adds. Not lent here: progress bars and toasts; music
+and the lights, which are the hub's own (Spotify's Web API reaches the
+laptop's Spotify app too); and the phone (LilacDeck's hands).
 """
 
 import asyncio
