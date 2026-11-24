@@ -780,7 +780,8 @@ def test_in_process() -> None:
     states = conn.states() if conn else []
     check("then the state, in the documented shape, every key there",
           bool(states) and protocol.state_problems(states[-1]) == []
-          and set(states[-1]) == {"type", *protocol.STATE_KEYS}
+          and set(states[-1]) == {"type", *protocol.STATE_KEYS, *protocol.OPTIONAL_STATE_KEYS}
+          and states[-1]["agent"] == [None, None, None]
           and [t["title"] for t in states[-1]["tabs"]] == ["Alpha", "Beta", "Gamma"]
           and states[-1]["current"] == 0 and states[-1]["secure"] is False
           and states[-1]["url"] == url("/page/Alpha"),

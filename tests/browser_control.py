@@ -398,8 +398,11 @@ def test_pure() -> None:
     hands = browser_hands()
     names = [h.name for h in hands]
     want = ["browser_tabs", "browser_open", "browser_switch", "browser_close", "browser_go",
-            "browser_wait", "browser_read", "browser_screenshot", "browser_look"]
-    check("hands: the nine, in order, each a Hand", names == want
+            "browser_wait", "browser_read", "browser_screenshot", "browser_look",
+            "browser_click", "browser_type", "browser_key", "browser_select", "browser_scroll",
+            "browser_fill", "browser_hover", "browser_dialog", "browser_release"]
+    check("hands: the nine for looking, then the nine for acting (tests/browser_act.py), in "
+          "order, each a Hand", names == want
           and all(isinstance(h, Hand) for h in hands), f"{names}")
     problems = []
     try:
@@ -1053,13 +1056,14 @@ def test_in_process(on_screen: bool = False) -> None:
 
     # ── the log ─────────────────────────────────────────────────────────
     lines = [r.getMessage() for r in logs.records if r.name.endswith("qt.control")]
-    kinds = {k for k in protocol.REQUESTS if any(m.startswith(f"agent: {k}") for m in lines)}
+    looking = set(protocol.REQUESTS) - set(protocol.ACTS) - {"release"}  # acting: browser_act.py
+    kinds = {k for k in looking if any(m.startswith(f"agent: {k}") for m in lines)}
     leaks = [m for m in lines if any(s in m for s in (SECRET, "SELECTED-WORDS", "FRAME-WORDS",
                                                       "Your account", "MARKER", "#never"))]
     sample = next((m for m in lines if m.startswith("agent: read tab")), "")
     check("the log: an info line per request (type, tab, host), no page content",
-          kinds == set(protocol.REQUESTS) and not leaks and "(127.0.0.1)" in sample,
-          f"missing {set(protocol.REQUESTS) - kinds}; leaks {leaks[:3]}; e.g. {sample!r}")
+          kinds == looking and not leaks and "(127.0.0.1)" in sample,
+          f"missing {looking - kinds}; leaks {leaks[:3]}; e.g. {sample!r}")
 
     # ── the hands ───────────────────────────────────────────────────────
     hands = {h.name: h for h in browser_hands()}

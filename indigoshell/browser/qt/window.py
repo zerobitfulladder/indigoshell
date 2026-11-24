@@ -84,6 +84,16 @@ only then, when the page's own address is a bookmark too, that one. The
 bookmark is never rewritten to where it leads. Keys and clicks that
 reach the page, and Back and Forward, tell its tab the user is moving
 it (`note_input`): after those, wherever it goes is a new beginning.
+
+The agent. Every event on the window's QWindow goes to the browser's
+Watch first (watch.py): while the agent drives the tab the window shows,
+the user's input stops there, and a key or a click on the overlay's mark
+takes the tab over. The window tells the Watch which tab it shows
+(`select`), which closes (`close_tab`) and when it goes (`closeEvent`);
+the state says the agent's hold on each tab (protocol `agent`), and the
+shell's `resume` hands a paused tab back. A tab whose page is inside a
+dialog's call (a nested event loop, tabs.py) is deleted only once that
+call returned, out of the window meanwhile.
 """
 
 import html
@@ -204,6 +214,20 @@ def _plain(rich: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", rich)).replace("\xa0", " ")
 
 
+def _after_dialog(tab: Tab) -> None:
+    """A tab whose page is inside a dialog's call: out of its window
+    (whose deletion would take it), deleted once the call returned."""
+    tab.view.setParent(None)
+    tab.setParent(None)
+
+    def delete() -> None:
+        if shiboken6.isValid(tab.view):
+            tab.view.deleteLater()
+        if shiboken6.isValid(tab):
+            tab.deleteLater()
+    tab.page.after_dialog.append(delete)
+
+
 def _key_id(event) -> int:
     """What ties a release to its press: the X keycode, or the key code
     where the platform has none (offscreen)."""
@@ -284,6 +308,7 @@ class Window(QWidget):
         page.fullScreenRequested.connect(partial(self.on_fullscreen, tab))
         page.permissionRequested.connect(partial(self.on_permission, tab))
         page.windowCloseRequested.connect(partial(self.close_tab, tab))
+        page.watch = self.browser.watch
         if self.browser.unattended:
             page.setAudioMuted(True)
 
@@ -311,6 +336,7 @@ class Window(QWidget):
         self._related = None
         self.stack.setCurrentWidget(tab.view)
         tab.view.setFocus()
+        self.browser.watch.shown(self)
         self.refresh()
 
     def move_tab(self, src: int, dst: int) -> None:
@@ -356,8 +382,12 @@ class Window(QWidget):
     def _dispose(self, tab: Tab) -> None:
         # Later, not now: this often runs inside one of the page's own
         # signals (windowCloseRequested).
+        self.browser.watch.forget(tab)
         self.stack.removeWidget(tab.view)
         tab.view.hide()
+        if tab.page.in_dialog:
+            _after_dialog(tab)
+            return
         tab.view.deleteLater()
         tab.deleteLater()
 
@@ -437,6 +467,9 @@ class Window(QWidget):
             self._key_window = handle
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        taken = self.browser.watch.window_event(self, event)
+        if taken is not None:
+            return taken                # the agent drives the tab shown (watch.py)
         kind = event.type()
         if kind == QEvent.Type.KeyPress:
             taken = self._key_press(event)
@@ -459,6 +492,11 @@ class Window(QWidget):
             if self.find_phase is not None:
                 self.end_find(clear=False)  # and the press goes on to the page
         return False
+
+    def swallow_release(self, event) -> None:
+        """A key press taken elsewhere (the Watch's take-over): its
+        release reaches nothing either."""
+        self._held_keys.add(_key_id(event))
 
     def _note_input(self) -> None:
         tab = self.current_tab()
@@ -804,6 +842,14 @@ class Window(QWidget):
             else:
                 log.debug("prompt for %r not understood", action)
             return
+        if cmd == protocol.RESUME:
+            index = msg.get("index")
+            if isinstance(index, int) and 0 <= index < len(self.tabs):
+                if not self.browser.watch.resume(self.tabs[index]):
+                    log.debug("resume: tab %d is not paused", index)
+            else:
+                log.debug("resume for no tab: %s", msg)
+            return
         if tab is None:
             return
         WA = QWebEnginePage.WebAction
@@ -841,7 +887,8 @@ class Window(QWidget):
                               tab.progress if tab.loading else 100, tab.secure(),
                               url=tab.url().toString(),
                               bookmarked=self.page_bookmark(tab) is not None,
-                              find=self._find_state())
+                              find=self._find_state(),
+                              agent=[self.browser.watch.state_of(t.id) for t in self.tabs])
 
     def refresh(self, *_) -> None:
         """The shell, the line and the title, once per turn of the event
@@ -886,6 +933,10 @@ class Window(QWidget):
         for tab in self.tabs:
             if tab.inspector is not None and shiboken6.isValid(tab.inspector):
                 tab.inspector.close()
+        self.browser.watch.window_closed(self)
+        for tab in self.tabs:
+            if tab.page.in_dialog:
+                _after_dialog(tab)      # not deleted with the window
         if self.prompt is not None and shiboken6.isValid(self.prompt):
             self.prompt.close()
         self._address_wanted = False

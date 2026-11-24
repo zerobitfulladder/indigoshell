@@ -34,8 +34,21 @@ script world (reader.py): the refs the agent gets are invisible to the
 page. A password field's value is never read; cookies and storage are
 not exported; a site's permission prompts stay the user's (window.py).
 
+**Acting.** The acting requests (protocol.py, "Acting") send real
+input to the page's view (act.py), find what a ref or a point is in the
+agent's world (reader.js `point`: scrolled into view, the middle of its
+visible part, refused when something covers it), and answer once the
+page settled. They are the agent's session on the tab (watch.py): they
+start or go on with it, and every request naming a tab the agent drives
+keeps it from running out while it runs. A paused tab refuses them all
+(protocol.TOOK_OVER), and a dialog held for the agent refuses all but
+`dialog` and the ones that only look (`tabs`, `screenshot`, `wait`,
+which ends at once, saying the dialog). A page popup (a datalist's, an
+autofill list) that opened anyway is closed when the action settles:
+it would hold the user's pointer and keyboard.
+
 Every request is logged at info: its type, the tab and the host, never
-what the page holds.
+what the page holds, never what the agent types.
 
 Qt: nothing here is newer than 6.8 (the Pi's Debian). A selection in
 an iframe is read with QWebEngineFrame (6.8); with an older Qt that
@@ -44,19 +57,21 @@ part is skipped.
 
 import logging
 import os
+import re
 import time
 from urllib.parse import urlsplit
 
 import shiboken6
-from PySide6.QtCore import QObject, QPoint, QTimer
+from PySide6.QtCore import QObject, QPoint, QPointF, QTimer
 from PySide6.QtGui import QCursor
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWidgets import QApplication
 
 from indigoshell.browser import protocol
 
-from . import reader
+from . import act, reader
 from .tabs import Tab, to_url
 
 log = logging.getLogger(__name__)
@@ -67,6 +82,11 @@ POLL_S = 0.15                   # wait's checks
 FRAME_POLL_S = 0.016
 FRAME_TIMEOUT_S = 1.0           # a page that paints no frame: grabbed anyway
 FRAMES_MAX = 50                 # frames asked for a selection, at most
+SETTLE_POLL_S = 0.03            # an action's settling, checked this often
+TYPE_BATCH = 20                 # characters typed between turns of the event loop
+SCROLL_POLL_S = 0.06
+SCROLL_MAX_S = 1.5              # a smooth scroll's end, waited for at most
+FILL_MAX = 100                  # fields in one fill
 
 
 class RequestError(Exception):
@@ -95,6 +115,7 @@ class Job:
         self.timer = QTimer()
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self._timed_out)
+        self.cleanups: list = []        # run once it is over, however it ends
 
     def start(self, coro) -> None:
         self.coro = coro
@@ -126,6 +147,12 @@ class Job:
         self.timer.stop()
         self.timer.deleteLater()
         self.conn.jobs.pop(self.id, None)
+        cleanups, self.cleanups = self.cleanups, []
+        for fn in cleanups:
+            try:
+                fn()
+            except Exception:           # noqa: BLE001
+                log.exception("request %s %d: a cleanup failed", self.kind, self.id)
 
     def cancel(self, *, answer: bool = True) -> None:
         if self.finished:
@@ -241,6 +268,7 @@ class Connection(QObject):
         requests.note(kind, msg)
         job = Job(self, rid, kind)
         self.jobs[rid] = job
+        requests.watch.touch(job, msg.get("tab"))   # a session it names lasts while it runs
         job.start(getattr(requests, kind)(job, msg))
 
     def send(self, msg: dict) -> None:
@@ -346,6 +374,37 @@ def _int(msg: dict, key: str, default: int | None = None) -> int:
     return value
 
 
+def _number(msg: dict, key: str, default: float | None = None) -> float | None:
+    value = msg.get(key, default)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RequestError(f"`{key}` must be a number")
+    return float(value)
+
+
+def _voice(msg: dict) -> str | None:
+    value = msg.get("voice")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _strings(value, key: str) -> list[str]:
+    """A string, or a list of strings, as a list."""
+    values = value if isinstance(value, list) else [value]
+    if not values or not all(isinstance(v, str) for v in values):
+        raise RequestError(f"`{key}` must be a string or a list of strings")
+    return values
+
+
+REFUSALS = {
+    "upload": lambda what: protocol.UPLOADS,
+    "select": lambda what: f"{what} is a <select>: choose its option with select (its popup "
+                           "would take the user's pointer)",
+    "picker": lambda what: f"{what} opens a picker that would take the user's pointer: set it "
+                           "with fill",
+}
+
+
 def _seconds(msg: dict, key: str, default: float, top: float) -> float:
     value = msg.get(key, default)
     if value is None:
@@ -360,6 +419,7 @@ class Requests:
 
     def __init__(self, browser) -> None:
         self.browser = browser
+        self.watch = browser.watch
 
     # ── finding windows and tabs ────────────────────────────────────────
     def windows(self) -> list:
@@ -383,15 +443,34 @@ class Requests:
         raise RequestError(f"no tab {tab_id}")
 
     def showing(self, tab_id: int) -> tuple:
+        """The tab, which must be the current one of its window and not
+        taken over by the user."""
         window, tab = self.find(tab_id)
+        if self.watch.paused(tab_id):
+            raise RequestError(protocol.took_over(tab_id))
         if window.current_tab() is not tab:
             raise RequestError(protocol.not_showing(tab_id))
         return window, tab
 
+    def not_hidden(self, window) -> None:
+        """What would change what `window` shows: refused while its tab is
+        the user's (taken over)."""
+        current = window.current_tab() if window is not None else None
+        if current is not None and self.watch.paused(current.id):
+            raise RequestError(protocol.took_over(current.id))
+
+    def no_dialog(self, tab: Tab) -> None:
+        held = self.watch.dialog_of(tab.id)
+        if held is not None:
+            article = "an" if held.kind[0] in "aeiou" else "a"
+            raise RequestError(f"tab {tab.id} has {article} {held.kind} dialog open; answer it "
+                               "first (dialog: accept or dismiss)")
+
     def tab(self, window, tab: Tab) -> dict:
         return {"tab": tab.id, "window": window.id, "index": window.tabs.index(tab),
                 "title": tab.page.title(), "url": tab.url().toString(),
-                "loading": tab.busy(), "current": window.current_tab() is tab}
+                "loading": tab.busy(), "current": window.current_tab() is tab,
+                **self.watch.about(tab.id)}
 
     def note(self, kind: str, msg: dict) -> None:
         """The request in the log: its type, its tab and host, no content.
@@ -437,13 +516,18 @@ class Requests:
                 raise RequestError(f"window {window.id} is a page's popup; it takes no tabs")
         else:
             window = self.browser.main_window()
+        if not msg.get("background"):
+            self.not_hidden(window)
         tab = window.add_tab(to_url(url.strip()), background=bool(msg.get("background")))
         tab.expect_load()
         return self.tab(window, tab)
 
     async def switch(self, job: Job, msg: dict) -> dict:
         window, tab = self.find(_int(msg, "tab"))
+        if self.watch.paused(tab.id):
+            raise RequestError(protocol.took_over(tab.id))
         if window.current_tab() is not tab:
+            self.not_hidden(window)
             window.select(window.tabs.index(tab))     # never raised, never focused
         return self.tab(window, tab)
 
@@ -455,6 +539,7 @@ class Requests:
 
     async def go(self, job: Job, msg: dict) -> dict:
         window, tab = self.showing(_int(msg, "tab"))
+        self.no_dialog(tab)
         url, action = msg.get("url"), msg.get("action")
         if (url is None) == (action is None):
             raise RequestError("give `url` or `action`")
@@ -494,7 +579,11 @@ class Requests:
             try:
                 window, tab = self.showing(tab_id)
             except RequestError as e:
+                if self.watch.paused(tab_id):
+                    raise
                 raise RequestError(f"tab {tab_id} stopped showing while waiting ({e})") from None
+            if self.watch.dialog_of(tab_id) is not None:
+                break                   # the page waits for its dialog: said in the answer
             if selector is None and text is None:
                 if not tab.busy():
                     break
@@ -514,6 +603,7 @@ class Requests:
 
     async def read(self, job: Job, msg: dict) -> dict:
         window, tab = self.showing(_int(msg, "tab"))
+        self.no_dialog(tab)             # the page cannot answer until it is
         what = msg.get("what")
         if what not in protocol.READS:
             raise RequestError(f"`what` must be one of {', '.join(protocol.READS)}")
@@ -532,9 +622,14 @@ class Requests:
 
     async def screenshot(self, job: Job, msg: dict) -> dict:
         window, tab = self.showing(_int(msg, "tab"))
-        await self._fresh_frame(job, tab)
+        if self.watch.dialog_of(tab.id) is None:    # else the page paints nothing new
+            await self._fresh_frame(job, tab)
         window, tab = self.showing(tab.id)
-        return {**self.tab(window, tab), **reader.png(reader.grab(tab.view))}
+        view = tab.view
+        zoom = tab.page.zoomFactor() or 1.0
+        return {**self.tab(window, tab), **reader.png(reader.grab(view)),
+                "viewport_width": round(view.width() / zoom),
+                "viewport_height": round(view.height() / zoom)}
 
     async def _fresh_frame(self, job: Job, tab: Tab) -> None:
         """Until the page has painted a frame begun after this request
@@ -565,23 +660,26 @@ class Requests:
                "unfocused_for": None if focused or window.unfocused_at is None
                else round(time.monotonic() - window.unfocused_at, 3)}
         log.info("agent: look at tab %d%s", tab.id, f" ({tab.host()})" if tab.host() else "")
-        sel = await job.read(tab.page, reader.script("selection",
-                                                     {"image": bool(msg.get("image"))}),
-                             timeout=3.0, quiet=True) or {}
+        # A page waiting on a dialog held for the agent answers no script.
+        blocked = self.watch.dialog_of(tab.id) is not None
+        sel = {} if blocked else await job.read(tab.page, reader.script(
+            "selection", {"image": bool(msg.get("image"))}), timeout=3.0, quiet=True) or {}
         text, where = sel.get("text") or "", sel.get("in")
         if where == "frame":
             text = await self._frame_selection(job, tab)
             where = "frame" if text else None
         out["selection"], out["selection_in"] = text, (where if text else None)
         if msg.get("screenshot") or msg.get("image"):
-            await self._fresh_frame(job, tab)
+            if not blocked:
+                await self._fresh_frame(job, tab)
             if not shiboken6.isValid(tab.view):
                 raise RequestError("the tab went away")
             image = reader.grab(tab.view)
             if msg.get("screenshot"):
                 out["screenshot"] = reader.png(image)
             if msg.get("image"):
-                out["image"] = await self._image(job, tab, image, sel.get("image"))
+                out["image"] = None if blocked else await self._image(job, tab, image,
+                                                                      sel.get("image"))
         return out
 
     def _look_window(self, msg: dict):
@@ -648,3 +746,345 @@ class Requests:
             return None
         return {**reader.png(part), "under": chosen["under"], "url": chosen.get("url") or "",
                 "alt": chosen.get("alt") or "", "from": "page" if own is not None else "screen"}
+
+    # ── acting ──────────────────────────────────────────────────────────
+    def acting(self, job: Job, msg: dict, *, dialog_ok: bool = False) -> tuple:
+        """The tab an acting request is for, made the agent's (watch.py)."""
+        window, tab = self.showing(_int(msg, "tab"))
+        if not dialog_ok:
+            self.no_dialog(tab)
+        self.watch.begin(job, window, tab, _voice(msg))
+        return window, tab
+
+    def proxy(self, tab: Tab):
+        """The widget the page takes input through."""
+        proxy = tab.view.focusProxy()
+        if proxy is None:
+            raise RequestError(f"tab {tab.id} has no page to act on yet")
+        self.watch.guard(tab)
+        return proxy
+
+    @staticmethod
+    def at(tab: Tab, spot: dict) -> QPointF:
+        """A point in CSS px of the viewport, in the view's own pixels."""
+        zoom = tab.page.zoomFactor() or 1.0
+        return QPointF(spot["x"] * zoom, spot["y"] * zoom)
+
+    def going_on(self, tab: Tab) -> None:
+        """Between the steps of an action: still the agent's to act on."""
+        if self.watch.paused(tab.id):
+            raise RequestError(protocol.took_over(tab.id))
+        if not self.alive(tab):
+            raise RequestError(f"tab {tab.id} went away")
+
+    def alive(self, tab: Tab) -> bool:
+        return shiboken6.isValid(tab) and any(tab in w.tabs for w in self.windows())
+
+    async def spot(self, job: Job, tab: Tab, msg: dict, *, refuse: bool, cover: bool,
+                   need: bool = True) -> dict | None:
+        """Where the request points: its `ref`, or `x` and `y` (reader.js
+        `point`). None when it names neither and `need` is false."""
+        ref, x, y = msg.get("ref"), msg.get("x"), msg.get("y")
+        if ref is not None and (x is not None or y is not None):
+            raise RequestError("give `ref`, or `x` and `y`, not both")
+        if ref is not None:
+            where = {"ref": _int(msg, "ref")}
+        elif x is not None or y is not None:
+            where = {"x": _number(msg, "x"), "y": _number(msg, "y")}
+            if where["x"] is None or where["y"] is None:
+                raise RequestError("give both `x` and `y` (CSS px of the visible page)")
+        elif need:
+            raise RequestError("give `ref` (from read) or `x` and `y`")
+        else:
+            return None
+        spot = await job.read(tab.page, reader.script("point", {**where, "refuse": refuse,
+                                                                "cover": cover}))
+        if spot.get("refused"):
+            raise RequestError(REFUSALS[spot["refused"]](spot.get("what") or "it"))
+        if spot.get("covered"):
+            named = f"[{where['ref']}]" if "ref" in where else "the point"
+            raise RequestError(f"{named} is covered at ({spot['x']}, {spot['y']}) by another "
+                               f"element; nothing done. What covers it: {spot['covered']}")
+        return spot
+
+    def before(self, tab: Tab) -> dict:
+        return {"loads": tab.loads, "navigations": tab.navigations,
+                "tabs": {t.id for w in self.windows() for t in w.tabs}}
+
+    async def settled(self, job: Job, tab: Tab, before: dict, **extra) -> dict:
+        """The answer to an action, once the page settled: a navigation it
+        caused began, a dialog opened, or SETTLE_S passed quietly."""
+        began = time.monotonic()
+        while True:
+            if not self.alive(tab):
+                raise RequestError(f"tab {tab.id} closed (the page closed itself)")
+            if (tab.navigations != before["navigations"]
+                    or self.watch.dialog_of(tab.id) is not None
+                    or time.monotonic() - began >= protocol.SETTLE_S):
+                break
+            await job.sleep(SETTLE_POLL_S)
+        if tab.loads != before["loads"]:
+            tab.expect_load()           # a `wait` straight after counts it as loading
+        notes = self.watch.notes(tab.id)
+        popup = QApplication.activePopupWidget()
+        if isinstance(popup, QQuickWidget):
+            popup.close()               # a page's popup: it would hold the user's pointer
+            notes.append("a list the page popped up (suggestions, a picker) was closed: it "
+                         "would take the user's pointer")
+            log.info("agent: a page popup closed after acting on tab %d", tab.id)
+        if self.watch.paused(tab.id):
+            raise RequestError(protocol.took_over(tab.id))
+        window, tab = self.find(tab.id)
+        opened = [self.tab(w, t) for w in self.windows() for t in w.tabs
+                  if t.id not in before["tabs"]]
+        out = {**self.tab(window, tab), "navigated": tab.navigations != before["navigations"],
+               "opened": opened, **extra}
+        if notes:
+            out["notes"] = notes
+        return out
+
+    async def click(self, job: Job, msg: dict) -> dict:
+        window, tab = self.acting(job, msg)
+        button = msg.get("button") or "left"
+        if button == "right":
+            raise RequestError("no right clicks: a context menu would take the user's pointer")
+        if button not in protocol.BUTTONS:
+            raise RequestError(f"`button` must be one of {', '.join(protocol.BUTTONS)}")
+        spot = await self.spot(job, tab, msg, refuse=True, cover=True)
+        self.going_on(tab)
+        before = self.before(tab)
+        tab.note_input()
+        self.watch.inject.click(self.proxy(tab), self.at(tab, spot), button,
+                                bool(msg.get("double")))
+        return await self.settled(job, tab, before, x=spot["x"], y=spot["y"],
+                                  what=spot.get("what") or "")
+
+    async def hover(self, job: Job, msg: dict) -> dict:
+        window, tab = self.acting(job, msg)
+        spot = await self.spot(job, tab, msg, refuse=False, cover=True)
+        self.going_on(tab)
+        before = self.before(tab)
+        self.watch.inject.move(self.proxy(tab), self.at(tab, spot))
+        return await self.settled(job, tab, before, x=spot["x"], y=spot["y"],
+                                  what=spot.get("what") or "")
+
+    async def _type(self, job: Job, tab: Tab, text: str) -> tuple[int, str]:
+        """`text` typed into what has focus: (characters typed, how). It
+        stops early when the page opens a dialog."""
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        via = "keys" if len(text) <= protocol.TYPE_KEYS_MAX else "input method"
+        inject, typed = self.watch.inject, 0
+        for piece in re.split(r"([\n\t])", text):
+            if not piece:
+                continue
+            if piece in ("\n", "\t") or via == "keys":
+                for ch in piece:
+                    inject.char(self.proxy(tab), ch)
+                    typed += 1
+                    if typed % TYPE_BATCH == 0:
+                        await job.sleep(0)
+                        self.going_on(tab)
+                        if self.watch.dialog_of(tab.id) is not None:
+                            return typed, via
+            else:
+                inject.commit(self.proxy(tab), piece)
+                typed += len(piece)
+            await job.sleep(0)
+            self.going_on(tab)
+            if self.watch.dialog_of(tab.id) is not None:
+                break
+        return typed, via
+
+    def _clear(self, tab: Tab) -> None:
+        """The focused field emptied as the user would: all of it
+        selected, then Backspace."""
+        key, mods, text = act.parse_key("ctrl+a")
+        self.watch.inject.key(self.proxy(tab), key, mods, text)
+        key, mods, text = act.parse_key("Backspace")
+        self.watch.inject.key(self.proxy(tab), key, mods, text)
+
+    async def _focus(self, job: Job, tab: Tab, ref: int) -> dict:
+        done = await job.read(tab.page, reader.script("focusField", ref))
+        if done.get("refused"):
+            raise RequestError(REFUSALS[done["refused"]](done.get("what") or "it"))
+        return done
+
+    async def type(self, job: Job, msg: dict) -> dict:
+        text = msg.get("text")
+        if not isinstance(text, str):
+            raise RequestError("`text` must be a string")
+        window, tab = self.acting(job, msg)
+        before = self.before(tab)
+        what = None
+        if msg.get("ref") is not None and (msg.get("x") is None and msg.get("y") is None):
+            what = (await self._focus(job, tab, _int(msg, "ref"))).get("what")
+        else:
+            spot = await self.spot(job, tab, msg, refuse=True, cover=True, need=False)
+            if spot is not None:
+                self.going_on(tab)
+                tab.note_input()
+                self.watch.inject.click(self.proxy(tab), self.at(tab, spot))
+                await job.sleep(0.05)
+        self.going_on(tab)
+        if what is None:
+            what = (await job.read(tab.page, reader.script("focused"))).get("what")
+        tab.note_input()
+        if msg.get("clear"):
+            self._clear(tab)
+        typed, via = await self._type(job, tab, text)
+        if msg.get("submit") and self.watch.dialog_of(tab.id) is None:
+            key, mods, ch = act.parse_key("Enter")
+            self.watch.inject.key(self.proxy(tab), key, mods, ch)
+        return await self.settled(job, tab, before, typed=typed, via=via, what=what or "")
+
+    async def key(self, job: Job, msg: dict) -> dict:
+        try:
+            key, mods, text = act.parse_key(msg.get("key"))
+        except ValueError as e:
+            raise RequestError(f"`key`: {e}") from None
+        count = _int(msg, "count", 1)
+        if not 1 <= count <= protocol.KEY_COUNT_MAX:
+            raise RequestError(f"`count` must be 1 to {protocol.KEY_COUNT_MAX}")
+        window, tab = self.acting(job, msg)
+        before = self.before(tab)
+        tab.note_input()
+        for i in range(count):
+            self.watch.inject.key(self.proxy(tab), key, mods, text)
+            if i % 10 == 9:
+                await job.sleep(0)
+                self.going_on(tab)
+                if self.watch.dialog_of(tab.id) is not None:
+                    break
+        return await self.settled(job, tab, before)
+
+    async def select(self, job: Job, msg: dict) -> dict:
+        ref = _int(msg, "ref")
+        value, label = msg.get("value"), msg.get("label")
+        if (value is None) == (label is None):
+            raise RequestError("give `value` or `label`")
+        by, wanted = ("value", value) if value is not None else ("label", label)
+        values = _strings(wanted, by)
+        window, tab = self.acting(job, msg)
+        before = self.before(tab)
+        chosen = await job.read(tab.page, reader.script("choose", ref,
+                                                        {"by": by, "values": values}))
+        return await self.settled(job, tab, before, value=chosen["value"], label=chosen["label"])
+
+    async def scroll(self, job: Job, msg: dict) -> dict:
+        window, tab = self.acting(job, msg)
+        before = self.before(tab)
+        extra = {}
+        if msg.get("to") is not None:
+            if any(msg.get(k) is not None for k in ("dx", "dy", "ref", "x", "y")):
+                raise RequestError("give `to` alone, or `dy`/`dx` with where to turn the wheel")
+            extra["what"] = (await job.read(tab.page, reader.script(
+                "scrollTo", _int(msg, "to")))).get("what") or ""
+        else:
+            dx, dy = _number(msg, "dx", 0.0), _number(msg, "dy", 0.0)
+            if not dx and not dy:
+                raise RequestError("give `dy` (down, px; negative is up) or `dx`, or `to`")
+            spot = await self.spot(job, tab, msg, refuse=False, cover=False, need=False)
+            if spot is None:
+                view = await job.read(tab.page, reader.script("info"))
+                spot = {"x": view["width"] / 2, "y": view["height"] / 2}
+            self.going_on(tab)
+            self.watch.inject.wheel(self.proxy(tab), self.at(tab, spot), dx, dy)
+            # A smooth scroll: until the page stops moving.
+            began, last = time.monotonic(), None
+            while time.monotonic() - began < SCROLL_MAX_S:
+                await job.sleep(SCROLL_POLL_S)
+                now = await job.read(tab.page, reader.script("scrolled"), timeout=2.0,
+                                     quiet=True)
+                if now is not None and now == last and time.monotonic() - began > 0.2:
+                    break
+                last = now
+        pos = await job.read(tab.page, reader.script("scrolled"), timeout=2.0, quiet=True) or {}
+        return await self.settled(job, tab, before, scroll_x=pos.get("x"), scroll_y=pos.get("y"),
+                                  **extra)
+
+    async def fill(self, job: Job, msg: dict) -> dict:
+        fields = msg.get("fields")
+        if not isinstance(fields, list) or not fields or len(fields) > FILL_MAX or not all(
+                isinstance(f, dict) and protocol.is_id(f.get("ref")) and "value" in f
+                for f in fields):
+            raise RequestError(f"`fields` must be a list of 1 to {FILL_MAX} {{ref, value}}")
+        window, tab = self.acting(job, msg)
+        before = self.before(tab)
+        tab.note_input()
+        done = []
+        for i, field in enumerate(fields):
+            ref, value = field["ref"], field["value"]
+            try:
+                await self._fill_one(job, tab, ref, value)
+                done.append({"ref": ref, "ok": True})
+            except (RequestError, reader.ScriptError) as e:
+                if self.watch.paused(tab.id) or not self.alive(tab):
+                    raise
+                done.append({"ref": ref, "ok": False, "error": str(e)})
+            if self.watch.dialog_of(tab.id) is not None:
+                done += [{"ref": f["ref"], "ok": False, "error": "not filled: the page opened "
+                          "a dialog"} for f in fields[i + 1:]]
+                break
+        return await self.settled(job, tab, before, fields=done)
+
+    async def _fill_one(self, job: Job, tab: Tab, ref: int, value) -> None:
+        self.going_on(tab)
+        field = await job.read(tab.page, reader.script("fieldKind", ref))
+        kind = field["kind"]
+        if field["disabled"]:
+            raise RequestError(f"[{ref}] is disabled")
+        if kind == "file":
+            raise RequestError(protocol.UPLOADS)
+        if kind == "text":
+            if not isinstance(value, str):
+                raise RequestError(f"[{ref}] is a text field: give a string")
+            await self._focus(job, tab, ref)
+            self._clear(tab)
+            await self._type(job, tab, value)
+        elif kind in ("checkbox", "radio"):
+            if not isinstance(value, bool):
+                raise RequestError(f"[{ref}] is a {kind}: give true or false")
+            if kind == "radio" and not value:
+                raise RequestError(f"[{ref}] is a radio button: choose another one of its "
+                                   "group instead of unchecking it")
+            if field["checked"] != value:
+                spot = await self.spot(job, tab, {"ref": ref}, refuse=False, cover=True)
+                self.watch.inject.click(self.proxy(tab), self.at(tab, spot))
+                await job.sleep(0.05)
+                now = await job.read(tab.page, reader.script("fieldKind", ref))
+                if now["checked"] != value:
+                    raise RequestError(f"[{ref}] did not change when clicked")
+        elif kind == "select":
+            values = _strings(value, "value")
+            try:
+                await job.read(tab.page, reader.script("choose", ref,
+                                                       {"by": "value", "values": values}))
+            except reader.ScriptError:
+                await job.read(tab.page, reader.script("choose", ref,
+                                                       {"by": "label", "values": values}))
+        elif kind == "value":
+            if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+                raise RequestError(f"[{ref}] takes a value as text (2024-05-01, 13:30, #ff0000)")
+            await job.read(tab.page, reader.script("setValue", ref, str(value)))
+        else:
+            raise RequestError(f"[{ref}] is no field to fill ({field['what']})")
+
+    async def dialog(self, job: Job, msg: dict) -> dict:
+        accept, text = msg.get("accept"), msg.get("text")
+        if not isinstance(accept, bool):
+            raise RequestError("`accept` must be true or false")
+        if text is not None and not isinstance(text, str):
+            raise RequestError("`text` must be a string")
+        window, tab = self.acting(job, msg, dialog_ok=True)
+        if self.watch.dialog_of(tab.id) is None:
+            raise RequestError(f"no dialog is open on tab {tab.id}")
+        before = self.before(tab)
+        self.watch.answer(tab.id, accept, text)
+        return await self.settled(job, tab, before)
+
+    async def release(self, job: Job, msg: dict) -> dict:
+        tab_id = None
+        if msg.get("tab") is not None:
+            tab_id = _int(msg, "tab")
+            self.find(tab_id)
+        return {"released": self.watch.release(tab_id)}

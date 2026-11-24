@@ -26,13 +26,19 @@ Browser -> shell
                                                  or it was reached from one
                                                  through redirects
                 "find": null | {"query": str, "active": int | null,
-                                "total": int | null, "typing": bool}}
+                                "total": int | null, "typing": bool},
+                "agent": [null | {"voice": str, "state": "driving" | "paused"},
+                          ...]}                  one per tab, in its order
                Always whole, every key there, and only when it differs
                from the last one sent on this connection. `find` is the
                find-in-page line while it is open: `typing` while the
                query is being typed (a caret is drawn), false while
                stepping through the matches with n / N; `active`
                (1-based) and `total` are null until the page has counted.
+               `agent`: the agent's hold on each tab (Watch, below): its
+               voice, and whether it drives the tab or the user took it
+               over. A shell from before it had `agent` ignores it; one
+               that has it takes a state without it as no hold anywhere.
     download   {"type": "download", "name": str, "state": one of DOWNLOAD_STATES,
                 "percent": <0..100, or null when unknown>}
     launcher   {"type": "launcher", "action": "address"}
@@ -60,6 +66,9 @@ Shell -> browser
                The shell took that action's key (or a `launcher`) but
                cannot show its launcher: do what the browser does for the
                key with no shell, its own dialog.
+    resume     {"type": "resume", "index": int}
+               The user hands that tab back to the agent after taking it
+               over (the window's actions, "Let Lilac drive again").
 
 The keys (KEYS). Ctrl+L (an address for this tab), Ctrl+T (an address
 for a new tab) and Ctrl+M (the window's actions) open the shell's
@@ -207,6 +216,107 @@ focus or changing the workspace; `open` and `tabs` work on any.
                read them ("page"; a cross-origin image without CORS it
                may not), else the part of the screen it covers ("screen";
                a selected image is drawn tinted there).
+
+**Acting.** On a tab that is showing, by element REF (from `read`: the
+outline's [N], a link's or a field's "ref"; refs of the document shown
+now, gone with it) or by viewport POINT: `x`, `y` in CSS pixels of the
+visible viewport, (0, 0) its top left. A screenshot's pixel (px, py) is
+the point (px * viewport_width / width, py * viewport_height / height)
+(`screenshot` gives both sizes; they differ when it was scaled down, or
+the page is zoomed). The input is real: Qt mouse, key and wheel events
+sent to the page's view, which the page sees as trusted, the same as
+the user's. Every acting request takes `voice` (the agent's voice, for
+its colour: VOICES) and answers
+    TAB + {"navigated": bool, "opened": [TAB, ...], "dialog": DIALOG | null}
+once the page settled: a navigation it caused began (`navigated`; then
+`wait`), a dialog opened, or SETTLE_S passed quietly. `opened`: tabs the
+action opened (a link to a new tab, a popup window).
+
+    click      {"tab", "ref" | "x", "y", "button"?: "left" | "middle",
+                "double"?: bool}
+               -> + {"x", "y", "what": str}: where it clicked, and what
+               is there (a ref, its role and name, as the outline says).
+               A ref is scrolled into view first; the click goes to the
+               middle of its visible part, and only when the element (or
+               something inside it, or its label) is what is there: else
+               ok:false naming what covers it. No right clicks (a context
+               menu would take the user's pointer). Refused: a file field
+               (UPLOADS), a <select> (`select` it), a date, time or colour
+               field (their pickers take the pointer too; `fill` them).
+    type       {"tab", "text", "ref"? | "x"?, "y"?, "clear"?: bool,
+                "submit"?: bool}
+               Into the field `ref` (focused, the caret at its end), at
+               the point (clicked first), or into what has focus. `clear`
+               empties it first (Ctrl+A, Backspace); `submit` presses
+               Enter after. A newline is Enter and a tab Tab, as typed.
+               Up to TYPE_KEYS_MAX characters go as key presses (each
+               with its own keydown, as typed); a longer text as one input
+               method commit between them (measured: 2100 characters in
+               2.4 s as keys, 0.05 s as a commit).
+               -> + {"typed": n, "via": "keys" | "input method"}
+    key        {"tab", "key": "Enter" | "ctrl+a" | "shift+Tab" | "PageDown"
+                | "a" ..., "count"?: 1..KEY_COUNT_MAX}
+               To what has focus in the page; KEY_NAMES has the names.
+    select     {"tab", "ref", "value"? | "label"?}
+               An option of a <select> (a list for a multiple one), set
+               in the agent's world with input and change events after:
+               never its popup, which would take the user's pointer.
+               -> + {"value", "label"}
+    scroll     {"tab", "dy"?, "dx"?: px, "ref"? | "x"?, "y"?}
+               Real wheel turns over the element, the point, or the
+               middle of the page, by about that many pixels (down,
+               right positive);
+               {"tab", "to": ref}  that element scrolled into view.
+               -> + {"scroll_x", "scroll_y"} (the page's, after)
+    fill       {"tab", "fields": [{"ref", "value"}, ...]}
+               Each in turn: a text field emptied and typed into (as
+               `type`), a checkbox or radio clicked to `value` (bool), a
+               <select> as `select`, a date, time, colour or range field
+               set in the agent's world with input and change events.
+               -> + {"fields": [{"ref", "ok": bool, "error"?: str}]}
+    hover      {"tab", "ref" | "x", "y"}
+               The pointer moved there (menus that open on hover).
+               -> + {"x", "y", "what"}
+    dialog     {"tab", "accept": bool, "text"?: str}
+               Answers the page's dialog held for the agent (below);
+               `text` is a prompt's answer.
+    release    {"tab"?}
+               The agent lets go of the tab (all its tabs with none).
+               -> {"released": [tab, ...]}
+
+**Watch.** An acting request starts the agent's SESSION on its tab, or
+goes on with it: the tab's input is the agent's while the user watches.
+The user's mouse and keys to that tab are swallowed (the agent's own
+events go on; the user's are the window system's, spontaneous, and they
+come through the window, where they are stopped); a frame and a mark
+in the voice's colour sit over the page (not in any screenshot). Other
+requests on the tab (read, screenshot, wait, go) keep a session going
+but never start one. A session ends QUIET_S after the last request on
+its tab ended (not while a dialog is held), on `release`, when its tab
+closes, or when its window shows another tab.
+
+TAKE-OVER: a key the user presses in that window, or a click on the
+mark, ends the session at once and PAUSES the agent on the tab; the key
+reaches nothing. Every request on a paused tab, and every one that would
+change what its window shows (`switch` to another tab there, `open`
+there not in the background), fails with TOOK_OVER, "the user took over
+tab N". The pause ends when the user hands the tab back (`resume`, from
+the shell's actions for the window) or PAUSE_S after their last key,
+click or wheel turn in that tab. Other clicks on the locked page are
+swallowed, and the mark flashes.
+
+DIALOG: {"type": one of DIALOG_TYPES, "message": str, "default": str}.
+While a session drives the tab, a dialog the page opens (alert, confirm,
+prompt, and leaving a page that asks first: "beforeunload") is held for
+the agent instead of shown: every result naming the tab says it (TAB's
+`dialog`), requests that need the page refuse until `dialog` answers it,
+and one left DIALOG_S unanswered is dismissed. On a take-over or a
+`release` it becomes the user's own dialog, shown as without the agent.
+A file chooser the page opens while the agent drives is refused
+(UPLOADS). Outside a session the page's dialogs are the user's, as ever.
+
+TAB, in every result since acting came, also says {"agent": null |
+"driving" | "paused", "voice": str | null, "dialog": DIALOG | null}.
 """
 
 import os
@@ -263,14 +373,21 @@ ACTIONS = ("address", "new_tab", "actions")
 KEYS = {"ctrl+l": "address", "ctrl+t": "new_tab", "ctrl+m": "actions"}
 
 COMMANDS = ("back", "forward", "reload", "open", "tab", "close", "load", "bookmark",
-            PROMPT)
+            PROMPT, "resume")
 
 OPEN = "open"
 URLS = "urls"
 OK = "ok"
 ERROR = "error"
 
+AGENT = "agent"
+AGENT_STATES = ("driving", "paused")
+RESUME = "resume"
+
 STATE_KEYS = (TABS, CURRENT, PROGRESS, SECURE, URL, BOOKMARKED, FIND)
+# In every state since the agent could act, but not required: a browser
+# from before it sends none (no hold on any tab).
+OPTIONAL_STATE_KEYS = (AGENT,)
 TAB_KEYS = (TITLE, HOST, LOADING)
 FIND_KEYS = ("query", "active", "total", "typing")
 
@@ -305,11 +422,26 @@ def find_count(f: dict) -> str:
     return f"{active or 0}/{total}"
 
 
+def agent(voice: str | None, state_: str) -> dict:
+    """A tab's entry in the state's `agent`."""
+    return {"voice": voice_id(voice), "state": state_}
+
+
 def state(tabs: list[dict], current: int, progress: int, secure: bool, *,
-          url: str, bookmarked: bool, find: dict | None) -> dict:
+          url: str, bookmarked: bool, find: dict | None,
+          agent: list[dict | None] | None = None) -> dict:
+    agents = list(agent) if agent is not None else [None] * len(tabs)
     return message(STATE, **{TABS: tabs, CURRENT: int(current), PROGRESS: int(progress),
                              SECURE: bool(secure), URL: url, BOOKMARKED: bool(bookmarked),
-                             FIND: find})
+                             FIND: find, AGENT: agents})
+
+
+def agents_of(msg: dict) -> list[dict | None]:
+    """A state's `agent`, one per tab; none held when it has none."""
+    value = msg.get(AGENT)
+    tabs = msg.get(TABS) or []
+    return list(value) if isinstance(value, list) and len(value) == len(tabs) \
+        else [None] * len(tabs)
 
 
 def _count(value) -> bool:
@@ -353,6 +485,15 @@ def state_problems(msg: dict) -> list[str]:
         elif not (isinstance(f["query"], str) and _count(f["active"])
                   and _count(f["total"]) and isinstance(f["typing"], bool)):
             problems.append(f"find field types: {f!r}")
+    if AGENT in msg:
+        agents = msg[AGENT]
+        if not isinstance(agents, list) or len(agents) != len(tabs):
+            problems.append(f"agent is not a list of one per tab: {agents!r}")
+        else:
+            for i, a in enumerate(agents):
+                if a is not None and not (isinstance(a, dict) and isinstance(a.get("voice"), str)
+                                          and a.get("state") in AGENT_STATES):
+                    problems.append(f"agent {i} is {a!r}")
     return problems
 
 
@@ -380,7 +521,9 @@ ID = "id"
 RESULT = "result"
 CANCEL = "cancel"
 CANCELLED = "cancelled"
-REQUESTS = ("tabs", "open", "switch", "close", "go", "wait", "read", "screenshot", "look")
+ACTS = ("click", "type", "key", "select", "scroll", "fill", "hover", "dialog")
+REQUESTS = ("tabs", "open", "switch", "close", "go", "wait", "read", "screenshot", "look",
+            *ACTS, "release")
 GO_ACTIONS = ("back", "forward", "reload")
 READS = ("text", "links", "forms", "outline")
 
@@ -394,6 +537,60 @@ LINKS_LENGTH, LINKS_MAX = 200, 1000
 FORMS_LENGTH, FORMS_MAX = 20, 100
 OUTLINE_LENGTH, OUTLINE_MAX = 400, 2000        # lines
 SHOT_MAX_SIDE = 1568                           # px, the long side
+
+# ── acting, and the Watch ───────────────────────────────────────────────
+TOOK_OVER = "the user took over tab {tab}"
+UPLOADS = "uploads come in a later step"
+DIALOG_TYPES = ("alert", "confirm", "prompt", "beforeunload")
+QUIET_S = 10.0          # a session with no request on its tab this long ends
+PAUSE_S = 120.0         # a take-over's pause, after the user's last input in the tab
+DIALOG_S = 60.0         # a dialog held for the agent this long unanswered: dismissed
+SETTLE_S = 0.4          # after acting: this long quiet, and the page counts as settled
+TYPE_KEYS_MAX = 200     # characters typed as key presses; a longer text is committed
+KEY_COUNT_MAX = 50      # `key`'s count
+BUTTONS = ("left", "middle")
+# The keys `key` names (case does not matter), besides one character:
+KEY_NAMES = ("Enter", "Escape", "Tab", "Backspace", "Delete", "Space", "Insert",
+             "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End",
+             "PageUp", "PageDown", *(f"F{n}" for n in range(1, 13)))
+KEY_MODIFIERS = ("ctrl", "shift", "alt", "meta")
+
+# The hub's voices (its welcome names them): name and colour. A voice
+# this table does not know is drawn in the first one's colour.
+VOICES = {"lilac": ("Lilac", "#c8a2c8"), "indigo": ("Indigo", "#b967ff")}
+DEFAULT_VOICE = "lilac"
+
+
+def voice_id(voice) -> str:
+    """The voice as the state carries it: its id, lowercase; the default
+    voice's for none."""
+    if isinstance(voice, str) and voice.strip():
+        return voice.strip().lower()[:32]
+    return DEFAULT_VOICE
+
+
+def voice_name(voice) -> str:
+    """"Lilac"; a voice not in VOICES by its own id, capitalized, when
+    that is a plain word, else the default voice's name."""
+    vid = voice_id(voice)
+    if vid in VOICES:
+        return VOICES[vid][0]
+    if vid.replace("-", "").replace("_", "").isalnum() and len(vid) <= 24:
+        return vid.capitalize()
+    return VOICES[DEFAULT_VOICE][0]
+
+
+def voice_color(voice) -> str:
+    """"#c8a2c8"; the default voice's for one VOICES does not know."""
+    return VOICES.get(voice_id(voice), VOICES[DEFAULT_VOICE])[1]
+
+
+def took_over(tab: int) -> str:
+    return TOOK_OVER.format(tab=tab)
+
+
+def dialog(type_: str, message_: str, default: str = "") -> dict:
+    return {"type": type_, "message": message_, "default": default}
 
 
 def is_id(value) -> bool:

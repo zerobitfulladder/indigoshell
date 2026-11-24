@@ -1,11 +1,15 @@
 // Jack's page reader: what the agent reads of a page, and the numbers
 // (refs) it names elements by. Run by reader.py in the agent's isolated
 // world only, never the page's own: the page's scripts can see neither
-// this code nor the refs, and nothing here writes to the page (no
-// attribute, no focus, no scroll, no selection change). Every request
-// sends this file again; it defines `window.__jack` once per document
-// (the world starts empty with each new document, so the refs last as
-// long as the page load does).
+// this code nor the refs. Reading writes nothing to the page (no
+// attribute, no focus, no scroll, no selection change); only the acting
+// part at the end does, for the agent's acting requests, what the user's
+// hands would: it scrolls an element into view, focuses a field, and
+// sets what no key can (a <select>'s option, a date). The clicks, keys
+// and wheel turns themselves are real input, sent by Jack as Qt events.
+// Every request sends this file again; it defines `window.__jack` once
+// per document (the world starts empty with each new document, so the
+// refs last as long as the page load does).
 //
 // Kept to what Chromium 122 has (Qt 6.8's QtWebEngine).
 (() => {
@@ -35,7 +39,7 @@ function ref(el) {
   return n;
 }
 
-function element(n) {           // for acting on a ref (not yet used)
+function element(n) {           // the element a ref names, while it is in the page
   const held = refs.get(n);
   const el = held && held.deref();
   if (!el) { refs.delete(n); return null; }
@@ -506,6 +510,241 @@ function frame() {
   return n;
 }
 
+// ── acting (the acting requests only) ───────────────────────────────────
+// What a click must not reach: a file field (its chooser is a dialog of
+// the browser's), a <select> and the date, time and colour fields (their
+// popups take the user's pointer and keyboard).
+const PICKERS = new Set(["date", "datetime-local", "month", "week", "time", "color"]);
+const TYPABLE = new Set(["text", "search", "email", "tel", "url", "password", "number"]);
+
+function target(n) {
+  const el = element(n);
+  if (!el) throw new Error(`no element [${n}] on this page (a ref is gone with the page ` +
+                           "that gave it: read the page again)");
+  return el;
+}
+
+// An element as the outline names it, with a ref: what was acted on, or
+// what is in the way.
+function describe(el) {
+  if (!el) return "nothing";
+  const r = role(el);
+  const n = name(el);
+  return `[${ref(el)}] ${r || el.tagName.toLowerCase()}` + (n ? " " + quote(n) : "");
+}
+
+// The field a click on `el` works: itself, the <select> it is in, or the
+// field of the label it is in.
+function controlOf(el) {
+  if (!el || !el.closest) return null;
+  if (["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(el.tagName)) return el;
+  const select = el.closest("select");
+  if (select) return select;
+  const label = el.closest("label");
+  return label ? label.control : null;
+}
+
+function refused(el) {
+  const c = controlOf(el);
+  if (!c) return null;
+  if (c.tagName === "INPUT" && c.type === "file") return "upload";
+  if (c.tagName === "SELECT") return "select";
+  if (c.tagName === "INPUT" && PICKERS.has(c.type)) return "picker";
+  return null;
+}
+
+function visibleRect(el) {
+  for (const r of el.getClientRects()) {
+    const x = Math.max(0, r.left), y = Math.max(0, r.top);
+    const w = Math.min(innerWidth, r.right) - x, h = Math.min(innerHeight, r.bottom) - y;
+    if (w >= 1 && h >= 1) return {x, y, w, h};
+  }
+  return null;
+}
+
+function intoView(el) {
+  const r = el.getBoundingClientRect();
+  if (r.top < 0 || r.left < 0 || r.bottom > innerHeight || r.right > innerWidth)
+    el.scrollIntoView({block: "center", inline: "center", behavior: "instant"});
+}
+
+// What is at a point, into open shadow roots.
+function hitAt(x, y) {
+  let hit = document.elementFromPoint(x, y);
+  while (hit && hit.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === hit) break;
+    hit = inner;
+  }
+  return hit;
+}
+
+// Whether a click on `hit` is a click on `el`: it is el, inside it
+// (through shadow roots too), or a label of it.
+function reaches(el, hit) {
+  for (let n = hit; n; ) {
+    if (n === el) return true;
+    if (n.parentNode) n = n.parentNode;
+    else n = n instanceof ShadowRoot ? n.host : null;
+  }
+  return !!(hit && el.labels && Array.from(el.labels).some(l => l === hit || l.contains(hit)));
+}
+
+// Where to put the pointer: o.ref (scrolled into view, the middle of its
+// visible part, or of a label's when its own is covered or has no box)
+// or the point o.x, o.y. o.refuse: refuse what a click must not reach;
+// o.cover: say what covers the element when something does.
+function point(o) {
+  if (o.ref !== undefined && o.ref !== null) {
+    const el = target(o.ref);
+    const why = o.refuse ? refused(el) : null;
+    if (why) return {refused: why, what: describe(el)};
+    if (o.refuse && el.disabled) throw new Error(`[${o.ref}] is disabled`);
+    const aims = [el, ...(el.labels ? Array.from(el.labels) : [])].filter(visible);
+    if (!aims.length) throw new Error(`[${o.ref}] is not visible on the page`);
+    let first = null;
+    for (const aim of aims) {
+      intoView(aim);
+      const r = visibleRect(aim);
+      if (!r) continue;
+      const x = Math.round(r.x + r.w / 2), y = Math.round(r.y + r.h / 2);
+      const hit = hitAt(x, y);
+      if (!o.cover || reaches(el, hit))
+        return {x, y, what: describe(el), width: innerWidth, height: innerHeight};
+      first = first || {covered: describe(hit), x, y, what: describe(el)};
+    }
+    if (first) return first;
+    throw new Error(`[${o.ref}] is outside the visible page, even scrolled to`);
+  }
+  const x = Number(o.x), y = Number(o.y);
+  if (!(x >= 0 && y >= 0 && x < innerWidth && y < innerHeight))
+    throw new Error(`(${o.x}, ${o.y}) is outside the visible page (${innerWidth}x${innerHeight} ` +
+                    "CSS px)");
+  const hit = hitAt(x, y);
+  const why = o.refuse && hit ? refused(hit) : null;
+  if (why) return {refused: why, what: describe(hit), x, y};
+  return {x, y, what: describe(hit), width: innerWidth, height: innerHeight};
+}
+
+function typable(el) {
+  if (!el) return false;
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName === "INPUT") return TYPABLE.has(el.type);
+  return !!el.isContentEditable;
+}
+
+function deepActive() {
+  let a = document.activeElement;
+  while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+  return a;
+}
+
+function caretToEnd(el) {
+  try {
+    if (typeof el.setSelectionRange === "function" && typeof el.value === "string") {
+      el.setSelectionRange(el.value.length, el.value.length);
+      return;
+    }
+  } catch (e) { /* email and number fields have no caret to set */ }
+  if (el.isContentEditable) {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.collapse(false);
+    const s = getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+  }
+}
+
+// A text field made the one keys go to, its caret at the end.
+function focusField(n) {
+  const el = target(n);
+  const why = refused(el);
+  if (why) return {refused: why, what: describe(el)};
+  if (!typable(el))
+    throw new Error(`[${n}] is not a text field (${describe(el)}): click it, then type with ` +
+                    "no ref");
+  if (el.disabled || el.readOnly) throw new Error(`[${n}] is ${el.disabled ? "disabled" : "read-only"}`);
+  intoView(el);
+  el.focus({preventScroll: true});
+  const active = deepActive();
+  if (active !== el && !el.contains(active)) throw new Error(`[${n}] did not take the focus`);
+  caretToEnd(el);
+  return {what: describe(el)};
+}
+
+function focused() {
+  const a = deepActive();
+  const none = !a || a === document.body || a === document.documentElement;
+  return {what: none ? null : describe(a), editable: !none && typable(a)};
+}
+
+function fieldKind(n) {
+  const el = target(n);
+  let kind = "other";
+  if (el.tagName === "SELECT") kind = "select";
+  else if (el.tagName === "TEXTAREA" || (el.tagName !== "INPUT" && el.isContentEditable)) kind = "text";
+  else if (el.tagName === "INPUT") {
+    if (el.type === "file") kind = "file";
+    else if (el.type === "checkbox" || el.type === "radio") kind = el.type;
+    else if (TYPABLE.has(el.type)) kind = "text";
+    else if (PICKERS.has(el.type) || el.type === "range") kind = "value";
+  }
+  return {kind, checked: !!el.checked, disabled: !!el.disabled, what: describe(el)};
+}
+
+function changed(el) {
+  el.dispatchEvent(new Event("input", {bubbles: true, composed: true}));
+  el.dispatchEvent(new Event("change", {bubbles: true}));
+}
+
+// A <select>'s options by value or by label (o.by), never its popup.
+function choose(n, o) {
+  const el = target(n);
+  if (el.tagName !== "SELECT") throw new Error(`[${n}] is not a <select> (${describe(el)})`);
+  if (el.disabled) throw new Error(`[${n}] is disabled`);
+  const options = Array.from(el.options);
+  const fold = s => clean(s).toLowerCase();
+  const found = o.values.map(w => {
+    const opt = o.by === "value" ? options.find(p => p.value === w)
+      : options.find(p => clean(p.text) === clean(w)) || options.find(p => fold(p.text) === fold(w));
+    if (!opt) throw new Error(`[${n}] has no option with the ${o.by} ${quote(w)}`);
+    if (opt.disabled) throw new Error(`[${n}]'s option ${quote(clean(opt.text))} is disabled`);
+    return opt;
+  });
+  if (found.length !== 1 && !el.multiple) throw new Error(`[${n}] takes one option`);
+  el.focus({preventScroll: true});
+  if (el.multiple) for (const p of options) p.selected = found.includes(p);
+  else found[0].selected = true;
+  changed(el);
+  const chosen = Array.from(el.selectedOptions);
+  return {value: el.multiple ? chosen.map(p => p.value) : el.value,
+          label: el.multiple ? chosen.map(p => clean(p.text)) : clean(chosen.length ? chosen[0].text : "")};
+}
+
+// A date, time, colour or range field's value, as typing cannot set it.
+function setValue(n, value) {
+  const el = target(n);
+  if (el.disabled || el.readOnly) throw new Error(`[${n}] is ${el.disabled ? "disabled" : "read-only"}`);
+  el.focus({preventScroll: true});
+  el.value = String(value);
+  if (String(value) !== "" && el.value === "")
+    throw new Error(`[${n}] does not take ${quote(String(value))} (a ${el.type} field)`);
+  changed(el);
+  return {value: el.value};
+}
+
+function scrollTo(n) {
+  const el = target(n);
+  el.scrollIntoView({block: "center", inline: "nearest", behavior: "instant"});
+  return {what: describe(el)};
+}
+
+function scrolled() {
+  return {x: scrollX, y: scrollY};
+}
+
 window.__jack = {text, links, forms, outline, has, info, selection, imageAt, frame,
-                 element, painted: 0};
+                 element, painted: 0, point, focusField, focused, fieldKind, choose, setValue,
+                 scrollTo, scrolled};
 })();

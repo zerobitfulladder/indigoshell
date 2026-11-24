@@ -52,13 +52,23 @@ cases):
                           later navigation. The request interceptor sees
                           every hop but names a hop's type as the first
                           request's (TypedNavigation), so it is not used.
+
+The page's dialogs (alert, confirm, prompt, and the question before
+leaving a page that asks, "beforeunload") and its file choosers go to
+the browser's Watch first (watch.py): held for the agent while it drives
+the tab, the user's own otherwise, as Qt shows them. Qt asks for each
+with a call that returns the answer, so a dialog is a nested event loop
+whichever answers it; while one is open (`in_dialog`) the page must not
+be deleted, and what would delete it waits (`after_dialog`, window.py).
+Qt words the beforeunload question itself (UNLOAD_MESSAGE) and asks it
+with javaScriptConfirm, which is how it is told from a page's confirm().
 """
 
 import itertools
 import logging
 import time
 
-from PySide6.QtCore import QObject, QUrl, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, QUrl, Signal
 from PySide6.QtWebEngineCore import (QWebEngineLoadingInfo, QWebEngineNavigationRequest,
                                      QWebEnginePage)
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -93,18 +103,73 @@ def to_url(text: str) -> QUrl:
     return QUrl(url)
 
 
+# How Qt words the question before leaving a page that asks (its
+# QWebEnginePage::javaScriptConfirm for Chromium's beforeunload dialog).
+UNLOAD_MESSAGE = ("Are you sure you want to leave this page? Changes that you made may not "
+                  "be saved.")
+
+
+def unload_message() -> str:
+    return QCoreApplication.translate("QWebEnginePage", UNLOAD_MESSAGE)
+
+
 class Page(QWebEnginePage):
     """A page whose console goes to the log at debug level, not the
     terminal. `id` names its tab to the agent (browser/qt/control.py):
     never reused in this process, and the page's, so it goes with the
-    page should the page move to another tab or window."""
+    page should the page move to another tab or window. Its dialogs and
+    file choosers ask `watch` first (the module docstring)."""
 
     def __init__(self, profile, parent=None) -> None:
         super().__init__(profile, parent)
         self.id = next(_page_ids)
+        self.watch = None               # the browser's Watch, once in a window
+        self.in_dialog = 0              # dialogs open on it now, the user's or held
+        self.after_dialog: list = []    # run once none is
 
     def javaScriptConsoleMessage(self, level, message, line, source) -> None:
         js_log.debug("js: %s (%s:%d)", message, source, line)
+
+    # ── dialogs ─────────────────────────────────────────────────────────
+    def _dialog(self, kind: str, origin, message: str, default: str = "") -> tuple:
+        self.in_dialog += 1
+        try:
+            held = (self.watch.hold_dialog(self, kind, message, default)
+                    if self.watch is not None else None)
+            return held if held is not None else self.user_dialog(kind, origin, message, default)
+        finally:
+            self.in_dialog -= 1
+            if not self.in_dialog and self.after_dialog:
+                # Not now: this frame is still inside the page's own call.
+                todo, self.after_dialog = self.after_dialog, []
+                for fn in todo:
+                    QTimer.singleShot(0, fn)
+
+    def user_dialog(self, kind: str, origin, message: str, default: str) -> tuple:
+        """The dialog as Qt shows it, the user's own: (accepted, text)."""
+        if kind == "alert":
+            super().javaScriptAlert(origin, message)
+            return True, ""
+        if kind == "prompt":
+            ok, text = super().javaScriptPrompt(origin, message, default)
+            return bool(ok), str(text or "")
+        return bool(super().javaScriptConfirm(origin, message)), ""
+
+    def javaScriptAlert(self, origin, message) -> None:
+        self._dialog("alert", origin, message)
+
+    def javaScriptConfirm(self, origin, message) -> bool:
+        kind = "beforeunload" if message == unload_message() else "confirm"
+        return bool(self._dialog(kind, origin, message)[0])
+
+    def javaScriptPrompt(self, origin, message, default):
+        ok, text = self._dialog("prompt", origin, message, default)
+        return bool(ok), str(text) if ok else ""
+
+    def chooseFiles(self, mode, old_files, accepted_types):
+        if self.watch is not None and self.watch.refuse_files(self):
+            return []
+        return super().chooseFiles(mode, old_files, accepted_types)
 
 
 class Tab(QObject):
@@ -131,6 +196,10 @@ class Tab(QObject):
         self._input = False             # a key or a click on it since it arrived
         self._settled: float | None = None  # when its load ended; None while loading
         self._asked: float | None = None    # when the agent asked for a load not yet ended
+        # Counted for the agent's actions (control.py): main-frame
+        # navigations asked for, and those plus same-document moves.
+        self.loads = 0
+        self.navigations = 0
 
         page = self.page
         page.titleChanged.connect(self.changed)
@@ -215,6 +284,8 @@ class Tab(QObject):
     def _on_navigation(self, request) -> None:
         if not request.isMainFrame():
             return
+        self.loads += 1
+        self.navigations += 1
         T = QWebEngineNavigationRequest.NavigationType
         kind = request.navigationType()
         url = request.url().toString()
@@ -275,6 +346,7 @@ class Tab(QObject):
             return
         # A same-document move: a load asked for that ends here.
         self._asked = None
+        self.navigations += 1
         if self._document_ok:
             self._record(url)
         self._moved(url)

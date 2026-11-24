@@ -20,7 +20,8 @@
 
 `Browser` keeps the windows, most recently used first, and is what the
 control socket, the windows and the downloads ask for "the window to
-put this in".
+put this in". Its `watch` (watch.py) keeps the agent's hold on the tabs
+it acts on.
 
 The end: Ctrl+C or SIGTERM quits the event loop, and so does the last
 window closing; the log says which (logs.py) before every window (and
@@ -51,6 +52,7 @@ from .control import ControlServer
 from .identity import Identity
 from .profile import make_profile
 from .tabs import to_url
+from .watch import Watch
 from .window import NAME, Window
 
 log = logging.getLogger(__name__)
@@ -124,6 +126,7 @@ class Browser(QObject):
         self.history = places.History()
         self.bookmarks = Bookmarks(self)
         self.bookmarks.changed.connect(self._bookmarks_changed)
+        self.watch = Watch(self)                # the agent driving tabs (watch.py)
         self.windows: list[Window] = []         # open ones, most recently used first
         self._made: list[Window] = []           # every one made and not closed, for the end
         self.server: ControlServer | None = None

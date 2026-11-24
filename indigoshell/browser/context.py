@@ -20,6 +20,13 @@ the browser's find is open its line takes the tabs' place:
 `find  query▏  3/12`, the caret only while the query is typed, "no
 matches" in the error colour. Nothing on it is clickable.
 
+The agent. While the agent drives a tab (protocol `agent`), that tab's
+number is drawn in the voice's colour (protocol.VOICES); while the user
+has taken it over and the agent waits, in that colour dimmed a third of
+the way to the bar's background. The title keeps its own colour. The window's
+actions (Ctrl+M) then begin with "Let Lilac drive again" (the voice's
+name) for each tab taken over, which sends the browser `resume`.
+
 The launcher. The shell takes Ctrl+L, Ctrl+T and Ctrl+M from every main
 browser window (protocol.KEYS, grabbed by the app service: applink/
 service.py); a single window (a sign-in popup, the inspector) keeps
@@ -83,6 +90,26 @@ PROGRESS_THICK = theme.BAR_RULE_THICK
 SIZE = theme.FONT_SIZE
 PAD = Insets()                      # the bar's own gutter is around it already
 HOST_CAP = 0.34                     # the host takes at most this share of the row
+PAUSED_DIM = 0.35                   # a taken-over tab's number: the voice's colour this far
+                                    # towards the bar's background (halfway is too near the
+                                    # muted tabs' colour to tell apart)
+RESUME_MARK = "\uf04b"              # Nerd Font: fa-play
+
+
+def _blend(a: str, b: str, t: float) -> str:
+    """#rrggbb `t` of the way from `a` to `b`."""
+    ca = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+    cb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(ca, cb))
+
+
+def agent_color(agent: dict | None) -> str | None:
+    """The colour of a tab's number for the agent's hold on it: its
+    voice's while it drives, dimmed while the user has taken it over."""
+    if not agent:
+        return None
+    color = protocol.voice_color(agent.get("voice"))
+    return color if agent.get("state") == "driving" else _blend(color, theme.BAR_BG, PAUSED_DIM)
 
 
 # ── widgets ─────────────────────────────────────────────────────────────
@@ -186,14 +213,20 @@ class TabList(Widget):
         super().__init__(flex=1)
         self.titles: list[str] = []
         self.current = 0
+        self.agents: list[dict | None] = []
         self.find: dict | None = None
         self.drawn: list[tuple[int, str, float, float]] = []
         self.find_drawn: list[tuple[str, str, float, float]] = []
 
-    def set_tabs(self, titles: list[str], current: int) -> None:
+    def set_tabs(self, titles: list[str], current: int,
+                 agents: list[dict | None] | None = None) -> None:
+        agents = list(agents) if agents is not None else [None] * len(titles)
         if titles != self.titles or current != self.current:
-            self.titles, self.current = list(titles), current
+            self.titles, self.current, self.agents = list(titles), current, agents
             self.invalidate(layout=True)
+        elif agents != self.agents:
+            self.agents = agents
+            self.invalidate()
 
     def set_find(self, find: dict | None) -> None:
         if find != self.find:
@@ -218,6 +251,15 @@ class TabList(Widget):
         canvas.clipRect(r)
         for i, label, x, _w in self.drawn:
             color = TAB_CURRENT_FG if i == self.current else TAB_FG
+            mark = agent_color(self.agents[i]) if i < len(self.agents) else None
+            number = str(i + 1)
+            if mark is not None and label.startswith(number):
+                text.draw(canvas, number, r.left() + x, base, SIZE, theme.color(mark))
+                rest = label[len(number):]
+                if rest:
+                    text.draw(canvas, rest, r.left() + x + text.measure(number, SIZE), base,
+                              SIZE, theme.color(color))
+                continue
             text.draw(canvas, label, r.left() + x, base, SIZE, theme.color(color))
         for role, piece, x, _w in self.find_drawn:
             color = {"label": FIND_FG, "query": FIND_QUERY_FG}.get(
@@ -233,7 +275,10 @@ class TabList(Widget):
             return [{"role": role, "text": piece, "x": r.left() + x, "w": w}
                     for role, piece, x, w in self.find_drawn]
         return [{"index": i, "text": label, "x": r.left() + x, "w": w,
-                 "current": i == self.current} for i, label, x, w in self.drawn]
+                 "current": i == self.current,
+                 "number_w": text.measure(str(i + 1), SIZE),
+                 "agent": self.agents[i] if i < len(self.agents) else None}
+                for i, label, x, w in self.drawn]
 
 
 class Host(Widget):
@@ -359,7 +404,9 @@ class JackWindow(AppWindow):
                 log.warning("state from browser 0x%x ignored: %s", self.wid,
                             "; ".join(problems))
                 return
-            self._show({k: msg[k] for k in (protocol.TYPE, *protocol.STATE_KEYS)})
+            state = {k: msg[k] for k in (protocol.TYPE, *protocol.STATE_KEYS)}
+            state[protocol.AGENT] = protocol.agents_of(msg)
+            self._show(state)
         elif kind == protocol.DOWNLOAD:
             log.debug("download in browser 0x%x: %s %s %s", self.wid, msg.get("name"),
                       msg.get("state"), msg.get("percent"))
@@ -377,7 +424,8 @@ class JackWindow(AppWindow):
             return
         self.state = state
         tabs, current = state[protocol.TABS], state[protocol.CURRENT]
-        self.content.tabs.set_tabs([str(t[protocol.TITLE]) for t in tabs], current)
+        self.content.tabs.set_tabs([str(t[protocol.TITLE]) for t in tabs], current,
+                                   protocol.agents_of(state))
         here = tabs[current] if tabs else {protocol.HOST: "", protocol.LOADING: False}
         self.content.host.set(str(here[protocol.HOST]), bool(state[protocol.SECURE]),
                               bool(state[protocol.BOOKMARKED]))
@@ -470,12 +518,22 @@ class JackWindow(AppWindow):
         return bool(getattr(window, "keyboard_grabbed", False))
 
     def actions(self) -> Choices:
-        """The window's actions, for its current page."""
+        """The window's actions, for its current page; first, while the
+        user has taken a tab over from the agent, handing it back."""
         url = str(self.state.get(protocol.URL) or "")
         marked = bool(self.state.get(protocol.BOOKMARKED))
         page = places.recordable(url)
         host = places.host_of(url)
+        tabs = self.state.get(protocol.TABS) or []
+        resume = [Choice(f"Let {protocol.voice_name(a.get('voice'))} drive again",
+                         partial(self._resume, i), glyph=RESUME_MARK,
+                         detail=" · ".join(filter(None, (f"tab {i + 1}",
+                                                       str(tabs[i].get(protocol.HOST) or "")
+                                                       if i < len(tabs) else ""))))
+                  for i, a in enumerate(protocol.agents_of(self.state))
+                  if a and a.get("state") == "paused"]
         return Choices([
+            *resume,
             Choice("Add bookmark", partial(self._bookmark, "add"),
                    enabled=page and not marked, detail=host, glyph=BOOKMARK_MARK),
             Choice("Remove bookmark", partial(self._bookmark, "remove"),
@@ -493,6 +551,12 @@ class JackWindow(AppWindow):
             log.info("the browser window that asked is gone; no bookmark %s", op)
             return
         self.command("bookmark", op=op)
+
+    def _resume(self, index: int) -> None:
+        if self.closed:
+            log.info("the browser window that asked is gone; tab %d not handed back", index + 1)
+            return
+        self.command(protocol.RESUME, index=index)
 
     def _remove_bookmark(self, url: str) -> bool:
         """Shift+Delete on a bookmark in the address list: the browser

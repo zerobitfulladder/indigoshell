@@ -23,6 +23,11 @@ own), as `<the CLI> browser --no-window` (desktop.py's command): no
 window until a request opens one. A Jack that is starting meanwhile, the
 user's or another start's, is the one it then connects to.
 
+The acting requests (`click`, `type_text`, `key`, `select`, `scroll`,
+`fill`, `hover`, `dialog`, `release`) carry the agent's `voice`, which
+Jack draws its hold on the tab in (protocol.VOICES). On a tab the user
+took over they raise ControlError with protocol.TOOK_OVER's words.
+
 `look()` is for the call: what the user is looking at in Jack, as
 content blocks to send with their words, or nothing when Jack is not
 running or no Jack window has had focus. It never starts Jack and
@@ -36,7 +41,7 @@ import asyncio
 import itertools
 import logging
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from indigoshell.browser import protocol
 
@@ -67,11 +72,15 @@ class TabInfo:
     url: str
     loading: bool
     current: bool
+    agent: str | None = None            # None, "driving", "paused" (the user took over)
+    voice: str | None = None
+    dialog: dict | None = field(default=None, compare=False)   # held for the agent
 
     @classmethod
     def of(cls, d: dict) -> "TabInfo":
         return cls(int(d["tab"]), int(d["window"]), int(d["index"]), str(d.get("title") or ""),
-                   str(d.get("url") or ""), bool(d.get("loading")), bool(d.get("current")))
+                   str(d.get("url") or ""), bool(d.get("loading")), bool(d.get("current")),
+                   d.get("agent"), d.get("voice"), d.get("dialog"))
 
 
 @dataclass(frozen=True)
@@ -227,6 +236,60 @@ class Control:
         return await self.request("look", {"window": window, "xid": xid,
                                            "screenshot": screenshot or None,
                                            "image": image or None}, within=within)
+
+    # ── acting (protocol.py, "Acting"): TAB + {"navigated", "opened",
+    # "dialog", ...} each; `voice` is the agent's ──────────────────────────
+    async def click(self, tab: int, ref: int | None = None, *, x: float | None = None,
+                    y: float | None = None, button: str | None = None, double: bool = False,
+                    voice: str | None = None, within: float = REQUEST_S) -> dict:
+        return await self.request("click", {"tab": tab, "ref": ref, "x": x, "y": y,
+                                            "button": button, "double": double or None,
+                                            "voice": voice}, within=within)
+
+    async def type_text(self, tab: int, text: str, *, ref: int | None = None,
+                        x: float | None = None, y: float | None = None, clear: bool = False,
+                        submit: bool = False, voice: str | None = None,
+                        within: float = REQUEST_S) -> dict:
+        return await self.request("type", {"tab": tab, "text": text, "ref": ref, "x": x, "y": y,
+                                           "clear": clear or None, "submit": submit or None,
+                                           "voice": voice}, within=within)
+
+    async def key(self, tab: int, key: str, *, count: int | None = None,
+                  voice: str | None = None, within: float = REQUEST_S) -> dict:
+        return await self.request("key", {"tab": tab, "key": key, "count": count,
+                                          "voice": voice}, within=within)
+
+    async def select(self, tab: int, ref: int, *, value=None, label=None,
+                     voice: str | None = None, within: float = REQUEST_S) -> dict:
+        return await self.request("select", {"tab": tab, "ref": ref, "value": value,
+                                             "label": label, "voice": voice}, within=within)
+
+    async def scroll(self, tab: int, *, dy: float | None = None, dx: float | None = None,
+                     ref: int | None = None, x: float | None = None, y: float | None = None,
+                     to: int | None = None, voice: str | None = None,
+                     within: float = REQUEST_S) -> dict:
+        return await self.request("scroll", {"tab": tab, "dy": dy, "dx": dx, "ref": ref, "x": x,
+                                             "y": y, "to": to, "voice": voice}, within=within)
+
+    async def fill(self, tab: int, fields: list[dict], *, voice: str | None = None,
+                   within: float = REQUEST_S) -> dict:
+        return await self.request("fill", {"tab": tab, "fields": fields, "voice": voice},
+                                  within=within)
+
+    async def hover(self, tab: int, ref: int | None = None, *, x: float | None = None,
+                    y: float | None = None, voice: str | None = None,
+                    within: float = REQUEST_S) -> dict:
+        return await self.request("hover", {"tab": tab, "ref": ref, "x": x, "y": y,
+                                            "voice": voice}, within=within)
+
+    async def dialog(self, tab: int, accept: bool, *, text: str | None = None,
+                     voice: str | None = None, within: float = REQUEST_S) -> dict:
+        return await self.request("dialog", {"tab": tab, "accept": bool(accept), "text": text,
+                                             "voice": voice}, within=within)
+
+    async def release(self, tab: int | None = None, *, within: float = REQUEST_S) -> list[int]:
+        """The tabs let go of."""
+        return (await self.request("release", {"tab": tab}, within=within))["released"]
 
 
 # ── finding Jack ────────────────────────────────────────────────────────

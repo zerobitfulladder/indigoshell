@@ -4,7 +4,10 @@ The agent's reads run reader.js in an isolated script world of their
 own (`WORLD`): the page shares the DOM with it but none of its
 variables, so the page's scripts can neither see the refs it hands out
 nor tamper with the reading. Jack's own scripts (find's selection
-clearing) use the ApplicationWorld, the page the MainWorld.
+clearing) use the ApplicationWorld, the page the MainWorld. The acting
+requests (control.py) use the same world and file: reader.js's last
+part finds where a ref is on screen, focuses a field and sets what no
+key can, with the refs the reads handed out.
 
 Two things QtWebEngine (PySide6 6.12, and as documented for 6.8) does
 that shape the calls:
