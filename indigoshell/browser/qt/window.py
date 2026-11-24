@@ -119,7 +119,7 @@ import time
 from functools import partial
 
 import shiboken6
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QDataStream, QEvent, QIODevice, QObject, Qt, QTimer, QUrl
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWebEngineCore import (QWebEngineNewWindowRequest, QWebEnginePage,
                                      QWebEngineScript)
@@ -137,6 +137,26 @@ from .tabs import Tab, to_url
 log = logging.getLogger(__name__)
 
 NAME = f"{APP}-browser"
+
+# Ctrl+Shift+T, as in Firefox: the tabs closed in the user's own windows
+# are remembered, newest last, each with its back/forward history and
+# where it was, and reopened one at a time. Tabs of the agent's window
+# and of popups aren't the user's to reopen.
+CLOSED_KEEP = 25
+
+
+class ClosedTab:
+    def __init__(self, window, index: int, url: QUrl, history: QByteArray) -> None:
+        self.window = window
+        self.index = index
+        self.url = url
+        self.history = history
+
+
+def history_bytes(page) -> QByteArray:
+    data = QByteArray()
+    QDataStream(data, QIODevice.OpenModeFlag.WriteOnly) << page.history()
+    return data
 
 # The fallback line's look, the top bar's colours. These mirror the
 # theme's values by hand: indigoshell.theme imports skia, which this
@@ -469,6 +489,7 @@ class Window(QWidget):
             self._restore_normal()
         if tab.inspector is not None and shiboken6.isValid(tab.inspector):
             tab.inspector.close()
+        self._remember_closed(tab, index)
         self.tabs.pop(index)
         self._related = None
         if not self.tabs:
@@ -485,6 +506,29 @@ class Window(QWidget):
             self.select(min(index, len(self.tabs) - 1))
         self._dispose(tab)
         self.refresh()
+
+    def _remember_closed(self, tab: Tab, index: int) -> None:
+        url = tab.page.url()
+        if self.single or self.agent or url.isEmpty() or url.toString() == "about:blank":
+            return
+        closed = self.browser.closed
+        closed.append(ClosedTab(self, index, url, history_bytes(tab.page)))
+        del closed[:-CLOSED_KEEP]
+
+    def reopen_tab(self) -> Tab | None:
+        """The tab closed last, back where it was when it was this
+        window's (else at the end), with its history, in front."""
+        closed = self.browser.closed
+        if not closed:
+            return None
+        entry = closed.pop()
+        here = entry.window is self and shiboken6.isValid(self)
+        tab = self.add_tab(at=min(entry.index, len(self.tabs)) if here else None)
+        QDataStream(entry.history, QIODevice.OpenModeFlag.ReadOnly) >> tab.page.history()
+        if tab.page.history().count() == 0:
+            tab.page.load(entry.url)        # no history to give back: the address
+        log.info("reopened a closed tab at %d", self.tabs.index(tab))
+        return tab
 
     def _dispose(self, tab: Tab) -> None:
         # Later, not now: this often runs inside one of the page's own
@@ -654,6 +698,8 @@ class Window(QWidget):
             page.triggerAction(WA.Back if action == "back" else WA.Forward)
         elif action == "reload":
             page.triggerAction(WA.Reload)
+        elif action == "reopen_tab":
+            self.reopen_tab()
         elif action == "hard_reload":
             # Every resource fetched again, none from the cache.
             page.triggerAction(WA.ReloadAndBypassCache)

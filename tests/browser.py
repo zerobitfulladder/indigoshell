@@ -360,6 +360,7 @@ def test_pure() -> None:
         ("Ctrl+Alt+1", int(K.Key_1), ctrl | alt, 10, None),
         ("Ctrl+F5", int(K.Key_F5), ctrl, 0, "hard_reload"),
         ("Ctrl+Shift+R", int(K.Key_R), ctrl | shift, 0, "hard_reload"),
+        ("Ctrl+Shift+T", int(K.Key_T), ctrl | shift, 0, "reopen_tab"),
         ("Shift+F5", int(K.Key_F5), shift, 0, "hard_reload"),
     ]
     wrong = [(name, got) for name, key, mods, code, want in expect
@@ -702,6 +703,23 @@ def test_in_process() -> None:
           blank_px == {"#050310"} and plain_ok and plain_px == "#ffffff",
           f"empty {blank_px}, unstyled page {plain_px}")
     w.close_tab(blank_tab)
+    count = len(w.tabs)
+    rt = w.add_tab()
+    spot = w.tabs.index(rt)
+    one = navigate(rt, lambda: rt.page.load(QUrl(url("/page/One"))), title="One")
+    two = navigate(rt, lambda: rt.page.load(QUrl(url("/page/Two"))), title="Two")
+    press(w, K.Key_W, M.ControlModifier)
+    closed_ok = len(w.tabs) == count and rt not in w.tabs
+    press(w, K.Key_T, M.ControlModifier | M.ShiftModifier)
+    back_tab = w.tabs[spot] if spot < len(w.tabs) and len(w.tabs) == count + 1 else None
+    reopened = back_tab is not None and back_tab is not rt and loaded(back_tab, "Two") \
+        and w.current == spot and back_tab.page.history().canGoBack()
+    stepped = reopened and navigate(back_tab, back_tab.view.back, title="One")
+    check("Ctrl+Shift+T reopens the tab closed last, in its place and in front, with its history",
+          one and two and closed_ok and reopened and stepped,
+          f"closed {closed_ok}, reopened {reopened}, back to One {stepped}")
+    if back_tab is not None:
+        w.close_tab(back_tab)
     press(w, K.Key_F12)
     inspector = w.tabs[3].inspector
     ok = inspector is not None and wait(lambda: inspector.isVisible()) and inspector.single

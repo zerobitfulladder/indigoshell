@@ -5,6 +5,7 @@
     Ctrl+T                      new tab: an address for it; the tab is made
                                 when one is picked
     Ctrl+W                      close the tab; the last one closes the window
+    Ctrl+Shift+T                reopen the tab closed last, with its history
     Ctrl+Tab, Ctrl+Shift+Tab    next, previous tab
     Ctrl+L                      address or search, in this tab
     Ctrl+M                      the window's actions: bookmarks
@@ -44,6 +45,7 @@ _ZERO = 19
 _PLAIN = {
     (M.ControlModifier, K.Key_T): "new_tab",
     (M.ControlModifier, K.Key_W): "close_tab",
+    (M.ControlModifier | M.ShiftModifier, K.Key_T): "reopen_tab",
     (M.ControlModifier, K.Key_Tab): "next_tab",
     (M.ControlModifier | M.ShiftModifier, K.Key_Tab): "prev_tab",
     (M.ControlModifier | M.ShiftModifier, K.Key_Backtab): "prev_tab",

@@ -143,6 +143,8 @@ class Browser(QObject):
         self.bookmarks.changed.connect(self._bookmarks_changed)
         self.watch = Watch(self)                # the agent driving tabs (watch.py)
         self.windows: list[Window] = []         # open ones, most recently used first
+        # Tabs the user closed, newest last, for Ctrl+Shift+T (window.py).
+        self.closed: list = []
         self._made: list[Window] = []           # every one made and not closed, for the end
         self.server: ControlServer | None = None
         self.downloads: dict[int, int | None] = {}  # id -> last percent reported
