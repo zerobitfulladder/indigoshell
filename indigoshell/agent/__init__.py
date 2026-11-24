@@ -23,7 +23,7 @@ The package, by job:
     tools.py         `ShellTools`: the desktop as tools — screenshots,
                      opening links and files (brought forward on their
                      workspace), apps, workspaces, the clipboard,
-                     Spotify, WiZ lights, Firefox, the phone
+                     Spotify, WiZ lights, Firefox
     glance.py        the desktop as the call opened: workspace, focused
                      window, Firefox's tab, what is playing, the
                      highlighted text and a screenshot without the call,
@@ -31,26 +31,22 @@ The package, by job:
                      line of each call
     spotify.py       the Spotify app and Web API, with its own sign-in
     wiz.py           WiZ lights on the LAN: discovery, scenes, names
-    phone.py         the user's phone over Termux's SSH server: its files,
-                     and the `ssh phone` host (pairing, finding it)
-    connections.py   where those three keep settings and keys:
+    connections.py   where those two keep settings and keys:
                      ~/.config/indigoshell/connections/<name>/
     remote.py        `RemoteAgent`: a call to the agent on the hub
                      (lilac, on a Raspberry Pi), read like `Agent`
     hands.py         `Hands`: the tools this machine lends the hub's
                      agent, and the calls to them
     laptop.py        the desktop as those tools: open, screenshot,
-                     windows, apps, the clipboard, Spotify, a shell
-                     (root asks first, in the call) and files
+                     windows, apps, the clipboard, a shell (root asks
+                     first, in the call), background jobs and files
     firefox.py       `Firefox`: the shell's end of the INDIGO bridge
                      add-on (extension/) and its native host
                      (browser_host.py) — the everyday Firefox, no port
     workspace/       the agent's starting files: its notebook
                      (CLAUDE.md, including how you want to be shown
-                     things), its report skill (steps, page template),
-                     its phone skill (the Termux:API commands over
-                     `ssh phone`) and new-skill: how it builds itself
-                     new abilities,
+                     things), its report skill (steps, page template)
+                     and new-skill: how it builds itself new abilities,
                      each a skill folder (SKILL.md, tools/ with uv
                      scripts, data/), nothing installed outside it
     seed.py          puts those in its workspace when missing — never

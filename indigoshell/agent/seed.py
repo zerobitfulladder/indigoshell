@@ -3,9 +3,8 @@
 Two kinds of file, set up on every dial:
 
 - Starting files — `agent/workspace/` mirrored into the workspace: the
-  notebook (CLAUDE.md), the report skill, the phone skill (its commands
-  over `ssh phone`), and `new-skill`, the way the agent builds itself
-  new abilities as skills. Copied in only when
+  notebook (CLAUDE.md), the report skill, and `new-skill`, the way the
+  agent builds itself new abilities as skills. Copied in only when
   missing. After that they belong to the agent and the user: a change
   asked for on a call ("show videos in mpv", "plainer reports") is an
   edit to these, and it has to stick.

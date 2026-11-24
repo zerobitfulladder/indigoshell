@@ -33,20 +33,13 @@ workspace, skip a song). Nothing here clicks or types for you.
     browser_*           the everyday Firefox, with the user's sign-ins:
                         tabs, reading pages, clicking, filling forms,
                         keys, uploading files, JavaScript, screenshots
-    phone_files         folders on the user's phone, over Wi-Fi (Termux's
-                        SSH server, while the user has its uplink on)
-    phone_pull          copy from the phone to this computer
-    phone_push          copy from this computer to the phone
-                        (the rest of the phone — texts, calls, notifications,
-                        location, camera — is `ssh phone` in Bash, taught by
-                        the workspace's phone skill)
     progress            how the long commands running now are getting on,
                         as the call's progress bars show them
 
 What each Spotify tool needs — nothing, the app's credentials, or the
 user's sign-in — is set out in agent/spotify.py; how the lights are
 found and named, in agent/wiz.py; how Firefox is reached, in
-agent/firefox.py; how the phone is set up and found, in agent/phone.py.
+agent/firefox.py.
 """
 
 import asyncio
@@ -65,7 +58,6 @@ from . import connections
 from .spotify import Spotify, SpotifyError, track_line, uri as spotify_uri
 from .firefox import Firefox, FirefoxError
 from .glance import FILL_WAIT_S, Glancer, describe as describe_glance
-from .phone import DEPTH_MAX, LIST_DEFAULT, LIST_MAX, Phone, PhoneError
 from .wiz import COLORS, Wiz, WizError, parse_color, parse_scene
 
 log = logging.getLogger(__name__)
@@ -92,14 +84,8 @@ numbers), click, fill forms, press keys, upload a local file into a \
 page (sending it on WhatsApp, attaching it to a mail), run JavaScript \
 in a page, and screenshot a tab. Prefer them to fetching a page yourself when the user \
 means something in their browser or behind their sign-in. Outside \
-Firefox, you cannot click or type on the user's behalf. The user's \
-Android phone is reachable over Wi-Fi while its uplink (Termux's SSH \
-server) is on: `phone_files` lists and searches its folders, \
-`phone_pull` copies files from it to this computer, `phone_push` sends \
-files to it, and `ssh phone '<command>'` in Bash runs a command on it \
-— texts, the call log, contacts, notifications, location, battery, \
-camera, torch, volume, speaking aloud and more; the `phone` skill has \
-the commands. Screenshots include the call overlay in the top-right \
+Firefox, you cannot click or type on the user's behalf. Screenshots \
+include the call overlay in the top-right \
 corner. The first line the user sends in each call comes with a note of \
 what was on their desktop when they opened it (workspace, focused \
 window, Firefox tab, what is playing, highlighted text), and a \
@@ -241,15 +227,13 @@ class ShellTools:
 
     def __init__(self, *, spotify: Spotify | None = None,
                  lights: Wiz | None = None,
-                 firefox: Firefox | None = None,
-                 phone: Phone | None = None) -> None:
+                 firefox: Firefox | None = None) -> None:
         # Before the links read their paths: files of an older layout
         # move into connections/ here.
         connections.tidy()
         self.spotify = spotify or Spotify()
         self.lights = lights or Wiz()
         self.firefox = firefox or Firefox()
-        self.phone = phone or Phone()
         self.glancer = Glancer()
 
     # ── the desktop as the call opened (agent/glance.py) ───────────────
@@ -467,7 +451,7 @@ class ShellTools:
               "How the long commands running now are getting on, as the "
               "user sees them on the call: each one's stage, how far it "
               "is (bytes, media time or items), its speed and the time "
-              "left. yt-dlp, ffmpeg, curl, rsync, phone transfers and "
+              "left. yt-dlp, ffmpeg, curl, rsync and "
               "skill scripts that report show up here. Use it when the "
               "user asks how far along something is, or to check on a "
               "background command without reading its output.", {})
@@ -475,100 +459,12 @@ class ShellTools:
             return _text(agent.jobs.describe()
                          or "Nothing is reporting progress right now.")
 
-        # The phone's transfers report into the same bars.
-        self.phone.progress = agent.jobs
         tools = [screenshot, notify, open_, launch_app, list_windows,
                  switch_workspace, focus_window, read_clipboard,
                  write_clipboard, progress]
         return (tools + self._spotify_tools(agent) + self._light_tools()
-                + self._browser_tools() + self._phone_tools())
+                + self._browser_tools())
 
-    # ── phone ───────────────────────────────────────────────────────────
-    def _phone_tools(self) -> list:
-        """Files on the user's phone, over Termux's SFTP — agent/phone.py."""
-        from claude_agent_sdk import tool
-        phone = self.phone
-
-        def paths(value) -> list[str]:
-            if isinstance(value, str):
-                value = [value]
-            return [str(v) for v in value or [] if str(v).strip()]
-
-        @tool("phone_files",
-              "List a folder on the user's phone, or search it. path: a "
-              "folder, relative to the phone's internal storage "
-              "(DCIM/Camera, Download, Pictures/Screenshots, Documents, "
-              "...) or absolute; empty for internal storage itself. pattern: match file names (*.pdf, *invoice*). depth: "
-              f"how many folders down to look (0 = just this one, max "
-              f"{DEPTH_MAX}). newest: newest first; 'the photo I just "
-              f"took' is DCIM/Camera, newest, limit 1. limit: entries "
-              f"(default {LIST_DEFAULT}, max {LIST_MAX}). Works while the "
-              "phone's uplink is on.",
-              {"type": "object", "properties": {
-                  "path": {"type": "string"},
-                  "pattern": {"type": "string"},
-                  "depth": {"type": "integer", "minimum": 0,
-                            "maximum": DEPTH_MAX},
-                  "newest": {"type": "boolean"},
-                  "limit": {"type": "integer", "minimum": 1,
-                            "maximum": LIST_MAX}},
-               "additionalProperties": False})
-        async def phone_files(args):
-            try:
-                return _text(await phone.list(
-                    str(args.get("path") or ""),
-                    pattern=str(args.get("pattern") or ""),
-                    depth=int(args.get("depth") or 0),
-                    newest=bool(args.get("newest")),
-                    limit=int(args.get("limit") or LIST_DEFAULT)))
-            except PhoneError as e:
-                return _error(str(e))
-
-        @tool("phone_pull",
-              "Copy files or folders from the phone to this computer. "
-              "paths: phone paths as phone_files gives them; wildcards "
-              "work (DCIM/Camera/IMG_20261118_*). to: a local folder "
-              "(default ~/Downloads, created if missing). An existing "
-              "name is never replaced unless overwrite is true: the copy "
-              "gets ' (1)' instead. Answers with the local paths.",
-              {"type": "object", "properties": {
-                  "paths": {"type": "array", "items": {"type": "string"},
-                            "minItems": 1},
-                  "to": {"type": "string"},
-                  "overwrite": {"type": "boolean"}},
-               "required": ["paths"], "additionalProperties": False})
-        async def phone_pull(args):
-            try:
-                return _text(await phone.pull(
-                    paths(args.get("paths")),
-                    str(args.get("to") or "~/Downloads"),
-                    overwrite=bool(args.get("overwrite"))))
-            except PhoneError as e:
-                return _error(str(e))
-
-        @tool("phone_push",
-              "Send files or folders from this computer to the phone. "
-              "paths: absolute local paths (or ~/...); wildcards work. "
-              "to: a folder on the phone (default its Download folder), "
-              "created if missing. A name already there is skipped unless "
-              "overwrite is true.",
-              {"type": "object", "properties": {
-                  "paths": {"type": "array", "items": {"type": "string"},
-                            "minItems": 1},
-                  "to": {"type": "string"},
-                  "overwrite": {"type": "boolean"}},
-               "required": ["paths"], "additionalProperties": False})
-        async def phone_push(args):
-            try:
-                return _text(await phone.push(
-                    paths(args.get("paths")), str(args.get("to") or ""),
-                    overwrite=bool(args.get("overwrite"))))
-            except PhoneError as e:
-                return _error(str(e))
-
-        return [phone_files, phone_pull, phone_push]
-
-    # ── firefox ─────────────────────────────────────────────────────────
     def _browser_tools(self) -> list:
         """The everyday Firefox, through the indigoshell bridge add-on —
         agent/firefox.py."""

@@ -23,7 +23,7 @@ listening its datagrams go nowhere and the job carries on.
 new-skill's SKILL.md gives them. yt-dlp, ffmpeg, curl and rsync, through
 the shims this module puts at the front of the agent's PATH: each runs
 the real program under `watch.py`, which reads the progress it prints
-(see there). And the shell's own helpers, such as the phone transfers.
+(see there). And the shell's own helpers.
 
 **Which step.** The socket tells the shell which process sent each
 datagram (SO_PASSCRED). Walking up that process's parents finds where it
