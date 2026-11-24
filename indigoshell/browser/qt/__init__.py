@@ -23,6 +23,9 @@ Modules, in the order a start runs through them:
     profile    the one persistent profile and its settings
     identity   the per-site User-Agent (sites.json)
     window     a top-level window: the tabs, the keys, the fallback line
+    watch      the agent driving a tab: the lock, the overlay, dialogs
+    effects    the lock shown on the page in the shell's look: its glitch,
+               a tint, its scanlines (a Qt Quick overlay, shaders/*.qsb)
     keys       which key does what
     tabs       one page and its view
     bookmarks  bookmarks.json, followed on disk

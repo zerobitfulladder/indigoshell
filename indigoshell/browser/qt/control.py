@@ -126,6 +126,7 @@ SCROLL_POLL_S = 0.06
 SCROLL_MAX_S = 1.5              # a smooth scroll's end, waited for at most
 FILL_MAX = 100                  # fields in one fill
 READY_POLL_S = 0.03             # the agent's new window, checked this often until shown
+HOLD_TRIES = 8                  # a running glitch (watch.py hold_s) waited out this often at most
 # Requests whose name is no Python method name.
 METHODS = {"return": "return_"}
 
@@ -918,12 +919,20 @@ class Requests:
                 "alt": chosen.get("alt") or "", "from": "page" if own is not None else "screen"}
 
     # ── acting ──────────────────────────────────────────────────────────
-    def acting(self, job: Job, msg: dict, *, dialog_ok: bool = False) -> tuple:
-        """The tab an acting request is for, made the agent's (watch.py)."""
+    async def acting(self, job: Job, msg: dict, *, dialog_ok: bool = False) -> tuple:
+        """The tab an acting request is for, made the agent's (watch.py),
+        once a glitch playing over it has ended (watch.py `hold_s`: the
+        lock's own, about a quarter of a second, or a repeat's)."""
         window, tab = self.showing(_int(msg, "tab"))
         if not dialog_ok:
             self.no_dialog(tab)
         self.watch.begin(job, window, tab, _voice(msg))
+        for _ in range(HOLD_TRIES):
+            hold = self.watch.hold_s(tab)
+            if hold <= 0:
+                break
+            await job.sleep(hold)
+            self.going_on(tab)          # the user may have taken it over meanwhile
         return window, tab
 
     def proxy(self, tab: Tab):
@@ -1079,7 +1088,7 @@ class Requests:
         return out
 
     async def click(self, job: Job, msg: dict) -> dict:
-        window, tab = self.acting(job, msg)
+        window, tab = await self.acting(job, msg)
         button = msg.get("button") or "left"
         if button == "right":
             raise RequestError("no right clicks: a context menu would take the user's pointer")
@@ -1095,7 +1104,7 @@ class Requests:
                                   what=spot.get("what") or "")
 
     async def hover(self, job: Job, msg: dict) -> dict:
-        window, tab = self.acting(job, msg)
+        window, tab = await self.acting(job, msg)
         spot = await self.spot(job, tab, msg, refuse=False, cover=True)
         self.going_on(tab)
         before = self.before(tab)
@@ -1149,7 +1158,7 @@ class Requests:
         text = msg.get("text")
         if not isinstance(text, str):
             raise RequestError("`text` must be a string")
-        window, tab = self.acting(job, msg)
+        window, tab = await self.acting(job, msg)
         before = self.before(tab)
         what = None
         if msg.get("ref") is not None and (msg.get("x") is None and msg.get("y") is None):
@@ -1181,7 +1190,7 @@ class Requests:
         count = _int(msg, "count", 1)
         if not 1 <= count <= protocol.KEY_COUNT_MAX:
             raise RequestError(f"`count` must be 1 to {protocol.KEY_COUNT_MAX}")
-        window, tab = self.acting(job, msg)
+        window, tab = await self.acting(job, msg)
         before = self.before(tab)
         tab.note_input()
         for i in range(count):
@@ -1200,13 +1209,13 @@ class Requests:
             raise RequestError("give `value` or `label`")
         by, wanted = ("value", value) if value is not None else ("label", label)
         values = _strings(wanted, by)
-        window, tab = self.acting(job, msg)
+        window, tab = await self.acting(job, msg)
         before = self.before(tab)
         chosen, _path = await self.ask(job, tab, ref, "choose", {"by": by, "values": values})
         return await self.settled(job, tab, before, value=chosen["value"], label=chosen["label"])
 
     async def scroll(self, job: Job, msg: dict) -> dict:
-        window, tab = self.acting(job, msg)
+        window, tab = await self.acting(job, msg)
         before = self.before(tab)
         extra = {}
         if msg.get("to") is not None:
@@ -1244,7 +1253,7 @@ class Requests:
                 isinstance(f, dict) and protocol.is_ref(f.get("ref")) and "value" in f
                 for f in fields):
             raise RequestError(f"`fields` must be a list of 1 to {FILL_MAX} {{ref, value}}")
-        window, tab = self.acting(job, msg)
+        window, tab = await self.acting(job, msg)
         before = self.before(tab)
         tab.note_input()
         done = []
@@ -1311,7 +1320,7 @@ class Requests:
             raise RequestError("`accept` must be true or false")
         if text is not None and not isinstance(text, str):
             raise RequestError("`text` must be a string")
-        window, tab = self.acting(job, msg, dialog_ok=True)
+        window, tab = await self.acting(job, msg, dialog_ok=True)
         if self.watch.dialog_of(tab.id) is None:
             raise RequestError(f"no dialog is open on tab {tab.id}")
         before = self.before(tab)
@@ -1415,7 +1424,7 @@ class Requests:
         if len(paths) > protocol.UPLOAD_PATHS_MAX:
             raise RequestError(f"at most {protocol.UPLOAD_PATHS_MAX} files at once")
         ref = _ref(msg)
-        window, tab = self.acting(job, msg)
+        window, tab = await self.acting(job, msg)
         aim, _path = await self.ask(job, tab, ref, "uploadTarget")
         if aim.get("folder"):
             raise RequestError(f"{aim['field']} takes a folder; upload gives a page files")
@@ -1460,7 +1469,7 @@ class Requests:
         if len(code) > protocol.JS_CODE_MAX:
             raise RequestError(f"`code` is longer than {protocol.JS_CODE_MAX} characters")
         timeout = _seconds(msg, "timeout", protocol.JS_TIMEOUT_S, protocol.JS_TIMEOUT_MAX_S)
-        window, tab = self.acting(job, msg)
+        window, tab = await self.acting(job, msg)
         before = self.before(tab)
         tab.note_input()                # what it makes the page do is the agent's doing
         await frames.guard_all(job, tab, script.GUARD, script.WORLD)

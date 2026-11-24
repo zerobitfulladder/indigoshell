@@ -25,6 +25,16 @@ agent's session there, or goes on with it (`begin`). While it drives:
   views, never in the page: a screenshot grabs the view alone, so it
   is in none (reader.grab). A click on the locked page anywhere but
   the mark flashes the mark (its colours swapped for FLASH_MS).
+- The page shows the lock in the shell's own look (effects.py, the
+  user's design): it starts with the shell's panel glitch over the page;
+  while it holds, Indigo's tint, the panels' raster and scan, and the
+  glitch again now and then; it ends with the glitch played out over the
+  live page (`_show` decides, for every way a lock starts or ends). An
+  action waits for a glitch in to end (`hold_s`), and no repeat starts
+  while one is in flight, so nothing it changes pops in from under the
+  glitch's still image. Made per window at its first lock; where it
+  cannot run (headless, no GPU scene graph, a file that fails to load)
+  the frame and the mark are all there is.
 - A dialog the page opens (alert, confirm, prompt, beforeunload) is
   held for the agent (`hold_dialog`): tabs.py's Page asks here before
   Qt's own dialog. Held means a nested event loop: Qt's page API is
@@ -71,7 +81,7 @@ from PySide6.QtWidgets import QLabel, QWidget
 
 from indigoshell.browser import protocol
 
-from . import act, keys
+from . import act, effects, keys
 from .window import BACKGROUND, FONT
 
 log = logging.getLogger(__name__)
@@ -125,6 +135,7 @@ class Session:
         self.voice = voice
         self.state = "driving"
         self.busy: set = set()          # the requests running on the tab
+        self.acting: set = set()        # ... the acting ones among them (begin)
         self.dialog: Held | None = None
         self.notes: list[str] = []      # what happened outside a request, said by the next
         self.proxies: list = []         # the views' focus proxies filtered
@@ -161,6 +172,7 @@ class Overlay(QObject):
         self.mark.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.mark.hide()
         self.color = protocol.voice_color(None)
+        self.fx = None                  # the window's page effects, kept over the page with it
         self.flashing = False
         self._flash = QTimer(self)
         self._flash.setSingleShot(True)
@@ -203,6 +215,9 @@ class Overlay(QObject):
         self.mark.adjustSize()
         self.mark.move(r.x() + r.width() - f - self.mark.width(),
                        r.y() + r.height() - f - self.mark.height())
+        if self.fx is not None and shiboken6.isValid(self.fx) and not self.fx.dead:
+            # Inside the frame, the mark kept out: both stay as they are.
+            self.fx.place(r.adjusted(f, f, -f, -f), self.mark.geometry())
 
     def on_mark(self, pos: QPoint) -> bool:
         return self.mark.isVisible() and self.mark.geometry().contains(pos)
@@ -230,6 +245,8 @@ class Watch(QObject):
         self.sessions: dict[int, Session] = {}
         self.inject = act.Injector()
         self.overlays: dict[int, Overlay] = {}      # window id -> its overlay
+        self.effects: dict[int, effects.PageFx] = {}    # window id -> its page effects
+        self._locked: dict[int, int | None] = {}    # window id -> the tab its effects lock
         self._release_after: set[int] = set()       # windows whose next mouse release is ours
         self._armed: dict[int, list[str]] = {}      # page id -> the next chooser's answer
         self._took: dict[int, dict] = {}            # page id -> what that chooser took
@@ -294,9 +311,33 @@ class Watch(QObject):
             log.info("agent: %s drives tab %d", protocol.voice_name(s.voice), tab.id)
         elif voice is not None and protocol.voice_id(voice) != s.voice:
             s.voice = protocol.voice_id(voice)
+        if job not in s.acting:
+            s.acting.add(job)
+            job.cleanups.append(partial(self._acted, tab.id, job))
         self.guard(tab)
         self.touch(job, tab.id)
         self._refresh(window)
+
+    def _acted(self, tab_id: int, job) -> None:
+        s = self.sessions.get(tab_id)
+        if s is not None:
+            s.acting.discard(job)
+
+    def acting_on(self, tab_id) -> bool:
+        """One of the agent's actions is in flight on the tab (effects.py
+        starts no repeat glitch meanwhile)."""
+        s = self.sessions.get(tab_id)
+        return s is not None and bool(s.acting)
+
+    def hold_s(self, tab) -> float:
+        """How long an acting request on `tab` waits before it acts: what
+        is left of a glitch in playing over it (effects.py), whose still
+        image would hide what the action changes until it ends."""
+        window, _ = self._where(tab.id)
+        fx = self.effects.get(window.id) if window is not None else None
+        if fx is None or not shiboken6.isValid(fx) or fx.dead or fx.tab_id != tab.id:
+            return 0.0
+        return fx.hold_s()
 
     def guard(self, tab) -> None:
         """The filter on the tab's view, as it is now: the view's focus
@@ -431,9 +472,15 @@ class Watch(QObject):
         for tab in window.tabs:
             self.forget(tab)
         self.overlays.pop(window.id, None)
+        fx = self.effects.pop(window.id, None)
+        if fx is not None and shiboken6.isValid(fx):
+            fx.close()
+        self._locked.pop(window.id, None)
         self._release_after.discard(window.id)
 
     def _show(self, window) -> None:
+        """The one place that decides what the window shows of the agent:
+        the overlay, and the page effects (`_effects`)."""
         tab = window.current_tab()
         s = self.sessions.get(tab.id) if tab is not None else None
         overlay = self.overlays.get(window.id)
@@ -443,10 +490,47 @@ class Watch(QObject):
         if s is None or s.state != "driving":
             if overlay is not None:
                 overlay.hide()
+            self._effects(window, tab, None)
             return
         if overlay is None:
             overlay = self.overlays[window.id] = Overlay(window)
-        overlay.show_for(s.voice)
+        overlay.fx = self._fx(window)
+        overlay.show_for(s.voice)       # places the effects too
+        self._effects(window, tab, tab)
+
+    def _fx(self, window) -> "effects.PageFx | None":
+        """The window's page effects, made at its first lock (None where
+        they cannot run: effects.make says why, once)."""
+        fx = self.effects.get(window.id)
+        if fx is not None and (not shiboken6.isValid(fx) or fx.dead):
+            self.effects.pop(window.id, None)
+            fx = None
+        if fx is None:
+            fx = effects.make(window, self.acting_on)
+            if fx is not None:
+                self.effects[window.id] = fx
+        return fx
+
+    def _effects(self, window, shown, locked) -> None:
+        """The page effects follow the lock on the tab the window shows:
+        a lock starts (a first action, a borrowed tab arriving locked):
+        the glitch in; it ends with its tab still shown (quiet, release,
+        return, the user's take-over): the glitch out; its tab no longer
+        shown (closed, switched away, moved off): gone at once. A paused
+        tab is no lock: nothing."""
+        was = self._locked.get(window.id)
+        now = locked.id if locked is not None else None
+        self._locked[window.id] = now
+        fx = self.effects.get(window.id)
+        if fx is None or not shiboken6.isValid(fx) or fx.dead:
+            return
+        if now is not None:
+            if now != was or fx.tab_id != now or fx.phase in ("off", "out"):
+                fx.lock(locked)
+        elif was is not None and shown is not None and shown.id == was:
+            fx.unlock()
+        elif fx.tab_id is not None and (shown is None or shown.id != fx.tab_id):
+            fx.vanish()
 
     # ── the user's input ────────────────────────────────────────────────
     def window_event(self, window, event) -> bool | None:
