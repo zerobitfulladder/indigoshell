@@ -66,8 +66,9 @@ The package, by job:
                      the two lines of the call
     ui/bars.py       progress bars: under a step, and on the status chip
     ui/call.py       `CallHost`: the call window and its keys
-    ui/status.py     `CallStatus` + `CallRouter`: the corner chip while a
-                     hung-up call works or rings
+    ui/status.py     `AgentChip` + `CallRouter` (+ the old `CallStatus`
+                     plate): the top bar's chip while a hung-up call
+                     works or rings
 
 The account: the agent signs in from `~/.config/indigoshell/claude`
 (CLAUDE_CONFIG_DIR, passed only to its own process), so it can be a
@@ -86,9 +87,9 @@ The call can talk to the agent on the hub instead, one mind with two
 voices: `RemoteAgent` (remote.py) reads like `Agent`, from the hub's
 events over a WebSocket with TLS, says each line in the voice the call
 has switched to (Ctrl+S), and lends the hub this machine's `hands`
-(hands.py). Put it where `AGENT` was — the call's and the corner chip's
-content, and the services, with a router that shows the chip only to
-ring or ask — and leave `AGENT` out:
+(hands.py). Put it where `AGENT` was (the call's content, and the
+services, with a router that keeps the corner plate shut; the top bar's
+chip shows its work and rings) and leave `AGENT` out:
 
     HUB = RemoteAgent(voice="indigo", endpoints=[...],
                       tls={"ca": ..., "cert": ..., "key": ...},
