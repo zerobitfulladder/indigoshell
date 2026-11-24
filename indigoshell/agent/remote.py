@@ -46,7 +46,11 @@ Ctrl+D.
 
 **Hands:** `hands` (hands.py) are the tools this machine lends the
 agent; the hub sends their calls down this line, and their results go
-back up it.
+back up it. What a hand asks the user first (root, in laptop.py) is
+asked here, in the call: the overlay's question, answered on this
+laptop without the hub, and rung like the hub's when the call is
+closed. It takes the screen over a question of the hub's, which comes
+back once it is answered.
 
 What only the desktop's own agent has stays empty here: the glance at
 the desktop and the progress bars of long commands (`jobs`).
@@ -240,6 +244,8 @@ class RemoteAgent:
         self.tls = dict(tls)
         self.server_name = server_name
         self.hands = hands
+        if hands is not None:
+            hands.asker = self._ask_here
         self._accent = accent
         # Where a relative link in a reply would be opened from.
         self.workspace = workspace or os.path.expanduser("~")
@@ -266,7 +272,8 @@ class RemoteAgent:
         self.message = ""
         self.thought = ""
         self.activity: deque[Activity] = deque(maxlen=ACTIVITY_KEEP)
-        self.approval: Approval | None = None
+        self._hub_ask: Approval | None = None     # the hub's question
+        self._local_ask: Approval | None = None   # this laptop's own
         self.hangup_line: str | None = None
         self.turn_started = 0.0
         self.queued: list[str] = []     # said while the line was down
@@ -348,6 +355,11 @@ class RemoteAgent:
     def _recall(self, what: str):
         return state.get(f"{self.state_key}.{what}") if self.state_key \
             else None
+
+    @property
+    def approval(self) -> Approval | None:
+        """The question on show: this laptop's own, else the hub's."""
+        return self._local_ask or self._hub_ask
 
     # ── service hooks ───────────────────────────────────────────────────
     def start(self) -> None:
@@ -443,9 +455,46 @@ class RemoteAgent:
             self._emit()
 
     def answer(self, decision: str) -> None:
-        if self._ask_id is not None:
+        local = self._local_ask
+        if local is not None:
+            if not local.future.done():
+                local.future.set_result(decision)
+        elif self._ask_id is not None:
             self._send({"type": "answer", "ask": self._ask_id,
                         "decision": decision})
+
+    async def _ask_here(self, title: str, detail: str,
+                        timeout: float) -> bool:
+        """A question from this machine's hands (hands.Call.ask), asked
+        in the call and answered here; rung if the call is closed. No
+        answer within `timeout` is a no. One at a time: a second waits
+        for the first to be answered."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while self._local_ask is not None:
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.2)
+        ask = Approval(tool=self.device or "laptop", title=title,
+                       detail=detail, future=loop.create_future())
+        self._local_ask = ask
+        log.info("%s: asking the user: %s", self._tag, title)
+        if not self.call_open:
+            self._ring("ask", line=title)
+        self._emit()
+        try:
+            decision = await asyncio.wait_for(
+                asyncio.shield(ask.future), max(0.0, deadline - loop.time()))
+        except asyncio.TimeoutError:
+            decision = "deny"
+        finally:
+            if self._local_ask is ask:
+                self._local_ask = None
+                if self.ringing == "ask" and self.approval is None:
+                    self.ringing = None
+                self._emit()
+        log.info("%s: the user's answer: %s", self._tag, decision)
+        return decision == "allow"
 
     def new_conversation(self) -> bool:
         if self.busy or not self.connected:
@@ -747,9 +796,9 @@ class RemoteAgent:
             self.busy = False
         self._local_turn = False
         self._mine.clear()
-        self.approval = None
+        self._hub_ask = None
         self._ask_id = None
-        if self.ringing == "ask":
+        if self.ringing == "ask" and self._local_ask is None:
             self.ringing = None
         self.phase = "error"
         why = self._why_down
@@ -803,7 +852,7 @@ class RemoteAgent:
         self._show_view(ev.get("view") or {})
         if self.busy:
             self.turn_started = time.monotonic()
-        self.approval = None
+        self._hub_ask = None
         self._ask_id = None
         if isinstance(ev.get("ask"), dict):
             self._on_event({"type": "ask", **ev["ask"]})
@@ -902,7 +951,7 @@ class RemoteAgent:
         elif kind == "ask":
             self._ask_id = str(ev.get("id") or "")
             device = ev.get("device")
-            self.approval = Approval(
+            self._hub_ask = Approval(
                 tool=str(device or ""),
                 title=str(ev.get("title") or "a question"),
                 detail=str(ev.get("detail") or ""),
@@ -915,9 +964,9 @@ class RemoteAgent:
                 self._ring("ask")
         elif kind == "answered":
             if self._ask_id is None or str(ev.get("id")) == self._ask_id:
-                self.approval = None
+                self._hub_ask = None
                 self._ask_id = None
-                if self.ringing == "ask":
+                if self.ringing == "ask" and self._local_ask is None:
                     self.ringing = None
         elif kind == "done":
             self.busy = False

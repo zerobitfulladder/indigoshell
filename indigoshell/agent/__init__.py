@@ -39,6 +39,9 @@ The package, by job:
                      (lilac, on a Raspberry Pi), read like `Agent`
     hands.py         `Hands`: the tools this machine lends the hub's
                      agent, and the calls to them
+    laptop.py        the desktop as those tools: open, screenshot,
+                     windows, apps, the clipboard, Spotify, a shell
+                     (root asks first, in the call) and files
     firefox.py       `Firefox`: the shell's end of the INDIGO bridge
                      add-on (extension/) and its native host
                      (browser_host.py) — the everyday Firefox, no port

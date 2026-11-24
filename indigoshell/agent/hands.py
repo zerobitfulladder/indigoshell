@@ -10,20 +10,27 @@ the connection a `call` and waits for the `result`. lilac's PROTOCOL.md
 task and answers within the call's `timeout`; one the hub gives up on
 (`cancel`), or that is still running when the line goes down, is
 dropped without an answer. A tool is a `Hand`: its name, what it does
-(the agent reads that to decide when to use it), the JSON Schema of its
-arguments, and the coroutine that runs it, which returns the result's
-content blocks or raises `HandError` with a message for the agent.
+(the agent reads that to decide when to use it, after the hub's "On the
+user's laptop: "), the JSON Schema of its arguments, and the coroutine
+that runs it. That gets the `Call` (its arguments, the time left) and
+returns the result's content blocks, or raises `HandError` with a
+message for the agent.
 
-For now the laptop lends one tool, `about`. The desktop's own tools
-(tools.py) are meant to come here as more `Hand`s; what needs the user's
-OK before it runs is then this machine's to decide, and to ask on its
-own screen ("the user declined" is the answer when they say no).
+What needs the user's OK is this machine's to decide, asked on its own
+screen: `Call.ask` puts the question in the call (remote.py's local
+questions, the overlay's Allow / Deny), rings it if it is closed, and
+counts no answer before the hub's deadline as a no. "the user declined"
+is the answer then.
+
+`laptop_hands()` is what the laptop lends: `about` here, and the desktop
+in laptop.py.
 """
 
 import asyncio
 import glob
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Iterable
 
@@ -36,8 +43,40 @@ DEFAULT_TIMEOUT_S = 30.0
 TIMEOUT_MARGIN_S = 0.5
 
 
+DECLINED = "the user declined"
+
+
 class HandError(Exception):
     """A tool that could not do its job: the message goes to the agent."""
+
+
+# Asks the user on this machine's screen: (title, detail, seconds to
+# wait) → whether they allowed it.
+Asker = Callable[[str, str, float], Awaitable[bool]]
+
+
+@dataclass
+class Call:
+    """One use of a hand by the agent, as the hand sees it."""
+
+    id: str
+    tool: str
+    args: dict
+    timeout: float                  # what the hub gives the whole call
+    asker: Asker | None = None
+    started: float = field(default_factory=time.monotonic)
+
+    def left(self) -> float:
+        """Seconds left to answer in, before the hub gives up."""
+        return (self.timeout - TIMEOUT_MARGIN_S
+                - (time.monotonic() - self.started))
+
+    async def ask(self, title: str, detail: str) -> bool:
+        """The user's OK, asked on this machine's screen; no screen, or
+        no answer in the time left, is a no."""
+        if self.asker is None:
+            return False
+        return await self.asker(title, detail, max(0.0, self.left() - 1.0))
 
 
 def text_block(value: str) -> dict:
@@ -54,7 +93,7 @@ class Hand:
 
     name: str                   # lowercase letters, digits and _
     description: str
-    run: Callable[[dict], Awaitable[list[dict]]]
+    run: Callable[[Call], Awaitable[list[dict]]]
     input: dict = field(default_factory=no_input)
 
     def lent(self) -> dict:
@@ -69,6 +108,9 @@ class Hands:
     def __init__(self, hands: Iterable[Hand] = ()) -> None:
         self._hands = {h.name: h for h in hands}
         self._calls: dict[str, asyncio.Task] = {}
+        # Who asks the user, set by the call that shows this machine's
+        # screen (remote.py); none, and whatever asks is declined.
+        self.asker: Asker | None = None
 
     def lent(self) -> list[dict]:
         return [h.lent() for h in self._hands.values()]
@@ -91,8 +133,8 @@ class Hands:
                         call_id)
             return
         task = asyncio.get_running_loop().create_task(self._run(
-            call_id, tool, args if isinstance(args, dict) else {}, timeout,
-            reply))
+            Call(call_id, tool, args if isinstance(args, dict) else {},
+                 timeout, self.asker), reply))
         self._calls[call_id] = task
         task.add_done_callback(lambda _t: self._calls.pop(call_id, None))
 
@@ -109,8 +151,9 @@ class Hands:
             task.cancel()
         self._calls.clear()
 
-    async def _run(self, call_id: str, tool: str, args: dict, timeout: float,
-                   reply: Callable[[dict], object]) -> None:
+    async def _run(self, call: Call, reply: Callable[[dict], object]) -> None:
+        call_id, tool, timeout = call.id, call.tool, call.timeout
+
         def answer(ok: bool, content: list[dict] | None = None,
                    error: str | None = None) -> None:
             reply({"type": "result", "call": call_id, "ok": ok,
@@ -123,7 +166,7 @@ class Hands:
         log.info("call %s: %s", call_id, tool)
         try:
             content = await asyncio.wait_for(
-                hand.run(args), max(0.1, timeout - TIMEOUT_MARGIN_S))
+                hand.run(call), max(0.1, timeout - TIMEOUT_MARGIN_S))
         except asyncio.TimeoutError:
             answer(False, error=f"{tool} took longer than {timeout:g} s")
         except HandError as e:
@@ -241,7 +284,7 @@ def about_text() -> str:
                                        *_power()) if line)
 
 
-async def _about(_args: dict) -> list[dict]:
+async def _about(_call: Call) -> list[dict]:
     return [text_block(about_text())]
 
 
@@ -252,5 +295,7 @@ ABOUT = Hand(
 
 
 def laptop_hands() -> Hands:
-    """What the laptop lends the hub's agent."""
-    return Hands([ABOUT])
+    """What the laptop lends the hub's agent: `about`, and the desktop
+    (laptop.py)."""
+    from .laptop import desktop_hands
+    return Hands([ABOUT, *desktop_hands()])
