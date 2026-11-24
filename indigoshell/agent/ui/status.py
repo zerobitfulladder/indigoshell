@@ -2,14 +2,14 @@
 
 `AgentChip`, the top bar's right end (config_default's `top_bar`),
 always there once an agent is configured: a small beveled chip with the
-name of a voice and, right of it, a light in that voice's colour. While
-the agent works (the call open or not) the name is the voice on the
-task and the light blinks; when it calls back (a turn ended, or a
-question for you, with the call closed) the whole chip blinks, until the
-call is answered or the ring is seen elsewhere; the rest of the time the
-chip is dimmed, with the voice that worked last, and its light out. With
-no agent configured it is not there and takes no room. A click answers
-(opens the call); a right-click silences a ring.
+name of a voice, in that voice's colour. While the agent works (the call
+open or not) it is the voice on the task, and the whole chip breathes,
+slowly; when it calls back (a turn ended, or a question for you, with
+the call closed) the whole chip blinks fast, until the call is answered
+or the ring is seen elsewhere; the rest of the time it rests dimmed,
+with the voice that worked last. With no agent configured it is not
+there and takes no room. A click answers (opens the call); a right-click
+silences a ring.
 
 `CallRouter`, the service that watches the agent and decides what shows:
 the chip's state, always; `call-status` only while an agent of this
@@ -323,20 +323,25 @@ class CallRouter:
 
 # ── the top bar's chip ──────────────────────────────────────────────────
 # The call's small square chip (chip.py), a bar's height tall and as long
-# as the name: the same plate in the voice's colour (style.plate_fill:
-# the plates' violet-black leaning to it, then a tint of it on top), the
-# hologram's raster across it (holo: a faint line every 3px, the call
-# plates' stripes, on the window's own pixel grid), its 2px frame and the
-# faint hairline inside it (style.inner_path at CHIP_INSET). The corners
-# are cut at the top-right and bottom-left, the call's bevel scaled to
-# the height. The name is set like the INDIGO tag at the bar's other end,
-# in bold capitals, a step smaller to sit in the chip. The light is the
-# network widget's blinking dot made round: the full colour and its
-# small glow while lit, a quarter of it between. Idle, the whole chip is
-# drawn at IDLE_DIM, its light a quarter of that: there, but quiet.
+# as a voice's name: the same plate in the voice's colour
+# (style.plate_fill: the plates' violet-black leaning to it, then a tint
+# of it on top), the hologram's raster across it (holo: a faint line
+# every 3px, the call plates' stripes, on the window's own pixel grid),
+# its 2px frame and the faint hairline inside it (style.inner_path at
+# CHIP_INSET). The corners are cut at the top-right and bottom-left, the
+# call's bevel scaled to the height. The name is set like the INDIGO tag
+# at the bar's other end, in bold capitals, a step smaller to sit in the
+# chip, centred. Every state is the whole chip at one strength: resting
+# at IDLE_DIM, breathing while it works, blinking while it calls back.
 CHIP_H = 28                 # in the 42px bar: 7px clear above and below
-CHIP_PAD_X = 11             # the name and the light clear of the hairline
+CHIP_PAD_X = 11             # the name clear of the hairline
 CHIP_BEVEL = round(BEVEL * CHIP_H / CHIP_SM)    # the call chip's cut: 8
+# One width for every voice: room for the longest of them, so the bar
+# doesn't shift when the voice changes, plus CHIP_ROOM, where a light
+# once sat beside the name (its 7px and the 8px before it), so the name
+# has air either side.
+CHIP_FIT = "INDIGO"
+CHIP_ROOM = 15
 # The voice's colour over the plate, as chip.Chip paints it, and the
 # extra it gets in a ring's flash.
 CHIP_TINT = 0.16
@@ -344,27 +349,27 @@ CHIP_FLASH_TINT = 0.14
 CHIP_NAME_SIZE = text.pt(11)    # 14.7px; the INDIGO tag is 13pt
 CHIP_TRACKING = 1.0
 CHIP_NAME_MAX_W = 160       # a longer voice name ends in an ellipsis
-LIGHT_D = 7
-LIGHT_GAP = 8               # name ↔ light
-LIGHT_DIM = 0.25            # the network dots' dim step...
-LIGHT_GLOW = 2.0            # ...and their glow (blur sigma) while lit
-LIGHT_GLOW_ALPHA = 0.55
-# Blinks, as (ms, lit) steps like theme.WORKSPACE_URGENT_RING, looped
-# from the moment the state began. Frames come only on their steps
-# (`_blink_fps`): 2 a second for the light, 20 for the ring.
-WORK_BLINK = ((500, True), (500, False))    # the light while it works: 1 Hz
-CALL_BLINK = theme.WORKSPACE_URGENT_RING    # the whole chip calling back:
-#                                             the bar's ring, 150/100/150/700
-CALL_DIM = 0.2              # the whole chip between the ring's flashes
 IDLE_DIM = 0.4              # the whole chip while the agent is idle
+# Working: a slow breath, a cosine from full down to PULSE_LOW and back
+# every PULSE_S, starting full. 24 frames a second read as smooth at 1x
+# (each frame moves the strength under 3.5%), and no more are asked.
+PULSE_S = 2.0
+PULSE_LOW = 0.5
+PULSE_FPS = 24
+# Calling back: a fast, even blink, as (ms, lit) steps like
+# theme.WORKSPACE_URGENT_RING, looped from the ring's start: 4 a second,
+# the whole chip flashing to full and dropping to CALL_DIM. Frames come
+# only on its steps (`_blink_fps`): 8 a second.
+CALL_BLINK = ((125, True), (125, False))
+CALL_DIM = 0.2
 
 
 def _blink_fps(pattern) -> int:
     """Frames a second that land on every step of `pattern`: 1000 over
-    the steps' greatest common divisor (50ms steps: 20). 0 with none."""
+    the greatest common divisor of 1000 and its steps (125ms steps: 8;
+    50ms: 20). 0 with none."""
     steps = [int(ms) for ms, _lit in pattern or ()]
-    gcd = math.gcd(*steps) if steps else 0
-    return max(1, round(1000 / gcd)) if gcd else 0
+    return 1000 // math.gcd(1000, *steps) if steps else 0
 
 
 def _blink_lit(pattern, elapsed: float) -> bool:
@@ -383,6 +388,13 @@ def _blink_lit(pattern, elapsed: float) -> bool:
     return True
 
 
+def _pulse(elapsed: float) -> float:
+    """The working breath `elapsed` seconds in: full at 0, PULSE_LOW at
+    half a period, eased all the way (a cosine)."""
+    wave = 0.5 + 0.5 * math.cos(2 * math.pi * elapsed / PULSE_S)
+    return PULSE_LOW + (1.0 - PULSE_LOW) * wave
+
+
 def _configured_routers() -> list[CallRouter]:
     """The running daemon's `CallRouter`s, from its SERVICES: built
     before any window opens (started only after the bars are up, which
@@ -396,11 +408,11 @@ def _configured_routers() -> list[CallRouter]:
 
 
 class AgentChip(Widget):
-    """The top bar's agent chip: a voice's name and a light on a
-    beveled plate. Working: the voice on the task, its light blinking.
-    Calling back: the whole chip blinking. Idle: the chip dimmed, with
-    the voice of the turn on show (the one that worked last; before any
-    turn, the voice the agent speaks with now), its light all but out.
+    """The top bar's agent chip: a voice's name on a beveled plate.
+    Working: the voice on the task, the whole chip breathing. Calling
+    back: the whole chip blinking fast. Idle: the chip dimmed, with the
+    voice of the turn on show (the one that worked last; before any
+    turn, the voice the agent speaks with now).
 
     It follows `routers` (`CallRouter`s), which decide what it shows.
     None, the default, finds them among the running daemon's SERVICES
@@ -409,9 +421,8 @@ class AgentChip(Widget):
     With none (no agent configured) it is not there: `collapsed`, so it
     takes no width and no gap in the bar's row, and costs nothing.
 
-    Its light is a widget of its own, so the working blink repaints the
-    dot and not the chip; the chip itself asks for frames only while it
-    calls back. Idle, nothing asks for any.
+    It asks for frames only while it moves: PULSE_FPS while it works,
+    the blink's 8 a second while it calls back, none while idle.
     """
 
     def __init__(self, routers=None) -> None:
@@ -419,15 +430,12 @@ class AgentChip(Widget):
         self._given = list(routers) if routers is not None else None
         self.routers: list[CallRouter] = []
         self._unfollow: list[Callable[[], None]] = []
-        self.light = _Light(self)
         # On show: (router, "idle" | "working" | "calling", name,
         # colour); None with no router.
         self.shown: tuple | None = None
-        self.since = 0.0        # when the state on show began: its blink's start
-        self.on = True          # lit, or between two of the ring's flashes
-
-    def children(self):
-        return (self.light,)
+        self.since = 0.0        # when the state on show began: its motion's start
+        self.on = True          # lit, or between two of the blink's flashes
+        self.breath = 1.0       # the working breath's strength now
 
     @property
     def state(self) -> str | None:
@@ -470,9 +478,10 @@ class AgentChip(Widget):
         if shown == old:
             return              # the agent's stream, nothing on show changed
         if old is None or shown is None or old[:2] != shown[:2]:
-            # A new state starts its blink lit.
+            # A new state starts its motion at full strength.
             self.since = time.monotonic()
-            self.on = self.light.lit = True
+            self.on = True
+            self.breath = 1.0
         self.shown = shown
         # Raising a rate wakes the window's clock through this damage.
         self.invalidate(layout=old is None or shown is None
@@ -481,17 +490,23 @@ class AgentChip(Widget):
     # ── motion ──────────────────────────────────────────────────────────
     @property
     def animation_fps(self) -> int:
+        if self.state == "working":
+            return PULSE_FPS
         return _blink_fps(CALL_BLINK) if self.state == "calling" else 0
 
     def animate(self, t: float) -> None:
+        elapsed = time.monotonic() - self.since
         self.on = (self.state != "calling"
-                   or _blink_lit(CALL_BLINK, time.monotonic() - self.since))
+                   or _blink_lit(CALL_BLINK, elapsed))
+        self.breath = _pulse(elapsed) if self.state == "working" else 1.0
 
     def level(self) -> float:
-        """The whole chip's opacity: dimmed while idle, and between the
-        ring's flashes."""
+        """The whole chip's strength: dimmed while idle, breathing while
+        it works, full or CALL_DIM while it blinks."""
         if self.state == "idle":
             return IDLE_DIM
+        if self.state == "working":
+            return self.breath
         return CALL_DIM if self.state == "calling" and not self.on else 1.0
 
     # ── layout / paint ──────────────────────────────────────────────────
@@ -504,18 +519,12 @@ class AgentChip(Widget):
     def measure(self, avail: Size) -> Size:
         if self.shown is None:
             return Size(0.0, 0.0)
-        name_w = text.measure(self._name(), CHIP_NAME_SIZE, True,
-                              CHIP_TRACKING)
-        # Whole pixels: the light repaints on its own, and an
-        # antialiased shape on a fractional row leaks past its clip.
-        return Size(math.ceil(CHIP_PAD_X + name_w + LIGHT_GAP + LIGHT_D
-                              + CHIP_PAD_X), CHIP_H)
-
-    def arrange(self, rect: skia.Rect) -> None:
-        self.rect = rect
-        x = rect.right() - CHIP_PAD_X - LIGHT_D
-        self.light.arrange(skia.Rect.MakeXYWH(
-            x, rect.centerY() - LIGHT_D / 2, LIGHT_D, LIGHT_D))
+        name_w = max(text.measure(n, CHIP_NAME_SIZE, True, CHIP_TRACKING)
+                     for n in (self._name(), CHIP_FIT))
+        # Whole pixels: the chip repaints on its own every frame it
+        # moves, and an antialiased shape on a fractional row leaks past
+        # its clip on the GPU.
+        return Size(math.ceil(2 * CHIP_PAD_X + name_w + CHIP_ROOM), CHIP_H)
 
     def path(self) -> skia.Path:
         r = self.rect
@@ -553,12 +562,13 @@ class AgentChip(Widget):
         hairline.setStrokeWidth(1.0)
         hairline.setColor(theme.color(colour, CHIP_INSET_ALPHA * k))
         canvas.drawPath(inner_path(r, CHIP_INSET, CHIP_BEVEL), hairline)
-        # The capitals' middle on the chip's middle, level with the light.
+        # Centred, the capitals' middle on the chip's middle.
+        name = self._name()
+        w = text.measure(name, CHIP_NAME_SIZE, True, CHIP_TRACKING)
         cap = text.font(CHIP_NAME_SIZE, True).getMetrics().fCapHeight
-        text.draw(canvas, self._name(), r.left() + CHIP_PAD_X,
+        text.draw(canvas, name, round(r.centerX() - w / 2),
                   round(r.centerY() + cap / 2), CHIP_NAME_SIZE,
                   theme.color(colour, k), bold=True, tracking=CHIP_TRACKING)
-        self.light.paint(canvas)
 
     # ── input ───────────────────────────────────────────────────────────
     @property
@@ -587,52 +597,3 @@ class AgentChip(Widget):
             agent._emit()
             return True
         return False
-
-
-class _Light(Widget):
-    """The chip's light, a widget of its own so that each blink while
-    the agent works damages only the dot and its glow."""
-
-    def __init__(self, chip: AgentChip) -> None:
-        super().__init__()
-        self.chip = chip
-        self.lit = True
-
-    @property
-    def animation_fps(self) -> int:
-        return _blink_fps(WORK_BLINK) if self.chip.state == "working" else 0
-
-    def animate(self, t: float) -> None:
-        chip = self.chip
-        self.lit = (chip.state != "working"
-                    or _blink_lit(WORK_BLINK, time.monotonic() - chip.since))
-
-    def measure(self, avail: Size) -> Size:
-        return Size(LIGHT_D, LIGHT_D)
-
-    def paint_bounds(self) -> skia.Rect:
-        # The glow, and room past it: a shape whose antialiased fringe
-        # ends at the clip leaks a pixel past it on the GPU.
-        pad = 3 * LIGHT_GLOW + 2
-        return self.rect.makeOutset(pad, pad)
-
-    def paint(self, canvas: skia.Canvas) -> None:
-        chip = self.chip
-        if chip.shown is None:
-            return
-        colour = chip.shown[3]
-        # Steady while calling (the chip blinks), out while idle.
-        lit = (chip.state == "calling"
-               or (chip.state == "working" and self.lit))
-        k = chip.level()
-        r = self.rect
-        cx, cy, radius = r.centerX(), r.centerY(), LIGHT_D / 2
-        if lit and k >= 1.0:
-            glow = skia.Paint(AntiAlias=True)
-            glow.setColor(theme.color(colour, LIGHT_GLOW_ALPHA))
-            glow.setMaskFilter(skia.MaskFilter.MakeBlur(
-                skia.kNormal_BlurStyle, LIGHT_GLOW))
-            canvas.drawCircle(cx, cy, radius, glow)
-        dot = skia.Paint(AntiAlias=True)
-        dot.setColor(theme.color(colour, (1.0 if lit else LIGHT_DIM) * k))
-        canvas.drawCircle(cx, cy, radius, dot)

@@ -7,9 +7,9 @@
 1. The state, from a stand-in agent through a real `CallRouter` on a
    stub daemon (no X): idle (dimmed, the voice of the turn on show, no
    frames) before any turn; working (name, the voice's colour, the
-   light's blink) while a turn runs, the call open or not; idle again
+   breath's frames) while a turn runs, the call open or not; idle again
    when the turn ends without a ring, keeping the voice that worked; the
-   whole chip blinking on a ring or a question, with no `call-status`
+   whole chip blinking fast on a ring or a question, with no `call-status`
    opened for either; the ring ended by the hub's `seen`, by answering
    (the call opened) or by a right-click; a turn in the other voice
    changing the name and colour without restarting the blink;
@@ -17,22 +17,24 @@
    working under it) but closing it for a ring; a calling router before
    a working one, a working one before an idle one; the router stopped;
    a left click opening the call; no router at all: nothing.
-2. The blinks as numbers: the light at 1 Hz on a 2 fps grid, the ring
-   pattern on a 20 fps grid, read the same by a frame a little early or
-   late.
+2. The motion as numbers: the call-back blink even at 4 a second on an
+   8 fps grid, read the same by a frame a little early or late; the
+   working breath full at its start, PULSE_LOW half a period on, eased,
+   each of its frames a small step.
 3. Layout: with no router the chip takes no width and no gap in the
    bar's row (`collapsed`); with one, idle or not, it is at the row's
-   right end with the bar's gap before it; whole pixels; painted off
-   screen (raster): the colour, the light's blink, the ring's flash and
-   dark, idle dimmed with its light out, the call chip's stripes;
+   right end with the bar's gap before it; whole pixels; one width for
+   both voices, as wide as the chip with its old light (INDIGO's);
+   painted off screen (raster): the colour, the breath's top and bottom,
+   the blink's flash and dark, idle dimmed, the call chip's stripes;
    the user's config.py (by its path, scratch XDG, no bytecode) has the
    chip at its top bar's right end and finds its router in its SERVICES.
 4. The real `Window` and frame clock, on an X window off the screen
    (override-redirect, no grab, never mapped where it shows), opened
-   twice: no frame at all over an idle second while idle; the light's
-   2 frames a second while working, and nothing else of the chip; the
-   ring's 20 while calling; none again once idle; and nothing left on
-   screen by any of it (`_live.stale`).
+   twice: no frame at all over an idle second while idle; the breath's
+   24 frames a second while working; the blink's 8 while calling; none
+   again once idle; and nothing left on screen by any of it
+   (`_live.stale`).
 
 Prints ok/FAIL lines and exits 1 if anything failed. Never touches the
 running shell: no socket, lock, state or window of its.
@@ -41,6 +43,7 @@ running shell: no socket, lock, state or window of its.
 import argparse
 import asyncio
 import json
+import math
 import os
 import subprocess
 import sys
@@ -52,11 +55,13 @@ import _live                                    # sets XDG_STATE_HOME first
 
 import skia
 
-from indigoshell import theme
+from indigoshell import text, theme
 from indigoshell.agent.ui import status
-from indigoshell.agent.ui.status import (CALL_BLINK, CHIP_H, WORK_BLINK,
-                                         AgentChip, CallRouter, _blink_fps,
-                                         _blink_lit)
+from indigoshell.agent.ui.status import (CALL_BLINK, CHIP_FIT, CHIP_H,
+                                         CHIP_NAME_SIZE, CHIP_PAD_X,
+                                         CHIP_TRACKING, PULSE_FPS, PULSE_LOW,
+                                         PULSE_S, AgentChip, CallRouter,
+                                         _blink_fps, _blink_lit, _pulse)
 from indigoshell.core import daemon as daemon_mod
 from indigoshell.widgets.base import Size
 from indigoshell.widgets.label import Label
@@ -162,27 +167,26 @@ def test_state() -> None:
     check("before any turn: idle, dimmed, the voice the agent speaks with, no frames",
           look(chip) == ("idle", "INDIGO", INDIGO) and not chip.collapsed
           and chip.level() == status.IDLE_DIM and chip.measure(Size(500, 42)).width > 0
-          and chip.animation_fps == 0 and chip.light.animation_fps == 0, f"{look(chip)}")
+          and chip.animation_fps == 0, f"{look(chip)}")
 
     agent.set(busy=True)
     check("a turn runs: working, the voice's name and colour, full strength",
           look(chip) == ("working", "INDIGO", INDIGO) and chip.level() == 1.0
           and win.damaged and win.damaged[-1] == (chip, False), f"{look(chip)}")
-    check("... the light asks 2 frames a second, the chip none",
-          chip.light.animation_fps == 2 and chip.animation_fps == 0,
-          f"{chip.light.animation_fps}/{chip.animation_fps}")
+    check("... breathing: PULSE_FPS (24) frames a second",
+          chip.animation_fps == PULSE_FPS == 24, f"{chip.animation_fps}")
     since = chip.since
     n = len(win.damaged)
     agent.set()                         # the agent's stream: nothing on show changes
     check("an agent event that changes nothing on show: no repaint", len(win.damaged) == n)
 
     agent.set(name="LILAC", accent=LILAC)
-    check("a turn in the other voice: its name and colour, the blink carrying on",
+    check("a turn in the other voice: its name and colour, the breath carrying on",
           look(chip) == ("working", "LILAC", LILAC) and chip.since == since)
 
     agent.set(call_open=True)
     check("the call opens mid-turn: still working (always on the bar)",
-          chip.state == "working" and chip.light.animation_fps == 2)
+          chip.state == "working" and chip.animation_fps == PULSE_FPS)
     d.instances["call"] = object()
     agent.set(call_open=False)
     check("the call window open: still working", chip.state == "working")
@@ -191,13 +195,12 @@ def test_state() -> None:
 
     agent.set(busy=False)
     check("the turn ends without a ring: idle, dimmed, the voice that worked, no frames",
-          look(chip) == ("idle", "LILAC", LILAC) and chip.animation_fps == 0
-          and chip.light.animation_fps == 0)
+          look(chip) == ("idle", "LILAC", LILAC) and chip.animation_fps == 0)
 
     agent.set(ringing="done", name="INDIGO", accent=INDIGO)
-    check("a ring: calling, the whole chip blinking at 20 fps, the light steady",
-          look(chip) == ("calling", "INDIGO", INDIGO) and chip.animation_fps == 20
-          and chip.light.animation_fps == 0)
+    check("a ring: calling, the whole chip blinking fast, 8 frames a second",
+          look(chip) == ("calling", "INDIGO", INDIGO) and chip.animation_fps == 8,
+          f"{chip.animation_fps}")
     check("... and no status window opened for it", d.opened == [] and "call-status"
           not in d.instances, f"{d.opened}")
     agent.set(ringing=None)
@@ -292,23 +295,28 @@ def test_state() -> None:
 # ── 2. blinks ───────────────────────────────────────────────────────────
 
 def test_blinks() -> None:
-    section("2. the blinks")
-    check("frames a second: the light 2 (500ms steps), the ring 20 (50ms steps)",
-          _blink_fps(WORK_BLINK) == 2 and _blink_fps(CALL_BLINK) == 20,
-          f"{_blink_fps(WORK_BLINK)}, {_blink_fps(CALL_BLINK)}")
-    light = [_blink_lit(WORK_BLINK, i * 0.5) for i in range(6)]
-    check("the light: lit, dim, lit, ... a step every 0.5 s", light == [True, False] * 3,
-          f"{light}")
-    jitter = [_blink_lit(WORK_BLINK, i * 0.5 + d) for i in range(6) for d in (-0.2, 0.2)]
-    check("... a frame up to 200ms early or late reads its own step",
-          jitter == [v for v in [True, False] * 3 for _ in (0, 1)])
-    ring = "".join("#" if _blink_lit(CALL_BLINK, i / 20) else "." for i in range(44))
-    want = ("###" "..") + ("###") + ("." * 14)
-    check("the ring: 150 lit, 100 dark, 150 lit, 700 dark, looped (the bar's urgent "
-          "workspace pattern)", ring == want * 2, ring)
-    check("... a frame 20ms off reads its own step",
-          all(_blink_lit(CALL_BLINK, i / 20 + d) == _blink_lit(CALL_BLINK, i / 20)
-              for i in range(44) for d in (-0.02, 0.02)))
+    section("2. the motion")
+    check("frames a second: the call-back blink 8 (125ms steps); the bar's ring "
+          "pattern (50ms steps) would be 20",
+          _blink_fps(CALL_BLINK) == 8 and _blink_fps(theme.WORKSPACE_URGENT_RING) == 20,
+          f"{_blink_fps(CALL_BLINK)}")
+    blink = [_blink_lit(CALL_BLINK, i / 8) for i in range(8)]
+    check("the call-back blink: lit, dark, lit, ... even, 4 flashes a second",
+          blink == [True, False] * 4, f"{blink}")
+    check("... a frame 50ms off reads its own step",
+          all(_blink_lit(CALL_BLINK, i / 8 + d) == blink[i]
+              for i in range(8) for d in (-0.05, 0.05)))
+    steps = [_pulse(i / PULSE_FPS) for i in range(int(PULSE_S * PULSE_FPS) + 1)]
+    half = len(steps) // 2
+    check(f"the breath: full at the start, {PULSE_LOW} half a period on ({PULSE_S / 2} s), "
+          f"full again at {PULSE_S} s",
+          abs(steps[0] - 1) < 1e-9 and abs(_pulse(PULSE_S / 2) - PULSE_LOW) < 1e-9
+          and abs(steps[-1] - 1) < 1e-9)
+    big = max(abs(b - a) for a, b in zip(steps, steps[1:]))
+    check("... eased (down all the first half, up all the second), each frame a step under "
+          "3.5% of full strength", all(b < a for a, b in zip(steps[:half], steps[1:half]))
+          and all(b > a for a, b in zip(steps[half + 1:], steps[half + 2:])) and big < 0.035,
+          f"largest step {big:.3f}")
 
 
 # ── 3. layout and paint ─────────────────────────────────────────────────
@@ -372,8 +380,14 @@ def test_layout(scratch: str) -> None:
           abs(r.left() - other.rect.right() - theme.BAR_SPACING) < 1e-6
           and r.width() == int(r.width()) and r.height() == CHIP_H
           and r.top() == (H - CHIP_H) / 2 == int(r.top()), f"{r}")
-    check("... the light inside its right end, its glow within the chip",
-          chip.light.rect.right() < r.right() and r.contains(chip.light.paint_bounds()))
+    fit = text.measure(CHIP_FIT, CHIP_NAME_SIZE, True, CHIP_TRACKING)
+    old = math.ceil(CHIP_PAD_X + fit + 8 + 7 + CHIP_PAD_X)     # with its 7px light
+    wide = r.width()
+    agent.set(name="LILAC", accent=LILAC)
+    lilac = chip.measure(Size(W, H)).width
+    agent.set(name="INDIGO", accent=INDIGO)
+    check("one width for both voices, as wide as the chip was with its light",
+          wide == lilac == old, f"INDIGO {wide:.0f}, LILAC {lilac:.0f}, before {old}")
     check("hit by its beveled shape: the middle, not the cut top-right corner",
           chip.hit(r.centerX(), r.centerY()) is chip
           and chip.hit(r.right() - 1, r.top() + 1) is None)
@@ -393,26 +407,33 @@ def test_layout(scratch: str) -> None:
         b = (abs(box[..., ::-1] - rgb).max(-1) <= tol).sum()
         return int(max(a, b))
 
+    def ink(img):
+        """How far the chip's box is from the bar's black, summed."""
+        bg = [int(theme.BAR_BG[i:i + 2], 16) for i in (1, 3, 5)]
+        box = img[:, int(r.left()):int(r.right()), :3].astype(int)
+        return int(min(abs(box - bg).sum(), abs(box[..., ::-1] - bg).sum()))
+
     agent.set(ringing=None)
     chip.since = time.monotonic()
-    chip.light.animate(0)
+    chip.animate(0)
     lit = painted()
-    chip.since = time.monotonic() - 0.5
-    chip.light.animate(0)
-    dim = painted()
+    chip.since = time.monotonic() - PULSE_S / 2
+    chip.animate(0)
+    low = painted()
     agent.set(ringing="done")
     chip.since = time.monotonic()
     chip.animate(0)
     flash = painted()
-    chip.since = time.monotonic() - 0.2
+    chip.since = time.monotonic() - 0.125
     chip.animate(0)
     dark = painted()
-    on, off = colour_px(lit, INDIGO), colour_px(dim, INDIGO)
-    check("painted (raster): the voice's colour on the chip (frame, name, light), less of "
-          "it with the light dim, and almost none between the ring's flashes",
-          on > 100 and off < on and colour_px(flash, INDIGO) > 100
-          and colour_px(dark, INDIGO) < 10,
-          f"{on} / {off} px; flash {colour_px(flash, INDIGO)} / {colour_px(dark, INDIGO)}")
+    on = colour_px(lit, INDIGO)
+    check("painted (raster): the voice's full colour on the chip (frame, name) at the "
+          "breath's top, less ink at its bottom, a flash full and almost nothing between",
+          on > 100 and colour_px(low, INDIGO) < on and ink(low) < 0.75 * ink(lit)
+          and colour_px(flash, INDIGO) > 100 and colour_px(dark, INDIGO) < 10,
+          f"{on} px; ink {ink(lit)} top, {ink(low)} bottom; flash "
+          f"{colour_px(flash, INDIGO)} px, between {colour_px(dark, INDIGO)}")
     # Between the hairline and the name, above the bottom-left cut.
     plate = lit[int(r.top()) + 7:int(r.bottom()) - 11, int(r.left()) + 7:int(r.left()) + 10, :3]
     rows = plate.astype(int).sum(axis=(1, 2))
@@ -423,14 +444,9 @@ def test_layout(scratch: str) -> None:
     agent.set(busy=False)
     idle = painted()
 
-    def ink(img):
-        """How far the chip's box is from the bar's black, summed."""
-        bg = [int(theme.BAR_BG[i:i + 2], 16) for i in (1, 3, 5)]
-        box = img[:, int(r.left()):int(r.right()), :3].astype(int)
-        return int(min(abs(box - bg).sum(), abs(box[..., ::-1] - bg).sum()))
-    check("idle: the same chip there, dimmed (well under half the ink of working)",
-          chip.state == "idle" and 0 < ink(idle) < 0.5 * ink(dim),
-          f"ink {ink(idle)} idle, {ink(dim)} working")
+    check("idle: the same chip there, dimmed below the breath's bottom",
+          chip.state == "idle" and 0 < ink(idle) < ink(low) < ink(lit),
+          f"ink {ink(idle)} idle, {ink(low)} breath's bottom")
     chip.detach()
 
     from indigoshell.core.paths import config_dir
@@ -468,7 +484,6 @@ async def test_clock() -> None:
     router.start()
     chip = AgentChip()
     _live.count_frames(chip)
-    _live.count_frames(chip.light)
     spec = WindowSpec(
         name="agent-chip", layer=Layer.OVERLAY, anchor=Anchor.TOP | Anchor.RIGHT,
         size=(560, theme.TOP_BAR_HEIGHT), override_redirect=True, focusable=False,
@@ -486,32 +501,32 @@ async def test_clock() -> None:
 
     win._run_frame = counted
 
-    async def measure(seconds: float) -> tuple[int, int, int]:
-        chip.frames = chip.light.frames = frames["n"] = 0
+    async def measure(seconds: float) -> tuple[int, int]:
+        chip.frames = frames["n"] = 0
         await asyncio.sleep(seconds)
-        return frames["n"], chip.frames, chip.light.frames
+        return frames["n"], chip.frames
 
     for label in ("first open", "opened again"):
         await asyncio.sleep(0.4)
         idle = await measure(1.0)
-        check(f"{label}, idle: no frame at all over an idle second", idle == (0, 0, 0),
-              f"window/chip/light {idle}")
+        check(f"{label}, idle: no frame at all over an idle second", idle == (0, 0),
+              f"window/chip {idle}")
         agent.set(busy=True)
         await asyncio.sleep(0.1)
         work = await measure(2.0)
-        check(f"{label}, working: the light's 2 frames a second, the chip none of its own",
-              3 <= work[2] <= 5 and work[1] == 0 and work[0] <= 6,
-              f"window/chip/light {work} in 2 s")
+        check(f"{label}, working: the breath's 24 frames a second, the window no more",
+              42 <= work[1] <= 50 and work[0] <= work[1] + 2,
+              f"window/chip {work} in 2 s")
         n, box = _live.stale(win, f"chip-working-{label.replace(' ', '-')}")
-        check(f"{label}: nothing left on screen by the light's blink", n == 0,
+        check(f"{label}: nothing left on screen by the breath", n == 0,
               f"{n}px at {box}" if n else "")
         agent.set(busy=False, ringing="done")
         await asyncio.sleep(0.1)
         ring = await measure(1.1)
-        check(f"{label}, calling: the ring's 20 frames a second",
-              18 <= ring[1] <= 24 and ring[2] == 0, f"window/chip/light {ring} in 1.1 s")
+        check(f"{label}, calling: the fast blink's 8 frames a second",
+              7 <= ring[1] <= 11 and ring[0] <= ring[1] + 2, f"window/chip {ring} in 1.1 s")
         n, box = _live.stale(win, f"chip-ringing-{label.replace(' ', '-')}")
-        check(f"{label}: nothing left on screen by the ring's blink", n == 0,
+        check(f"{label}: nothing left on screen by the blink", n == 0,
               f"{n}px at {box}" if n else "")
         agent.set(ringing=None)
         await asyncio.sleep(0.4)
@@ -519,8 +534,8 @@ async def test_clock() -> None:
         check(f"{label}: the ring answered, nothing left on screen", n == 0,
               f"{n}px at {box}" if n else "")
         after = await measure(1.0)
-        check(f"{label}, idle again: no frames", after == (0, 0, 0),
-              f"window/chip/light {after}")
+        check(f"{label}, idle again: no frames", after == (0, 0),
+              f"window/chip {after}")
         check(f"{label}: no status window opened", d.opened == [], f"{d.opened}")
         if label == "first open":
             await _live.reopen(win)

@@ -243,10 +243,10 @@ clock_cluster = Row(
 # and load line while a Jack window has focus, nothing while any other
 # window does. `widgets` go after it, at the right; the right end itself
 # is the agent's: `AgentChip` (agent/ui/status.py), always there, shows
-# the name of the voice on the task and a blinking light while the agent
-# works, blinks whole when it calls back (in place of the old corner
-# plate's ring), and rests dimmed in between. It finds the agent through
-# the `CallRouter` in SERVICES; with none it takes no room at all.
+# the name of the voice on the task and breathes while the agent works,
+# blinks fast when it calls back (in place of the old corner plate's
+# ring), and rests dimmed in between. It finds the agent through the
+# `CallRouter` in SERVICES; with none it takes no room at all.
 #
 # A config.py adds its own without copying the spec, by building the
 # bar again with them in place of the shipped one:
