@@ -744,7 +744,51 @@ function scrolled() {
   return {x: scrollX, y: scrollY};
 }
 
+// ── uploads ─────────────────────────────────────────────────────────────
+function fileField(el) {
+  if (el.tagName === "INPUT" && el.type === "file") return el;
+  const c = el.tagName === "LABEL" ? el.control : null;
+  return c && c.tagName === "INPUT" && c.type === "file" ? c : null;
+}
+
+// What `upload` clicks for ref n (Jack answers the chooser that opens):
+// aim "element", n itself (an opener: a button, a drop zone, a label; or
+// the field, shown), "label" (a hidden field's shown label, its ref in
+// `label`), or "script" (a hidden field with no label shown: Jack lets
+// the page open a chooser with a key press, then clicks it here).
+function uploadTarget(n) {
+  const el = target(n);
+  const input = fileField(el);
+  if (input && input.disabled) throw new Error(`[${n}] is disabled`);
+  const out = {what: describe(el), field: input ? describe(input) : null,
+               multiple: input ? !!input.multiple : null,
+               folder: input ? !!input.webkitdirectory : false, aim: "element"};
+  if (!input || input !== el) return out;
+  if (visible(input) && visibleRect(input)) return out;
+  const label = Array.from(input.labels || []).find(l => visible(l) && visibleRect(l));
+  if (label) {
+    out.aim = "label";
+    out.label = ref(label);
+  } else {
+    out.aim = "script";
+  }
+  return out;
+}
+
+function fileClick(n) {
+  const input = fileField(target(n));
+  if (!input) throw new Error(`[${n}] is not a file field`);
+  input.click();
+  return navigator.userActivation ? navigator.userActivation.isActive : null;
+}
+
+// The files a field holds now: names and sizes (never their contents).
+function fileNames(n) {
+  const input = fileField(target(n));
+  return input ? Array.from(input.files || []).map(f => ({name: f.name, size: f.size})) : null;
+}
+
 window.__jack = {text, links, forms, outline, has, info, selection, imageAt, frame,
                  element, painted: 0, point, focusField, focused, fieldKind, choose, setValue,
-                 scrollTo, scrolled};
+                 scrollTo, scrolled, uploadTarget, fileClick, fileNames};
 })();

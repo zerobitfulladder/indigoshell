@@ -9,12 +9,16 @@ JSON object per line both ways, each with its `type`; a type a side
 does not know is ignored. This module is what Jack says on it.
 
 Browser -> shell
-    announce   {"type": "announce", "app": "jack", "wid": <X window>, "single": bool}
+    announce   {"type": "announce", "app": "jack", "wid": <X window>, "single": bool,
+                "agent"?: <voice>}
                First on every connection, then the current state.
                `single`: a window of one page that takes no tabs (a page's
                sign-in popup, the inspector). The shell takes KEYS from
                Jack's other windows, the main ones; a single window keeps
-               them (its own handling, below).
+               them (its own handling, below). `agent`: the agent's own
+               window ("Alone", below), and whose: the top bar says so.
+               The agent's window, and a popup of it, also asks the shell
+               to `place` it before it is first shown (applink/protocol.py).
     state      {"type": "state",
                 "tabs": [{"title": str, "host": str, "loading": bool}, ...],
                 "current": <index into tabs>,
@@ -131,10 +135,13 @@ focus or changing the workspace; `open` and `tabs` work on any.
                    "focused": <the focused window's id, or null>}
                `single`: a page's popup or the inspector (one page, takes
                no tabs). `xid` is the window manager's id for the window.
-    open       {"url": str, "window"?: id, "background"?: bool}
+    open       {"url": str, "window"?: id | "agent", "background"?: bool,
+                "voice"?: str}
                A new tab at the end of that window (a main one), or of
-               the most recently used main window (one is made when there
-               is none). It becomes the current tab unless `background`.
+               the most recently used main window of the user's (one is
+               made when there is none), or with "agent" of the agent's
+               own window, made (and placed) first when there is none
+               ("Alone"). It becomes the current tab unless `background`.
                -> TAB. Answered once the load is asked for; `wait` for it.
                `url` is anything the address line takes (a search too).
     switch     {"tab": id}                         -> TAB
@@ -241,8 +248,9 @@ action opened (a link to a new tab, a popup window).
                something inside it, or its label) is what is there: else
                ok:false naming what covers it. No right clicks (a context
                menu would take the user's pointer). Refused: a file field
-               (UPLOADS), a <select> (`select` it), a date, time or colour
-               field (their pickers take the pointer too; `fill` them).
+               (`upload` gives it files), a <select> (`select` it), a date,
+               time or colour field (their pickers take the pointer too;
+               `fill` them).
     type       {"tab", "text", "ref"? | "x"?, "y"?, "clear"?: bool,
                 "submit"?: bool}
                Into the field `ref` (focused, the caret at its end), at
@@ -312,11 +320,110 @@ the agent instead of shown: every result naming the tab says it (TAB's
 `dialog`), requests that need the page refuse until `dialog` answers it,
 and one left DIALOG_S unanswered is dismissed. On a take-over or a
 `release` it becomes the user's own dialog, shown as without the agent.
-A file chooser the page opens while the agent drives is refused
-(UPLOADS). Outside a session the page's dialogs are the user's, as ever.
+A file chooser the page opens while the agent drives is refused, but
+the one `upload` asked for ("Uploads"). Outside a session the page's
+dialogs are the user's, as ever.
 
 TAB, in every result since acting came, also says {"agent": null |
 "driving" | "paused", "voice": str | null, "dialog": DIALOG | null}.
+
+**Alone.** The agent's own window, a main window like the user's, in
+their sight only when they go and look. `open` with "window": "agent"
+and `borrow` make it when there is none, one per voice. Before it is
+first shown Jack asks the shell to put it on an empty workspace no
+screen shows (applink `place`), so it never appears where the user is
+looking and their view never moves; with no shell (or one too old to
+answer within applink's PLACE_WAIT_S) it shows where the window manager
+puts it. Jack never raises it or gives it focus. Its title is "<Voice>
+· Jack" and its page's, its WM_WINDOW_ROLE AGENT_ROLE, its class Jack's
+own; its announce names the voice (`agent`). The showing rule, the
+Watch's lock and take-over hold in it as in any window. A popup a page
+in it opens goes to the same workspace, and the tabs such a popup asks
+for to the agent's window.
+
+    borrow     {"tab": id, "voice"?: str}
+               A tab of the user's moves into the agent's window (made if
+               need be) as its current tab: its page and everything in it
+               (a half-filled form, the scroll, the page's scripts and
+               cookies: the same page, in a new view). Any tab of the
+               user's main windows, showing or not; not one the user took
+               over, one whose page has a dialog open, a popup's, or one
+               in an agent's window already. A window's last tab leaves a
+               blank tab behind (a window holds one at least), closed
+               again when the tab comes back.
+               -> TAB + {"from": {"window": id, "index": int}}
+    return     {"tab": id, "show"?: bool}
+               A tab in the agent's window goes to the user: a borrowed
+               one back to its window at its old place; one whose window
+               is gone, and one the agent opened itself, to the end of the
+               user's most recently used window. In the background there
+               unless `show` (then that window's current tab, the window
+               neither raised nor focused, the workspace kept); refused
+               when the user has no window. The agent's session on it
+               ends; its window closes with its last tab.
+               -> TAB + {"to": "its window" | "another window"}
+
+While away, a borrowed tab is gone from its window's tab list (and the
+top bar's): nothing stands in its place. When the agent's window closes
+(the user, the window manager), its borrowed tabs go back as `return`
+sends them (to a new window of the user's when none is left); the tabs
+it opened itself close with it. TAB also says {"borrowed": null |
+{"window": id, "index": int}}: where a tab in the agent's window came
+from. Each window in `tabs` also says {"agent": null | <voice>}.
+
+**Show.**
+    show       {"path": str}
+               A local file (an absolute path, or a file:// URL): an HTML
+               report with what it links beside it (images, stylesheets),
+               a PDF, an image. A new tab at the end of the user's most
+               recently used window, its current tab (in the background
+               when the user has taken over the tab that window shows),
+               the window neither raised nor focused, the workspace kept;
+               a new window when the user has none. Anything that is not
+               a file is refused.
+               -> TAB + {"background": bool}
+
+**Downloads.** Jack takes every download into the profile's download
+folder, no question asked.
+    downloads  {} -> {"downloads": [DOWNLOAD, ...]}  newest first, this
+               run's, at most DOWNLOADS_KEPT
+    wait       {"download": id, "timeout"?: s}
+               until it has finished (done, failed or cancelled)
+               -> DOWNLOAD + {"waited": s}; ok:false "timed out ..." as
+               the other waits.
+    DOWNLOAD   {"download": id, "name": str, "path": str, "state": one of
+                DOWNLOAD_LIST_STATES, "percent": <0..100, or null>,
+                "received": <bytes>, "total": <bytes, or null>, "host": str
+                (where from), "tab": <the tab it started in, or null>,
+                "error"?: str}
+An acting request's answer lists the downloads it started, when it did
+(`downloads`: [DOWNLOAD, ...]).
+
+**Uploads.**
+    upload     {"tab", "ref", "paths": [str, ...], "voice"?: str}
+               An acting request: the files reach the page as from its
+               file chooser, with no dialog. `ref` is a file field, or
+               what opens one (a button, a drop zone's "browse"): Jack
+               arms the answer to the next chooser the page opens with the
+               paths, then clicks with real input (the field, or its label
+               when the field is hidden; a hidden field with no label gets
+               a key press the page can open a chooser after, then a click
+               in the agent's world). Every path is checked first: a
+               readable file, under the home or /tmp, in no place secrets
+               are kept (browser/uploads.py has the list); several paths
+               for a field that takes one are refused too.
+               -> + {"files": [{"name", "size"}], "field": <what got them,
+                     as the outline names it, or null when the page's own
+                     chooser took them>}
+               ok:false (NO_CHOOSER) when the page opened no chooser.
+
+**Sites kept from the agent.** sites.json (browser/qt/identity.py) may
+name hosts the agent stays out of: {"agent": {"<host or *.domain>":
+"never"}}. Every request on a tab at such a host, and `open`, `go` and
+`show` to one, fails with KEPT ("the user keeps <host> to themselves");
+`release` and `return` still work. `tabs` lists such a tab with no
+title and its address cut to the site ({"kept": true}); `look` there
+fails the same. No host is "never" unless the user writes it.
 """
 
 import os
@@ -393,8 +500,11 @@ FIND_KEYS = ("query", "active", "total", "typing")
 
 
 # ── messages ────────────────────────────────────────────────────────────
-def announce(wid: int, single: bool) -> dict:
-    return _link.announce(KIND, wid, **{SINGLE: bool(single)})
+def announce(wid: int, single: bool, agent: str | None = None) -> dict:
+    """`agent`: the voice whose own window this is (none for the
+    user's)."""
+    extra = {AGENT: voice_id(agent)} if agent else {}
+    return _link.announce(KIND, wid, **{SINGLE: bool(single)}, **extra)
 
 
 def tab(title: str, host: str, loading: bool) -> dict:
@@ -522,8 +632,10 @@ RESULT = "result"
 CANCEL = "cancel"
 CANCELLED = "cancelled"
 ACTS = ("click", "type", "key", "select", "scroll", "fill", "hover", "dialog")
+UPLOAD = "upload"               # acting too, with files
+ALONE = ("borrow", "return", "show", "downloads")
 REQUESTS = ("tabs", "open", "switch", "close", "go", "wait", "read", "screenshot", "look",
-            *ACTS, "release")
+            *ACTS, "release", UPLOAD, *ALONE)
 GO_ACTIONS = ("back", "forward", "reload")
 READS = ("text", "links", "forms", "outline")
 
@@ -538,9 +650,32 @@ FORMS_LENGTH, FORMS_MAX = 20, 100
 OUTLINE_LENGTH, OUTLINE_MAX = 400, 2000        # lines
 SHOT_MAX_SIDE = 1568                           # px, the long side
 
+# ── alone, downloads, uploads, kept sites ───────────────────────────────
+AGENT_WINDOW = "agent"          # `open`'s window: the agent's own
+AGENT_ROLE = f"{APP}-agent"     # its WM_WINDOW_ROLE
+AGENT_TITLE = "{name} · Jack"
+DOWNLOAD_LIST_STATES = ("running", "done", "failed", "cancelled")
+DOWNLOADS_KEPT = 50
+UPLOAD_PATHS_MAX = 20
+UPLOAD_WAIT_S = 3.0             # for the chooser the click should open
+KEPT = "the user keeps {host} to themselves"
+AGENT_POLICIES = ("never",)
+FILE_FIELD = "{what} is a file field: give it files with upload"
+FILES_REFUSED = "the page asked for files and got none: only upload gives a page files"
+NO_CHOOSER = ("{what} opened no file chooser: give upload the file field's ref (read with "
+              "hidden finds a hidden one) or what opens its chooser")
+
+
+def kept(host: str) -> str:
+    return KEPT.format(host=host or "this site")
+
+
+def agent_title(voice) -> str:
+    return AGENT_TITLE.format(name=voice_name(voice))
+
+
 # ── acting, and the Watch ───────────────────────────────────────────────
 TOOK_OVER = "the user took over tab {tab}"
-UPLOADS = "uploads come in a later step"
 DIALOG_TYPES = ("alert", "confirm", "prompt", "beforeunload")
 QUIET_S = 10.0          # a session with no request on its tab this long ends
 PAUSE_S = 120.0         # a take-over's pause, after the user's last input in the tab

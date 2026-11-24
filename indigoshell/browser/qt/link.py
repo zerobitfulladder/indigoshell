@@ -16,6 +16,14 @@ Either side may start first or restart at any time. With no shell
 listening this tries again every half second, quietly, until the
 fallback shows, and every couple of seconds after; when a shell appears
 it is told everything again from the start.
+
+Placing (the agent's window, and a popup of it: window.py). Before the
+window is first shown its link starts on its own, and `place` asks the
+shell to put the window on a workspace (applink `place`, sent right
+after the announce, on whichever connection comes first); `placed`
+carries the answer, a workspace index or None. The window waits for it
+at most applink's PLACE_WAIT_S and then shows anyway: no shell, a shell
+restarting, or one too old to answer.
 """
 
 import logging
@@ -23,6 +31,7 @@ import logging
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QLocalSocket
 
+from indigoshell.applink import protocol as link_protocol
 from indigoshell.browser import protocol
 
 log = logging.getLogger(__name__)
@@ -38,11 +47,14 @@ class ShellLink(QObject):
     fallback_changed = Signal(bool)
     command = Signal(dict)
     down = Signal()             # a connection attempt failed, or the line dropped
+    placed = Signal(object)     # the answer to `place`: a workspace index, or None
 
-    def __init__(self, wid_of, single: bool, parent=None) -> None:
+    def __init__(self, wid_of, single: bool, parent=None, agent: str | None = None) -> None:
         super().__init__(parent)
         self.wid_of = wid_of        # asked at connect time, once the window exists
         self.single = single
+        self.agent = agent          # the voice whose own window this is (its announce says)
+        self._place: dict | None = None     # a `place` not yet answered
         self.wid: int | None = None         # the X window last announced
         self.state: dict | None = None      # the latest state, sent or not
         self._sent: dict | None = None      # what this connection last carried
@@ -102,6 +114,21 @@ class ShellLink(QObject):
         """A one-off message (a download's progress, a launcher wanted)."""
         self._send(msg)
 
+    def place(self, with_wid: int | None = None) -> None:
+        """Ask the shell to put the window, not yet shown, on a workspace
+        (`with_wid`'s, else an empty one): `placed` answers. Starts the
+        line when it has not started (the window is not shown yet)."""
+        self._place = link_protocol.place(with_wid)
+        if self.connected():
+            self._send(self._place)
+        else:
+            self.start()            # sent once connected, after the announce
+
+    def placing_over(self) -> None:
+        """The window is shown, answered or not: a shell that comes later
+        is not asked to place it."""
+        self._place = None
+
     def connected(self) -> bool:
         return self.sock.state() == QLocalSocket.LocalSocketState.ConnectedState
 
@@ -135,7 +162,9 @@ class ShellLink(QObject):
         log.debug("connected to the shell")
         self._sent = None
         self.wid = int(self.wid_of())
-        self._send(protocol.announce(self.wid, self.single))
+        self._send(protocol.announce(self.wid, self.single, self.agent))
+        if self._place is not None:
+            self._send(self._place)
         if self.state is not None:
             self._send_state()
 
@@ -157,6 +186,13 @@ class ShellLink(QObject):
                 log.info("the shell is restarting; waiting up to %d s for it",
                          RESTART_MS // 1000)
                 self.restarting = True
+            elif kind == link_protocol.PLACED:
+                if self._place is not None:
+                    self._place = None
+                    desktop = msg.get(link_protocol.DESKTOP)
+                    if desktop is None:
+                        log.info("the shell did not place the window: %s", msg.get("why") or "")
+                    self.placed.emit(desktop if protocol.is_id(desktop) else None)
             elif kind in protocol.COMMANDS:
                 self.command.emit(msg)
             else:

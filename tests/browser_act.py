@@ -92,6 +92,7 @@ from indigoshell.core.paths import runtime_dir        # noqa: E402
 PY = sys.executable
 FAILED: list[str] = []
 SECRET = "hunter2secret"
+UPLOAD_FIELD = 'button "Upload"'         # the file field, as the outline names it
 TURKISH = "Ağaç dalı şöyle: İğne ÇÖÜ ğüşıöç"
 
 
@@ -417,8 +418,10 @@ def test_pure() -> None:
           and protocol.voice_name(None) == "Lilac" and protocol.voice_color(None) == "#c8a2c8"
           and protocol.voice_name("indigo") == "Indigo"
           and protocol.voice_name("<script>") == "Lilac")
-    check("the take-over words, exactly", protocol.took_over(7) == "the user took over tab 7"
-          and protocol.UPLOADS == "uploads come in a later step")
+    check("the take-over words, exactly; a file field's (uploads are browser_alone.py's)",
+          protocol.took_over(7) == "the user took over tab 7"
+          and protocol.FILE_FIELD.format(what="[3]") == "[3] is a file field: give it files "
+                                                        "with upload")
     tabs = [protocol.tab("A", "a.org", False), protocol.tab("B", "b.org", False)]
     good = protocol.state(tabs, 0, 100, True, url="https://a.org/", bookmarked=False, find=None,
                           agent=[protocol.agent("indigo", "paused"), None])
@@ -651,11 +654,12 @@ def test_in_process() -> None:
     _, e_select = J(jack.click(T, R['combobox "Country"']))
     _, e_file = J(jack.click(T, R['button "Upload"']))
     _, e_date = J(jack.click(T, R['textbox "Day"']))
-    check("refused: a right click, a <select> (its popup), a file field (\"uploads come in a "
-          "later step\"), a date field (its picker); no popup ever shown",
+    check("refused: a right click, a <select> (its popup), a file field (upload gives it "
+          "files), a date field (its picker); no popup ever shown",
           e_right and e_right.startswith("no right clicks") and e_select
           and "choose its option with select" in e_select
-          and e_file == "uploads come in a later step" and e_date and "picker" in e_date
+          and e_file == f'[{R[UPLOAD_FIELD]}] button "Upload" is a file field: give it files '
+                        "with upload" and e_date and "picker" in e_date
           and QApplication.activePopupWidget() is None,
           f"{e_right} / {e_select} / {e_file} / {e_date}")
     _, e_stale = J(jack.click(T, 9999))
@@ -800,7 +804,8 @@ def test_in_process() -> None:
           and all(f["ok"] for f in fields[:7]), f"{err} {got} {fields}")
     check("fill: a file field and a stale ref fail alone, saying why; the rest go on",
           len(fields) == 9 and fields[7] == {"ref": R['button "Upload"'], "ok": False,
-                                             "error": "uploads come in a later step"}
+                                             "error": f"[{R[UPLOAD_FIELD]}] is a file field: "
+                                                      "give it files with upload"}
           and not fields[8]["ok"] and "no element [9999]" in fields[8]["error"], f"{fields[7:]}")
     pw_read, _ = J(jack.read(T, "forms"))
     check("the password typed is never read back (the answer, the forms read)",
@@ -924,7 +929,7 @@ def test_in_process() -> None:
     done, err = J(jack.click(T, refs_of(T)['button "Pick a file"']))
     check("a file chooser the page opens while the agent drives: refused, said in the answer; "
           "Qt's chooser never asked", done is not None and not users
-          and any("uploads come in a later step" in n for n in done.get("notes", [])),
+          and any("only upload gives a page files" in n for n in done.get("notes", [])),
           f"{err} {done and done.get('notes')} {users}")
 
     # ── the lock ────────────────────────────────────────────────────────

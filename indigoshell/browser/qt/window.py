@@ -94,6 +94,21 @@ the state says the agent's hold on each tab (protocol `agent`), and the
 shell's `resume` hands a paused tab back. A tab whose page is inside a
 dialog's call (a nested event loop, tabs.py) is deleted only once that
 call returned, out of the window meanwhile.
+
+The agent's own window (`agent`, its voice: protocol.py, "Alone") is a
+main window made for the agent's requests. It is never raised or given
+focus by Jack (shown without activating), its title says whose it is
+(protocol.agent_title) and its WM_WINDOW_ROLE is protocol.AGENT_ROLE.
+It is shown only once placed (`show_placed`): its native window made
+but not mapped, its line to the shell started early, the shell asked to
+put it on an empty workspace (link.py `place`), and shown when the shell
+answers, or after applink's PLACE_WAIT_S with no answer. A popup a page
+in it opens is placed on the same workspace (`opener`), and the tabs
+such a popup asks for go to the agent's window. Tabs move between
+windows (`release_tab`, `insert_tab`; app.py `move_tab`): a borrowed
+tab's origin is kept in `borrowed`, by tab id, and when the agent's
+window closes it gives those tabs back (app.py `give_back`) before
+anything else.
 """
 
 import html
@@ -111,6 +126,7 @@ from PySide6.QtWebEngineCore import (QWebEngineNewWindowRequest, QWebEnginePage,
 from PySide6.QtWidgets import (QHBoxLayout, QInputDialog, QLabel, QMessageBox,
                                QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
+from indigoshell.applink.protocol import PLACE_WAIT_S
 from indigoshell.browser import places, protocol
 from indigoshell.core.naming import APP
 
@@ -235,7 +251,8 @@ def _key_id(event) -> int:
 
 
 class Window(QWidget):
-    def __init__(self, browser, *, single: bool = False, dialog: bool = False) -> None:
+    def __init__(self, browser, *, single: bool = False, dialog: bool = False,
+                 agent: str | None = None, opener: "Window | None" = None) -> None:
         super().__init__(None, Qt.WindowType.Dialog if dialog else Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         # First, before anything can make the native window: GPU-composed
@@ -257,6 +274,18 @@ class Window(QWidget):
         self._key_window = None         # the QWindow our key filter sits on
         self._held_keys: set[int] = set()       # pressed, taken by us
         self._address_wanted = False    # a new window's address, until the shell says
+        self.agent = agent              # the voice whose own window this is (None: the user's)
+        self.opener = opener            # a popup's: the window whose page opened it
+        self.borrowed: dict[int, dict] = {}     # tab id -> where it came from (app.py)
+        self.ready = True               # shown, or free to be (False while being placed)
+        self.placed_on: int | None = None       # the workspace the shell put it on
+        self._place_timer: QTimer | None = None
+        if agent or (opener is not None and opener.agent):
+            # The agent's: never activated by its showing (and so never
+            # by Jack, which raises or activates only the user's).
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        if agent:
+            self.setWindowRole(protocol.AGENT_ROLE)
 
         # Find in page.
         self.find_query = ""
@@ -278,7 +307,7 @@ class Window(QWidget):
 
         # The shell shows the tabs and host in its top bar when one has
         # this window; the line says them when none does.
-        self.link = ShellLink(self.winId, single, self)
+        self.link = ShellLink(self.winId, single, self, agent=agent)
         self.link.attached_changed.connect(self.refresh)
         self.link.attached_changed.connect(self._on_attached)
         self.link.down.connect(self._on_shell_down)
@@ -290,8 +319,40 @@ class Window(QWidget):
         self._refresh.setInterval(0)
         self._refresh.timeout.connect(self._refresh_now)
 
-        self.setWindowTitle(NAME)
+        self.setWindowTitle(protocol.agent_title(agent) if agent else NAME)
         self.resize(1280, 800)
+
+    # ── being placed (the agent's window) ───────────────────────────────
+    def show_placed(self, near: "Window | None" = None) -> None:
+        """Shown once the shell has put it on a workspace: an empty one,
+        or `near`'s (link.py `place`); with no answer within applink's
+        PLACE_WAIT_S, shown anyway, where the window manager puts it."""
+        if self._place_timer is not None or self.isVisible():
+            return
+        self.ready = False
+        self.winId()                    # the native window, made and not mapped
+        self.link.placed.connect(self._on_placed)
+        self._place_timer = QTimer(self)
+        self._place_timer.setSingleShot(True)
+        self._place_timer.setInterval(int(PLACE_WAIT_S * 1000))
+        self._place_timer.timeout.connect(partial(self._on_placed, None))
+        self._place_timer.start()
+        near_wid = (int(near.winId()) if near is not None and shiboken6.isValid(near)
+                    and near.testAttribute(Qt.WidgetAttribute.WA_WState_Created) else None)
+        self.link.place(near_wid)
+
+    def _on_placed(self, desktop) -> None:
+        if self.ready:
+            return
+        self.ready = True
+        if self._place_timer is not None:
+            self._place_timer.stop()
+        self.link.placing_over()
+        self.placed_on = desktop
+        log.info("%s window %d %s", "the agent's" if self.agent else "a popup of the agent's",
+                 self.id, f"placed on workspace {desktop}" if desktop is not None else
+                 "shown where the window manager puts it (no workspace from the shell)")
+        self.show()
 
     # ── tabs ────────────────────────────────────────────────────────────
     def current_tab(self) -> Tab | None:
@@ -300,29 +361,75 @@ class Window(QWidget):
     def add_tab(self, url: QUrl | None = None, *, background: bool = False,
                 at: int | None = None) -> Tab:
         tab = Tab(self.profile, self)
-        page = tab.page
-        tab.changed.connect(self.refresh)
-        tab.visited.connect(partial(self._on_visit, tab))
-        tab.titled.connect(self._on_title)
-        page.newWindowRequested.connect(partial(self.on_new_window, tab))
-        page.fullScreenRequested.connect(partial(self.on_fullscreen, tab))
-        page.permissionRequested.connect(partial(self.on_permission, tab))
-        page.windowCloseRequested.connect(partial(self.close_tab, tab))
-        page.watch = self.browser.watch
+        tab.page.watch = self.browser.watch
         if self.browser.unattended:
-            page.setAudioMuted(True)
+            tab.page.setAudioMuted(True)
+        at = self._insert(tab, at)
+        if url is not None:
+            tab.page.load(url)
+        if not background or self.current < 0:
+            self.select(at)
+        self.refresh()
+        return tab
 
+    def _insert(self, tab: Tab, at: int | None) -> int:
+        """`tab` into the list at `at` (the end for None), its view into
+        the stack, its signals to this window; where it went."""
+        page = tab.page
+        tab.slots = [(tab.changed, self.refresh), (tab.visited, partial(self._on_visit, tab)),
+                     (tab.titled, self._on_title),
+                     (page.newWindowRequested, partial(self.on_new_window, tab)),
+                     (page.fullScreenRequested, partial(self.on_fullscreen, tab)),
+                     (page.permissionRequested, partial(self.on_permission, tab)),
+                     (page.windowCloseRequested, partial(self.close_tab, tab))]
+        for signal, slot in tab.slots:
+            signal.connect(slot)
         at = len(self.tabs) if at is None else max(0, min(at, len(self.tabs)))
         self.tabs.insert(at, tab)
         self.stack.addWidget(tab.view)
         if 0 <= self.current and at <= self.current:
             self.current += 1
-        if url is not None:
-            page.load(url)
+        return at
+
+    def insert_tab(self, tab: Tab, at: int | None = None, *, background: bool = False) -> int:
+        """A tab from another window (app.py `move_tab`, its page in a new
+        view already) into this one; where it went."""
+        tab.setParent(self)
+        at = self._insert(tab, at)
         if not background or self.current < 0:
             self.select(at)
         self.refresh()
-        return tab
+        return at
+
+    def release_tab(self, tab: Tab) -> int:
+        """`tab` out of this window, for another (app.py `move_tab`): its
+        signals cut, out of the list (the window shows the neighbour
+        close_tab would) and its view out of the stack; its index then. A
+        window left with no tab is the caller's to close."""
+        index = self.tabs.index(tab)
+        if tab is self.find_tab:
+            self.end_find(clear=False)
+        if tab is self.fullscreen_tab:
+            self._restore_normal()
+        for signal, slot in getattr(tab, "slots", ()):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        tab.slots = []
+        self.tabs.pop(index)
+        self._related = None
+        self.stack.removeWidget(tab.view)
+        if not self.tabs:
+            self.current = -1
+        elif index < self.current:
+            self.current -= 1
+        elif index == self.current:
+            self.current = -1
+            self.select(min(index, len(self.tabs) - 1))
+        self.borrowed.pop(tab.id, None)
+        self.refresh()
+        return index
 
     def select(self, index: int) -> None:
         if not 0 <= index < len(self.tabs):
@@ -624,8 +731,7 @@ class Window(QWidget):
     def load(self, text: str, where: str, tab: Tab | None = None) -> None:
         """An address or a search, in `tab` (the current one) or a new tab."""
         if where == "tab":
-            target = self.browser.main_window() if self.single else self
-            target.add_tab(to_url(text))
+            self.tab_target().add_tab(to_url(text))
             return
         if tab not in self.tabs:
             tab = self.current_tab()
@@ -764,14 +870,26 @@ class Window(QWidget):
         log.debug("%s asks for %s: %s", opener.host() or "a page", destination.name,
                   request.requestedUrl().toString())
         if destination == D.InNewDialog:
-            self.browser.open_popup(request)
+            self.browser.open_popup(request, self.tab_target())
             return
-        target = self.browser.main_window() if self.single else self
+        target = self.tab_target()
         at = target.related_position(opener)
         tab = target.add_tab(background=destination == D.InNewBackgroundTab, at=at)
         request.openIn(tab.page)
-        if target is not self:
+        if target is not self and not target.agent:
             target.raise_()
+
+    def tab_target(self) -> "Window":
+        """Where a new tab asked for in this window goes: here; for a
+        single window, the agent's window that opened it while it is
+        there, else the user's most recently used main window."""
+        if not self.single:
+            return self
+        opener = self.opener
+        if (opener is not None and shiboken6.isValid(opener) and opener.agent
+                and opener in self.browser.windows):
+            return opener
+        return self.browser.main_window()
 
     def on_fullscreen(self, tab: Tab, request) -> None:
         request.accept()
@@ -862,10 +980,7 @@ class Window(QWidget):
             tab.page.triggerAction({"back": WA.Back, "forward": WA.Forward,
                                     "reload": WA.Reload}[cmd])
         elif cmd == "open" and isinstance(msg.get("url"), str):
-            if self.single:
-                self.browser.main_window().add_tab(to_url(msg["url"]))
-            else:
-                self.add_tab(to_url(msg["url"]))
+            self.tab_target().add_tab(to_url(msg["url"]))
         elif cmd == "load" and isinstance(msg.get("url"), str) and msg["url"].strip():
             self.load(msg["url"], "tab" if msg.get("where") == "tab" else "here")
         elif cmd == "bookmark" and msg.get("op") in ("add", "remove"):
@@ -904,7 +1019,10 @@ class Window(QWidget):
         if state is None:
             return
         tab = self.current_tab()
-        self.setWindowTitle(tab.page.title() or NAME)
+        title = tab.page.title()
+        if self.agent:
+            title = protocol.agent_title(self.agent) + (f" · {title}" if title else "")
+        self.setWindowTitle(title or NAME)
         self.link.push(state)
         self.line.show_state(state if self.link.fallback else None, self.download)
 
@@ -933,6 +1051,8 @@ class Window(QWidget):
         log.info("%s window closed: %s", "a single-page" if self.single else "a",
                  "by the window manager" if event.spontaneous()
                  else "its last tab closed" if not self.tabs else f"with {len(self.tabs)} tab(s)")
+        if self.borrowed:
+            self.browser.give_back(self)    # first: the user's tabs go home, not with it
         for tab in self.tabs:
             if tab.inspector is not None and shiboken6.isValid(tab.inspector):
                 tab.inspector.close()

@@ -24,6 +24,11 @@ content blocks.
     browser_hover       the pointer over an element
     browser_dialog      answer the page's alert, confirm or prompt
     browser_release     let go of a tab
+    browser_upload      files for a page's file field, with no dialog
+    browser_borrow      a user's tab into the agent's own window
+    browser_return      a tab of the agent's window to the user's
+    browser_show        a local file (a report) in the user's window
+    browser_downloads   Jack's downloads, or wait for one
 
 What the agent gets from a page is marked as the site's: a block of its
 own whose first line says whose words follow (control.SITE_WORDS);
@@ -39,6 +44,13 @@ call's voice, Jack draws its hold on the tab in that voice's colour and
 locks the user's input out of it, and a key from the user takes the tab
 back. Then Jack's answer is "the user took over tab N", and the agent is
 told to stop and say so, not to try again.
+
+Alone (protocol.py): the agent's own window, on a workspace of its own
+the user is not looking at, is where it works on what is its to do
+alone; it borrows a user's tab there (with all its state) and returns it
+when done. The descriptions say when to work alone and when where the
+user looks, that the agent never switches the user's workspace, and
+where uploads never come from (browser/uploads.py).
 
 Daemon side: no PySide6, nothing from browser/qt.
 """
@@ -70,6 +82,20 @@ REFS = ("`ref` is an element's number from browser_read of the page as it is now
 POINT = ("Instead of `ref`, a point: `x`, `y` in CSS pixels of the visible page, (0, 0) "
          "its top left (from browser_screenshot: the image's pixel times the viewport "
          "size over the image size, which it says).")
+ALONE = ("You have a Jack window of your own (window \"agent\"), on a workspace of its own "
+         "that the user is not looking at: work there on what is yours to do alone (looking "
+         "things up, filling in a form for them), so their view never changes; act in the "
+         "user's own tab (they watch you) when they asked you to act where they are looking. "
+         "To work on a page the user has open, browser_borrow it into your window, act, and "
+         "browser_return it when you are done. Never switch the user's workspace or focus to "
+         "your window: read and screenshot it where it is.")
+KEPT = ("A site the user keeps to themselves answers every request on its tabs with \"the "
+        "user keeps <site> to themselves\": leave it alone.")
+UPLOAD_REFUSED = ("Files from secret places are refused: ~/.ssh, ~/.gnupg, the keyrings, "
+                  "password stores (pass, rbw), browser profiles (Firefox's, Jack's own), the "
+                  "shell's connections, and files named like private keys or sign-ins (id_*, "
+                  "*.pem, *.key, .credentials.json); only files under the home folder or /tmp "
+                  "go.")
 
 
 def _schema(properties: dict, required: tuple = ()) -> dict:
@@ -161,6 +187,9 @@ async def _tabs(call: Call) -> list[dict]:
              "the sites' own words.)"]
     for w in windows:
         about = []
+        if w.agent:
+            about.append(f"{protocol.voice_name(w.agent)}'s own window, on a workspace of its "
+                         "own" + (": yours" if w.agent == protocol.voice_id(_voice(call)) else ""))
         if w.focused:
             about.append("has the user's focus")
         if w.single:
@@ -175,7 +204,11 @@ async def _tabs(call: Call) -> list[dict]:
                          + {"driving": " [yours: you are acting on it]",
                             "paused": " [the user took it over: hands off]"}.get(t.agent or "", "")
                          + (f" [a {t.dialog['type']} dialog waits for browser_dialog]"
-                            if t.dialog else ""))
+                            if t.dialog else "")
+                         + (f" [borrowed from window {t.borrowed['window']}: browser_return it "
+                            "when done]" if t.borrowed else "")
+                         + (" [the user keeps this site to themselves: hands off]"
+                            if t.kept else ""))
     return [text_block("\n".join(lines))]
 
 
@@ -184,21 +217,24 @@ async def _open(call: Call) -> list[dict]:
     if not isinstance(url, str) or not url.strip():
         raise HandError("give `url`: an address, or words to search for")
     window = call.args.get("window")
-    if window is not None and not protocol.is_id(window):
-        raise HandError("`window` must be a window id from browser_tabs")
+    if window is not None and window != protocol.AGENT_WINDOW and not protocol.is_id(window):
+        raise HandError("`window` must be a window id from browser_tabs, or \"agent\" for your "
+                        "own window")
     wanted = _seconds(call, "wait_s", LOAD_S, SLOW_S)
     background = bool(call.args.get("background"))
     jack = await _jack(start=True)
     try:
         tab = await jack.open(url.strip(), window=window, background=background,
-                              within=_within(call))
+                              voice=_voice(call), within=_within(call))
         # A tab in the background is not showing: no waiting on it.
         note = await _settle(jack, call, tab.tab, wanted) if wanted and not background else ""
         tab = await _current(jack, call, tab.tab)
     except ControlError as e:
         raise HandError(str(e)) from None
     return [text_block(f"Opened {_says(tab)}{note}"
-                       + (" in the background" if background else "") + ".")]
+                       + (" in the background" if background else "")
+                       + (" in your own window" if window == protocol.AGENT_WINDOW else "")
+                       + ".")]
 
 
 async def _current(jack: control.Control, call: Call, tab: int) -> control.TabInfo:
@@ -428,6 +464,9 @@ def _acted(done: dict, did: str, page_words: str = "") -> list[dict]:
     if not tab.current:
         lines.append(f"Tab {tab.tab} no longer shows in its window: browser_switch to it to act "
                      "on it again.")
+    for d in done.get("downloads") or ():
+        lines.append(f"It started download {d['download']}: {d['name']} ({d['state']}; "
+                     "browser_downloads with `wait` waits for it)")
     for note in done.get("notes") or ():
         lines.append(note[:1].upper() + note[1:] + ".")
     blocks = [text_block("\n".join(lines))]
@@ -601,6 +640,108 @@ async def _release(call: Call) -> list[dict]:
                        + ": the user's input reaches it again, and your mark is gone.")]
 
 
+async def _upload(call: Call) -> list[dict]:
+    ref = call.args.get("ref")
+    if not protocol.is_id(ref):
+        raise HandError("give `ref`: the file field's (or its button's) ref from browser_read")
+    paths = call.args.get("paths")
+    if isinstance(paths, str):
+        paths = [paths]
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
+        raise HandError("give `paths`: the files' absolute paths")
+    tab = _tab(call)
+    done = await _act(call, lambda jack: jack.upload(tab, ref, paths, voice=_voice(call),
+                                                     within=_within(call)))
+    files = ", ".join(f"{f['name']} ({f['size']} bytes)" for f in done.get("files") or ())
+    return _acted(done, f"The page got {len(done.get('files') or ())} file(s) as from its file "
+                  f"chooser: {files}.", f"What was clicked: {done['what']}"
+                  + (f"; the field: {done['field']}" if done.get("field") and
+                     done["field"] != done["what"] else "") if done.get("what") else "")
+
+
+async def _borrow(call: Call) -> list[dict]:
+    jack = await _jack()
+    tab = _tab(call)
+    try:
+        done = await jack.borrow(tab, voice=_voice(call), within=_within(call))
+    except ControlError as e:
+        raise HandError(str(e)) from None
+    came = done.get("from") or {}
+    return [text_block(f"Borrowed into your own window: {_says(done)}, now its current tab. It "
+                       f"came from window {came.get('window')} (its place there kept); "
+                       "browser_return it when you are done.")]
+
+
+async def _return(call: Call) -> list[dict]:
+    jack = await _jack()
+    tab = _tab(call)
+    try:
+        done = await jack.return_tab(tab, show=bool(call.args.get("show")),
+                                     within=_within(call))
+    except ControlError as e:
+        raise HandError(str(e)) from None
+    where = "back to its window" if done.get("to") == "its window" else \
+        "to the user's most recently used window"
+    how = "as its current tab" if done.get("current") else "in the background"
+    return [text_block(f"Returned tab {tab} {where} ({how}): {_says(done)}.")]
+
+
+async def _show(call: Call) -> list[dict]:
+    path = call.args.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise HandError("give `path`: the file's absolute path (or a file:// URL)")
+    jack = await _jack(start=True)
+    try:
+        done = await jack.show(path.strip(), within=_within(call))
+        note = await _settle(jack, call, done["tab"], LOAD_S) if not done.get("background") else ""
+        now = await _current(jack, call, done["tab"])
+    except ControlError as e:
+        raise HandError(str(e)) from None
+    return [text_block(f"Shown in the user's window: {_says(now)}{note}"
+                       + (" (in the background: the user is using the tab that window shows)"
+                          if done.get("background") else ", its current tab") + ".")]
+
+
+def _download_line(d: dict) -> str:
+    size = (f"{d['received']} of {d['total']} bytes" if d.get("total")
+            else f"{d['received']} bytes")
+    line = (f"download {d['download']}: {d['name']} -> {d['path']} [{d['state']}"
+            + (f", {d['percent']}%" if d.get("percent") is not None and d["state"] == "running"
+               else "") + f"; {size}]")
+    if d.get("host"):
+        line += f" from {d['host']}"
+    if d.get("tab") is not None:
+        line += f", started in tab {d['tab']}"
+    if d.get("error"):
+        line += f" ({d['error']})"
+    return line
+
+
+async def _downloads(call: Call) -> list[dict]:
+    wanted = call.args.get("wait")
+    if wanted is not None and not protocol.is_id(wanted):
+        raise HandError("`wait` must be a download id from browser_downloads")
+    try:
+        jack = await control.shared(start=False)
+    except NotRunning:
+        return [text_block("Jack is not running: no downloads.")]
+    try:
+        if wanted is not None:
+            timeout = _seconds(call, "timeout", protocol.WAIT_DEFAULT_S, protocol.WAIT_MAX_S)
+            room = _within(call) - 6.0
+            if room < 0:
+                raise HandError("no time left to wait in")
+            d = await jack.wait_download(wanted, timeout=min(timeout, room))
+            return [text_block(f"After {d['waited']:.1f} s, {_download_line(d)}")]
+        found = await jack.downloads(within=_within(call))
+    except ControlError as e:
+        raise HandError(str(e)) from None
+    if not found:
+        return [text_block("No downloads in this run of Jack.")]
+    return [text_block("Jack's downloads, newest first (file names are the sites' words):\n"
+                       + "\n".join(_download_line(d) for d in found))]
+
+
 def browser_hands() -> list[Hand]:
     """Jack's hands, in the order they are lent."""
     return [
@@ -613,13 +754,16 @@ def browser_hands() -> list[Hand]:
               _tabs, _schema({})),
         _hand("browser_open",
               f"{JACK} Opens an address (or words to search for) in a new tab at the end "
-              "of `window` (an id from browser_tabs) or of the most recently used window, "
-              "and makes it that window's current tab unless `background`. Starts Jack "
-              f"if it isn't running. Waits up to `wait_s` seconds (default {LOAD_S:g}; 0: "
-              "not at all) for the page to load, and answers the new tab's id, title and "
-              "address.",
+              "of `window` (an id from browser_tabs, or \"agent\": your own window, made the "
+              "first time on an empty workspace the user is not looking at) or of the user's "
+              "most recently used window, and makes it that window's current tab unless "
+              f"`background`. Starts Jack if it isn't running. Waits up to `wait_s` seconds "
+              f"(default {LOAD_S:g}; 0: not at all) for the page to load, and answers the new "
+              f"tab's id, title and address. {ALONE} {KEPT}",
               _open, _schema({"url": {"type": "string"},
-                              "window": {"type": "integer"},
+                              "window": {"anyOf": [{"type": "integer"},
+                                                   {"type": "string",
+                                                    "enum": [protocol.AGENT_WINDOW]}]},
                               "background": {"type": "boolean"},
                               "wait_s": {"type": "number", "minimum": 0,
                                          "maximum": SLOW_S}}, ("url",)),
@@ -770,4 +914,53 @@ def browser_hands() -> list[Hand]:
               f"acting; it also happens {protocol.QUIET_S:g} s after your last request on the "
               "tab.",
               _release, _schema({"tab": TAB})),
+        _hand("browser_upload",
+              f"{JACK} Gives a page's file field files, as if the user had picked them in its "
+              "file dialog (no dialog opens): `ref` is the file field (from browser_read; a "
+              "hidden one shows with `hidden`: true) or the button that opens the page's file "
+              "picker; `paths` are the files' absolute paths on this laptop. "
+              f"{UPLOAD_REFUSED} {REFS} {SHOWING} {WATCHED} {SITE}",
+              _upload, _schema({"tab": TAB, "ref": REF,
+                                "paths": {"type": "array", "minItems": 1,
+                                          "maxItems": protocol.UPLOAD_PATHS_MAX,
+                                          "items": {"type": "string"}},
+                                "wait_s": WAIT_S}, ("tab", "ref", "paths")),
+              timeout=SLOW_S),
+        _hand("browser_borrow",
+              f"{JACK} Moves a tab of the user's into your own window (made the first time, on "
+              "an empty workspace the user is not looking at) as its current tab, with "
+              "everything in it: a half-typed form, the scroll, the page's state, the sign-in. "
+              "Any tab of the user's windows may be borrowed, also one that is not showing in "
+              "its window: borrowing is how you work on such a tab without changing what the "
+              "user sees. Not one the user took over. While it is away it is gone from the "
+              "user's window: browser_return it as soon as you are done. Never switch the "
+              f"user's workspace to look at it. {ALONE} {KEPT}",
+              _borrow, _schema({"tab": TAB}, ("tab",)), timeout=SLOW_S),
+        _hand("browser_return",
+              f"{JACK} Hands a tab of your own window to the user: a borrowed tab goes back to "
+              "its window at its old place (or, that window gone, to the user's most recently "
+              "used window), a tab you opened yourself to the end of the user's most recently "
+              "used window. In the background there, unless `show`: then it becomes that "
+              "window's current tab (the window is never raised or focused). Your session on it "
+              "ends; your window closes with its last tab. Return every tab you borrowed.",
+              _return, _schema({"tab": TAB, "show": {"type": "boolean"}}, ("tab",))),
+        _hand("browser_show",
+              f"{JACK} Shows the user a local file you made: an HTML report (with the images "
+              "and stylesheets it links beside it), a PDF or an image, opened as a new tab in "
+              "the user's own window (the one they used last), as its current tab, so they see "
+              "it when they look at Jack; the window is not raised or focused and their "
+              "workspace stays. `path`: the file's absolute path, or a file:// URL. A path "
+              "that is not a file is refused.",
+              _show, _schema({"path": {"type": "string"}}, ("path",)), timeout=SLOW_S),
+        _hand("browser_downloads",
+              f"{JACK} Lists Jack's downloads in this run, newest first: id, file name and the "
+              "path it was saved at, state (running, done, failed, cancelled), how far, the "
+              "site it came from, the tab that started it. With `wait` (a download id): waits "
+              f"until that one has finished, at most `timeout` seconds (default "
+              f"{protocol.WAIT_DEFAULT_S:g}), and says how it ended. Jack saves every download "
+              "to the download folder without asking.",
+              _downloads, _schema({"wait": {"type": "integer"},
+                                   "timeout": {"type": "number", "minimum": 0,
+                                               "maximum": protocol.WAIT_MAX_S}}),
+              timeout=protocol.WAIT_MAX_S + 10),
     ]

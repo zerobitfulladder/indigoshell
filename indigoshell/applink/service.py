@@ -42,6 +42,31 @@ keymap changes (MappingNotify) and when the app announces again. A grab
 another client holds already on the window (BadAccess) is said once as a
 warning, and that chord is left to the app.
 
+Placing. An app may ask for a window it has made but not yet shown to
+go to a workspace before it maps (protocol `place`): Jack's window for
+the agent, which works on a workspace of its own, never the one the user
+is looking at. The service sets the window's `_NET_WM_DESKTOP` (EWMH's
+"desktop", qtile's group by index) and reads it back before it answers
+`placed`, so the X server has it when the app's map request comes:
+qtile then manages the window on that group from its first map, keeps
+it unmapped while the group is not on a screen, and neither switches to
+it nor gives it focus (checked against qtile's `Window.set_group` and
+`handle_MapRequest`, and by experiment: tests/browser_alone.py).
+
+Which workspace (`pick_desktop`): the highest-numbered one with no
+client window on it that no screen shows. Shown: `_NET_CURRENT_DESKTOP`,
+any whose `_NET_DESKTOP_VIEWPORT` is not (0, 0) (another monitor's), and
+any with a client window mapped on it. Client windows: those in
+`_NET_CLIENT_LIST`, by their `_NET_WM_DESKTOP`, and the windows this
+service placed (qtile lists a window it keeps unmapped only at its next
+update of the list). When every hidden workspace has windows, the
+highest-numbered hidden one; when every workspace is shown, none (the
+app maps where the window manager puts it). With several monitors an
+empty workspace shown on the one at (0, 0) while another has the focus
+cannot be told from a hidden one by EWMH; that case is not handled.
+`place` naming another window (`with`) puts the new one on that
+window's workspace: a popup of a placed window goes where it is.
+
 Lifecycle. A connection that closes (the app window closed, the app
 quit, or it replaced its X window and announced again on a new
 connection) drops its `AppWindow`. `stop()` (the daemon stopping or
@@ -60,6 +85,7 @@ import asyncio
 import logging
 import os
 import socket
+import struct
 from dataclasses import dataclass
 
 import xcffib.xproto as xp
@@ -99,6 +125,7 @@ class AppWindow:
         self.wid = wid
         self.content = None
         self.closed = False
+        self.placed: int | None = None      # the workspace `place` put it on
 
     def on_message(self, msg: dict) -> None:
         """Every message after the announce."""
@@ -142,6 +169,8 @@ class Link:
             if announce:
                 log.debug("app window 0x%x announced again on the same connection; ignored",
                           self.window.wid)
+            elif msg[protocol.TYPE] == protocol.PLACE:
+                self.service.place(self.window, msg)
             else:
                 self.window.on_message(msg)
             return
@@ -188,6 +217,39 @@ class Link:
         if not self.writer.is_closing():
             self.writer.close()
         self.service.forget(self, window)
+
+
+UNSET = 0xFFFFFFFF                  # _NET_WM_DESKTOP of a window on every workspace
+
+
+def pick_desktop(count: int, current: int | None, viewports: list[int],
+                 clients: list[tuple[int | None, bool]],
+                 taken: set[int] = frozenset()) -> tuple[int | None, str]:
+    """The workspace for a window that must not appear where the user
+    looks (the module docstring, "Placing"): (index, how it was chosen),
+    or (None, why none). `clients`: each client window's workspace and
+    whether it is mapped; `taken`: workspaces of windows placed here."""
+    if not count:
+        return None, "the window manager names no workspaces"
+    shown = {current} if current is not None else set()
+    for d in range(count):
+        xy = tuple(viewports[2 * d:2 * d + 2])
+        if len(xy) == 2 and xy != (0, 0):
+            shown.add(d)
+    used = {d for d in taken if 0 <= d < count}
+    for desktop, mapped in clients:
+        if desktop is None or not 0 <= desktop < count:
+            continue                    # on every workspace, or on none
+        used.add(desktop)
+        if mapped:
+            shown.add(desktop)
+    hidden = [d for d in range(count) if d not in shown]
+    if not hidden:
+        return None, "every workspace is shown"
+    empty = [d for d in hidden if d not in used]
+    if empty:
+        return max(empty), "the highest-numbered empty workspace no screen shows"
+    return max(hidden), "no workspace is empty: the highest-numbered one no screen shows"
 
 
 @dataclass
@@ -405,6 +467,66 @@ class AppService:
         two said the same (the older one's connection is on its way
         out)."""
         return next((w for w in reversed(self.windows) if w.wid == wid), None)
+
+    # ── placing ─────────────────────────────────────────────────────────
+    def place(self, window: AppWindow, msg: dict) -> None:
+        """An app window not yet shown asks for a workspace (protocol
+        `place`): its `_NET_WM_DESKTOP` set and read back, then `placed`."""
+        d = self.display
+        if d is None:
+            window.send(protocol.placed(None, "no X display"))
+            return
+        near = msg.get(protocol.WITH)
+        try:
+            desktop, how = self._placement(window, near if protocol.valid_wid(near) else None)
+            if desktop is not None:
+                d.set_prop(window.wid, "_NET_WM_DESKTOP", xp.Atom.CARDINAL, [desktop])
+                # The round trip: once this answers, the server has the
+                # property, before the app (told next) can map.
+                if d.get_int(window.wid, "_NET_WM_DESKTOP") != desktop:
+                    desktop, how = None, "the window is gone"
+        except Exception as e:          # noqa: BLE001  (a window gone meanwhile, mostly)
+            log.debug("placing 0x%x failed", window.wid, exc_info=True)
+            desktop, how = None, f"placing failed ({type(e).__name__})"
+        finally:
+            d.wake()
+        if desktop is not None:
+            window.placed = desktop
+            log.info("%s window 0x%x placed on workspace %d (%s)", window.kind or "app",
+                     window.wid, desktop, how)
+        else:
+            log.info("%s window 0x%x not placed: %s", window.kind or "app", window.wid, how)
+        window.send(protocol.placed(desktop, None if desktop is not None else how))
+
+    def _placement(self, window: AppWindow, near: int | None) -> tuple[int | None, str]:
+        d = self.display
+        core = d.conn.core
+        if core.GetWindowAttributes(window.wid).reply().map_state != xp.MapState.Unmapped:
+            return None, "the window is shown already"
+        if near is not None:
+            desktop = d.get_int(near, "_NET_WM_DESKTOP")
+            if desktop is None or desktop == UNSET:
+                return None, f"window 0x{near:x} is on no one workspace"
+            return desktop, f"where window 0x{near:x} is"
+        count = d.get_int(d.root, "_NET_NUMBER_OF_DESKTOPS") or 0
+        current = d.get_int(d.root, "_NET_CURRENT_DESKTOP")
+        viewports = d.get_ints(d.root, "_NET_DESKTOP_VIEWPORT", 2 * max(1, count))
+        atom = d.atom("_NET_WM_DESKTOP")
+        asked = [(core.GetProperty(False, c, atom, xp.Atom.CARDINAL, 0, 1),
+                  core.GetWindowAttributes(c))
+                 for c in d.get_ints(d.root, "_NET_CLIENT_LIST", 4096)]
+        clients = []
+        for prop, attrs in asked:
+            try:
+                p, a = prop.reply(), attrs.reply()
+            except Exception:           # noqa: BLE001  (gone since the list was read)
+                continue
+            raw = bytes(p.value.buf())
+            desktop = struct.unpack("<I", raw[:4])[0] if p.format == 32 and len(raw) >= 4 \
+                else None
+            clients.append((desktop, a.map_state == xp.MapState.Viewable))
+        taken = {w.placed for w in self.windows if w is not window and w.placed is not None}
+        return pick_desktop(count, current, viewports, clients, taken)
 
     # ── keys ────────────────────────────────────────────────────────────
     def grab_keys(self, window: AppWindow) -> None:

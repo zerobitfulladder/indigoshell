@@ -47,8 +47,21 @@ which ends at once, saying the dialog). A page popup (a datalist's, an
 autofill list) that opened anyway is closed when the action settles:
 it would hold the user's pointer and keyboard.
 
+**Alone.** The agent's own window (protocol.py, "Alone"; app.py has
+the moves): `open` in it, `borrow` a user's tab into it, `return` a tab
+from it, each answered once the window is placed and shown (window.py
+`show_placed`). `show` opens a local file in the user's window;
+`downloads` lists this run's downloads and `wait` waits for one;
+`upload` arms the answer to the page's next file chooser (watch.py
+`arm_files`) with paths browser/uploads.py let through, then clicks what
+opens it with real input (a hidden field: the key F24, which lets a page
+open a chooser and does nothing else, then a click in the agent's world;
+measured: a modifier alone does not let it, F24 does), and answers once
+the chooser took them. A host sites.json keeps from the agent (identity.py)
+refuses every request on its tabs (`allowed`).
+
 Every request is logged at info: its type, the tab and the host, never
-what the page holds, never what the agent types.
+what the page holds, never what the agent types, never a file's name.
 
 Qt: nothing here is newer than 6.8 (the Pi's Debian). A selection in
 an iframe is read with QWebEngineFrame (6.8); with an older Qt that
@@ -59,17 +72,19 @@ import logging
 import os
 import re
 import time
+from functools import partial
 from urllib.parse import urlsplit
 
 import shiboken6
-from PySide6.QtCore import QObject, QPoint, QPointF, QTimer
+from PySide6.QtCore import QObject, QPoint, QPointF, Qt, QTimer, QUrl
 from PySide6.QtGui import QCursor
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWidgets import QApplication
 
-from indigoshell.browser import protocol
+from indigoshell.applink.protocol import PLACE_WAIT_S
+from indigoshell.browser import protocol, uploads
 
 from . import act, reader
 from .tabs import Tab, to_url
@@ -87,6 +102,9 @@ TYPE_BATCH = 20                 # characters typed between turns of the event lo
 SCROLL_POLL_S = 0.06
 SCROLL_MAX_S = 1.5              # a smooth scroll's end, waited for at most
 FILL_MAX = 100                  # fields in one fill
+READY_POLL_S = 0.03             # the agent's new window, checked this often until shown
+# Requests whose name is no Python method name.
+METHODS = {"return": "return_"}
 
 
 class RequestError(Exception):
@@ -269,7 +287,7 @@ class Connection(QObject):
         job = Job(self, rid, kind)
         self.jobs[rid] = job
         requests.watch.touch(job, msg.get("tab"))   # a session it names lasts while it runs
-        job.start(getattr(requests, kind)(job, msg))
+        job.start(getattr(requests, METHODS.get(kind, kind))(job, msg))
 
     def send(self, msg: dict) -> None:
         if self.closed or not shiboken6.isValid(self.sock):
@@ -397,7 +415,7 @@ def _strings(value, key: str) -> list[str]:
 
 
 REFUSALS = {
-    "upload": lambda what: protocol.UPLOADS,
+    "upload": lambda what: protocol.FILE_FIELD.format(what=what),
     "select": lambda what: f"{what} is a <select>: choose its option with select (its popup "
                            "would take the user's pointer)",
     "picker": lambda what: f"{what} opens a picker that would take the user's pointer: set it "
@@ -442,10 +460,25 @@ class Requests:
                     return w, tab
         raise RequestError(f"no tab {tab_id}")
 
+    # ── the sites the user keeps from the agent (identity.py) ────────────
+    def kept(self, host: str) -> bool:
+        return bool(host) and self.browser.identity.agent_policy(host) == "never"
+
+    def allowed(self, tab: Tab) -> None:
+        """Refused: a tab at a host the user keeps from the agent."""
+        host = tab.host()
+        if self.kept(host):
+            raise RequestError(protocol.kept(host))
+
+    def allowed_url(self, url: QUrl) -> None:
+        if self.kept(url.host()):
+            raise RequestError(protocol.kept(url.host()))
+
     def showing(self, tab_id: int) -> tuple:
-        """The tab, which must be the current one of its window and not
-        taken over by the user."""
+        """The tab, which must be the current one of its window, not
+        taken over by the user, and at no host they keep from the agent."""
         window, tab = self.find(tab_id)
+        self.allowed(tab)
         if self.watch.paused(tab_id):
             raise RequestError(protocol.took_over(tab_id))
         if window.current_tab() is not tab:
@@ -467,10 +500,24 @@ class Requests:
                                "first (dialog: accept or dismiss)")
 
     def tab(self, window, tab: Tab) -> dict:
-        return {"tab": tab.id, "window": window.id, "index": window.tabs.index(tab),
-                "title": tab.page.title(), "url": tab.url().toString(),
-                "loading": tab.busy(), "current": window.current_tab() is tab,
-                **self.watch.about(tab.id)}
+        origin = window.borrowed.get(tab.id)
+        out = {"tab": tab.id, "window": window.id, "index": window.tabs.index(tab),
+               "title": tab.page.title(), "url": tab.url().toString(),
+               "loading": tab.busy(), "current": window.current_tab() is tab,
+               **self.watch.about(tab.id),
+               "borrowed": {"window": origin["window_id"], "index": origin["index"]}
+               if origin else None}
+        host = tab.host()
+        if self.kept(host):
+            out.update(title="", url=f"{tab.url().scheme()}://{host}/", kept=True)
+        return out
+
+    async def until_ready(self, job: Job, window) -> None:
+        """Until the agent's new window is placed and shown (window.py
+        `show_placed`: at most applink's PLACE_WAIT_S)."""
+        deadline = time.monotonic() + PLACE_WAIT_S + 1.0
+        while not window.ready and time.monotonic() < deadline:
+            await job.sleep(READY_POLL_S)
 
     def note(self, kind: str, msg: dict) -> None:
         """The request in the log: its type, its tab and host, no content.
@@ -492,6 +539,14 @@ class Requests:
             parts.append("to")
         if kind == "go" and msg.get("action") in protocol.GO_ACTIONS:
             parts.append(msg["action"])
+        if kind == "open" and msg.get("window") == protocol.AGENT_WINDOW:
+            parts.append("in the agent's window")
+        if kind == "show":
+            parts.append("a local file")
+        if kind == "upload" and isinstance(msg.get("paths"), list):
+            parts.append(f"{len(msg['paths'])} file(s)")
+        if kind == "wait" and protocol.is_id(msg.get("download")):
+            parts.append(f"for download {msg['download']}")
         if kind == "read" and msg.get("what") in protocol.READS:
             parts.append(msg["what"])
         log.info("agent: %s%s", " ".join(parts), f" ({host})" if host else "")
@@ -502,7 +557,7 @@ class Requests:
         out = []
         for w in self.windows():
             out.append({"window": w.id, "xid": int(w.internalWinId()) or None,
-                        "single": w.single, "focused": w is focused,
+                        "single": w.single, "focused": w is focused, "agent": w.agent,
                         "tabs": [self.tab(w, t) for t in w.tabs]})
         return {"windows": out, "focused": focused.id if focused is not None else None}
 
@@ -510,7 +565,12 @@ class Requests:
         url = msg.get("url")
         if not isinstance(url, str) or not url.strip():
             raise RequestError("`url` must be an address (or a search)")
-        if msg.get("window") is not None:
+        target = to_url(url.strip())
+        self.allowed_url(target)
+        where = msg.get("window")
+        if where == protocol.AGENT_WINDOW:
+            window = self.browser.agent_window(_voice(msg))
+        elif where is not None:
             window = self.window(_int(msg, "window"))
             if window.single:
                 raise RequestError(f"window {window.id} is a page's popup; it takes no tabs")
@@ -518,12 +578,17 @@ class Requests:
             window = self.browser.main_window()
         if not msg.get("background"):
             self.not_hidden(window)
-        tab = window.add_tab(to_url(url.strip()), background=bool(msg.get("background")))
+        tab = window.add_tab(target, background=bool(msg.get("background")))
         tab.expect_load()
+        if window.agent:
+            window.show_placed()        # a window just made: placed, then shown
+            await self.until_ready(job, window)
+        window, tab = self.find(tab.id)
         return self.tab(window, tab)
 
     async def switch(self, job: Job, msg: dict) -> dict:
         window, tab = self.find(_int(msg, "tab"))
+        self.allowed(tab)
         if self.watch.paused(tab.id):
             raise RequestError(protocol.took_over(tab.id))
         if window.current_tab() is not tab:
@@ -547,6 +612,7 @@ class Requests:
         if url is not None:
             if not isinstance(url, str) or not url.strip():
                 raise RequestError("`url` must be an address (or a search)")
+            self.allowed_url(to_url(url.strip()))
             window.load(url.strip(), "here", tab)
         elif action in ("back", "forward"):
             history = tab.page.history()
@@ -562,6 +628,8 @@ class Requests:
         return self.tab(window, tab)
 
     async def wait(self, job: Job, msg: dict) -> dict:
+        if msg.get("download") is not None:
+            return await self._wait_download(job, msg)
         tab_id = _int(msg, "tab")
         self.showing(tab_id)
         timeout = _seconds(msg, "timeout", protocol.WAIT_DEFAULT_S, protocol.WAIT_MAX_S)
@@ -655,6 +723,7 @@ class Requests:
     async def look(self, job: Job, msg: dict) -> dict:
         window = self._look_window(msg)
         tab = window.current_tab()
+        self.allowed(tab)
         focused = self.focused() is window
         out = {**self.tab(window, tab), "focused": focused,
                "unfocused_for": None if focused or window.unfocused_at is None
@@ -809,7 +878,8 @@ class Requests:
 
     def before(self, tab: Tab) -> dict:
         return {"loads": tab.loads, "navigations": tab.navigations,
-                "tabs": {t.id for w in self.windows() for t in w.tabs}}
+                "tabs": {t.id for w in self.windows() for t in w.tabs},
+                "downloads": {d["download"] for d in self.browser.download_list}}
 
     async def settled(self, job: Job, tab: Tab, before: dict, **extra) -> dict:
         """The answer to an action, once the page settled: a navigation it
@@ -841,6 +911,10 @@ class Requests:
                "opened": opened, **extra}
         if notes:
             out["notes"] = notes
+        started = [self.browser.download(d["download"]) for d in self.browser.download_list
+                   if d["download"] not in before.get("downloads", ())]
+        if started:
+            out["downloads"] = started
         return out
 
     async def click(self, job: Job, msg: dict) -> dict:
@@ -1034,7 +1108,7 @@ class Requests:
         if field["disabled"]:
             raise RequestError(f"[{ref}] is disabled")
         if kind == "file":
-            raise RequestError(protocol.UPLOADS)
+            raise RequestError(protocol.FILE_FIELD.format(what=f"[{ref}]"))
         if kind == "text":
             if not isinstance(value, str):
                 raise RequestError(f"[{ref}] is a text field: give a string")
@@ -1088,3 +1162,129 @@ class Requests:
             tab_id = _int(msg, "tab")
             self.find(tab_id)
         return {"released": self.watch.release(tab_id)}
+
+    # ── alone: the agent's own window (protocol.py, "Alone") ────────────
+    async def borrow(self, job: Job, msg: dict) -> dict:
+        tab_id = _int(msg, "tab")
+        window, tab = self.find(tab_id)
+        self.allowed(tab)
+        if self.watch.paused(tab_id):
+            raise RequestError(protocol.took_over(tab_id))
+        if window.agent:
+            raise RequestError(f"tab {tab_id} is in {protocol.voice_name(window.agent)}'s own "
+                               "window already")
+        if window.single:
+            raise RequestError(f"tab {tab_id} is a page's popup (window {window.id}); it moves to "
+                               "no other window")
+        if tab.page.in_dialog:
+            raise RequestError(f"tab {tab_id} has a dialog open; it moves once that is answered")
+        origin = self.browser.borrow(tab, _voice(msg))
+        window, tab = self.find(tab_id)
+        await self.until_ready(job, window)
+        window, tab = self.find(tab_id)
+        log.info("agent: tab %d borrowed from window %d into window %d", tab_id,
+                 origin["window_id"], window.id)
+        return {**self.tab(window, tab),
+                "from": {"window": origin["window_id"], "index": origin["index"]}}
+
+    async def return_(self, job: Job, msg: dict) -> dict:
+        tab_id = _int(msg, "tab")
+        window, tab = self.find(tab_id)
+        if not window.agent:
+            raise RequestError(f"tab {tab_id} is not in your own window: only a tab there goes "
+                               "back to the user")
+        if tab.page.in_dialog:
+            raise RequestError(f"tab {tab_id} has a dialog open; it moves once that is answered")
+        try:
+            home, to = self.browser.hand_back(tab, show=bool(msg.get("show")))
+        except LookupError as e:
+            raise RequestError(f"{e}; tab {tab_id} stays in your window") from None
+        return {**self.tab(home, tab), "to": to}
+
+    async def show(self, job: Job, msg: dict) -> dict:
+        raw = msg.get("path")
+        if not isinstance(raw, str) or not raw.strip():
+            raise RequestError("`path` must be a file's absolute path, or a file:// URL")
+        raw = raw.strip()
+        if raw.lower().startswith("file:"):
+            local = QUrl(raw).toLocalFile()
+        else:
+            local = os.path.expanduser(raw) if raw.startswith("~/") else raw
+        if not local or not os.path.isabs(local):
+            raise RequestError(f"{raw!r} is not an absolute path or a file:// URL")
+        if not os.path.exists(local):
+            raise RequestError(f"{local} does not exist")
+        if not os.path.isfile(local):
+            raise RequestError(f"{local} is not a file")
+        window = self.browser.main_window()
+        current = window.current_tab()
+        background = current is not None and self.watch.paused(current.id)
+        tab = window.add_tab(QUrl.fromLocalFile(os.path.abspath(local)), background=background)
+        tab.expect_load()
+        return {**self.tab(window, tab), "background": background}
+
+    # ── downloads ───────────────────────────────────────────────────────
+    async def downloads(self, job: Job, msg: dict) -> dict:
+        return {"downloads": [self.browser.download(d["download"])
+                              for d in self.browser.download_list]}
+
+    async def _wait_download(self, job: Job, msg: dict) -> dict:
+        did = _int(msg, "download")
+        timeout = _seconds(msg, "timeout", protocol.WAIT_DEFAULT_S, protocol.WAIT_MAX_S)
+        if self.browser.download(did) is None:
+            raise RequestError(f"no download {did} in this run of Jack (downloads lists them)")
+        began = time.monotonic()
+        while True:
+            now = self.browser.download(did)
+            if now["state"] != "running":
+                return {**now, "waited": round(time.monotonic() - began, 3)}
+            left = began + timeout - time.monotonic()
+            if left <= 0:
+                raise RequestError(f"timed out after {timeout:g} s waiting for download {did} "
+                                   f"({now['percent'] or 0}% so far)")
+            await job.sleep(min(POLL_S, left))
+
+    # ── uploads ─────────────────────────────────────────────────────────
+    async def upload(self, job: Job, msg: dict) -> dict:
+        try:
+            paths = uploads.check(msg.get("paths"))
+        except ValueError as e:
+            raise RequestError(str(e)) from None
+        if len(paths) > protocol.UPLOAD_PATHS_MAX:
+            raise RequestError(f"at most {protocol.UPLOAD_PATHS_MAX} files at once")
+        ref = _int(msg, "ref")
+        window, tab = self.acting(job, msg)
+        aim = await job.read(tab.page, reader.script("uploadTarget", ref))
+        if aim.get("folder"):
+            raise RequestError(f"{aim['field']} takes a folder; upload gives a page files")
+        if aim.get("multiple") is False and len(paths) > 1:
+            raise RequestError(f"{aim['field']} takes one file; {len(paths)} were given")
+        self.going_on(tab)
+        before = self.before(tab)
+        self.watch.arm_files(tab.id, paths)
+        job.cleanups.append(partial(self.watch.disarm_files, tab.id))
+        tab.note_input()
+        if aim["aim"] == "script":
+            # A hidden field with no label shown: a key the page may open
+            # a chooser after (a modifier alone is not one), then its click.
+            self.watch.inject.key(self.proxy(tab), int(Qt.Key.Key_F24))
+            await job.sleep(0.05)
+            self.going_on(tab)
+            await job.read(tab.page, reader.script("fileClick", ref))
+        else:
+            spot = await self.spot(job, tab, {"ref": aim["label"] if aim["aim"] == "label"
+                                              else ref}, refuse=False, cover=True)
+            self.going_on(tab)
+            self.watch.inject.click(self.proxy(tab), self.at(tab, spot))
+        deadline = time.monotonic() + protocol.UPLOAD_WAIT_S
+        while self.watch.took_files(tab.id) is None and time.monotonic() < deadline:
+            await job.sleep(SETTLE_POLL_S)
+            self.going_on(tab)
+        took = self.watch.disarm_files(tab.id)
+        if took is None:
+            raise RequestError(protocol.NO_CHOOSER.format(what=aim["what"]))
+        if took.get("error"):
+            raise RequestError(took["error"])
+        files = [{"name": os.path.basename(p), "size": os.path.getsize(p)} for p in took["paths"]]
+        return await self.settled(job, tab, before, files=files, field=aim.get("field"),
+                                  what=aim["what"])

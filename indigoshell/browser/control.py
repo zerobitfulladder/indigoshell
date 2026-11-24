@@ -24,9 +24,14 @@ window until a request opens one. A Jack that is starting meanwhile, the
 user's or another start's, is the one it then connects to.
 
 The acting requests (`click`, `type_text`, `key`, `select`, `scroll`,
-`fill`, `hover`, `dialog`, `release`) carry the agent's `voice`, which
-Jack draws its hold on the tab in (protocol.VOICES). On a tab the user
-took over they raise ControlError with protocol.TOOK_OVER's words.
+`fill`, `hover`, `dialog`, `upload`, `release`) carry the agent's
+`voice`, which Jack draws its hold on the tab in (protocol.VOICES). On a
+tab the user took over they raise ControlError with protocol.TOOK_OVER's
+words.
+
+The agent's own window (protocol.py, "Alone"): `open(..., window="agent",
+voice=...)`, `borrow`, `return_tab`; `show` puts a local file in the
+user's window; `downloads` and `wait_download`.
 
 `look()` is for the call: what the user is looking at in Jack, as
 content blocks to send with their words, or nothing when Jack is not
@@ -75,12 +80,15 @@ class TabInfo:
     agent: str | None = None            # None, "driving", "paused" (the user took over)
     voice: str | None = None
     dialog: dict | None = field(default=None, compare=False)   # held for the agent
+    borrowed: dict | None = field(default=None, compare=False)  # where it came from
+    kept: bool = False                  # at a host the user keeps from the agent
 
     @classmethod
     def of(cls, d: dict) -> "TabInfo":
         return cls(int(d["tab"]), int(d["window"]), int(d["index"]), str(d.get("title") or ""),
                    str(d.get("url") or ""), bool(d.get("loading")), bool(d.get("current")),
-                   d.get("agent"), d.get("voice"), d.get("dialog"))
+                   d.get("agent"), d.get("voice"), d.get("dialog"), d.get("borrowed"),
+                   bool(d.get("kept")))
 
 
 @dataclass(frozen=True)
@@ -90,11 +98,13 @@ class WindowInfo:
     single: bool
     focused: bool
     tabs: tuple[TabInfo, ...]
+    agent: str | None = None            # the voice whose own window it is
 
     @classmethod
     def of(cls, d: dict) -> "WindowInfo":
         return cls(int(d["window"]), d.get("xid"), bool(d.get("single")),
-                   bool(d.get("focused")), tuple(TabInfo.of(t) for t in d.get("tabs") or ()))
+                   bool(d.get("focused")), tuple(TabInfo.of(t) for t in d.get("tabs") or ()),
+                   d.get("agent"))
 
     def current(self) -> TabInfo | None:
         return next((t for t in self.tabs if t.current), None)
@@ -194,11 +204,13 @@ class Control:
         result = await self.request("tabs", within=within)
         return [WindowInfo.of(w) for w in result.get("windows") or ()]
 
-    async def open(self, url: str, *, window: int | None = None, background: bool = False,
-                   within: float = REQUEST_S) -> TabInfo:
+    async def open(self, url: str, *, window: int | str | None = None, background: bool = False,
+                   voice: str | None = None, within: float = REQUEST_S) -> TabInfo:
+        """`window`: an id, or protocol.AGENT_WINDOW for the agent's own
+        (made and placed first when there is none: `voice`'s)."""
         return TabInfo.of(await self.request(
-            "open", {"url": url, "window": window, "background": background or None},
-            within=within))
+            "open", {"url": url, "window": window, "background": background or None,
+                     "voice": voice}, within=within))
 
     async def switch(self, tab: int, *, within: float = REQUEST_S) -> TabInfo:
         return TabInfo.of(await self.request("switch", {"tab": tab}, within=within))
@@ -290,6 +302,37 @@ class Control:
     async def release(self, tab: int | None = None, *, within: float = REQUEST_S) -> list[int]:
         """The tabs let go of."""
         return (await self.request("release", {"tab": tab}, within=within))["released"]
+
+    async def upload(self, tab: int, ref: int, paths: list[str], *, voice: str | None = None,
+                     within: float = REQUEST_S) -> dict:
+        """TAB + {"navigated", "opened", "dialog", "files", "field", "what"}."""
+        return await self.request("upload", {"tab": tab, "ref": ref, "paths": list(paths),
+                                             "voice": voice}, within=within)
+
+    # ── alone, show, downloads (protocol.py) ────────────────────────────
+    async def borrow(self, tab: int, *, voice: str | None = None,
+                     within: float = REQUEST_S) -> dict:
+        """TAB (in the agent's window) + {"from": {"window", "index"}}."""
+        return await self.request("borrow", {"tab": tab, "voice": voice}, within=within)
+
+    async def return_tab(self, tab: int, *, show: bool = False,
+                         within: float = REQUEST_S) -> dict:
+        """TAB (in the user's window) + {"to": "its window" | "another window"}."""
+        return await self.request("return", {"tab": tab, "show": show or None}, within=within)
+
+    async def show(self, path: str, *, within: float = REQUEST_S) -> dict:
+        """TAB + {"background"}."""
+        return await self.request("show", {"path": path}, within=within)
+
+    async def downloads(self, *, within: float = REQUEST_S) -> list[dict]:
+        return (await self.request("downloads", within=within))["downloads"]
+
+    async def wait_download(self, download: int, *,
+                            timeout: float = protocol.WAIT_DEFAULT_S) -> dict:
+        """DOWNLOAD + {"waited"}, once it finished (done, failed or
+        cancelled); Jack's own bound is `timeout`."""
+        return await self.request("wait", {"download": download, "timeout": float(timeout)},
+                                  within=float(timeout) + 5.0)
 
 
 # ── finding Jack ────────────────────────────────────────────────────────

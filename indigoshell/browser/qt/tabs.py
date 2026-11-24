@@ -2,6 +2,10 @@
 
 A window keeps its tabs' views in a stack and shows the current one; a
 tab in the background keeps loading and running (Chromium throttles it).
+A tab moves to another window (the agent's `borrow` and `return`) by
+its page going into a new view there (`new_view`): the same page, so
+everything in it stays (measured: a half-filled form, the scroll, the
+page's scripts and cookies), and the tab keeps its id.
 
 The page's own signals are forwarded to the window as `changed` (what
 the top bar and the window's line show moved), `visited` and `titled` (for the
@@ -56,7 +60,8 @@ cases):
 The page's dialogs (alert, confirm, prompt, and the question before
 leaving a page that asks, "beforeunload") and its file choosers go to
 the browser's Watch first (watch.py): held for the agent while it drives
-the tab, the user's own otherwise, as Qt shows them. Qt asks for each
+the tab (a chooser answered with an upload's files), the user's own
+otherwise, as Qt shows them. Qt asks for each
 with a call that returns the answer, so a dialog is a nested event loop
 whichever answers it; while one is open (`in_dialog`) the page must not
 be deleted, and what would delete it waits (`after_dialog`, window.py).
@@ -167,8 +172,9 @@ class Page(QWebEnginePage):
         return bool(ok), str(text) if ok else ""
 
     def chooseFiles(self, mode, old_files, accepted_types):
-        if self.watch is not None and self.watch.refuse_files(self):
-            return []
+        chosen = self.watch.files_for(self, mode.name) if self.watch is not None else None
+        if chosen is not None:
+            return chosen               # the agent's upload, or refused while it drives
         return super().chooseFiles(mode, old_files, accepted_types)
 
 
@@ -210,6 +216,18 @@ class Tab(QObject):
         page.loadingChanged.connect(self._on_loading)
         page.navigationRequested.connect(self._on_navigation)
         page.renderProcessTerminated.connect(self._on_crash)
+
+    def new_view(self) -> QWebEngineView:
+        """The page in a new view, for the tab's new window; the old view,
+        empty now, is returned for its window to drop. The page is the new
+        view's child from here on: the old view's deletion must not take
+        it."""
+        old = self.view
+        view = QWebEngineView()
+        view.setPage(self.page)
+        self.page.setParent(view)
+        self.view = view
+        return old
 
     # ── what the top bar shows ──────────────────────────────────────────
     def url(self) -> QUrl:

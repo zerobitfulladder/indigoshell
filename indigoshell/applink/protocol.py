@@ -18,6 +18,18 @@ App -> shell
                 takes from it (applink/service.py); a kind may say more
                 here (Jack: browser/protocol.py).
 
+App -> shell, any time after the announce
+    place       {"type": "place", "with"?: <X window>}
+                The window, made but not yet shown (mapped), wants a
+                workspace of the window manager's before it maps, so that
+                it never appears on the one the user is looking at: an
+                empty one no screen shows (applink/service.py has the
+                rule), or with `with` the one that other window is on (a
+                popup of a window placed so). The app maps the window once
+                `placed` answers, or after PLACE_WAIT_S with no answer (an
+                older shell that does not know `place`), or at once when
+                no shell listens: then wherever the window manager puts it.
+
 Shell -> app
     attached    {"type": "attached"}
                 The answer to the announce: the shell has the window. It
@@ -27,6 +39,11 @@ Shell -> app
                 Sent as the shell stops for a reload: it will be back in
                 a moment (a second or two), so an app can wait longer than
                 usual before it shows its state itself.
+    placed      {"type": "placed", "desktop": <index> | null, "why"?: str}
+                The answer to `place`: the window's `_NET_WM_DESKTOP` is
+                set (and read back, so the X server has it before the app
+                maps), or null with why not (no workspace to put it on,
+                the window already shown, no X display).
 """
 
 import json
@@ -44,6 +61,11 @@ WID = "wid"
 ANNOUNCE = "announce"
 ATTACHED = "attached"
 RESTARTING = "restarting"
+PLACE = "place"
+PLACED = "placed"
+WITH = "with"
+DESKTOP = "desktop"
+PLACE_WAIT_S = 1.5              # an app waits this long for `placed`, then maps anyway
 
 
 def socket_path() -> str:
@@ -78,3 +100,11 @@ def valid_wid(wid) -> bool:
     """Whether an announced window id can be an X window at all (X
     resource ids are 29 bits)."""
     return isinstance(wid, int) and not isinstance(wid, bool) and 0 < wid < 1 << 29
+
+
+def place(with_wid: int | None = None) -> dict:
+    return message(PLACE, **({WITH: int(with_wid)} if with_wid else {}))
+
+
+def placed(desktop: int | None, why: str | None = None) -> dict:
+    return message(PLACED, **{DESKTOP: desktop}, **({"why": why} if why else {}))

@@ -43,11 +43,16 @@ screenshots tabs through it, with `control.py` as the client (pure
 asyncio; it starts the browser when none runs) and `hands.py` as the
 tools the laptop lends (`browser_hands()`). `control.look()` is the
 call's: what the user is looking at in the browser, as content blocks.
+The agent also has a Jack window of its own, placed by the shell on a
+workspace the user is not looking at, where it borrows the user's tabs
+and returns them (protocol.py, "Alone"); it shows the user local files,
+lists downloads and uploads files, never from the places `uploads.py`
+lists.
 
 The two halves must stay apart: nothing under `browser/qt/` imports
 xcffib, skia or a shell module that does (only the pure ones: `core/`'s,
-`fuzzy`, `applink.protocol`, and `protocol`, `places` and `desktop`
-here), and nothing the daemon imports pulls in PySide6: `context.py`
+`fuzzy`, `applink.protocol`, and `protocol`, `places`, `uploads` and
+`desktop` here), and nothing the daemon imports pulls in PySide6: `context.py`
 takes only `protocol` and `places` from this package, `control.py` only
 `protocol` (and `desktop` and `services.proc` to start the browser),
 and `hands.py` `control`, `protocol` and the agent's `hands`.

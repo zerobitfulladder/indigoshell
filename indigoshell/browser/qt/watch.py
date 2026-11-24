@@ -31,12 +31,18 @@ agent's session there, or goes on with it (`begin`). While it drives:
   synchronous (QWebEnginePage.javaScriptConfirm returns the answer), so
   the page waits in it, as it waits in Qt's own modal QMessageBox, until
   `answer`, the user taking over or releasing (then it is shown to them
-  as their own), or DIALOG_S unanswered (dismissed). A page opening a
-  file chooser while driven gets none (`refuse_files`).
+  as their own), or DIALOG_S unanswered (dismissed).
+- A file chooser the page opens (tabs.py's Page asks `files_for`) gets
+  the paths an `upload` armed for that page, once (`arm_files`), and
+  nothing otherwise while the agent drives the tab; outside a session it
+  is the user's, Qt's own dialog.
 
 Ends: QUIET_S after the last request on the tab ended (requests that
 read keep it going but never start one; a held dialog holds the clock),
-`release`, the tab closing, its window showing another tab.
+`release`, the tab closing, its window showing another tab, the tab
+going back to the user (`return`: `drop`, which ends a pause too). A
+tab moving to another window (`borrow`) keeps its session: the overlay
+follows it to the window that shows it.
 
 **Take-over.** A key the user presses in the window (not a modifier
 alone), or a click on the mark, ends the session at once and PAUSES the
@@ -225,6 +231,8 @@ class Watch(QObject):
         self.inject = act.Injector()
         self.overlays: dict[int, Overlay] = {}      # window id -> its overlay
         self._release_after: set[int] = set()       # windows whose next mouse release is ours
+        self._armed: dict[int, list[str]] = {}      # page id -> the next chooser's answer
+        self._took: dict[int, dict] = {}            # page id -> what that chooser took
 
     # ── what it says ────────────────────────────────────────────────────
     def driving(self, tab_id: int) -> bool:
@@ -385,6 +393,19 @@ class Watch(QObject):
         log.info("the user handed tab %d back to %s", tab.id, protocol.voice_name(s.voice))
         self._refresh(self._where(tab.id)[0])
         return True
+
+    def drop(self, tab_id: int, why: str) -> None:
+        """The agent's hold on the tab goes, driving or paused: the tab is
+        the user's again (returned to them)."""
+        s = self.sessions.pop(tab_id, None)
+        if s is None:
+            return
+        self._unguard(s)
+        s.stop()
+        self._let_go(s, to_user=True)
+        log.info("agent: the %s session on tab %d ended (%s)",
+                 "paused" if s.state == "paused" else "driving", tab_id, why)
+        self._refresh(self._where(tab_id)[0])
 
     def forget(self, tab) -> None:
         """The tab is closing: its session goes, a held dialog dismissed."""
@@ -550,12 +571,47 @@ class Watch(QObject):
             held.finish(answer, to_user=to_user)
             self._arm(s)
 
-    def refuse_files(self, page) -> bool:
-        """A file chooser the page opens: refused while the agent drives
-        (True), the user's otherwise."""
+    def arm_files(self, tab_id: int, paths: list[str]) -> None:
+        """The next file chooser the tab's page opens gets `paths`
+        (`upload`), once."""
+        self._armed[tab_id] = list(paths)
+        self._took.pop(tab_id, None)
+
+    def disarm_files(self, tab_id: int) -> dict | None:
+        """The upload is over: what the chooser took, or None when the
+        page opened none."""
+        self._armed.pop(tab_id, None)
+        return self._took.pop(tab_id, None)
+
+    def took_files(self, tab_id: int) -> dict | None:
+        return self._took.get(tab_id)
+
+    def files_for(self, page, mode: str) -> list[str] | None:
+        """A file chooser the page opens, in `mode` (a FileSelectionMode's
+        name): the paths armed for it; none while the agent drives the tab
+        otherwise (refused, said in the next answer; Chromium then empties
+        the field, as it does for the user's Cancel: Qt names no files the
+        field held to give back); None when it is the user's (Qt's own
+        dialog)."""
+        paths = self._armed.pop(page.id, None)
+        if paths is not None:
+            if mode not in ("FileSelectOpen", "FileSelectOpenMultiple"):
+                self._took[page.id] = {"error": "the page asked for a folder or a place to save, "
+                                                "not files; it got none"}
+            elif mode == "FileSelectOpen" and len(paths) > 1:
+                self._took[page.id] = {"error": f"the page's chooser takes one file; "
+                                                f"{len(paths)} were given and it got none"}
+            else:
+                self._took[page.id] = {"paths": list(paths)}
+                log.info("tab %d: the page's file chooser answered with %d file(s) (upload)",
+                         page.id, len(paths))
+                return list(paths)
+            log.info("tab %d: the page's file chooser got nothing (%s)", page.id, mode)
+            return []
         s = self.sessions.get(page.id)
         if s is None or s.state != "driving":
-            return False
-        s.notes.append(f"the page asked for files; refused: {protocol.UPLOADS}")
+            return None
+        s.notes.append(protocol.FILES_REFUSED)
         log.info("tab %d: a file chooser refused (the agent drives it)", page.id)
-        return True
+        return []
+

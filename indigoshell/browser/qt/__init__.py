@@ -31,6 +31,7 @@ module that does (`indigoshell.theme` imports skia). Only the pure
 `indigoshell.core` modules (naming, paths, log), `indigoshell.fuzzy`
 (through places), `indigoshell.applink.protocol`,
 `indigoshell.browser.protocol`,
-`indigoshell.browser.places`, and `indigoshell.browser.desktop` (for
+`indigoshell.browser.places`, `indigoshell.browser.uploads` (the places
+uploads never come from), and `indigoshell.browser.desktop` (for
 `--install`). The X side (`browser/context.py`) never sees Qt either.
 """

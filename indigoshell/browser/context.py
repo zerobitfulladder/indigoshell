@@ -25,7 +25,10 @@ number is drawn in the voice's colour (protocol.VOICES); while the user
 has taken it over and the agent waits, in that colour dimmed a third of
 the way to the bar's background. The title keeps its own colour. The window's
 actions (Ctrl+M) then begin with "Let Lilac drive again" (the voice's
-name) for each tab taken over, which sends the browser `resume`.
+name) for each tab taken over, which sends the browser `resume`. The
+agent's own window (its announce names the voice: protocol `agent`,
+"Alone") says whose it is before its tabs: the voice's name in its
+colour, "Lilac", plain like the rest.
 
 The launcher. The shell takes Ctrl+L, Ctrl+T and Ctrl+M from every main
 browser window (protocol.KEYS, grabbed by the app service: applink/
@@ -332,15 +335,35 @@ class Host(Widget):
                 "bookmark_x": book_x, "bookmark_w": book_w}
 
 
+class Owner(Widget):
+    """Whose window it is, before its tabs: the agent's name in its
+    voice's colour, for the agent's own window."""
+
+    def __init__(self, voice: str) -> None:
+        super().__init__()
+        self.label = protocol.voice_name(voice)
+        self.color = protocol.voice_color(voice)
+
+    def measure(self, avail: Size) -> Size:
+        return Size(text.measure(self.label, SIZE), text.line_height(SIZE))
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        text.draw(canvas, self.label, self.rect.left(), text.baseline_in(self.rect, SIZE), SIZE,
+                  theme.color(self.color))
+
+
 class JackContent(Widget):
     """Tabs and host in a row, and the progress line along the bottom
-    edge: what the top bar shows for one browser window."""
+    edge: what the top bar shows for one browser window; for the agent's
+    own window (`owner`, its voice), its name first."""
 
-    def __init__(self) -> None:
+    def __init__(self, owner: str | None = None) -> None:
         super().__init__()
         self.tabs = TabList()
         self.host = Host()
-        self.row = Row([self.tabs, Spacer(size=theme.SPACING_MD), self.host],
+        self.owner = Owner(owner) if owner else None
+        lead = [self.owner, Spacer(size=theme.SPACING_MD)] if self.owner else []
+        self.row = Row([*lead, self.tabs, Spacer(size=theme.SPACING_MD), self.host],
                        padding=PAD, align=Align.STRETCH)
         self.progress: int | None = None    # the current tab's load; None when idle
 
@@ -389,7 +412,9 @@ class JackWindow(AppWindow):
         self.single = single
         # Only a main window's keys are the shell's (protocol.py).
         self.keys = {} if single else dict(protocol.KEYS)
-        self.content = JackContent()
+        agent = announce.get(protocol.AGENT)
+        self.agent = protocol.voice_id(agent) if isinstance(agent, str) and agent else None
+        self.content = JackContent(owner=self.agent)
         self.request = None             # the launcher mode last opened for this window
         self.state = protocol.state([], 0, 100, True, url="", bookmarked=False, find=None)
 

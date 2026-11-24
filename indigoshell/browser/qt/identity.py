@@ -38,6 +38,15 @@ host under it; an exact host beats a pattern, a longer pattern beats a
 shorter one. Edits apply without a restart, to pages loaded after the
 edit. A file that does not parse is reported and the rules before it
 stay; a bad entry is reported and skipped.
+
+The same file may say where the agent stays out (protocol.py, "Sites
+kept from the agent"), with the same keys:
+
+    {"identity": {...}, "agent": {"bank.example": "never", "*.health.example": "never"}}
+
+"never" is the one policy: every agent request on a tab at that host is
+refused. The table is optional and empty unless the user writes it;
+Jack never adds to it. It applies from the next request after an edit.
 """
 
 import json
@@ -61,6 +70,12 @@ SCRIPT_NAME = "identity"
 DEFAULT_SITES = {"identity": {"accounts.google.com": ORIGINAL,
                               "accounts.youtube.com": ORIGINAL}}
 
+IDENTITY_TABLE, AGENT_TABLE = "identity", "agent"
+NEVER = "never"
+AGENT_POLICIES = (NEVER,)
+# What each table's values may be, and what a host none names gets.
+TABLES = {IDENTITY_TABLE: (IDENTITIES, DEFAULT), AGENT_TABLE: (AGENT_POLICIES, None)}
+
 _HOST = re.compile(r"^[a-z0-9_]([a-z0-9_.-]*[a-z0-9_])?$|^\[?[0-9a-f:.]+\]?$")
 
 
@@ -78,46 +93,53 @@ def _normal(host: str) -> str:
 
 
 class Rules:
-    """host -> identity, from the "identity" table of sites.json."""
+    """host -> value, from one table of sites.json: the identity (the
+    default "identity" table), or the agent's policy ("agent")."""
 
     def __init__(self, exact: dict[str, str] | None = None,
-                 domains: dict[str, str] | None = None) -> None:
+                 domains: dict[str, str] | None = None, default: str | None = DEFAULT) -> None:
         self.exact = dict(exact or {})
         # Longest first: the most specific pattern wins.
         self.domains = sorted((domains or {}).items(), key=lambda kv: -len(kv[0]))
+        self.default = default
 
-    def identity_for(self, host: str) -> str:
+    def value_for(self, host: str) -> str | None:
         host = _normal(host)
         found = self.exact.get(host)
         if found:
             return found
-        for domain, identity in self.domains:
+        for domain, value in self.domains:
             if host == domain or host.endswith("." + domain):
-                return identity
-        return DEFAULT
+                return value
+        return self.default
+
+    identity_for = value_for
 
     def __eq__(self, other) -> bool:
         return (isinstance(other, Rules) and self.exact == other.exact
-                and self.domains == other.domains)
+                and self.domains == other.domains and self.default == other.default)
 
     def __repr__(self) -> str:
         return f"Rules(exact={self.exact}, domains={dict(self.domains)})"
 
     @classmethod
-    def parse(cls, data) -> tuple["Rules", list[str]]:
-        """Rules from sites.json's parsed contents, and what was skipped.
-        Raises ValueError when the shape is wrong as a whole."""
+    def parse(cls, data, table_name: str = IDENTITY_TABLE) -> tuple["Rules", list[str]]:
+        """Rules from one table of sites.json's parsed contents, and what
+        was skipped (with the identity table, also the keys no table
+        has). Raises ValueError when the shape is wrong as a whole."""
         if not isinstance(data, dict):
             raise ValueError("the file is not a JSON object")
-        warnings = [f"unknown key {k!r} ignored" for k in data if k != "identity"]
-        table = data.get("identity", {})
+        values, default = TABLES[table_name]
+        warnings = ([f"unknown key {k!r} ignored" for k in data if k not in TABLES]
+                    if table_name == IDENTITY_TABLE else [])
+        table = data.get(table_name, {})
         if not isinstance(table, dict):
-            raise ValueError('"identity" is not an object of host: identity')
+            raise ValueError(f'"{table_name}" is not an object of host: {table_name}')
         exact, domains = {}, {}
         for key, identity in table.items():
-            if identity not in IDENTITIES:
-                warnings.append(f"{key!r}: identity {identity!r} is not one of "
-                                f"{', '.join(IDENTITIES)}; skipped")
+            if identity not in values:
+                warnings.append(f"{key!r}: {table_name} {identity!r} is not one of "
+                                f"{', '.join(values)}; skipped")
                 continue
             pattern = key.strip().lower() if isinstance(key, str) else ""
             wild = pattern.startswith("*.")
@@ -126,7 +148,7 @@ class Rules:
                 warnings.append(f"{key!r} is not a host or *.domain; skipped")
                 continue
             (domains if wild else exact)[host] = identity
-        return cls(exact, domains), warnings
+        return cls(exact, domains, default), warnings
 
 
 # ── the page side ───────────────────────────────────────────────────────
@@ -230,6 +252,7 @@ class Identity(QObject):
         self.path = Path(path) if path else sites_path()
         self.agents = user_agents(profile.httpUserAgent())
         self.rules = Rules()
+        self.agent_rules = Rules(default=None)      # where the agent stays out
         self.reloads = 0            # successful loads, for whoever wants to wait on one
         self._text = None           # what the last read found, parsed or not
 
@@ -292,23 +315,38 @@ class Identity(QObject):
             return False
         self._text = text
         try:
-            rules, warnings = Rules.parse(json.loads(text))
+            data = json.loads(text)
+            rules, warnings = Rules.parse(data)
         except ValueError as e:
             log.warning("%s: %s; keeping the rules before it", self.path, e)
             return False
-        for w in warnings:
+        try:
+            agent, more = Rules.parse(data, AGENT_TABLE)
+        except ValueError as e:
+            agent, more = self.agent_rules, [f"{e}; keeping the agent's rules before it"]
+        for w in warnings + more:
             log.warning("%s: %s", self.path, w)
         self.reloads += 1
+        if agent != self.agent_rules:
+            self.agent_rules = agent
+            log.info("sites kept from the agent: %s", self.describe(agent) or "none")
         if rules == self.rules:
             return False
         self.rules = rules
         log.info("site identities: %s", self.describe())
         return True
 
-    def describe(self) -> str:
-        entries = [f"{h} {i}" for h, i in self.rules.exact.items()]
-        entries += [f"*.{d} {i}" for d, i in self.rules.domains]
+    def describe(self, rules: Rules | None = None) -> str:
+        rules = rules or self.rules
+        entries = [f"{h} {i}" for h, i in rules.exact.items()]
+        entries += [f"*.{d} {i}" for d, i in rules.domains]
+        if rules is not self.rules:
+            return ", ".join(entries)
         return ", ".join(entries) or f"none (everything {DEFAULT})"
+
+    def agent_policy(self, host: str) -> str | None:
+        """The agent's policy for a host: "never", or None."""
+        return self.agent_rules.value_for(host) if host else None
 
     def _install_script(self) -> None:
         scripts = self.profile.scripts()

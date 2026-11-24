@@ -400,8 +400,11 @@ def test_pure() -> None:
     want = ["browser_tabs", "browser_open", "browser_switch", "browser_close", "browser_go",
             "browser_wait", "browser_read", "browser_screenshot", "browser_look",
             "browser_click", "browser_type", "browser_key", "browser_select", "browser_scroll",
-            "browser_fill", "browser_hover", "browser_dialog", "browser_release"]
-    check("hands: the nine for looking, then the nine for acting (tests/browser_act.py), in "
+            "browser_fill", "browser_hover", "browser_dialog", "browser_release",
+            "browser_upload", "browser_borrow", "browser_return", "browser_show",
+            "browser_downloads"]
+    check("hands: the nine for looking, then the nine for acting (tests/browser_act.py), then "
+          "the agent's own window, show, downloads, uploads (tests/browser_alone.py), in "
           "order, each a Hand", names == want
           and all(isinstance(h, Hand) for h in hands), f"{names}")
     problems = []
@@ -1056,7 +1059,9 @@ def test_in_process(on_screen: bool = False) -> None:
 
     # ── the log ─────────────────────────────────────────────────────────
     lines = [r.getMessage() for r in logs.records if r.name.endswith("qt.control")]
-    looking = set(protocol.REQUESTS) - set(protocol.ACTS) - {"release"}  # acting: browser_act.py
+    # Acting: browser_act.py; alone, show, downloads, upload: browser_alone.py.
+    looking = (set(protocol.REQUESTS) - set(protocol.ACTS) - {"release", protocol.UPLOAD}
+               - set(protocol.ALONE))
     kinds = {k for k in looking if any(m.startswith(f"agent: {k}") for m in lines)}
     leaks = [m for m in lines if any(s in m for s in (SECRET, "SELECTED-WORDS", "FRAME-WORDS",
                                                       "Your account", "MARKER", "#never"))]
