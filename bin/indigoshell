@@ -1,0 +1,8 @@
+#!/bin/sh
+# The `indigoshell` command, run from this checkout through its venv: the
+# same code the window manager starts, with nothing installed anywhere.
+# Put it on PATH with a link, which keeps following the checkout:
+#
+#     ln -s "$PWD/bin/indigoshell" ~/.local/bin/indigoshell
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+exec "$root/.venv/bin/python" "$root/main.py" "$@"

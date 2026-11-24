@@ -459,10 +459,15 @@ uv sync
 .venv/bin/python main.py --log-level debug --log-file
 ```
 
-`uv sync` also installs an `indigoshell` console script into
-`.venv/bin`. Running `main.py` by absolute path works from any
-directory — the file's own directory lands on `sys.path` — which is what
-lets a window manager spawn it without a PATH entry.
+Running `main.py` by absolute path works from any directory — the
+file's own directory lands on `sys.path` — which is what lets a window
+manager spawn it without a PATH entry. For a terminal, `bin/indigoshell`
+does the same through the venv; link it onto PATH and it keeps
+following the checkout:
+
+```bash
+ln -s "$PWD/bin/indigoshell" ~/.local/bin/indigoshell
+```
 
 Client verbs (same binary; the first argument decides):
 
