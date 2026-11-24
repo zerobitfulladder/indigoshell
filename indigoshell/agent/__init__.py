@@ -95,8 +95,8 @@ chip shows its work and rings) and leave `AGENT` out:
                       tls={"ca": ..., "cert": ..., "key": ...},
                       hands=laptop_hands())
     SERVICES = [..., FIREFOX, HUB, CallRouter(HUB, show_working=False)]
-    WINDOWS = [..., WindowSpec(name=CALL_WINDOW, content=CallHost(HUB), ...),
-               WindowSpec(name=STATUS_WINDOW, content=CallStatus(HUB), ...)]
+    WINDOWS = [..., WindowSpec(name=CALL_WINDOW, content=CallHost(HUB), ...)]
+    # (and no STATUS_WINDOW: nothing opens in the corner)
 
 A second call works too: its own CallHost (with its own `draft_key`),
 CallStatus (`call=` its window, `side=` its screen edge) and CallRouter
