@@ -79,6 +79,8 @@ log = logging.getLogger(__name__)
 PROTOCOL = 1
 # What this connection is to the hub.
 CLIENT = "call"
+# Lines and turns of the hub's own (a job ended, a scheduled turn).
+HUB_CLIENT = "hub"
 MAX_MESSAGE = 16 * 1024 * 1024
 RETRY_MIN_S = 5.0
 RETRY_MAX_S = 120.0
@@ -743,6 +745,10 @@ class RemoteAgent:
                     f"the hub speaks protocol {welcome.get('protocol')} "
                     f"(this call speaks {PROTOCOL})")
             self._on_welcome(welcome)
+            if self.hands is not None:
+                # What the hands report by themselves (jobs that ended)
+                # goes out on this line while it lasts.
+                self.hands.online(reply)
             while (text := await link.recv()) is not None:
                 event = self._decode(text)
                 if event is None:
@@ -762,6 +768,8 @@ class RemoteAgent:
         except asyncio.TimeoutError:
             raise ConnectionError("the hub didn't answer hello") from None
         finally:
+            if self.hands is not None:
+                self.hands.offline()
             self._outbox = None
             writer.cancel()
             await link.close()
@@ -907,13 +915,25 @@ class RemoteAgent:
                     and ev.get("client") == CLIENT:
                 self._mine.popleft()        # ours, already on show
                 return
-            if self.busy and not self._local_turn:
+            if ev.get("client") == HUB_CLIENT:
+                if not self.busy:
+                    return                  # its turn shows it
+                # The hub's own line, mid-turn: a note, not your words.
+                self.activity.append(Activity("note", text))
+            elif self.busy and not self._local_turn:
                 self._you_segment(text)     # another screen's, mid-turn
             else:
                 return                      # its turn shows it
         elif kind == "turn":
             line = str(ev.get("line") or "")
-            if self._local_turn and line.strip() == self.heard.strip():
+            if ev.get("client") == HUB_CLIENT:
+                # A turn the hub started (a job ended, a scheduled one):
+                # its line is a note at the top, not something you said.
+                self._local_turn = False
+                self._begin_turn("")
+                self._turn_ours = False
+                self.activity.append(Activity("note", line))
+            elif self._local_turn and line.strip() == self.heard.strip():
                 self._local_turn = False    # ours, already on show
             else:
                 self._begin_turn(line)

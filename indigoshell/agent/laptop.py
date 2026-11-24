@@ -16,11 +16,18 @@ returns text, or a PNG for a screenshot.
     spotify           the desktop app, over MPRIS: what is playing,
                       play, pause, skip, or play a link
     run               a shell command as the user (bash -lc)
+    job_start / job_status / job_output / job_cancel
+                      a long command in the background (`Jobs`): it
+                      outlives the call, the link to the hub and a
+                      reload of the shell, and the hub hears when it
+                      ends (a `job_done` event)
     read_file / write_file
-                      a file's text, or its bytes in base64, either way
+                      a file's text, or its bytes in base64, either way;
+                      the hub also syncs skills' code through these, into
+                      ~/.cache/lilac/skills/
 
-**Root asks first.** A command that mentions sudo, doas, pkexec, su or
-run0 asks the user in the call (Allow / Deny, rung if the call is
+**Root asks first.** A command (or a job) that mentions sudo, doas,
+pkexec, su or run0 asks the user in the call (Allow / Deny, rung if the call is
 closed), and no answer before the hub gives up is a no. Root needs no
 password on this laptop, so that question is the gate: commands that
 weren't allowed also run with those five shadowed on their PATH, so a
@@ -38,7 +45,10 @@ import contextlib
 import logging
 import mimetypes
 import os
+import json
 import re
+import secrets
+import shutil
 import signal
 import tempfile
 import time
@@ -513,6 +523,373 @@ RUN = Hand(
              "timeout": {"type": "number", "minimum": 1,
                          "maximum": RUN_MAX_S}}, ("command",)),
     timeout=RUN_MAX_S)
+
+
+# ── jobs ────────────────────────────────────────────────────────────────
+JOBS_DIR = os.path.join("~", ".cache", "lilac", "jobs")
+JOB_POLL_S = 3.0            # how often to look for jobs that ended
+JOB_KEEP_S = 30 * 86400     # a reported job's folder is kept this long
+JOB_TAIL_LINES = 20         # the output's end, in job_status and job_done
+JOB_TAIL_MAX = 4096         # ... at most this many bytes of it
+JOB_OUTPUT_LINES = 200      # job_output's default
+CANCEL_GRACE_S = 5.0
+
+# Runs the job, in a session of its own (setsid --fork): the command in a
+# login bash, its output to a file, and its exit code and end time to
+# another. It catches TERM (a trap, not ignored, so the command doesn't
+# inherit it) so that a cancelled command still gets its code written.
+_JOB_WRAPPER = """\
+d=$LAPTOP_JOB_DIR; unset LAPTOP_JOB_DIR
+echo $$ > "$d/pid"
+trap 'true' TERM
+bash -lc "$LAPTOP_JOB_INNER" > "$d/output" 2>&1 < /dev/null
+code=$?
+printf '%s %s\\n' "$code" "$(date +%s)" > "$d/exit.tmp" && mv "$d/exit.tmp" "$d/exit"
+"""
+
+
+def _tail(data: bytes, lines: int, limit: int) -> str:
+    text = data.decode(errors="replace").rstrip("\n")
+    out = "\n".join(text.splitlines()[-lines:]) if lines else ""
+    return out[-limit:]
+
+
+class Jobs:
+    """Long commands in the background, each in its own folder under
+    ~/.cache/lilac/jobs/<id>/: job.json (what was asked), pid, output,
+    exit ("<code> <end time>"), and the marks cancelled and reported.
+
+    The folders are the whole record, so a job started before a reload
+    of the shell is as known after it as before. While the line to the
+    hub is up (`online`), the jobs that ended and aren't yet reported go
+    to the hub as `job_done` events, each once."""
+
+    def __init__(self, folder: str | None = None) -> None:
+        self.folder = os.path.expanduser(folder or JOBS_DIR)
+        self._send = None
+        self._watch: asyncio.Task | None = None
+
+    # ── the record ──────────────────────────────────────────────────────
+    def _dir(self, job: str) -> str:
+        job = str(job or "").strip()
+        if not re.fullmatch(r"[0-9a-f]{8}", job):
+            raise HandError(f"no job {job!r}: a job is the 8-character id "
+                            "laptop_job_start answered")
+        path = os.path.join(self.folder, job)
+        if not os.path.isdir(path):
+            raise HandError(f"no job {job} on the laptop")
+        return path
+
+    @staticmethod
+    def _read(path: str) -> str:
+        try:
+            with open(path, errors="replace") as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+
+    def info(self, job: str) -> dict:
+        """Everything known about a job: its job.json, plus `state`
+        (starting, running, done, gone), `exit` and `ended`."""
+        path = self._dir(job)
+        try:
+            with open(os.path.join(path, "job.json")) as f:
+                info = json.load(f)
+        except (OSError, ValueError):
+            info = {}
+        info["job"] = job
+        ended = self._read(os.path.join(path, "exit")).split()
+        if ended:
+            info["state"] = "done"
+            info["exit"] = int(ended[0]) if ended[0].lstrip("-").isdigit() \
+                else None
+            info["ended"] = float(ended[1]) if len(ended) > 1 else None
+        elif self._alive(job, path):
+            info["state"] = "running"
+        elif not os.path.exists(os.path.join(path, "pid")) \
+                and time.time() - info.get("started", 0) < 10:
+            info["state"] = "starting"
+        else:
+            # Killed outright, or the laptop restarted under it.
+            info["state"] = "gone"
+            info["exit"] = None
+        info["cancelled"] = os.path.exists(os.path.join(path, "cancelled"))
+        info["reported"] = os.path.exists(os.path.join(path, "reported"))
+        return info
+
+    def _alive(self, job: str, path: str) -> bool:
+        pid = self._read(os.path.join(path, "pid"))
+        if not pid.isdigit():
+            return False
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                return f"lilac-job-{job}".encode() in f.read()
+        except OSError:
+            return False
+
+    def _output(self, job: str) -> bytes:
+        try:
+            with open(os.path.join(self._dir(job), "output"), "rb") as f:
+                return f.read()
+        except OSError:
+            return b""
+
+    def _tail_of(self, job: str, lines: int = JOB_TAIL_LINES,
+                 limit: int = JOB_TAIL_MAX) -> str:
+        path = os.path.join(self._dir(job), "output")
+        try:
+            with open(path, "rb") as f:
+                f.seek(max(0, os.path.getsize(path) - 64 * 1024))
+                data = f.read()
+        except OSError:
+            return ""
+        return _tail(data, lines, limit)
+
+    def all(self) -> list[str]:
+        try:
+            names = os.listdir(self.folder)
+        except OSError:
+            return []
+        return sorted(n for n in names if re.fullmatch(r"[0-9a-f]{8}", n))
+
+    # ── doing ───────────────────────────────────────────────────────────
+    async def start(self, command: str, *, cwd: str, title: str,
+                    root: bool) -> str:
+        """Start `command` in the background; its id."""
+        self._prune()
+        job = secrets.token_hex(4)
+        path = os.path.join(self.folder, job)
+        os.makedirs(path, mode=0o700)
+        with open(os.path.join(path, "job.json"), "w") as f:
+            json.dump({"command": command, "cwd": cwd, "title": title,
+                       "root": root, "started": time.time()}, f)
+        inner = 'unset LAPTOP_JOB_INNER; c=$LAPTOP_RUN_CMD; unset LAPTOP_RUN_CMD; eval "$c"'
+        env = dict(os.environ, LAPTOP_RUN_CMD=command, LAPTOP_JOB_DIR=path)
+        if not root:
+            env["LAPTOP_RUN_SHIMS"] = _shims()
+            inner = ('PATH="$LAPTOP_RUN_SHIMS:$PATH"; unset LAPTOP_RUN_SHIMS; '
+                     + inner)
+        env["LAPTOP_JOB_INNER"] = inner
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "setsid", "--fork", "bash", "-c", _JOB_WRAPPER,
+                f"lilac-job-{job}", cwd=cwd, env=env,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL)
+            await proc.wait()
+        except OSError as e:
+            shutil.rmtree(path, ignore_errors=True)
+            raise HandError(f"couldn't start the job: {e}") from None
+        for _ in range(40):                 # until it has said its pid
+            if os.path.exists(os.path.join(path, "pid")):
+                break
+            await asyncio.sleep(0.05)
+        log.info("job %s started: %s", job, title)
+        self._poke()
+        return job
+
+    async def cancel(self, job: str) -> dict:
+        path = self._dir(job)
+        info = self.info(job)
+        if info["state"] not in ("running", "starting"):
+            return info
+        open(os.path.join(path, "cancelled"), "w").close()
+        pid = int(self._read(os.path.join(path, "pid")) or 0)
+        if pid:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(pid, sig)
+                deadline = time.monotonic() + CANCEL_GRACE_S
+                while time.monotonic() < deadline \
+                        and self.info(job)["state"] == "running":
+                    await asyncio.sleep(0.1)
+                if self.info(job)["state"] != "running":
+                    break
+        log.info("job %s cancelled", job)
+        return self.info(job)
+
+    def _prune(self) -> None:
+        """Forget jobs reported long ago."""
+        now = time.time()
+        for job in self.all():
+            mark = os.path.join(self.folder, job, "reported")
+            with contextlib.suppress(OSError):
+                if now - os.path.getmtime(mark) > JOB_KEEP_S:
+                    shutil.rmtree(os.path.join(self.folder, job),
+                                  ignore_errors=True)
+
+    # ── telling the hub ─────────────────────────────────────────────────
+    def online(self, send) -> None:
+        """A line to the hub is up: report what ended, and keep watching."""
+        self._send = send
+        if self._watch is None or self._watch.done():
+            self._watch = asyncio.get_running_loop().create_task(
+                self._watching())
+
+    def offline(self) -> None:
+        self._send = None
+        if self._watch is not None:
+            self._watch.cancel()
+            self._watch = None
+
+    def _poke(self) -> None:
+        if self._send is not None and (self._watch is None
+                                       or self._watch.done()):
+            self.online(self._send)
+
+    def event(self, job: str) -> dict:
+        info = self.info(job)
+        code = info.get("exit")
+        return {"type": "event", "kind": "job_done", "job": job,
+                "ok": code == 0, "exit": code,
+                "title": info.get("title") or "",
+                "tail": self._tail_of(job)}
+
+    def report(self) -> int:
+        """Tell the hub about every job that ended and isn't reported;
+        how many. Each is marked once it is on its way."""
+        sent = 0
+        for job in self.all():
+            if self._send is None:
+                break
+            try:
+                info = self.info(job)
+            except HandError:
+                continue
+            if info["reported"] or info["state"] not in ("done", "gone"):
+                continue
+            self._send(self.event(job))
+            open(os.path.join(self.folder, job, "reported"), "w").close()
+            log.info("job %s reported (exit %s)", job, info.get("exit"))
+            sent += 1
+        return sent
+
+    def _pending(self) -> bool:
+        """Whether any job is still running or not yet reported."""
+        for job in self.all():
+            if not os.path.exists(os.path.join(self.folder, job,
+                                               "reported")):
+                return True
+        return False
+
+    async def _watching(self) -> None:
+        while self._send is not None:
+            try:
+                self.report()
+            except Exception:
+                log.exception("jobs: reporting failed")
+            if not self._pending():
+                return                      # woken again by the next start
+            await asyncio.sleep(JOB_POLL_S)
+
+    # ── the hands ───────────────────────────────────────────────────────
+    def _describe(self, info: dict, lines: int = JOB_TAIL_LINES) -> str:
+        now = time.time()
+        started = info.get("started") or now
+        state = info["state"]
+        if state == "done":
+            took = (info.get("ended") or now) - started
+            head = (f"finished: exit code {info['exit']}, after "
+                    f"{_span(took)}"
+                    + (" (cancelled)" if info["cancelled"] else ""))
+        elif state == "gone":
+            head = ("cancelled" if info["cancelled"] else
+                    "ended without an exit code (killed, or the laptop "
+                    "restarted)")
+        else:
+            head = f"{state}, for {_span(now - started)}"
+        tail = self._tail_of(info["job"], lines)
+        return (f"job {info['job']}: {info.get('title') or ''}\n{head}\n"
+                + (f"last lines of its output:\n{tail}" if tail
+                   else "no output yet" if state in ("running", "starting")
+                   else "no output"))
+
+    def hands(self) -> list[Hand]:
+        async def start(call: Call) -> list[dict]:
+            args = call.args
+            command = str(args.get("command") or "")
+            if not command.strip():
+                raise HandError("give a command")
+            cwd = _path(args.get("cwd") or "~")
+            if not os.path.isdir(cwd):
+                raise HandError(f"no such folder: {cwd}")
+            title = " ".join(str(args.get("title") or "").split()) \
+                or " ".join(command.split())[:60]
+            root = needs_root(command)
+            if root and not await call.ask(
+                    "Start this as root on the laptop?", command):
+                raise HandError(DECLINED)
+            job = await self.start(command, cwd=cwd, title=title, root=root)
+            return _texts(f"job {job} started")
+
+        async def status(call: Call) -> list[dict]:
+            return _texts(self._describe(self.info(call.args.get("job"))))
+
+        async def output(call: Call) -> list[dict]:
+            job = call.args.get("job")
+            self._dir(job)
+            try:
+                lines = int(call.args.get("tail") or JOB_OUTPUT_LINES)
+            except (TypeError, ValueError):
+                lines = JOB_OUTPUT_LINES
+            data = self._output(job)
+            text = _tail(data, max(1, lines), OUTPUT_MAX)
+            return _texts(text or "(no output yet)")
+
+        async def cancel(call: Call) -> list[dict]:
+            info = self.info(call.args.get("job"))
+            if info["state"] not in ("running", "starting"):
+                return _texts(f"job {info['job']} isn't running: "
+                              + self._describe(info).split("\n")[1])
+            return _texts(self._describe(await self.cancel(info["job"])))
+
+        job = {"job": {"type": "string",
+                       "description": "the id laptop_job_start answered"}}
+        return [
+            Hand("job_start",
+                 "Start a long command on the laptop in the background, as "
+                 "the user (bash -lc, the same environment as laptop_run: "
+                 "its GPU, its files), in cwd (default: the home folder). "
+                 "Answers at once, 'job <id> started'; the job keeps running "
+                 "whatever happens to this conversation or the laptop's link "
+                 "to the hub, and when it ends the hub hears of it and a "
+                 "turn of its own collects the result. title: a few words "
+                 "for it (default: the command). For transcribing, "
+                 "encoding, downloads, training: anything longer than a "
+                 "minute. Anything with sudo, doas, pkexec, su or run0 in "
+                 "it asks the user on the laptop first.",
+                 start,
+                 _schema({"command": {"type": "string"},
+                          "cwd": {"type": "string"},
+                          "title": {"type": "string"}}, ("command",)),
+                 timeout=RUN_MAX_S),
+            Hand("job_status",
+                 "A background job on the laptop: running (for how long) or "
+                 "finished (its exit code, how long it took), and the last "
+                 "lines of its output.",
+                 status, _schema(job, ("job",))),
+            Hand("job_output",
+                 "A background job's output so far (stdout and stderr "
+                 f"together): its last `tail` lines (default "
+                 f"{JOB_OUTPUT_LINES}), at most {OUTPUT_MAX // 1024} kB.",
+                 output,
+                 _schema({**job, "tail": {"type": "integer", "minimum": 1}},
+                         ("job",))),
+            Hand("job_cancel",
+                 "Stop a background job on the laptop (TERM, then KILL "
+                 f"after {CANCEL_GRACE_S:g} s).",
+                 cancel, _schema(job, ("job",))),
+        ]
+
+
+def _span(seconds: float) -> str:
+    s = int(max(0, seconds))
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min {s % 60} s"
+    return f"{s // 3600} h {s // 60 % 60} min"
 
 
 # ── files ───────────────────────────────────────────────────────────────

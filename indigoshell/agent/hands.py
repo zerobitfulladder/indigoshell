@@ -22,8 +22,13 @@ questions, the overlay's Allow / Deny), rings it if it is closed, and
 counts no answer before the hub's deadline as a no. "the user declined"
 is the answer then.
 
+Some of what a machine lends speaks up by itself: a background job
+that ends tells the hub (an `event`). Such a provider is one of the
+`watchers`: told when a line to the hub is up (`online(send)`) and when
+it is down (`offline()`), it sends its events while it may.
+
 `laptop_hands()` is what the laptop lends: `about` here, and the desktop
-in laptop.py.
+and its background jobs in laptop.py.
 """
 
 import asyncio
@@ -116,8 +121,10 @@ class Hand:
 class Hands:
     """The tools a connection lends, and the calls to them in flight."""
 
-    def __init__(self, hands: Iterable[Hand] = ()) -> None:
+    def __init__(self, hands: Iterable[Hand] = (),
+                 watchers: Iterable = ()) -> None:
         self._hands = {h.name: h for h in hands}
+        self.watchers = list(watchers)
         self._calls: dict[str, asyncio.Task] = {}
         # Who asks the user, set by the call that shows this machine's
         # screen (remote.py); none, and whatever asks is declined.
@@ -164,6 +171,21 @@ class Hands:
         for task in self._calls.values():
             task.cancel()
         self._calls.clear()
+
+    def online(self, send: Callable[[dict], None]) -> None:
+        """A line to the hub is up: `send` puts an event on it."""
+        for watcher in self.watchers:
+            try:
+                watcher.online(send)
+            except Exception:
+                log.exception("%r failed going online", watcher)
+
+    def offline(self) -> None:
+        for watcher in self.watchers:
+            try:
+                watcher.offline()
+            except Exception:
+                log.exception("%r failed going offline", watcher)
 
     async def _run(self, call: Call, reply: Callable[[dict], object]) -> None:
         call_id, tool, timeout = call.id, call.tool, call.timeout
@@ -310,6 +332,7 @@ ABOUT = Hand(
 
 def laptop_hands() -> Hands:
     """What the laptop lends the hub's agent: `about`, and the desktop
-    (laptop.py)."""
-    from .laptop import desktop_hands
-    return Hands([ABOUT, *desktop_hands()])
+    and its background jobs (laptop.py)."""
+    from .laptop import Jobs, desktop_hands
+    jobs = Jobs()
+    return Hands([ABOUT, *desktop_hands(), *jobs.hands()], watchers=[jobs])
