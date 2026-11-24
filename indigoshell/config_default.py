@@ -242,11 +242,12 @@ clock_cluster = Row(
 # docks). Its left is the focused indigoshell app's: Flux's tabs, host
 # and load line while a Flux window has focus, nothing while any other
 # window does. `widgets` go after it, at the right; the right end itself
-# is the agent's: `AgentChip` (agent/ui/status.py), always there, shows
-# the name of the voice on the task and breathes while the agent works,
-# blinks fast when it calls back (in place of the old corner plate's
-# ring), and rests dimmed in between. It finds the agent through the
-# `CallRouter` in SERVICES; with none it takes no room at all.
+# is the agent's: `AgentChip` (agent/ui/status.py), always there, the
+# old corner status made short: a box saying what the agent is doing and
+# the call's small CALL chip, its arcs turning while it works, yellow
+# for a question, red and blinking when it calls back, dimmed in
+# between. It finds the agent through the `CallRouter` in SERVICES; with
+# none it takes no room at all.
 #
 # A config.py adds its own without copying the spec, by building the
 # bar again with them in place of the shipped one:

@@ -1,15 +1,17 @@
 """The agent on the top bar, and while a hung-up call works or rings.
 
 `AgentChip`, the top bar's right end (config_default's `top_bar`),
-always there once an agent is configured: a small beveled chip with the
-name of a voice, in that voice's colour. While the agent works (the call
-open or not) it is the voice on the task, and the whole chip breathes,
-slowly; when it calls back (a turn ended, or a question for you, with
-the call closed) the whole chip blinks fast, until the call is answered
-or the ring is seen elsewhere; the rest of the time it rests dimmed,
-with the voice that worked last. With no agent configured it is not
-there and takes no room. A click answers (opens the call); a right-click
-silences a ring.
+always there once an agent is configured: the old corner status made
+short enough for the bar, a box saying what the agent is doing beside
+the call's small square CALL chip, both in the call's look. While it
+works (the call open or not) the box names the step it is on and the
+chip's arcs turn; a question for you turns both yellow and the chip
+blinks ASK; a call back turns both red, blinking, until the call is
+answered or the ring is seen elsewhere; the rest of the time both rest
+dimmed, with the voice that worked last. The box never shows what the
+agent thinks or says: only the step. With no agent configured it is
+not there and takes no room. A click answers (opens the call); a
+right-click silences a ring.
 
 `CallRouter`, the service that watches the agent and decides what shows:
 the chip's state, always; `call-status` only while an agent of this
@@ -37,12 +39,13 @@ from .call import CALL_WINDOW
 from .chip import Chip
 from .frame import TRACE_BLEED, Trace
 from ...widgets.holo import RASTER_ALPHA, Projection, paint_raster
-from .style import (ACT_SIZE, BEVEL, CHIP_INSET, CHIP_INSET_ALPHA, CHIP_SM,
-                    CORNERS, FRAME_W, GAP, PAD_X, PAD_Y, RING_FOR_S, SPIN, STATUS_W,
+from .style import (ACT_SIZE, AGENT_ACCENT, BLINK_FPS, BRACKET_ALPHA,
+                    BRACKET_W, CHIP_INSET, CHIP_INSET_ALPHA, CHIP_SM, CORNERS, FRAME_W,
+                    GAP, PAD_X, PAD_Y, RING_FOR_S, SPIN, STATUS_W,
                     STATUS_WORDS, TAG_SIZE, TOOL_FG, UNBOUNDED, accent_of,
-                    clock_text, fill_of, frame_inset, inner_path, line_h,
-                    own_accent, paint_heading, paint_plate, plate_fill,
-                    plate_path)
+                    blink_on, clock_text, corner_marks, fill_of, frame_inset,
+                    inner_path, line_h, own_accent, paint_heading,
+                    paint_plate, plate_fill, plate_path)
 
 
 STATUS_WINDOW = "call-status"
@@ -322,77 +325,55 @@ class CallRouter:
 
 
 # ── the top bar's chip ──────────────────────────────────────────────────
-# The call's small square chip (chip.py), a bar's height tall and as long
-# as a voice's name: the same plate in the voice's colour
-# (style.plate_fill: the plates' violet-black leaning to it, then a tint
-# of it on top), the hologram's raster across it (holo: a faint line
-# every 3px, the call plates' stripes, on the window's own pixel grid),
-# its 2px frame and the faint hairline inside it (style.inner_path at
-# CHIP_INSET). The corners are cut at the top-right and bottom-left, the
-# call's bevel scaled to the height. The name is set like the INDIGO tag
-# at the bar's other end, in bold capitals, a step smaller to sit in the
-# chip, centred. Every state is the whole chip at one strength: resting
-# at IDLE_DIM, breathing while it works, blinking while it calls back.
-CHIP_H = 28                 # in the 42px bar: 7px clear above and below
-CHIP_PAD_X = 11             # the name clear of the hairline
-CHIP_BEVEL = round(BEVEL * CHIP_H / CHIP_SM)    # the call chip's cut: 8
-# One width for every voice: room for the longest of them, so the bar
-# doesn't shift when the voice changes, plus CHIP_ROOM, where a light
-# once sat beside the name (its 7px and the 8px before it), so the name
-# has air either side.
-CHIP_FIT = "INDIGO"
-CHIP_ROOM = 15
-# The voice's colour over the plate, as chip.Chip paints it, and the
-# extra it gets in a ring's flash.
-CHIP_TINT = 0.16
-CHIP_FLASH_TINT = 0.14
-CHIP_NAME_SIZE = text.pt(11)    # 14.7px; the INDIGO tag is 13pt
-CHIP_TRACKING = 1.0
-CHIP_NAME_MAX_W = 160       # a longer voice name ends in an ellipsis
-IDLE_DIM = 0.4              # the whole chip while the agent is idle
-# Working: a slow breath, a cosine from full down to PULSE_LOW and back
-# every PULSE_S, starting full. 24 frames a second read as smooth at 1x
-# (each frame moves the strength under 3.5%), and no more are asked.
-PULSE_S = 2.0
-PULSE_LOW = 0.5
-PULSE_FPS = 24
-# Calling back: a fast, even blink, as (ms, lit) steps like
-# theme.WORKSPACE_URGENT_RING, looped from the ring's start: 4 a second,
-# the whole chip flashing to full and dropping to CALL_DIM. Frames come
-# only on its steps (`_blink_fps`): 8 a second.
-CALL_BLINK = ((125, True), (125, False))
-CALL_DIM = 0.2
+# The old corner status (CallStatus and its chip) at the bar's size: two
+# pieces BAR_H tall in the 42px bar, 5px clear above and below. The box
+# is drawn as `paint_plate` draws a plate (the speaker's fill, the
+# hologram's raster in the frame's colour, the 2px frame, corner marks
+# inside it) and the square as chip.Chip draws its chip (fill, tint,
+# raster, frame, the faint hairline inside at the call's CHIP_INSET, two
+# arcs), with no label: the name and the step are the box's, and the
+# arcs take the middle, where at this size they read as the moving
+# thing rather than as a thicker frame. The geometry is scaled from the
+# call's: the bevel, the marks, the arcs. At the call's own numbers a
+# 32px piece is all corner.
+BAR_H = 32
+BAR_BEVEL = 8               # the call's 12 on a 44px chip, scaled
+BOX_W = 360                 # the box, fixed: the bar never moves with its text
+BOX_PAD_X = 10
+BOX_GAP = 6                 # box ↔ chip (the call's GAP, scaled)
+BOX_MARK_D = 4              # the plate's corner marks (6 and 12 at full size)
+BOX_MARK_ARM = 8
+BOX_NAME_SIZE = TAG_SIZE + 2    # the plate's heading: the name and the word
+BOX_DETAIL_SIZE = ACT_SIZE      # and its line: the step
+CHIP_ARC_R = 7.0            # the arcs, inside the hairline
+CHIP_ARC_W = 2.0
+# chip.Chip's strengths: lit and between flashes of a blink, a missed
+# ring; its tint over the plate and the extra in a flash.
+LIT, UNLIT, MISSED = 1.0, 0.3, 0.45
+CHIP_TINT, CHIP_FLASH_TINT = 0.16, 0.14
+IDLE_DIM = 0.4              # both pieces while the agent is idle
 
 
-def _blink_fps(pattern) -> int:
-    """Frames a second that land on every step of `pattern`: 1000 over
-    the greatest common divisor of 1000 and its steps (125ms steps: 8;
-    50ms: 20). 0 with none."""
-    steps = [int(ms) for ms, _lit in pattern or ()]
-    return 1000 // math.gcd(1000, *steps) if steps else 0
-
-
-def _blink_lit(pattern, elapsed: float) -> bool:
-    """Whether `pattern`, looped, is lit `elapsed` seconds in. Read on
-    its own frame grid (rounded to the nearest of `_blink_fps`), so a
-    frame a few ms early or late shows the step it was due for."""
-    fps = _blink_fps(pattern)
-    if not fps:
-        return True
-    period = sum(ms for ms, _lit in pattern)
-    t = (round(max(0.0, elapsed) * fps) * (1000.0 / fps)) % period
-    for ms, lit in pattern:
-        if t < ms:
-            return lit
-        t -= ms
-    return True
-
-
-def _pulse(elapsed: float) -> float:
-    """The working breath `elapsed` seconds in: full at 0, PULSE_LOW at
-    half a period, eased all the way (a cosine)."""
-    wave = 0.5 + 0.5 * math.cos(2 * math.pi * elapsed / PULSE_S)
-    return PULSE_LOW + (1.0 - PULSE_LOW) * wave
+def _doing(agent, fresh: bool) -> tuple[str, str]:
+    """What the box says: a word and its detail. Only what the agent is
+    doing: the phase as a word and the step it is on (the newest tool
+    step's own line, `Activity.text` of kind "tool"), the question it
+    asks, the ring and the agent's notification for it. Never its
+    thinking (`thought`), its reply (`message`), or notes and info."""
+    a = agent
+    if a.approval is not None:
+        return "needs your ok", a.approval.detail or a.approval.title
+    if a.ringing is not None:
+        if a.ringing == "error":
+            return "line dropped", (a.error if a.phase == "error" else "") or ""
+        return ("calling back" if fresh else "missed call",
+                getattr(a, "ring_line", None) or "mod+a to answer")
+    if a.busy or a.jobs.shown():
+        step = next((act.text for act in reversed(a.activity)
+                     if act.kind == "tool"), "")
+        word = STATUS_WORDS.get(a.phase, a.phase) if a.busy else "running"
+        return word, step
+    return "", ""
 
 
 def _configured_routers() -> list[CallRouter]:
@@ -408,21 +389,26 @@ def _configured_routers() -> list[CallRouter]:
 
 
 class AgentChip(Widget):
-    """The top bar's agent chip: a voice's name on a beveled plate.
-    Working: the voice on the task, the whole chip breathing. Calling
-    back: the whole chip blinking fast. Idle: the chip dimmed, with the
-    voice of the turn on show (the one that worked last; before any
-    turn, the voice the agent speaks with now).
+    """The top bar's agent: a box saying what it is doing and the call's
+    small square chip, as the old corner status was, shorter.
 
-    It follows `routers` (`CallRouter`s), which decide what it shows.
-    None, the default, finds them among the running daemon's SERVICES
-    when the bar opens, so a config wires nothing for it. With several,
-    a calling one goes first, then the first working, then the first.
-    With none (no agent configured) it is not there: `collapsed`, so it
-    takes no width and no gap in the bar's row, and costs nothing.
+    Working: the box names the step (`_doing`), the chip's arcs turn at
+    the phase's speed. A question (with the call closed): both yellow,
+    the chip blinking. A call back: both red, blinking in the bar's
+    ring pattern (style.blink_on) for RING_FOR_S, then still and dim,
+    "missed call", until answered. Idle: both dimmed, the box with the
+    voice of the turn on show (the one that worked last).
 
-    It asks for frames only while it moves: PULSE_FPS while it works,
-    the blink's 8 a second while it calls back, none while idle.
+    It follows `routers` (`CallRouter`s), which decide its state. None,
+    the default, finds them among the running daemon's SERVICES when the
+    bar opens, so a config wires nothing for it. With several, a calling
+    one goes first, then the first working, then the first. With none (no
+    agent configured) it is not there: `collapsed`, no width and no gap
+    in the bar's row, and costs nothing.
+
+    Its two pieces are widgets of their own and ask for frames apart:
+    the chip while its arcs turn or settle and while it blinks, the box
+    only while it blinks. Idle, neither asks for any.
     """
 
     def __init__(self, routers=None) -> None:
@@ -430,16 +416,23 @@ class AgentChip(Widget):
         self._given = list(routers) if routers is not None else None
         self.routers: list[CallRouter] = []
         self._unfollow: list[Callable[[], None]] = []
-        # On show: (router, "idle" | "working" | "calling", name,
-        # colour); None with no router.
+        # On show: (router, "idle" | "working" | "calling"); None with no
+        # router. `_key` is what was painted, to repaint only on change.
         self.shown: tuple | None = None
-        self.since = 0.0        # when the state on show began: its motion's start
-        self.on = True          # lit, or between two of the blink's flashes
-        self.breath = 1.0       # the working breath's strength now
+        self._key: tuple | None = None
+        self.box = _Box(self)
+        self.chip = _BarChip(self)
+
+    def children(self):
+        return (self.box, self.chip)
 
     @property
     def state(self) -> str | None:
         return self.shown[1] if self.shown is not None else None
+
+    @property
+    def agent(self):
+        return self.shown[0].agent if self.shown is not None else None
 
     @property
     def collapsed(self) -> bool:
@@ -458,7 +451,7 @@ class AgentChip(Widget):
             undo()
         self._unfollow = []
         self.routers = []
-        self.shown = None
+        self.shown = self._key = None
         super().detach()
 
     def _on_router(self) -> None:
@@ -469,106 +462,102 @@ class AgentChip(Widget):
                     or next((r for r in self.routers if r.state == "working"),
                             None)
                     or self.routers[0])
-            a = pick.agent
-            # The voice of the turn on show (a RemoteAgent's `name`): the
-            # one on the task, or the one that worked last.
-            name = str(getattr(a, "name", "") or "lilac").upper()
-            shown = (pick, pick.state or "idle", name, own_accent(a))
-        old = self.shown
-        if shown == old:
+            shown = (pick, pick.state or "idle")
+        old, self.shown = self.shown, shown
+        key = None if shown is None else (
+            shown, self.name(), self.accent(), self.tint(), self.words(),
+            self.chip_look())
+        if key == self._key and (old is None) == (shown is None):
             return              # the agent's stream, nothing on show changed
-        if old is None or shown is None or old[:2] != shown[:2]:
-            # A new state starts its motion at full strength.
-            self.since = time.monotonic()
-            self.on = True
-            self.breath = 1.0
-        self.shown = shown
+        self._key = key
         # Raising a rate wakes the window's clock through this damage.
-        self.invalidate(layout=old is None or shown is None
-                        or old[2] != shown[2])
+        self.invalidate(layout=(old is None) != (shown is None))
 
-    # ── motion ──────────────────────────────────────────────────────────
-    @property
-    def animation_fps(self) -> int:
-        if self.state == "working":
-            return PULSE_FPS
-        return _blink_fps(CALL_BLINK) if self.state == "calling" else 0
+    # ── what shows ──────────────────────────────────────────────────────
+    def fresh(self) -> bool:
+        a = self.agent
+        return (a is not None and a.ringing is not None
+                and time.monotonic() - a.ring_started < RING_FOR_S)
 
-    def animate(self, t: float) -> None:
-        elapsed = time.monotonic() - self.since
-        self.on = (self.state != "calling"
-                   or _blink_lit(CALL_BLINK, elapsed))
-        self.breath = _pulse(elapsed) if self.state == "working" else 1.0
+    def name(self) -> str:
+        a = self.agent
+        # The voice of the turn on show (a RemoteAgent's `name`): the one
+        # on the task, or the one that worked last.
+        return str(getattr(a, "name", "") or "lilac").upper() if a else ""
 
-    def level(self) -> float:
-        """The whole chip's strength: dimmed while idle, breathing while
-        it works, full or CALL_DIM while it blinks."""
+    def tint(self) -> str:
+        """Whose pieces: the voice's colour, in their fill whatever the
+        frame is doing."""
+        a = self.agent
+        return own_accent(a) if a is not None else AGENT_ACCENT
+
+    def accent(self) -> str:
+        """The frames' colour: yellow asking, red ringing (style's
+        accent_of, as the old plate), else the voice's."""
+        return accent_of(self.agent) if self.state == "calling" \
+            else self.tint()
+
+    def words(self) -> tuple[str, str]:
+        if self.state in (None, "idle"):
+            return "", ""
+        return _doing(self.agent, self.fresh())
+
+    def chip_look(self):
+        """chip.Chip's (accent, label, mode), as the old corner chip
+        chose them (CallStatus._look), for the state the router gives.
+        The label is left empty: this square has none."""
+        a, st = self.agent, self.state
+        if a is None or st == "idle":
+            return self.tint(), "", "still"
+        if st == "calling":
+            if a.approval is not None:
+                return self.accent(), "", "blink"
+            return self.accent(), "", "blink" if self.fresh() else "dim"
+        return self.tint(), "", a.phase if a.phase in SPIN else "working"
+
+    def ring_since(self) -> float:
+        a = self.agent
+        return a.ring_started if a is not None else 0.0
+
+    def ringing(self) -> bool:
+        """A ring on show (not a question): both pieces blink for it."""
+        a = self.agent
+        return self.state == "calling" and a is not None \
+            and a.approval is None and a.ringing is not None
+
+    def strength(self) -> float:
+        """Both pieces' strength: the frames' blink while ringing, as
+        chip.Chip blinks (lit, unlit, missed), times IDLE_DIM while
+        idle."""
         if self.state == "idle":
             return IDLE_DIM
-        if self.state == "working":
-            return self.breath
-        return CALL_DIM if self.state == "calling" and not self.on else 1.0
+        if self.ringing():
+            if not self.fresh():
+                return MISSED
+            return LIT if blink_on(time.monotonic() - self.ring_since()) \
+                else UNLIT
+        return LIT
 
     # ── layout / paint ──────────────────────────────────────────────────
-    def _name(self) -> str:
-        if self.shown is None:
-            return ""
-        return text.ellipsize(self.shown[2], CHIP_NAME_SIZE,
-                              CHIP_NAME_MAX_W, True)
-
     def measure(self, avail: Size) -> Size:
         if self.shown is None:
             return Size(0.0, 0.0)
-        name_w = max(text.measure(n, CHIP_NAME_SIZE, True, CHIP_TRACKING)
-                     for n in (self._name(), CHIP_FIT))
-        # Whole pixels: the chip repaints on its own every frame it
-        # moves, and an antialiased shape on a fractional row leaks past
-        # its clip on the GPU.
-        return Size(math.ceil(2 * CHIP_PAD_X + name_w + CHIP_ROOM), CHIP_H)
+        return Size(BOX_W + BOX_GAP + BAR_H, BAR_H)
 
-    def path(self) -> skia.Path:
-        r = self.rect
-        return shapes.beveled(r.left(), r.top(), r.width(), r.height(),
-                              bevel=CHIP_BEVEL, corners=CORNERS)
+    def arrange(self, rect: skia.Rect) -> None:
+        self.rect = rect
+        x, y = round(rect.left()), round(rect.top())
+        self.box.arrange(skia.Rect.MakeXYWH(x, y, BOX_W, BAR_H))
+        self.chip.arrange(skia.Rect.MakeXYWH(x + BOX_W + BOX_GAP, y,
+                                             BAR_H, BAR_H))
 
     def paint(self, canvas: skia.Canvas) -> None:
-        if self.shown is None or self.rect.isEmpty():
+        if self.shown is None:
             return
-        colour = self.shown[3]
-        flash = self.state == "calling" and self.on
-        k = self.level()
-        r = self.rect
-        path = self.path()
-        # As chip.Chip paints its plate: the fill, the tint, the raster,
-        # the frame, the hairline inside it.
-        base, base_a = plate_fill(colour)
-        fill = skia.Paint(AntiAlias=True)
-        fill.setColor(theme.color(base, base_a * k))
-        canvas.drawPath(path, fill)
-        tint = skia.Paint(AntiAlias=True)
-        tint.setColor(theme.color(
-            colour, (CHIP_TINT + (CHIP_FLASH_TINT if flash else 0.0)) * k))
-        canvas.drawPath(path, tint)
-        paint_raster(canvas, path, colour, RASTER_ALPHA * k)
-        frame = skia.Paint(AntiAlias=True)
-        frame.setStyle(skia.Paint.kStroke_Style)
-        frame.setStrokeWidth(FRAME_W)
-        frame.setColor(theme.color(colour, k))
-        canvas.drawPath(shapes.beveled(
-            r.left(), r.top(), r.width(), r.height(), bevel=CHIP_BEVEL,
-            corners=CORNERS, inset=frame_inset()), frame)
-        hairline = skia.Paint(AntiAlias=True)
-        hairline.setStyle(skia.Paint.kStroke_Style)
-        hairline.setStrokeWidth(1.0)
-        hairline.setColor(theme.color(colour, CHIP_INSET_ALPHA * k))
-        canvas.drawPath(inner_path(r, CHIP_INSET, CHIP_BEVEL), hairline)
-        # Centred, the capitals' middle on the chip's middle.
-        name = self._name()
-        w = text.measure(name, CHIP_NAME_SIZE, True, CHIP_TRACKING)
-        cap = text.font(CHIP_NAME_SIZE, True).getMetrics().fCapHeight
-        text.draw(canvas, name, round(r.centerX() - w / 2),
-                  round(r.centerY() + cap / 2), CHIP_NAME_SIZE,
-                  theme.color(colour, k), bold=True, tracking=CHIP_TRACKING)
+        clip = canvas.getLocalClipBounds()
+        for piece in (self.box, self.chip):
+            if piece.paint_bounds().intersects(clip):
+                piece.paint(canvas)
 
     # ── input ───────────────────────────────────────────────────────────
     @property
@@ -576,9 +565,11 @@ class AgentChip(Widget):
         return self.shown is not None
 
     def hit(self, x: float, y: float) -> Widget | None:
-        if self.shown is None or not self.path().contains(x, y):
+        if self.shown is None:
             return None
-        return self
+        if self.box.path().contains(x, y) or self.chip.path().contains(x, y):
+            return self
+        return None
 
     def click(self, button: int, x: float = 0.0, y: float = 0.0) -> bool:
         """As the corner plate did: a click answers, opening the call; a
@@ -597,3 +588,130 @@ class AgentChip(Widget):
             agent._emit()
             return True
         return False
+
+
+def _beveled(r: skia.Rect, inset: float = 0.0) -> skia.Path:
+    return shapes.beveled(r.left(), r.top(), r.width(), r.height(),
+                          bevel=BAR_BEVEL, corners=CORNERS, inset=inset)
+
+
+class _Box(Widget):
+    """The box: a plate as `paint_plate` draws one, scaled, with one line
+    on it: the voice's name in the frame's colour, the word (muted), the
+    detail (cyan for a step, as the old plate's line). Fixed width, the
+    line cut with an ellipsis."""
+
+    def __init__(self, owner: AgentChip) -> None:
+        super().__init__()
+        self.owner = owner
+
+    @property
+    def animation_fps(self) -> int:
+        o = self.owner
+        return BLINK_FPS if o.ringing() and o.fresh() else 0
+
+    def measure(self, avail: Size) -> Size:
+        return Size(BOX_W, BAR_H)
+
+    def path(self) -> skia.Path:
+        return _beveled(self.rect)
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        o = self.owner
+        if o.shown is None:
+            return
+        r = self.rect
+        k = IDLE_DIM if o.state == "idle" else 1.0
+        frame_a = o.strength()
+        accent, tint = o.accent(), o.tint()
+        base, base_a = fill_of(o.agent)
+        fill = skia.Paint(AntiAlias=True)
+        fill.setColor(theme.color(base, base_a * k))
+        canvas.drawPath(self.path(), fill)
+        paint_raster(canvas, self.path(), accent, RASTER_ALPHA * k)
+        stroke = skia.Paint(AntiAlias=True)
+        stroke.setStyle(skia.Paint.kStroke_Style)
+        stroke.setStrokeWidth(FRAME_W)
+        stroke.setColor(theme.color(accent, frame_a))
+        canvas.drawPath(_beveled(r, frame_inset()), stroke)
+        marks = skia.Paint(AntiAlias=True)
+        marks.setStyle(skia.Paint.kStroke_Style)
+        marks.setStrokeWidth(BRACKET_W)
+        marks.setColor(theme.color(accent, BRACKET_ALPHA * frame_a))
+        canvas.drawPath(corner_marks(r, BOX_MARK_D, BOX_MARK_ARM, BAR_BEVEL),
+                        marks)
+        # One line, steady through a blink so it stays readable.
+        word, detail = o.words()
+        detail = " ".join(str(detail).split())      # one line, always
+        x = r.left() + BOX_PAD_X
+        right = r.right() - BOX_PAD_X - BAR_BEVEL / 2
+        base_y = text.baseline_in(r, BOX_NAME_SIZE, True)
+        space = text.measure(" ", BOX_NAME_SIZE)
+        for value, size, bold, colour in (
+                (o.name(), BOX_NAME_SIZE, True, accent),
+                (word, BOX_NAME_SIZE, False, theme.BASE_MUTED),
+                (detail, BOX_DETAIL_SIZE, False,
+                 TOOL_FG if o.state == "working" else theme.HUD_FG)):
+            if not value or x >= right:
+                continue
+            value = text.ellipsize(value, size, right - x, bold)
+            if not value:
+                continue
+            text.draw(canvas, value, x, base_y, size,
+                      theme.color(colour, k), bold)
+            x += text.measure(value, size, bold) + space
+
+
+class _BarChip(Chip):
+    """The call's CALL chip (chip.py) at the bar's size, without its
+    label: its motion as it is (arcs turning at the phase's speed,
+    easing back to rest, the ring's blink, measured from the ring), its
+    drawing in chip.Chip's order with the geometry scaled, dimmed while
+    idle."""
+
+    def __init__(self, owner: AgentChip) -> None:
+        super().__init__(BAR_H, owner.chip_look, owner.ring_since,
+                         tint=owner.tint)
+        self.owner = owner
+
+    def path(self) -> skia.Path:
+        return _beveled(self.rect)
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        if self.owner.shown is None:
+            return
+        accent, _label, mode = self.look()
+        r = self.rect
+        lit = mode != "blink" or blink_on(time.monotonic() - self.ring_since())
+        alpha = (MISSED if mode == "dim" else LIT if lit else UNLIT) \
+            * (IDLE_DIM if self.owner.state == "idle" else 1.0)
+        k = IDLE_DIM if self.owner.state == "idle" else 1.0
+        fill = skia.Paint(AntiAlias=True)
+        base, base_a = plate_fill(self.tint)
+        fill.setColor(theme.color(base, base_a * k))
+        canvas.drawPath(self.path(), fill)
+        tint = skia.Paint(AntiAlias=True)
+        tint.setColor(theme.color(accent, CHIP_TINT * alpha + (
+            CHIP_FLASH_TINT if mode == "blink" and lit else 0.0)))
+        canvas.drawPath(self.path(), tint)
+        paint_raster(canvas, self.path(), self.tint, RASTER_ALPHA * k)
+        stroke = skia.Paint(AntiAlias=True)
+        stroke.setStyle(skia.Paint.kStroke_Style)
+        stroke.setStrokeWidth(FRAME_W)
+        stroke.setColor(theme.color(accent, alpha))
+        canvas.drawPath(_beveled(r, frame_inset()), stroke)
+        hair = skia.Paint(AntiAlias=True)
+        hair.setStyle(skia.Paint.kStroke_Style)
+        hair.setStrokeWidth(1.0)
+        hair.setColor(theme.color(accent, CHIP_INSET_ALPHA * alpha))
+        canvas.drawPath(inner_path(r, CHIP_INSET, BAR_BEVEL), hair)
+        arc = skia.Paint(AntiAlias=True)
+        arc.setStyle(skia.Paint.kStroke_Style)
+        arc.setStrokeWidth(CHIP_ARC_W)
+        arc.setColor(theme.color(accent, alpha))
+        cx, cy = r.centerX(), r.centerY()
+        oval = skia.Rect.MakeLTRB(cx - CHIP_ARC_R, cy - CHIP_ARC_R,
+                                  cx + CHIP_ARC_R, cy + CHIP_ARC_R)
+        sweep = 64.0
+        for base_angle in (self.angle, self.angle + 180.0):
+            canvas.drawArc(oval, base_angle - sweep / 2, sweep, False, arc)
