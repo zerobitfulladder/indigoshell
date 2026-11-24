@@ -13,6 +13,7 @@ from .services.text_effects import Scramble
 from .widgets.base import Insets
 from .agent import (CALL_WINDOW, STATUS_WINDOW, Agent, CallHost,
                     CallRouter, CallStatus, Firefox, ShellTools)
+from .agent.ui.status import AgentChip
 from .applink.context import AppContext
 from .applink.service import AppService
 from .browser.context import JackWindow
@@ -128,8 +129,9 @@ AGENT = Agent(name="INDIGO", model="opus",
 # ── Services ───────────────────────────────────────────────────────────
 # Long-lived non-window services the daemon starts once its loop is up.
 # Each toast is its own window, so the scan-lock spawn/despawn plays per
-# notification rather than once for the stack. The router shows the
-# call's status chip while a hung-up call works or rings back; FIREFOX
+# notification rather than once for the stack. The router watches a
+# hung-up call: the top bar's agent chip shows its work and blinks when
+# it rings back, and its corner plate shows while it works; FIREFOX
 # is the socket the browser add-on's host connects to. APPS is the
 # socket the shell's own apps connect to, one line per window, and knows
 # which of their windows has focus (applink/): today Jack, the browser
@@ -240,8 +242,11 @@ clock_cluster = Row(
 # docks). Its left is the focused indigoshell app's: Jack's tabs, host
 # and load line while a Jack window has focus, nothing while any other
 # window does. `widgets` go after it, at the right; the right end itself
-# is kept for the agent, which will draw itself there when it goes to
-# the background.
+# is the agent's: `AgentChip` (agent/ui/status.py) shows the name of the
+# voice on the task and a blinking light while the agent works with its
+# call hung up, and blinks whole when it calls back, in place of the old
+# corner plate's ring. It finds the agent through the `CallRouter` in
+# SERVICES; while there is nothing to show it takes no room at all.
 #
 # A config.py adds its own without copying the spec, by building the
 # bar again with them in place of the shipped one:
@@ -261,7 +266,7 @@ def top_bar(*widgets, apps: AppService = APPS) -> WindowSpec:
         padding=Insets.xy(theme.BAR_MARGIN, 0),
         autostart=True,
         content=Row(
-            [AppContext(apps), *widgets],
+            [AppContext(apps), *widgets, AgentChip()],
             spacing=theme.BAR_SPACING,
             align=Align.CENTER,
         ),
@@ -457,9 +462,9 @@ WINDOWS = [
         content=CallHost(AGENT),
     ),
 
-    # Where the call goes when it is hung up but still working, and what
-    # rings when the work is done. No grab: it sits in the corner while
-    # you carry on. Click to answer, right-click to silence a ring.
+    # Where the call goes when it is hung up but still working (the
+    # router's `show_working`); a ring is the top bar's chip now. No
+    # grab: it sits in the corner while you carry on. Click to answer.
     WindowSpec(
         name=STATUS_WINDOW,
         layer=Layer.OVERLAY,

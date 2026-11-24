@@ -50,6 +50,13 @@ class _Axis(Widget):
     def children(self):
         return self._children
 
+    def _shown(self) -> list[bool]:
+        """Which children take part in the spacing. A child that says it
+        is `collapsed` (showing nothing for now: the top bar's agent chip
+        while the agent is idle) takes no gap either, so the row closes
+        up as if it were not there. Read at measure and at arrange."""
+        return [not getattr(c, "collapsed", False) for c in self._children]
+
     def replace(self, children) -> None:
         """Swap the whole child list — for content that only exists once
         an async query lands. The new children are attached to the same
@@ -68,7 +75,7 @@ class _Axis(Widget):
         inner = Size(max(0.0, avail.width - self.padding.horizontal),
                      max(0.0, avail.height - self.padding.vertical))
         self._measured = [c.measure(inner) for c in self._children]
-        gaps = self.spacing * max(0, len(self._children) - 1)
+        gaps = self.spacing * max(0, sum(self._shown()) - 1)
         if self.horizontal:
             main = sum(s.width for s in self._measured) + gaps
             cross = max((s.height for s in self._measured), default=0.0)
@@ -87,7 +94,8 @@ class _Axis(Widget):
         if len(self._measured) != len(self._children):
             self.measure(Size(rect.width(), rect.height()))
 
-        gaps = self.spacing * (len(self._children) - 1)
+        shown = self._shown()
+        gaps = self.spacing * max(0, sum(shown) - 1)
         sizes = [s.width if self.horizontal else s.height for s in self._measured]
         extent = inner.width() if self.horizontal else inner.height()
         flex_total = sum(c.flex for c in self._children)
@@ -103,12 +111,17 @@ class _Axis(Widget):
                 default=0.0)
 
         pos = inner.left() if self.horizontal else inner.top()
-        for child, size, base in zip(self._children, self._measured, sizes):
+        for i, (child, size, base) in enumerate(
+                zip(self._children, self._measured, sizes)):
             main = base
             if child.flex and flex_total:
                 main += leftover * child.flex / flex_total
             child.arrange(self._place(inner, pos, main, size, child))
-            pos += main + self.spacing
+            # A gap after each shown child that a shown child follows:
+            # with nothing collapsed, the spacing after every child, as
+            # it always was.
+            gap = self.spacing if shown[i] and any(shown[i + 1:]) else 0.0
+            pos += main + gap
 
     def _place(self, inner: skia.Rect, pos: float, main: float,
                size: Size, child: Widget | None = None) -> skia.Rect:

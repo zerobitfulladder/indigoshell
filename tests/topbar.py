@@ -1486,7 +1486,7 @@ def test_spec(scratch: Path) -> None:
     win.paint(surface.getCanvas(), W, H)
     img = rgb_of(surface.makeImageSnapshot())
     save(scratch / "topbar-whole.png", img)
-    ctx, label = list(spec.content.children())
+    ctx, label, chip = list(spec.content.children())
     h = jw.content.host.layout()
     check("the whole bar off screen: Jack's tabs from the left, its host just before the user's "
           "widget, the widget at the right end, the load line under the context area only",
@@ -1499,6 +1499,9 @@ def test_spec(scratch: Path) -> None:
           f"context {ctx.rect.width():.0f} px, label at {label.rect.left():.0f}")
     check("the bar's background everywhere else (no rule)",
           share_of(img[:3], hex_rgb(theme.BAR_BG)) > 0.98)
+    check("the agent chip last in the row, empty with no agent: no width and no gap "
+          "(agent/ui/status.py; tests/agent_chip.py tests it)",
+          type(chip).__name__ == "AgentChip" and chip.collapsed and chip.rect.width() == 0)
 
     path = os.path.join(config_dir(), "config.py")
     if not os.path.isfile(path):
@@ -1524,7 +1527,7 @@ def test_spec(scratch: Path) -> None:
           f"exit {p.returncode}; {out.get('names', [])[:3]} ... {len(out.get('names', []))} "
           f"windows; {p.stderr.strip()[-200:] if p.returncode else ''}")
     check("... and a widget of its own added the documented way: the context area then it, the "
-          "order of WINDOWS kept", out.get("added") == ["AppContext", "Label"]
+          "order of WINDOWS kept", out.get("added") == ["AppContext", "Label", "AgentChip"]
           and out.get("same_order"), f"{out.get('added')}")
 
 
