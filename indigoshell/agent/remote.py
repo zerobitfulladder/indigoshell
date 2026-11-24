@@ -40,6 +40,14 @@ down; so does an open question meant for it. When another screen
 reports a turn seen, the ring stops. `ring_line`
 is the notification the agent wrote for it, for the corner chip.
 
+**Look and shown things:** a line can carry what the user is looking at
+(`say(..., attach=)`, the call's Look: Jack's tab, the selection, a
+screenshot), and the agent can show a picture or a file in the chat
+(`shown`): it takes its place in the turn's story where it arrives, and
+its bytes come only when asked for (`want_media`, `fetch_media`: the
+hub's `fetch` and `file`), cached by id. `save_media` puts one in
+~/Downloads, never over another file.
+
 **Devices:** `devices` is the hub's device list (who is online, when the
 others were last seen, the hands each lends); the call shows it on
 Ctrl+D.
@@ -57,6 +65,7 @@ the desktop and the progress bars of long commands (`jobs`).
 """
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -64,7 +73,7 @@ import os
 import re
 import ssl
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Callable
 from urllib.parse import urlsplit
 
@@ -92,6 +101,13 @@ AWAY_TIMEOUT_S = 10.0
 # How long the hub has to answer `hello` with `welcome`.
 WELCOME_TIMEOUT_S = 10.0
 PING_S = 20
+# What a line may carry (the hub takes at most this many blocks).
+ATTACH_MAX = 8
+# Shown things' bytes kept at once, and the biggest fetched by itself
+# (larger pictures show as files, fetched when opened).
+MEDIA_KEEP = 24
+MEDIA_AUTO_MAX = 12 * 1024 * 1024
+FETCH_TIMEOUT_S = 60.0
 # The hub's phases that the overlay knows by another name.
 PHASES = {"starting": "dialing"}
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")
@@ -219,6 +235,27 @@ def _notify_line(notify) -> str | None:
     return " — ".join(str(p) for p in parts if p) or None
 
 
+def save_download(name: str, data: bytes, folder: str = "~/Downloads"
+                  ) -> str:
+    """Write `data` into `folder` as `name` (its last part only), or as
+    "name (2).ext", "name (3).ext"... when that is taken. Its path."""
+    folder = os.path.expanduser(folder)
+    os.makedirs(folder, exist_ok=True)
+    base = os.path.basename(str(name).replace("\0", "")).strip() \
+        .lstrip(".") or "file"
+    stem, ext = os.path.splitext(base)
+    for n in range(1, 1000):
+        path = os.path.join(folder, base if n == 1 else f"{stem} ({n}){ext}")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return path
+    raise FileExistsError(f"too many files named {base} in {folder}")
+
+
 class RemoteAgent:
     """The hub's agent, read like the desktop's `Agent`.
 
@@ -230,6 +267,11 @@ class RemoteAgent:
     voice chosen, the hub's voices); None remembers nothing. `accent` is
     the voice's colour until the hub gives its own.
     """
+
+    # A line can carry what the user is looking at (the call's Look).
+    attachments = True
+    # Pictures bigger than this show as files, fetched when opened.
+    media_auto_max = MEDIA_AUTO_MAX
 
     def __init__(self, *, voice: str, endpoints: list[str], tls: dict,
                  server_name: str = "lilac", hands: Hands | None = None,
@@ -280,6 +322,9 @@ class RemoteAgent:
         self.turn_started = 0.0
         self.queued: list[str] = []     # said while the line was down
         self._queued_voices: list[str] = []
+        self._queued_attach: list[list | None] = []
+        self.heard_attached = 0         # blocks the line on show came with
+        self._line_attached: tuple[str, int] = ("", 0)
 
         # ── ours ────────────────────────────────────────────────────
         self.call_open = False
@@ -302,6 +347,14 @@ class RemoteAgent:
         self._segments: list[str] = []
         self._seg_after: list[int] = []
         self._seg_you: list[bool] = []
+        self._seg_shown: list[str | None] = []  # a shown thing's id
+        # What the agent showed (`shown`), by id, and the bytes fetched.
+        self.shown: dict[str, dict] = {}
+        self._media: OrderedDict[str, dict] = OrderedDict()
+        self._media_failed: dict[str, str] = {}
+        self._fetching: list[str] = []      # asked for, in order
+        self._media_waiters: dict[str, list[asyncio.Future]] = {}
+        self.media_rev = 0                  # bumped when bytes arrive
         self._open_seg: int | None = None
         self._seg_map: dict = {}        # the hub's block numbers → ours
         self._sessions: list[_Session] = []
@@ -418,13 +471,17 @@ class RemoteAgent:
         if not self._send({"type": "warm"}):
             self._poke()
 
-    def say(self, line: str) -> None:
+    def say(self, line: str, attach: list[dict] | None = None) -> None:
+        """Say a line in the chosen voice; `attach`: what the user is
+        looking at (the call's Look), up to ATTACH_MAX content blocks."""
         line = line.strip()
         if not line:
             return
+        attach = list(attach or [])[:ATTACH_MAX] or None
         if not self.connected:
             self.queued.append(line)
             self._queued_voices.append(self.voice)
+            self._queued_attach.append(attach)
             self._poke()
             self._emit()
             return
@@ -435,16 +492,22 @@ class RemoteAgent:
             self._begin_turn(line)
             self._local_turn = self._turn_ours = True
             self.shown_voice = self.voice
-        self._say(line, self.voice)
+            self.heard_attached = len(attach or ())
+        self._say(line, self.voice, attach)
         self._emit()
 
-    def _say(self, line: str, voice: str) -> None:
+    def _say(self, line: str, voice: str,
+             attach: list[dict] | None = None) -> None:
         self._mine.append((line, voice))
-        self._send({"type": "say", "text": line, "voice": voice})
+        message = {"type": "say", "text": line, "voice": voice}
+        if attach:
+            message["attach"] = attach
+        self._send(message)
 
     def interrupt(self) -> None:
         self.queued.clear()
         self._queued_voices.clear()
+        self._queued_attach.clear()
         if self.busy:
             self._interrupted = True
         self._send({"type": "stop"})
@@ -549,15 +612,97 @@ class RemoteAgent:
         return []
 
     def said_parts(self) -> list[tuple[str, float, str]]:
-        """As `Agent.said_parts`: the turn's words between its steps."""
-        parts = [(f"{'y' if you else 'm'}{i}_", float(after), s.strip())
-                 for i, (s, after, you) in enumerate(zip(
-                     self._segments, self._seg_after, self._seg_you))
-                 if s.strip()]
+        """As `Agent.said_parts`: the turn's words between its steps. A
+        thing the agent showed is a part too, its key starting with "s"
+        and its id in place of the words."""
+        parts = []
+        for i, (s, after, you, shown) in enumerate(zip(
+                self._segments, self._seg_after, self._seg_you,
+                self._seg_shown)):
+            if shown is not None:
+                parts.append((f"s{i}_", float(after), shown))
+            elif s.strip():
+                parts.append((f"{'y' if you else 'm'}{i}_", float(after),
+                              s.strip()))
         if not any(k.startswith("m") for k, _, _ in parts) \
                 and self.message.strip():
             parts.append(("m", float("inf"), self.message.strip()))
         return parts
+
+    # ── what the agent showed ───────────────────────────────────────────
+    def media(self, sid: str) -> dict | None:
+        """A shown thing's bytes, if here: {name, mime, data}."""
+        return self._media.get(sid)
+
+    def media_failed(self, sid: str) -> str | None:
+        return self._media_failed.get(sid)
+
+    def want_media(self, sid: str) -> None:
+        """Have a shown thing's bytes fetched, if they aren't here or on
+        their way (a picture on show asks for itself)."""
+        if sid in self._media or sid in self._fetching \
+                or sid in self._media_failed:
+            return
+        if self._send({"type": "fetch", "id": sid}):
+            self._fetching.append(sid)
+
+    async def fetch_media(self, sid: str,
+                          timeout: float = FETCH_TIMEOUT_S) -> dict:
+        """A shown thing's bytes, fetched if need be."""
+        self._media_failed.pop(sid, None)
+        if sid in self._media:
+            return self._media[sid]
+        fut = asyncio.get_running_loop().create_future()
+        self._media_waiters.setdefault(sid, []).append(fut)
+        self.want_media(sid)
+        if sid not in self._fetching:
+            raise ConnectionError("not on the line to the hub")
+        try:
+            got = await asyncio.wait_for(fut, timeout)
+        finally:
+            waiters = self._media_waiters.get(sid) or []
+            if fut in waiters:
+                waiters.remove(fut)
+        if got is None:
+            raise LookupError(self._media_failed.get(sid) or "not found")
+        return got
+
+    def _got_media(self, ev: dict) -> None:
+        sid = str(ev.get("id") or "")
+        try:
+            data = base64.b64decode(str(ev.get("data") or ""))
+        except ValueError:
+            data = None
+        if sid in self._fetching:
+            self._fetching.remove(sid)
+        if not sid or data is None:
+            if sid:
+                self._media_failed[sid] = "the hub sent it garbled"
+                self._wake_media(sid, None)
+            return
+        item = {"name": str(ev.get("name") or self.shown.get(sid, {}).get(
+                    "name") or sid),
+                "mime": str(ev.get("mime") or ""), "data": data}
+        self._media[sid] = item
+        self._media.move_to_end(sid)
+        while len(self._media) > MEDIA_KEEP:
+            self._media.popitem(last=False)
+        self._media_failed.pop(sid, None)
+        self.media_rev += 1
+        self._wake_media(sid, item)
+
+    def _wake_media(self, sid: str, item: dict | None) -> None:
+        for fut in self._media_waiters.pop(sid, []):
+            if not fut.done():
+                fut.set_result(item)
+        self.media_rev += 1
+
+    async def save_media(self, sid: str) -> str:
+        """Put a shown thing in ~/Downloads, under its own name or, if
+        that is taken, "name (2).ext": never over another file. Its path."""
+        item = await self.fetch_media(sid)
+        return await asyncio.to_thread(save_download, item["name"],
+                                       item["data"])
 
     # ── the turn on show ────────────────────────────────────────────────
     def _begin_turn(self, heard: str) -> None:
@@ -565,6 +710,7 @@ class RemoteAgent:
         self.ringing = None
         self.heard = heard
         self.heard_on = None
+        self.heard_attached = 0
         self._clear_turn()
         self.error = self.hint = None
         self._interrupted = False
@@ -576,6 +722,7 @@ class RemoteAgent:
         self.hangup_line = None
         self.activity.clear()
         self._segments, self._seg_after, self._seg_you = [], [], []
+        self._seg_shown = []
         self._open_seg = None
         self._seg_map = {}
         self._turn = None
@@ -583,6 +730,7 @@ class RemoteAgent:
     def _new_segment(self, value: str) -> int:
         self._segments.append(value)
         self._seg_you.append(False)
+        self._seg_shown.append(None)
         self._seg_after.append(self.activity[-1].id if self.activity else 0)
         self._open_seg = len(self._segments) - 1
         return self._open_seg
@@ -591,7 +739,27 @@ class RemoteAgent:
         """A line the user said mid-turn, here or on another screen."""
         self._segments.append(line)
         self._seg_you.append(True)
+        self._seg_shown.append(None)
         self._seg_after.append(self.activity[-1].id if self.activity else 0)
+
+    def _shown_segment(self, item: dict) -> None:
+        """Something the agent showed, where it arrives in the turn."""
+        sid = str(item.get("id") or "")
+        if not sid or sid in self._seg_shown:
+            return
+        self.shown[sid] = {"id": sid,
+                           "kind": "image" if item.get("kind") == "image"
+                           else "file",
+                           "name": str(item.get("name") or sid),
+                           "mime": str(item.get("mime") or ""),
+                           "size": item.get("size")
+                           if isinstance(item.get("size"), int) else None,
+                           "caption": str(item.get("caption") or "")}
+        self._segments.append("")
+        self._seg_you.append(False)
+        self._seg_shown.append(sid)
+        self._seg_after.append(self.activity[-1].id if self.activity else 0)
+        self._open_seg = None
 
     def _said(self) -> str:
         return "\n\n".join(s.strip() for s, you in zip(self._segments,
@@ -618,6 +786,9 @@ class RemoteAgent:
             if isinstance(block, dict) and block.get("block") is not None:
                 self._seg_map[block["block"]] = self._new_segment(
                     str(block.get("text") or ""))
+        for item in view.get("shown") or []:
+            if isinstance(item, dict):
+                self._shown_segment(item)
         self._open_seg = None
         self.message = str(view.get("text") or "") or self._said()
 
@@ -804,6 +975,7 @@ class RemoteAgent:
             self.busy = False
         self._local_turn = False
         self._mine.clear()
+        self._fetching.clear()          # asked again on the next line
         self._hub_ask = None
         self._ask_id = None
         if self.ringing == "ask" and self._local_ask is None:
@@ -882,19 +1054,22 @@ class RemoteAgent:
                 self._ring("done" if unseen.get("ok") else "error",
                            self._unseen, _notify_line(unseen.get("notify")))
         if self.queued:                     # said while the line was down
-            said = list(zip(self.queued, self._queued_voices))
+            said = list(zip(self.queued, self._queued_voices,
+                            self._queued_attach))
             self.queued.clear()
             self._queued_voices.clear()
+            self._queued_attach.clear()
             if not self.busy:
                 self._begin_turn(said[0][0])
                 self._local_turn = self._turn_ours = True
                 self.shown_voice = said[0][1]
+                self.heard_attached = len(said[0][2] or ())
             else:
-                for line, _voice in said:
+                for line, _voice, _attach in said:
                     self._you_segment(line)
-            for line, voice in said:
+            for line, voice, attach in said:
                 self._say(line, voice if voice in self._voices
-                          else self.voice)
+                          else self.voice, attach)
         self._send({"type": "history"})
         if self.call_open:
             self._send({"type": "warm"})
@@ -915,6 +1090,8 @@ class RemoteAgent:
                     and ev.get("client") == CLIENT:
                 self._mine.popleft()        # ours, already on show
                 return
+            # What it came with, for its turn's start.
+            self._line_attached = (text, int(ev.get("attached") or 0))
             if ev.get("client") == HUB_CLIENT:
                 if not self.busy:
                     return                  # its turn shows it
@@ -938,6 +1115,9 @@ class RemoteAgent:
             else:
                 self._begin_turn(line)
                 self._turn_ours = False
+                said, attached = self._line_attached
+                if said == line.strip():
+                    self.heard_attached = attached
                 device = ev.get("device")
                 self.heard_on = str(device) if device \
                     and device != self.device else None
@@ -1036,6 +1216,12 @@ class RemoteAgent:
         elif kind == "devices":
             self.devices = [_device(d) for d in ev.get("items") or []
                             if isinstance(d, dict)]
+        elif kind == "shown":
+            if self._turn is None and ev.get("turn") is not None:
+                self._turn = ev.get("turn")
+            self._shown_segment(ev)
+        elif kind == "file":
+            self._got_media(ev)
         elif kind == "history":
             self._sessions = [_Session(i) for i in ev.get("items") or []
                               if isinstance(i, dict)]
@@ -1044,6 +1230,11 @@ class RemoteAgent:
             request, reason = ev.get("request"), ev.get("reason")
             log.warning("%s: the hub refused %s: %s", self._tag, request,
                         reason)
+            if request == "fetch" and self._fetching:
+                # The hub answers in order: the oldest fetch failed.
+                self._media_failed[self._fetching[0]] = str(reason or
+                                                            "not found")
+                self._wake_media(self._fetching.pop(0), None)
             if request == "say":
                 if self._mine:
                     self._mine.popleft()

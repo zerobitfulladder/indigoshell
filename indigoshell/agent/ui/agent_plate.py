@@ -2,7 +2,8 @@
 Markdown, selectable) and, between its words, the steps it ran
 (expandable), in order, a long one with its progress bar under it — and
 the list of past conversations, or of the hub's devices, when that is
-open."""
+open. A picture or a file the agent showed takes its place among them
+(media.py)."""
 
 import time
 from typing import Callable
@@ -25,6 +26,8 @@ from .style import (ACT_ROWS_ALL, ACT_ROWS_BUSY, ACT_ROWS_IDLE, ACT_SIZE,
                     TAG_SIZE, TOOL_FG, YOU_ACCENT, accent_of, ago, clock_text,
                     fill_of, line_h, own_accent, paint_heading,
                     paint_plate)
+from .media import (MEDIA_KINDS, Pictures, paint_file, paint_image,
+                    paint_waiting, shown_rows)
 from .rows import Row, code_rows, highlight, markdown_rows, paint_line, text_rows
 
 
@@ -50,6 +53,9 @@ class AgentPlate(Widget):
         self.relayout: Callable[[], None] = lambda: None
         self.touched: Callable[[], None] = lambda: None
         self.link_clicked: Callable[[str], None] = lambda url: None
+        # A picture or file the agent showed, clicked: its id.
+        self.media_clicked: Callable[[str], None] = lambda sid: None
+        self.pictures = Pictures()
         # The past-conversations list, while it is open (Ctrl+H).
         self.history: list | None = None
         self.hist_sel = 0
@@ -70,6 +76,7 @@ class AgentPlate(Widget):
             Choice("SCRUB", "deny", theme.ERROR, pick),
         )
         self._copied_until = 0.0
+        self._flash = ("copied", None)     # the heading's brief tag
         self._dragging = False
         self._press: tuple[float, float] = (0.0, 0.0)
         self._press_pos: tuple[str, int] | None = None
@@ -119,7 +126,7 @@ class AgentPlate(Widget):
                 sum(1 for x in acts if x.result is not None),
                 self.show_all, tuple(sorted(self.expanded)),
                 tuple(sorted(self.full_output)), self.scroll, self.width,
-                a.jobs.shape(),
+                a.jobs.shape(), getattr(a, "media_rev", 0),
                 None if self.history is None
                 else (len(self.history), self.hist_sel, self.hist_top),
                 # The colour the reply's Markdown is drawn in: the voice's.
@@ -206,6 +213,8 @@ class AgentPlate(Widget):
                 rows += text_rows(key, said, BODY_SIZE, w, YOU_ACCENT,
                                   x=text.advance(ACT_SIZE) * 1.5,
                                   bar=YOU_ACCENT)
+            elif item[0].startswith("s"):       # a picture or a file
+                rows += shown_rows(a, self.pictures, item[2], w)
             else:
                 key, _after, said = item
                 rows += markdown_rows(said, w, key, own_accent(a))
@@ -565,12 +574,25 @@ class AgentPlate(Widget):
         return text.unpad("\n".join(sources[k][s:e]
                                     for k, (s, e) in spans.items()))
 
+    def flash(self, value: str, color: str | None = None) -> None:
+        """A word in the heading for a moment: "copied", "saved"..."""
+        self._flash = (value, color)
+        self._copied_until = time.monotonic() + COPIED_S * 2
+        self.invalidate()
+
+    def last_shown(self) -> str | None:
+        """The id of the last thing the agent showed in the turn."""
+        ids = [said for key, _after, said in self.agent.said_parts()
+               if key.startswith("s")]
+        return ids[-1] if ids else None
+
     def copy(self, selection: str = "clipboard") -> bool:
         value = self.selected_text()
         if not value or not clipboard.copy(value, selection):
             return False
         if selection == "clipboard":
             self._copied_until = time.monotonic() + COPIED_S
+            self._flash = ("copied", None)
             self.invalidate()
         return True
 
@@ -635,6 +657,9 @@ class AgentPlate(Widget):
             self.link_clicked(url)
             return
         row = self._row_at(y, laid)
+        if row is not None and row.kind in MEDIA_KINDS:
+            self.media_clicked(row.label)
+            return
         if row is not None and row.kind == "session":
             self.hist_pick(int(row.label))
             return
@@ -719,6 +744,12 @@ class AgentPlate(Widget):
                 self._paint_keys(canvas)
             elif kind == "session":
                 self._paint_session(canvas, box, int(row.label), accent)
+            elif kind == "image":
+                paint_image(canvas, box, row, self.pictures, a)
+            elif kind == "file":
+                paint_file(canvas, box, row, a, own_accent(a))
+            elif kind == "media":
+                paint_waiting(canvas, box, row, a)
             elif kind == "device":
                 self._paint_device(canvas, box, int(row.label), accent)
             elif kind == "devinfo":
@@ -817,7 +848,7 @@ class AgentPlate(Widget):
                            ("on the hub", theme.BASE_MUTED, False)))
             return
         if self._copied():
-            tag = ("copied", accent, True)
+            tag = (self._flash[0], self._flash[1] or accent, True)
         else:
             tag = (STATUS_WORDS.get(a.phase, a.phase),
                    ASK_ACCENT if a.phase == "asking" else theme.BASE_MUTED,

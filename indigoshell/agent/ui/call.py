@@ -61,7 +61,17 @@ Keys in the call:
     Ctrl+S              who answers your next line: Indigo or Lilac (a
                         call to the hub only; shown in your plate's
                         heading, and remembered)
-    Ctrl+N              a new conversation, from scratch (also Ctrl+L)
+    Ctrl+L              Look (a call to the hub only): your next line
+                        carries what you are looking at in Jack, your
+                        browser: the tab, the selection, the picture in it
+                        or under the pointer. A chip over your line says
+                        what; Ctrl+L again, or Escape with the line empty,
+                        drops it. Ctrl+Shift+L adds a screenshot of the
+                        tab. (Ctrl+L used to start a new conversation.)
+    Ctrl+F              open the last picture or file the agent showed in
+                        the turn (saved to ~/Downloads); a click on one
+                        does the same
+    Ctrl+N              a new conversation, from scratch
     Ctrl+M              next model: opus, sonnet, haiku, fable (Shift:
                         back). Switches the live conversation.
     Ctrl+T              next effort: idle, stock, boost, overclock,
@@ -78,8 +88,11 @@ the workspace.
 """
 
 import asyncio
+import logging
 import math
+import re
 import time
+from dataclasses import dataclass, field
 
 import skia
 
@@ -97,8 +110,43 @@ from .style import (CHIP, GAP, HANGUP_CLOSE_S, HISTORY_ROWS, MAX_BODY_ROWS,
 from .you_plate import YouPlate
 
 
+log = logging.getLogger(__name__)
+
 CALL_WINDOW = "call"
 DRAFT_KEY = "agent.draft"       # your unsent line, between calls
+LOOK_NOTE_S = 4.0               # "Jack isn't open" stays this long
+LOOK_WAIT_S = 4.0               # a line waits this long for its Look
+
+
+@dataclass
+class _Look:
+    """What the next line will carry (Ctrl+L): Jack's answer, once in."""
+
+    screenshot: bool
+    blocks: list | None = None      # None while Jack is asked
+    note: str = ""                  # why there is nothing
+    task: asyncio.Task | None = field(default=None, repr=False)
+
+    def chip(self) -> tuple[str, str]:
+        if self.blocks is None:
+            return "looking…", theme.BASE_MUTED
+        if not self.blocks:
+            return self.note or "nothing to look at", theme.YELLOW_DIM
+        return look_label(self.blocks), theme.CYAN_BRIGHT
+
+
+def look_label(blocks: list) -> str:
+    """The chip's words for a Look: the tab's title, and what else."""
+    texts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+    head = texts[0].splitlines()[0] if texts and texts[0] else ""
+    m = re.search(r'"(.*)" at (\S*)\s*$', head)
+    title = (m.group(1) or m.group(2)) if m else "Jack's tab"
+    words = f"looking at: {title}"
+    if any(t.startswith("The tab as shown") for t in texts):
+        words += " + screenshot"
+    if any(t.startswith("The image") for t in texts):
+        words += " + image"
+    return words
 
 _RETURN, _KP_ENTER, _ESCAPE = 0xFF0D, 0xFF8D, 0xFF1B
 _UP, _DOWN, _KP_UP, _KP_DOWN = 0xFF52, 0xFF54, 0xFF97, 0xFF99
@@ -125,6 +173,7 @@ class CallHost(Widget):
         self.agent_plate = AgentPlate(agent)
         self.agent_plate.relayout = self._fit
         self.agent_plate.link_clicked = self._open_link
+        self.agent_plate.media_clicked = self._open_media
         self.agent_plate.touched = agent.acknowledge
         self.you_plate = YouPlate(agent)
         self.agent_chip = Chip(CHIP, self._agent_look, self._blink_since,
@@ -144,6 +193,8 @@ class CallHost(Widget):
         self._you_key: tuple | None = None
         self._chip_look: tuple | None = None
         self._close_handle: asyncio.TimerHandle | None = None
+        self._look: _Look | None = None
+        self._look_xid: int | None = None   # focused as the call opened
 
     def children(self):
         # The projection last: it paints over the surfaces it scans.
@@ -185,6 +236,14 @@ class CallHost(Widget):
                 field_.set_text(draft)
         self._was_busy = self.agent.busy
         self._nudge_t0 = 0.0
+        # The window that had focus as the call opened: Look asks Jack
+        # about that one. The call takes no focus (it grabs the keyboard),
+        # so this is still the window the user was in.
+        try:
+            d = window.display
+            self._look_xid = d.get_int(d.root, "_NET_ACTIVE_WINDOW") or None
+        except Exception:
+            self._look_xid = None
         self._unsub = self.agent.subscribe(self._on_agent)
         self.agent.set_call_open(True)
         mon = window.display.primary_monitor()
@@ -201,6 +260,7 @@ class CallHost(Widget):
             self._unsub()
             self._unsub = None
         state.set(self.draft_key, self.you_plate.input.text)
+        self._drop_look()                   # about what was on screen then
         super().detach()
         self.agent.set_call_open(False)
 
@@ -289,6 +349,108 @@ class CallHost(Widget):
         asyncio.get_running_loop().create_task(
             open_target(url, self.agent.workspace))
 
+    def _open_media(self, sid: str) -> None:
+        """A picture or file the agent showed, clicked (or Ctrl+F): save
+        it to ~/Downloads and open it, as a clicked link would be."""
+        save = getattr(self.agent, "save_media", None)
+        if save is None:
+            return
+
+        async def go() -> None:
+            name = (getattr(self.agent, "shown", {}).get(sid) or {}).get(
+                "name", "it")
+            self.agent_plate.flash("saving…")
+            try:
+                path = await save(sid)
+            except Exception as e:
+                log.warning("couldn't save %s: %s", sid, e)
+                self.agent_plate.flash(f"couldn't get {name}: {e}",
+                                       theme.ERROR)
+                return
+            log.info("saved %s to %s", sid, path)
+            self._open_link(path)
+
+        asyncio.get_running_loop().create_task(go())
+
+    # ── Look ────────────────────────────────────────────────────────────
+    def _show_look(self) -> None:
+        self.you_plate.look_chip = self._look.chip() if self._look else None
+        self._fit()
+
+    def _drop_look(self) -> None:
+        look, self._look = self._look, None
+        if look is not None and look.task is not None \
+                and not look.task.done():
+            look.task.cancel()
+        if self.you_plate.look_chip is not None:
+            self._show_look()
+
+    def _toggle_look(self, screenshot: bool) -> None:
+        """Ctrl+L (Shift: with a screenshot): the next line carries what
+        you are looking at in Jack; again, the chip goes."""
+        if self._look is not None and self._look.screenshot == screenshot:
+            self._drop_look()
+            return
+        self._drop_look()
+        look = self._look = _Look(screenshot)
+        look.task = asyncio.get_running_loop().create_task(
+            self._ask_jack(look))
+        self._show_look()
+
+    async def _ask_jack(self, look: _Look) -> None:
+        try:
+            from ...browser.control import look as jack_look
+        except ImportError:
+            blocks, note = [], "Jack isn't here"
+        else:
+            try:
+                blocks = await jack_look(screenshot=look.screenshot,
+                                         image=True, xid=self._look_xid)
+            except Exception:
+                log.exception("look failed")
+                blocks = []
+            note = "Jack isn't open"
+        look.blocks, look.note = list(blocks or []), note
+        if self._look is not look:
+            return                          # dropped meanwhile
+        self._show_look()
+        if not look.blocks:
+            # Nothing to carry: the note says why, then goes.
+            def gone() -> None:
+                if self._look is look:
+                    self._drop_look()
+            asyncio.get_running_loop().call_later(LOOK_NOTE_S, gone)
+
+    def _say(self, line: str) -> None:
+        """Say a line, with the Look if there is one (waiting a moment
+        for Jack's answer if it isn't in yet)."""
+        look, self._look = self._look, None
+        if look is not None:
+            self.you_plate.look_chip = None
+        if look is None:
+            self.agent.say(line)
+            return
+        if look.blocks is not None:
+            self._say_with(line, look.blocks)
+            return
+
+        async def later() -> None:
+            try:
+                await asyncio.wait_for(asyncio.shield(look.task),
+                                       LOOK_WAIT_S)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            self._say_with(line, look.blocks or [])
+            self._fit()
+
+        asyncio.get_running_loop().create_task(later())
+
+    def _say_with(self, line: str, blocks: list) -> None:
+        if blocks:
+            self.agent.say(line, attach=blocks)
+        else:
+            self.agent.say(line)
+
     def _schedule_close(self) -> None:
         if self._close_handle is not None:
             self._close_handle.cancel()
@@ -366,6 +528,9 @@ class CallHost(Widget):
             if plate.show_devices:
                 plate.close_devices()
                 return True
+            if self._look is not None and not field_.text:
+                self._drop_look()           # the chip goes first
+                return True
             return False                    # the window closes: hang up
         a.acknowledge()                     # any key: you are back
         if self._close_handle is not None:  # typing keeps the line open
@@ -385,7 +550,7 @@ class CallHost(Widget):
                 plate.hist_move(HISTORY_ROWS)
             elif letter == "h":
                 plate.close_history()
-            elif letter in ("n", "l"):
+            elif letter == "n":
                 if a.new_conversation():
                     plate.reset()
                     self._fit()
@@ -413,7 +578,15 @@ class CallHost(Widget):
         if letter == "s" and hasattr(a, "switch_voice"):
             a.switch_voice()                # who answers the next line
             return True
-        if letter in ("l", "n"):
+        if letter == "l" and getattr(a, "attachments", False):
+            self._toggle_look(screenshot=ev.shift)
+            return True
+        if letter == "f" and hasattr(a, "save_media"):
+            sid = plate.last_shown()
+            if sid is not None:
+                self._open_media(sid)
+            return True
+        if letter == "n":
             if a.new_conversation():
                 plate.reset()
                 self._fit()
@@ -432,7 +605,7 @@ class CallHost(Widget):
                 self.you_chip.kick()
                 self.you_plate.comet.fire()
                 self.you_plate.invalidate()
-                a.say(line)
+                self._say(line)
                 self._fit()
             return True
         if k in (_PAGE_UP, _KP_PAGE_UP):

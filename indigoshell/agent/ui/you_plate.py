@@ -1,11 +1,12 @@
 """Your plate: what you said this turn, anything queued, and the line
-you are typing."""
+you are typing, with the Look chip over it while the next line is to
+carry what you are looking at (Ctrl+L, call.py)."""
 
 import math
 
 import skia
 
-from ... import text, theme
+from ... import shapes, text, theme
 from ...widgets.base import Size, Widget
 from ...widgets.text_input import TextInput
 from ..session import Agent
@@ -13,6 +14,10 @@ from .frame import Comet
 from .style import (ACT_SIZE, AGENT_ACCENT, BODY_SIZE, MAX_HEARD_LINES,
                     NAME_SIZE, PAD_X, PAD_Y, PLATE_W, TAG_SIZE, YOU_ACCENT,
                     YOU_FILL, line_h, paint_heading, paint_plate)
+
+
+_CHIP_H = line_h(ACT_SIZE) + 12     # the Look chip's row
+_CHIP_PAD = 8
 
 
 # ── your plate ──────────────────────────────────────────────────────────
@@ -29,6 +34,8 @@ class YouPlate(Widget):
                                blink_for=math.inf)
         self._input_h = 0.0
         self.comet = Comet()        # one lap round the plate on a send
+        # The Look chip: (words, colour), or None. Set by the call.
+        self.look_chip: tuple[str, str] | None = None
 
     @property
     def animation_fps(self) -> int:
@@ -55,6 +62,8 @@ class YouPlate(Widget):
         h = line_h(NAME_SIZE, True) + 6
         h += len(self._heard()) * (line_h(BODY_SIZE) + 3)
         h += len(self.agent.queued) * (line_h(ACT_SIZE) + 3)
+        if self.look_chip is not None:
+            h += _CHIP_H
         # Whole pixels, like every other row: the plates and chips below
         # are placed from this height, and a frame edge on a fractional
         # row is soft — and on the GPU its antialiasing reaches a pixel
@@ -82,12 +91,13 @@ class YouPlate(Widget):
         least needed keys go when the heading is short of room."""
         a = self.agent
         hub = getattr(a, "devices", None) is not None
+        look = "^L look" if getattr(a, "attachments", False) else ""
         if a.busy:
-            keys = ["⏎ send", "^C stop", "^D devices" if hub else "",
+            keys = ["⏎ send", look, "^C stop", "^D devices" if hub else "",
                     "esc hang up"]
         else:
-            keys = ["⏎ send", "^H history", "^D devices" if hub else "",
-                    "^N new", "esc hang up"]
+            keys = ["⏎ send", look, "^H history",
+                    "^D devices" if hub else "", "^N new", "esc hang up"]
         keys = [k for k in keys if k]
         switch = getattr(a, "voice_switch", None)
         gap = "   "
@@ -100,7 +110,7 @@ class YouPlate(Widget):
             return w + (lead + name_w + text.measure(gap, TAG_SIZE)
                         if switch else 0.0)
 
-        for drop in ("^D devices", "^H history", "^N new"):
+        for drop in ("^D devices", "^H history", "^N new", "^L look"):
             if left + 12 + width(keys) <= right:
                 break
             if drop in keys:
@@ -118,6 +128,28 @@ class YouPlate(Widget):
             text.draw(canvas, "^S ", x - lead, base, TAG_SIZE,
                       theme.color(theme.BASE_MUTED))
 
+    def _paint_chip(self, canvas, x: float, y: float, right: float) -> None:
+        """The Look chip: what the next line will carry, in a small
+        beveled tag."""
+        words, color = self.look_chip
+        words = text.ellipsize(words, ACT_SIZE, right - x - 2 * _CHIP_PAD)
+        w = text.measure(words, ACT_SIZE) + 2 * _CHIP_PAD
+        h = _CHIP_H - 6
+        tag = shapes.beveled(x, y + 2, w, h, bevel=5,
+                             corners=("top-right", "bottom-left"))
+        fill = skia.Paint(AntiAlias=True)
+        fill.setColor(theme.color(color, 0.12))
+        canvas.drawPath(tag, fill)
+        edge = skia.Paint(AntiAlias=True)
+        edge.setStyle(skia.Paint.kStroke_Style)
+        edge.setStrokeWidth(1)
+        edge.setColor(theme.color(color, 0.8))
+        canvas.drawPath(tag, edge)
+        text.draw(canvas, words, x + _CHIP_PAD,
+                  text.baseline_in(skia.Rect.MakeXYWH(x, y + 2, w, h),
+                                   ACT_SIZE),
+                  ACT_SIZE, theme.color(color))
+
     def paint(self, canvas: skia.Canvas) -> None:
         a = self.agent
         paint_plate(canvas, self.rect, YOU_ACCENT, YOU_FILL)
@@ -131,10 +163,13 @@ class YouPlate(Widget):
         # The hub's conversation is shared: a line asked on another of
         # your devices says which.
         on = getattr(a, "heard_on", None)
+        looked = getattr(a, "heard_attached", 0)
         head_end = paint_heading(
             canvas, box, NAME_SIZE,
             (("YOU", YOU_ACCENT, True),
-             (f"on {on}" if on else "", theme.BASE_MUTED, False)))
+             (f"on {on}" if on else "", theme.BASE_MUTED, False),
+             ("+ look" if looked and a.heard else "", theme.CYAN_MID,
+              False)))
         self._paint_keys(canvas, box, head_end, right)
         y += hh
 
@@ -155,6 +190,9 @@ class YouPlate(Widget):
                       text.baseline_in(row, ACT_SIZE), ACT_SIZE,
                       theme.color(theme.HUD_FG))
             y += lh
+        if self.look_chip is not None:
+            self._paint_chip(canvas, x, y, right)
+            y += _CHIP_H
 
         r = self.input.rect
         text.draw(canvas, "›", x, text.baseline_in(r, BODY_SIZE, True),
