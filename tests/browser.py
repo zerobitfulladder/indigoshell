@@ -1,4 +1,4 @@
-"""The browser (indigoshell/browser/qt), unattended.
+"""The browser (flux/qt), unattended.
 
     .venv/bin/python tests/browser.py              off screen, about a minute
     .venv/bin/python tests/browser.py --on-screen  the shell's app service and a real window, ~40 s
@@ -319,10 +319,10 @@ class FakeShell:
 def test_pure() -> None:
     from PySide6.QtCore import Qt
 
-    from indigoshell.browser import protocol
-    from indigoshell.browser.qt import startup
-    from indigoshell.browser.qt.identity import ORIGINAL, Rules
-    from indigoshell.browser.qt.keys import action_for
+    from flux import protocol
+    from flux.qt import startup
+    from flux.qt.identity import ORIGINAL, Rules
+    from flux.qt.keys import action_for
 
     section("1. pure parts")
     K, M = Qt.Key, Qt.KeyboardModifier
@@ -487,11 +487,11 @@ def test_in_process() -> None:
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
-    from indigoshell.browser import protocol
-    from indigoshell.browser.qt import app as browser_app
-    from indigoshell.browser.qt import instance, startup
-    from indigoshell.browser.qt.identity import CHROME, ORIGINAL
-    from indigoshell.browser.qt.profile import make_profile
+    from flux import protocol
+    from flux.qt import app as browser_app
+    from flux.qt import instance, startup
+    from flux.qt.identity import CHROME, ORIGINAL
+    from flux.qt.profile import make_profile
 
     logs = Log()
     K, M = Qt.Key, Qt.KeyboardModifier
@@ -680,7 +680,7 @@ def test_in_process() -> None:
         press(w, key, mods)
         zooms.append(round(w.tabs[3].page.zoomFactor(), 2))
     check("Ctrl++, Ctrl+=, Ctrl+-, Ctrl+0 zoom", zooms == [1.1, 1.25, 1.1, 1.0], f"{zooms}")
-    from indigoshell.browser.qt import profile as profile_mod
+    from flux.qt import profile as profile_mod
     tab3 = w.tabs[3]
     long_ok = navigate(tab3, lambda: tab3.page.load(QUrl(url("/long"))), title="Long")
     QTest.qWait(300)
@@ -1319,8 +1319,8 @@ def test_in_process() -> None:
 
     # ── bookmarks whose address now leads elsewhere ─────────────────────
     print("  bookmarks that redirect (imported ones, with keys of their own):")
-    from indigoshell.browser import places
-    from indigoshell.browser.qt import tabs as tabs_mod
+    from flux import places
+    from flux.qt import tabs as tabs_mod
     imported = [
         {"name": "Moved", "url": url("/moved/A"), "added": 1, "folder": "Imported"},
         {"name": "Chain", "url": url("/hop1/B"), "added": 2, "folder": "Imported"},
@@ -1484,7 +1484,7 @@ def test_in_process() -> None:
     wait(lambda: not browser.bookmarks.file.entries, 3)
 
     # ── history ─────────────────────────────────────────────────────────
-    from indigoshell.browser import places
+    from flux import places
     reader = places.HistoryReader(Path(os.environ["XDG_DATA_HOME"]) / APP
                                   / "browser-history.sqlite")
 
@@ -1556,7 +1556,7 @@ def test_in_process() -> None:
           f"reattached {time.monotonic() - t0 - 3.5:.2f} s after the shell came back; "
           f"line changes {len(line_at) - flips}")
     # A reload that says so, and takes longer than three seconds.
-    from indigoshell.browser.qt import link as link_mod
+    from flux.qt import link as link_mod
     flips = len(line_at)
     shell.conn_of(w).send({"type": "restarting"})
     told = wait(lambda: w.link.restarting, 2)
@@ -1681,14 +1681,14 @@ def browser_log(state: Path) -> Path:
 
 
 def test_processes() -> None:
-    section("3. python -m indigoshell.browser.qt, as processes")
+    section("3. python -m flux.qt, as processes")
     shell = FakeShell(SOCK["apps2"])
     state1 = SCRATCH / "state-1"
     envs = dict(os.environ, QT_QPA_PLATFORM="offscreen", XDG_STATE_HOME=str(state1), **{
         env("BROWSER_SOCKET"): SOCK["browser2"], env("APPS_SOCKET"): SOCK["apps2"]})
     log_path = SCRATCH / "browser-process-1.log"
     with open(log_path, "w") as err:
-        first = subprocess.Popen([PY, "-m", f"{APP}.browser.qt", "--log-level", "debug",
+        first = subprocess.Popen([PY, "-m", "flux.qt", "--log-level", "debug",
                                   url("/page/One")], cwd=REPO, env=envs,
                                  stdout=err, stderr=err)
 
@@ -1707,7 +1707,7 @@ def test_processes() -> None:
                            for s in states() for t in s["tabs"]), 30)
     check("the first invocation starts and reports its tab", up)
     t0 = time.monotonic()
-    second = subprocess.run([PY, "-m", f"{APP}.browser.qt", url("/page/Two")], cwd=REPO,
+    second = subprocess.run([PY, "-m", "flux.qt", url("/page/Two")], cwd=REPO,
                             env=envs, capture_output=True, text=True, timeout=30)
     took = time.monotonic() - t0
     got = until(lambda: any([t["title"] for t in s["tabs"]] == ["One", "Two"] and s["current"] == 1
@@ -1716,7 +1716,7 @@ def test_processes() -> None:
           second.returncode == 0 and got, f"exit {second.returncode} after {took:.2f} s "
           f"{second.stderr.strip()[-200:]!r}")
     check("... without loading Qt (fast)", took < 3.0, f"{took:.2f} s")
-    third = subprocess.run([PY, "-m", f"{APP}.browser.qt"], cwd=REPO, env=envs,
+    third = subprocess.run([PY, "-m", "flux.qt"], cwd=REPO, env=envs,
                            capture_output=True, text=True, timeout=30)
     windows = until(lambda: len(shell.conns) >= 2, 10)
     check("with no URL: exits 0, and the running browser opens a new window",
@@ -1756,7 +1756,7 @@ def test_processes() -> None:
             env("BROWSER_SOCKET"): SOCK["browser3"], env("APPS_SOCKET"): SOCK["apps3"]})
         out = SCRATCH / f"browser-process-{state.name}.log"
         with open(out, "w") as err:
-            proc_ = subprocess.Popen([PY, "-m", f"{APP}.browser.qt", *args, url(f"/{title}")],
+            proc_ = subprocess.Popen([PY, "-m", "flux.qt", *args, url(f"/{title}")],
                                      cwd=REPO, env=envs_, stdout=err, stderr=err)
         up_ = until(lambda: shell_.conns and any(t["title"] == title and not t["loading"]
                                                  for s in shell_.conns[0].states()
@@ -1861,10 +1861,10 @@ def alive(pid: int, start: str) -> bool:
 LOG_CHILD = """
 import logging, sys
 from PySide6.QtCore import QTimer
-from indigoshell.browser.qt import app, logs
+from flux.qt import app, logs
 logs.setup("info")
 qt = app.make_application()
-log = logging.getLogger("indigoshell.browser.qt.test")
+log = logging.getLogger("flux.qt.test")
 def boom():
     raise RuntimeError("from a slot")
 QTimer.singleShot(0, boom)

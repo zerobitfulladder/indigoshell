@@ -33,7 +33,7 @@ import skia
 
 from ... import markdown, shapes, text, theme
 from ...widgets.base import Size, Widget
-from ..session import Agent
+from ..remote import RemoteAgent
 from .bars import Bars
 from .call import CALL_WINDOW
 from .chip import Chip
@@ -62,7 +62,7 @@ class CallStatus(Widget):
     answering. The chip sits against the screen edge: `side` is the
     screen edge the window is anchored to, "right" or "left"."""
 
-    def __init__(self, agent: Agent, *, answer_hint: str = "mod+a to answer",
+    def __init__(self, agent: RemoteAgent, *, answer_hint: str = "mod+a to answer",
                  width: int = STATUS_W, call: str = CALL_WINDOW,
                  side: str = "right") -> None:
         super().__init__()
@@ -270,7 +270,7 @@ class CallRouter:
     `RemoteAgent`).
     """
 
-    def __init__(self, agent: Agent, *, call: str = CALL_WINDOW,
+    def __init__(self, agent: RemoteAgent, *, call: str = CALL_WINDOW,
                  status: str = STATUS_WINDOW,
                  show_working: bool = True) -> None:
         self.agent = agent

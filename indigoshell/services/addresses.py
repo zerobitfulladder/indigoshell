@@ -2,9 +2,9 @@
 
 A launcher mode (services/modes.py) beside the app catalog: the same
 window, the same rows and keys, other things in the rows. Reads Flux's
-history and bookmarks (browser/places.py), read-only; picking a row
+history and bookmarks (flux/places.py), read-only; picking a row
 hands its address to `on_load`, which the shell's side of Flux
-(browser/context.py) turns into a `load` command for the browser window
+(applink/flux.py) turns into a `load` command for the browser window
 that asked.
 
 The rows, top to bottom:
@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import fuzzy
-from ..browser import places
+from flux import places
 from .modes import Entry, Mode
 
 log = logging.getLogger(__name__)

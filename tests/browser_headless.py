@@ -19,11 +19,9 @@ listens where the shell's apps connect, and counts them.
      profile, this Python and the repository's main.py); no display
      means headless; the upload check refuses every profile's cache; the
      imports (none of the blocked modules, no PySide6, no indigoshell
-     .agent); the hands made of the given Hand, raising the given
-     HandError, the same shapes as the laptop's, their headless words
-     (no laptop, no workspace, no X window), the laptop's words kept;
-     `browser_hands()` with no Hand where the agent package cannot import
-     says what to give.
+     .agent); the hands made of core's Hand, raising its HandError, the
+     same shapes as the laptop's, their headless words (no laptop, no
+     workspace, no X window), the laptop's words kept.
   2. a headless Flux, `--headless --no-window --profile pi`, through
      browser_hands(profile="pi", headless=True): tabs (headless, no
      windows, then no X window and no focus); open; read (outline refs);
@@ -64,7 +62,6 @@ for _name in BLOCKED:
 import argparse                 # noqa: E402
 import asyncio                  # noqa: E402
 import base64                   # noqa: E402
-import importlib.util           # noqa: E402
 import json                     # noqa: E402
 import os                       # noqa: E402
 import re                       # noqa: E402
@@ -248,18 +245,11 @@ def near(a: tuple, b: tuple, tol: int = 6) -> bool:
     return len(a) == len(b) and all(abs(x - y) <= tol for x, y in zip(a, b))
 
 
-# ── the agent's hands module, as the Pi gets it ─────────────────────────
+# ── what a hand is, as the Pi gets it ──────────────────────────────────
 def agent_hands():
-    """agent/hands.py by its path: the module itself, not the package
-    (whose __init__ needs skia)."""
-    name = "pi_agent_hands"
-    if name in sys.modules:
-        return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, REPO / "indigoshell/agent/hands.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    """core/hands.py: Hand, Call, HandError (pure)."""
+    from indigoshell.core import hands
+    return hands
 
 
 # ── Flux processes ──────────────────────────────────────────────────────
@@ -272,7 +262,7 @@ def start_flux(*args: str) -> subprocess.Popen:
 
 
 def wait_listening(profile: str | None, timeout: float = 45.0) -> bool:
-    from indigoshell.browser import control
+    from flux import control
 
     async def go():
         deadline = time.monotonic() + timeout
@@ -309,7 +299,7 @@ def stop(proc_or_pid, timeout: float = 20.0) -> int | None:
 
 
 def log_of(profile: str | None) -> str:
-    from indigoshell.browser import profiles
+    from flux import profiles
     path = Path(profiles.log_path(profile))
     return path.read_text(errors="replace") if path.exists() else ""
 
@@ -317,7 +307,7 @@ def log_of(profile: str | None) -> str:
 # ── 1. pure ─────────────────────────────────────────────────────────────
 def test_pure() -> None:
     section("1. pure: profiles, the start command, the imports, the hands")
-    from indigoshell.browser import control, profiles, protocol, uploads
+    from flux import control, profiles, protocol, uploads
     from indigoshell.core.paths import cache_dir, config_dir, data_dir, state_dir
 
     saved = os.environ.pop(env("BROWSER_SOCKET"))
@@ -327,8 +317,8 @@ def test_pure() -> None:
         default_lock = protocol.instance_lock_path()
     finally:
         os.environ[env("BROWSER_SOCKET")] = saved
-    from indigoshell.browser import places
-    from indigoshell.browser.qt import logs
+    from flux import places
+    from flux.qt import logs
     before = {"storage": os.path.join(data_dir(), "browser"),
               "cache": os.path.join(cache_dir(), "browser"),
               "history": str(Path(data_dir()) / "browser-history.sqlite"),
@@ -382,7 +372,7 @@ def test_pure() -> None:
         ok = "Flux's cache" in str(e)
     check("uploads: a named profile's cache refused", ok)
 
-    from indigoshell.browser import hands as browser_hands_module
+    from flux import hands as browser_hands_module
     loaded = sorted(m for m in sys.modules if m.split(".")[0] in BLOCKED and sys.modules[m])
     check("imports: browser.control and browser.hands with xcffib, skia, dbus_fast and psutil "
           "blocked", not loaded, f"{loaded}")
@@ -391,12 +381,12 @@ def test_pure() -> None:
           f"{[m for m in sys.modules if m.startswith(f'{APP}.agent')]}")
 
     ah = agent_hands()
-    hl = browser_hands_module.browser_hands("pi", headless=True, hand=ah.Hand, error=ah.HandError)
-    check("hands: made of the given Hand", all(isinstance(h, ah.Hand) for h in hl) and len(hl) == 24,
+    hl = browser_hands_module.browser_hands("pi", headless=True)
+    check("hands: made of core's Hand", all(isinstance(h, ah.Hand) for h in hl) and len(hl) == 24,
           f"{len(hl)}")
     shapes = [(h.name, json.dumps(h.input, sort_keys=True), h.timeout) for h in hl]
     try:
-        laptop = browser_hands_module.browser_hands(hand=ah.Hand, error=ah.HandError)
+        laptop = browser_hands_module.browser_hands()
     except Exception as e:      # noqa: BLE001
         laptop = []
         print(f"    {e}")
@@ -424,22 +414,18 @@ def test_pure() -> None:
             return f"{type(e).__name__}: {e}"
         return "no error"
     said = asyncio.run(bad_tab())
-    check("... a hand's error is the given HandError", said.startswith("HandError: "), said)
-    try:
-        browser_hands_module.browser_hands("pi", headless=True)
-        said = "built"
-    except ImportError as e:
-        said = str(e)
-    check("browser_hands() with no Hand where indigoshell.agent cannot import: says what to give",
-          "browser_hands(hand=..., error=...)" in said, said[:160])
+    check("... a hand's error is core's HandError", said.startswith("HandError: "), said)
+    check("... still none of the blocked modules, nor the agent package", not any(
+        m.split(".")[0] in BLOCKED or m.startswith(f"{APP}.agent") for m in sys.modules
+        if sys.modules[m]))
 
 
 # ── 2. a headless Flux through the hands ────────────────────────────────
 def test_headless() -> None:
     section("2. a headless Flux (--headless --no-window --profile pi) through the hands")
-    from indigoshell.browser import hands as bh
+    from flux import hands as bh
     # link.py's, read from its source: importing it would load PySide6 here.
-    FALLBACK_MS = int(re.search(r"^FALLBACK_MS = (\d+)", (REPO / "indigoshell/browser/qt/link.py")
+    FALLBACK_MS = int(re.search(r"^FALLBACK_MS = (\d+)", (REPO / "flux/qt/link.py")
                                 .read_text(), re.M).group(1))
     ah = agent_hands()
     seen_before = len(SHELL_SEEN)
@@ -447,8 +433,7 @@ def test_headless() -> None:
     if not check("it listens on pi's socket", wait_listening("pi")):
         stop(proc)
         return
-    hands = {h.name: h for h in bh.browser_hands("pi", headless=True, hand=ah.Hand,
-                                                  error=ah.HandError)}
+    hands = {h.name: h for h in bh.browser_hands("pi", headless=True)}
 
     async def run() -> dict:
         out: dict = {}
@@ -599,7 +584,7 @@ def test_headless() -> None:
 # ── 3. two profiles side by side ────────────────────────────────────────
 def test_two_profiles() -> None:
     section("3. two profiles side by side: the default one and pi")
-    from indigoshell.browser import control, places, profiles
+    from flux import control, places, profiles
     default = start_flux("--headless", "--no-window")
     pi = start_flux("--headless", "--no-window", "--profile", "pi")
     both = wait_listening(None) and wait_listening("pi")
@@ -660,7 +645,7 @@ def test_two_profiles() -> None:
 # ── 4. ensure_running with no display and no systemd ────────────────────
 def test_ensure_running() -> None:
     section("4. ensure_running(profile=\"auto\"): no display, no systemd, plain setsid")
-    from indigoshell.browser import control, protocol
+    from flux import control, protocol
     bin_dir = SCRATCH / "bin"
     bin_dir.mkdir(exist_ok=True)
     setsid = shutil.which("setsid")
@@ -718,7 +703,7 @@ def test_ensure_running() -> None:
 QT68 = r"""
 import os, sys, json
 sys.path.insert(0, sys.argv[1])
-from indigoshell.browser.qt import profile as profile_module
+from flux.qt import profile as profile_module
 from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtWidgets import QApplication
 from PySide6.QtWebEngineCore import QWebEnginePage
@@ -751,7 +736,7 @@ print(json.dumps(out))
 
 def test_qt68() -> None:
     section("5. the Qt 6.8 profile path (no QWebEngineProfileBuilder)")
-    from indigoshell.browser import profiles
+    from flux import profiles
 
     def child(*args: str) -> dict:
         r = subprocess.run([PY, "-B", "-c", QT68, str(REPO), *args], capture_output=True,

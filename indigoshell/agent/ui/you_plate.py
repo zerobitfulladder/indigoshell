@@ -9,7 +9,7 @@ import skia
 from ... import shapes, text, theme
 from ...widgets.base import Size, Widget
 from ...widgets.text_input import TextInput
-from ..session import Agent
+from ..remote import RemoteAgent
 from .frame import Comet
 from .style import (ACT_SIZE, AGENT_ACCENT, BODY_SIZE, MAX_HEARD_LINES,
                     NAME_SIZE, PAD_X, PAD_Y, PLATE_W, TAG_SIZE, YOU_ACCENT,
@@ -22,7 +22,7 @@ _CHIP_PAD = 8
 
 # ── your plate ──────────────────────────────────────────────────────────
 class YouPlate(Widget):
-    def __init__(self, agent: Agent, width: int = PLATE_W) -> None:
+    def __init__(self, agent: RemoteAgent, width: int = PLATE_W) -> None:
         super().__init__()
         self.agent = agent
         self.width = width

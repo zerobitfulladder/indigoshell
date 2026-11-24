@@ -11,12 +11,11 @@ from .core import registry
 from .services import music, sysinfo
 from .services.text_effects import Scramble
 from .widgets.base import Insets
-from .agent import (CALL_WINDOW, STATUS_WINDOW, Agent, CallHost,
-                    CallRouter, CallStatus, Firefox, ShellTools)
+from .agent import CALL_WINDOW, CallHost, CallRouter
 from .agent.ui.status import AgentChip
 from .applink.context import AppContext
 from .applink.service import AppService
-from .browser.context import FluxWindow
+from .applink.flux import FluxWindow
 from .widgets.clock import Clock
 from .widgets.fastfetch import Fastfetch
 from .widgets.hardware_panel import HardwarePanel
@@ -98,53 +97,37 @@ PANEL_SPAWN = ScanLock(duration=0.22, band_px=36.0, tear_px=29.0, split_px=17.0,
 
 
 # ── The call ───────────────────────────────────────────────────────────
-# Claude on the line, through the Agent SDK — `indigoshell toggle call`
-# from a keybinding. It signs in from its own Claude Code config
-# directory, so it can use a different account from a `claude` in a
-# terminal; sign that directory in once with
+# The agent on the line — `indigoshell toggle call` from a keybinding —
+# lives on a hub, a machine of its own (lilac, on a Raspberry Pi): the
+# call talks to it over a WebSocket with TLS (agent/remote.py) and lends
+# it this machine's hands (agent/hands.py, laptop.py; flux/hands.py for
+# Flux). Which hub, with which certificates, is this machine's to say, so
+# the defaults have no call; a config.py adds it with `call`:
 #
-#     CLAUDE_CONFIG_DIR=~/.config/indigoshell/claude claude auth login
-#
-# `persona` tells it the tone you enjoy (agent/prompts.py has the default:
-# a love of cyberpunk and its street slang). `model="opus"` follows the newest
-# Opus; `effort` defaults to Claude Code's own. `permission_mode="auto"`
-# (the default) lets a classifier approve routine tool calls; the ones in
-# `agent/permissions.py` (rm, sudo, kill, ...) still ask on the call.
-# `tools` gives it the desktop (agent/tools.py): screenshots, opening
-# links and files (reports, images, videos) brought forward on their
-# workspace, apps, workspaces, the clipboard, Spotify, the WiZ lights
-# on the LAN (named in ~/.config/indigoshell/connections/wiz/config.json),
-# and your everyday Firefox through the INDIGO bridge add-on — set up
-# once with `python -m indigoshell.agent.firefox install` (agent/firefox.py).
-# The agent works in ~/.config/indigoshell/assistant, whose CLAUDE.md is
-# its notebook for this machine — how it shows you things included; ask
-# it on a call to work differently and it edits the notebook — and whose
-# .claude/commands/ holds any slash commands of your own (`/name` on the
-# call runs one).
-FIREFOX = Firefox()
-AGENT = Agent(name="INDIGO", model="opus",
-              tools=ShellTools(firefox=FIREFOX))
+#     from indigoshell.agent import RemoteAgent, laptop_hands
+#     from indigoshell.config_default import (MENUS, SCREEN, SERVICES,
+#                                             STARTUP, WINDOWS, call)
+#     HUB = RemoteAgent(voice="indigo", endpoints=["wss://hub.lan:443"],
+#                       tls={"ca": ..., "cert": ..., "key": ...},
+#                       hands=laptop_hands())
+#     CALL, CALL_SERVICES = call(HUB)
+#     WINDOWS = [*WINDOWS, CALL]
+#     SERVICES = [*SERVICES, *CALL_SERVICES]
 
 
 # ── Services ───────────────────────────────────────────────────────────
 # Long-lived non-window services the daemon starts once its loop is up.
 # Each toast is its own window, so the scan-lock spawn/despawn plays per
-# notification rather than once for the stack. The router watches a
-# hung-up call: the top bar's agent chip shows its work and blinks when
-# it rings back, and its corner plate shows while it works; FIREFOX
-# is the socket the browser add-on's host connects to. APPS is the
+# notification rather than once for the stack. APPS is the
 # socket the shell's own apps connect to, one line per window, and knows
 # which of their windows has focus (applink/): today Flux, the browser
 # (`indigoshell browser`), whose windows the top bar shows
-# (browser/context.py) and whose Ctrl+L, Ctrl+T, Ctrl+M open the
+# (applink/flux.py) and whose Ctrl+L, Ctrl+T, Ctrl+M open the
 # launcher. Another app kind is one more entry in `kinds`.
 APPS = AppService(kinds={"flux": FluxWindow})
 
 SERVICES = [
     NotificationManager(effects=(PANEL_SPAWN,), effect_scale=0.35, holo=True),
-    FIREFOX,
-    AGENT,
-    CallRouter(AGENT),
     APPS,
 ]
 
@@ -438,13 +421,20 @@ WINDOWS = [
         effect_scale=0.35,           # raster fallback only
         content=Launcher(rows=12, width=760, terminal=("kitty",)),
     ),
+]
 
-    # The call — top right, clear of the bar. Frosted rather than solid:
-    # translucent plates with `blur`, which has the compositor blur what
-    # is behind them and cuts the window to the plates' outline. Grabs
-    # the keyboard and pointer like the launcher; Escape, an outside
-    # click or the keybinding again hangs up, and the work carries on.
-    WindowSpec(
+
+def call(hub) -> tuple[WindowSpec, list]:
+    """The call holding `hub` (a RemoteAgent), and the services it needs:
+    the hub's line itself, and the router the top bar's agent chip reads
+    (the chip shows the agent's work while the call is hung up, and
+    blinks when it rings back; nothing opens in the corner)."""
+    # Top right, clear of the bar. Frosted rather than solid: translucent
+    # plates with `blur`, which has the compositor blur what is behind
+    # them and cuts the window to the plates' outline. Grabs the keyboard
+    # and pointer like the launcher; Escape, an outside click or the
+    # keybinding again hangs up, and the work carries on.
+    window = WindowSpec(
         name=CALL_WINDOW,
         layer=Layer.OVERLAY,
         anchor=Anchor.TOP | Anchor.RIGHT,
@@ -460,25 +450,6 @@ WINDOWS = [
         blur=True,
         effects=(PANEL_SPAWN,),
         effect_scale=0.35,           # raster fallback only
-        content=CallHost(AGENT),
-    ),
-
-    # Where the call goes when it is hung up but still working (the
-    # router's `show_working`); a ring is the top bar's chip now. No
-    # grab: it sits in the corner while you carry on. Click to answer.
-    WindowSpec(
-        name=STATUS_WINDOW,
-        layer=Layer.OVERLAY,
-        anchor=Anchor.TOP | Anchor.RIGHT,
-        size=(1, 1),                 # placeholder; content-sized
-        margin=Insets(top=16, right=theme.BAR_MARGIN + 12),
-        override_redirect=True,
-        focusable=False,
-        keep_alive=True,
-        background="#00000000",
-        blur=True,
-        effects=(PANEL_SPAWN,),
-        effect_scale=0.35,           # raster fallback only
-        content=CallStatus(AGENT),
-    ),
-]
+        content=CallHost(hub),
+    )
+    return window, [hub, CallRouter(hub, call=CALL_WINDOW, show_working=False)]

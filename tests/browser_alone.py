@@ -7,7 +7,7 @@ uploads, the sites kept from it, and the hands for them.
                                                          an empty workspace; a few seconds
 
 Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
-  1. pure parts: the refused upload places (browser/uploads.py) against a
+  1. pure parts: the refused upload places (flux/uploads.py) against a
      scratch home holding fake secrets (.ssh, .gnupg, keyrings, pass, rbw,
      Firefox's profiles, the shell's data and connections, key-like
      names), reached directly and through links from /tmp; what may go;
@@ -251,11 +251,11 @@ def make_home() -> dict:
 
 # ── 1. pure parts ───────────────────────────────────────────────────────
 def test_pure(files: dict) -> None:
-    from indigoshell.agent.hands import Hand
+    from indigoshell.core.hands import Hand
     from indigoshell.applink import protocol as link
-    from indigoshell.browser import protocol, uploads
-    from indigoshell.browser.hands import browser_hands
-    from indigoshell.browser.qt.identity import AGENT_TABLE, Rules
+    from flux import protocol, uploads
+    from flux.hands import browser_hands
+    from flux.qt.identity import AGENT_TABLE, Rules
 
     section("1. pure parts")
     home = str(HOME)
@@ -472,7 +472,7 @@ class Log:
 
     def lines(self, level=20) -> list[str]:
         return [r.getMessage() for r in self.records
-                if r.name.startswith(f"{APP}.browser") and r.levelno >= level]
+                if r.name.startswith("flux") and r.levelno >= level]
 
 
 def make_report() -> Path:
@@ -497,13 +497,13 @@ def test_in_process(files: dict) -> None:
     from PySide6.QtWebEngineCore import QWebEnginePage
     from PySide6.QtWidgets import QApplication, QWidget
 
-    from indigoshell.agent.hands import Call
-    from indigoshell.browser import control, protocol, uploads
-    from indigoshell.browser.hands import browser_hands
-    from indigoshell.browser.qt import app as browser_app
-    from indigoshell.browser.qt import instance, startup
-    from indigoshell.browser.qt.profile import make_profile
-    from indigoshell.browser.qt.window import Window
+    from indigoshell.core.hands import Call
+    from flux import control, protocol, uploads
+    from flux.hands import browser_hands
+    from flux.qt import app as browser_app
+    from flux.qt import instance, startup
+    from flux.qt.profile import make_profile
+    from flux.qt.window import Window
     from indigoshell.core.paths import config_dir
 
     logs = Log()
@@ -993,8 +993,8 @@ def shell_side() -> None:
 
     from indigoshell import theme
     from indigoshell.applink.service import AppService, pick_desktop
-    from indigoshell.browser import protocol
-    from indigoshell.browser.context import FluxWindow
+    from flux import protocol
+    from indigoshell.applink.flux import FluxWindow
     from indigoshell.widgets.base import Size
 
     out = {}
@@ -1243,7 +1243,7 @@ def serve_apps(sock: str) -> None:
     until stdin closes; a JSON line for each window placed."""
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
-    from indigoshell.browser.context import FluxWindow
+    from indigoshell.applink.flux import FluxWindow
 
     async def main():
         service = AppService({"flux": FluxWindow}, path=sock, display=Display())
@@ -1310,10 +1310,10 @@ def _agent_window_on_screen(service) -> None:
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
-    from indigoshell.browser import control, protocol
-    from indigoshell.browser.qt import app as browser_app
-    from indigoshell.browser.qt import instance, startup
-    from indigoshell.browser.qt.profile import make_profile
+    from flux import control, protocol
+    from flux.qt import app as browser_app
+    from flux.qt import instance, startup
+    from flux.qt.profile import make_profile
 
     ready = service.stdout.readline()
     if '"ready"' not in ready:

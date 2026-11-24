@@ -1,5 +1,5 @@
-"""Flux's control socket (browser/qt/control.py), its client
-(browser/control.py) and the agent's hands (browser/hands.py).
+"""Flux's control socket (flux/qt/control.py), its client
+(flux/control.py) and the agent's hands (flux/hands.py).
 
     .venv/bin/python tests/browser_control.py              off screen, about a minute
     .venv/bin/python tests/browser_control.py --on-screen  one floating test window,
@@ -279,9 +279,9 @@ class FakeFlux:
 
 
 def test_pure() -> None:
-    from indigoshell.agent.hands import Hand
-    from indigoshell.browser import control, protocol
-    from indigoshell.browser.hands import browser_hands
+    from indigoshell.core.hands import Hand
+    from flux import control, protocol
+    from flux.hands import browser_hands
 
     section("1. pure parts")
     check("messages: a request, a result, a failure, the cancel",
@@ -525,12 +525,12 @@ def test_in_process(on_screen: bool = False) -> None:
     from PySide6.QtWebEngineWidgets import QWebEngineView
     from PySide6.QtWidgets import QApplication, QWidget
 
-    from indigoshell.agent.hands import Call
-    from indigoshell.browser import control, protocol
-    from indigoshell.browser.hands import browser_hands
-    from indigoshell.browser.qt import app as browser_app
-    from indigoshell.browser.qt import instance, startup
-    from indigoshell.browser.qt.profile import make_profile
+    from indigoshell.core.hands import Call
+    from flux import control, protocol
+    from flux.hands import browser_hands
+    from flux.qt import app as browser_app
+    from flux.qt import instance, startup
+    from flux.qt.profile import make_profile
 
     logs = Log()
 
@@ -1138,7 +1138,7 @@ def test_in_process(on_screen: bool = False) -> None:
 
 # ── 3. Flux not running ─────────────────────────────────────────────────
 def test_not_running() -> None:
-    from indigoshell.browser import control
+    from flux import control
 
     section("3. Flux not running: ensure_running, in the test's own namespace")
     state = SCRATCH / "state-started"
@@ -1232,10 +1232,10 @@ def test_on_screen() -> None:
     from PySide6.QtCore import QUrl
     from PySide6.QtTest import QTest
 
-    from indigoshell.browser import control
-    from indigoshell.browser.qt import app as browser_app
-    from indigoshell.browser.qt import instance, startup
-    from indigoshell.browser.qt.profile import make_profile
+    from flux import control
+    from flux.qt import app as browser_app
+    from flux.qt import instance, startup
+    from flux.qt.profile import make_profile
 
     section("on screen: one floating test window, never focused")
     Log()

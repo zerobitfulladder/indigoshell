@@ -5,7 +5,7 @@
                                                              about two seconds
     .venv/bin/python tests/browser_launcher.py --off-screen  1-6 only: nothing shows
 
-1. places (browser/places.py): what a typed line means, the history
+1. places (flux/places.py): what a typed line means, the history
    writer's rules and its pruning, the bookmarks file (atomic writes,
    hand edits, a broken file).
 2. The address mode (services/addresses.py) on a scratch history and
@@ -25,7 +25,7 @@
    Delete still the query's.
 4. `open_launcher` against a stand-in daemon: pending mode, in-place
    swap, the placement passed on, no launcher configured.
-5. The shell's side of Flux (browser/context.py, `FluxWindow`) with the
+5. The shell's side of Flux (applink/flux.py, `FluxWindow`) with the
    launcher and the keyboard grab replaced by recorders: the keys a main
    window gives the shell and a single one does not; Ctrl+L, Ctrl+T,
    Ctrl+M as the service hands them over (the keyboard held first, the
@@ -100,7 +100,7 @@ def section(title: str) -> None:
 # ── 1. places ───────────────────────────────────────────────────────────
 
 def test_places() -> None:
-    from indigoshell.browser import places
+    from flux import places
 
     section("1. places: typed lines, history, bookmarks")
     cases = {
@@ -209,7 +209,7 @@ def test_places() -> None:
 # ── 2. the address mode ─────────────────────────────────────────────────
 
 def _history(db: Path, rows) -> None:
-    from indigoshell.browser import places
+    from flux import places
     h = places.History(db)
     for url, title, visits, age in rows:
         for _ in range(visits):
@@ -218,7 +218,7 @@ def _history(db: Path, rows) -> None:
 
 
 def test_addresses() -> None:
-    from indigoshell.browser import places
+    from flux import places
     from indigoshell.services.addresses import BOOKMARK, HISTORY, AddressMode
 
     section("2. the address mode: rows, order, preselection, cost")
@@ -403,7 +403,7 @@ def test_launcher_widget() -> None:
     import numpy as np
 
     from indigoshell import theme
-    from indigoshell.browser import places
+    from flux import places
     from indigoshell.services.addresses import AddressMode
     from indigoshell.services.apps import Catalog
     from indigoshell.services.modes import Choice, Choices
@@ -690,8 +690,8 @@ class Line:
 
 def test_flux_flow() -> None:
     from indigoshell.applink.service import AppService
-    from indigoshell.browser import protocol
-    from indigoshell.browser.context import FluxWindow
+    from flux import protocol
+    from indigoshell.applink.flux import FluxWindow
     from indigoshell.services.addresses import AddressMode
     from indigoshell.services.modes import Choices
 
@@ -961,8 +961,8 @@ async def on_screen() -> None:
     from indigoshell import config_default
     from indigoshell.backend.x11 import Display
     from indigoshell.applink.service import AppService
-    from indigoshell.browser import protocol
-    from indigoshell.browser.context import FluxWindow
+    from flux import protocol
+    from indigoshell.applink.flux import FluxWindow
     from indigoshell.core import daemon as daemon_mod
     from indigoshell.widgets.launcher import Launcher, open_launcher
     from indigoshell.window import Window

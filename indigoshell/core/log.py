@@ -6,13 +6,15 @@ Modules do the standard thing:
     log = logging.getLogger(__name__)
 
 which makes every logger a child of `APP`, so it follows a package
-rename for free. `setup()` installs handlers on the *root* logger so that
-warnings from asyncio, watchdog and dbus-fast still surface, while only
-our own namespace follows the requested level.
+rename for free; Flux's (flux/, the browser beside the shell in this
+checkout) are children of `flux`, and `OWN` names both. `setup()`
+installs handlers on the *root* logger so that warnings from asyncio,
+watchdog and dbus-fast still surface, while only our own namespaces
+follow the requested level.
 
 Default is stderr — a session daemon's stderr is captured by whatever
 started it. `--log-file` adds a rotating file for the common case where
-that's /dev/null. The browser (browser/qt/logs.py) always keeps its own
+that's /dev/null. The browser (flux/qt/logs.py) always keeps its own
 file, and leaves stderr out when it is no terminal.
 """
 
@@ -105,6 +107,11 @@ class _Formatter(logging.Formatter):
         return name
 
 
+# Our own namespaces, which follow the requested level: the shell's and
+# Flux's (flux/, its own package; it logs through this module too).
+OWN = (APP, "flux")
+
+
 def default_level() -> str:
     return os.environ.get(env("LOG_LEVEL"), "info").lower()
 
@@ -149,7 +156,8 @@ def setup(level: str | None = None, log_file: str | None = None, *,
     # warnings, watchdog, dbus-fast) is visible but not verbose; our own
     # namespace follows the requested level.
     root.setLevel(logging.WARNING)
-    logging.getLogger(APP).setLevel(numeric)
+    for name in OWN:
+        logging.getLogger(name).setLevel(numeric)
 
 
 def is_debug() -> bool:

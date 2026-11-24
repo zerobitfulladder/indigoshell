@@ -116,8 +116,8 @@ def shell_side(path: str) -> None:
 
     from indigoshell import theme
     from indigoshell.applink.service import AppService
-    from indigoshell.browser import protocol
-    from indigoshell.browser.context import TAB_CURRENT_FG, TAB_FG, FluxWindow, agent_color
+    from flux import protocol
+    from indigoshell.applink.flux import TAB_CURRENT_FG, TAB_FG, FluxWindow, agent_color
     from indigoshell.widgets.base import Size
 
     given = json.loads(Path(path).read_text())
@@ -405,10 +405,10 @@ def near(a: tuple, b: tuple, tol: int = 12) -> bool:
 
 # ── 1. pure parts ───────────────────────────────────────────────────────
 def test_pure() -> None:
-    from indigoshell.agent.hands import Hand
-    from indigoshell.browser import protocol
-    from indigoshell.browser.hands import browser_hands
-    from indigoshell.browser.qt import act
+    from indigoshell.core.hands import Hand
+    from flux import protocol
+    from flux.hands import browser_hands
+    from flux.qt import act
 
     section("1. pure parts")
     check("voices: one table, Lilac #c8a2c8 and Indigo #b967ff; an unknown voice drawn in "
@@ -520,11 +520,11 @@ def test_in_process() -> None:
     from PySide6.QtWebEngineCore import QWebEnginePage
     from PySide6.QtWidgets import QApplication, QWidget
 
-    from indigoshell.agent.hands import Call
-    from indigoshell.browser import control, protocol
-    from indigoshell.browser.hands import browser_hands
-    from indigoshell.browser.qt import app as browser_app
-    from indigoshell.browser.qt import instance, startup, watch as watch_mod
+    from indigoshell.core.hands import Call
+    from flux import control, protocol
+    from flux.hands import browser_hands
+    from flux.qt import app as browser_app
+    from flux.qt import instance, startup, watch as watch_mod
 
     logs = Log()
 
@@ -553,7 +553,7 @@ def test_in_process() -> None:
     shell = FakeShell(SOCK["apps"])
     startup.apply_flags()
     app = browser_app.make_application()
-    from indigoshell.browser.qt.profile import make_profile
+    from flux.qt.profile import make_profile
     profile = make_profile()
     lock = instance.try_lock()
     browser = browser_app.Browser(profile, unattended=False)
@@ -1205,7 +1205,7 @@ def test_in_process() -> None:
 
     # ── the log ─────────────────────────────────────────────────────────
     lines = [r.getMessage() for r in logs.records
-             if r.name.startswith(f"{APP}.browser") and r.levelno >= logging.INFO]
+             if r.name.startswith("flux") and r.levelno >= logging.INFO]
     acts = {k for k in (*protocol.ACTS, "release")
             if any(m.startswith(f"agent: {k}") for m in lines)}
     leaks = [m for m in lines if any(s in m for s in (SECRET, "Ağaç", "Ayşe", "Hello from the page",
@@ -1299,7 +1299,7 @@ def test_shell_side() -> None:
     (the child process also drove the actions, above)."""
     section("3. the shell's side (a child process): the top bar's mark")
     given = SCRATCH / "shell-state-pure.json"
-    from indigoshell.browser import protocol
+    from flux import protocol
     given.write_text(json.dumps({"state": protocol.state(
         [protocol.tab("A", "a.org", False)], 0, 100, True, url="https://a.org/",
         bookmarked=False, find=None)}))
@@ -1395,10 +1395,10 @@ def test_on_screen() -> None:
     import shiboken6
     from PySide6.QtTest import QTest
 
-    from indigoshell.browser import control, protocol
-    from indigoshell.browser.qt import app as browser_app
-    from indigoshell.browser.qt import instance, startup
-    from indigoshell.browser.qt.profile import make_profile
+    from flux import control, protocol
+    from flux.qt import app as browser_app
+    from flux.qt import instance, startup
+    from flux.qt.profile import make_profile
 
     section("on screen: one floating test window, never focused")
     Log()

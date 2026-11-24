@@ -1,9 +1,8 @@
 """A call to the agent on the hub: lilac, on a Raspberry Pi.
 
-`RemoteAgent` stands in for `Agent` (session.py) wherever the call
-overlay, its corner chip and `CallRouter` read one: the same attributes
-and methods, kept from the hub's events instead of a Claude Code process
-of our own. The hub's agent is one mind with two voices, Lilac and
+`RemoteAgent` is what the call overlay, the top bar's chip and
+`CallRouter` read: the conversation's attributes and methods, kept from
+the hub's events. The hub's agent is one mind with two voices, Lilac and
 Indigo; lilac's PROTOCOL.md is the reference for how devices talk to it.
 
 **The line:** a WebSocket over TLS to the hub's gateway, with this
@@ -60,8 +59,8 @@ laptop without the hub, and rung like the hub's when the call is
 closed. It takes the screen over a question of the hub's, which comes
 back once it is answered.
 
-What only the desktop's own agent has stays empty here: the glance at
-the desktop and the progress bars of long commands (`jobs`).
+The call can draw progress bars of long commands (`jobs`); nothing on
+the hub reports them yet, so they stay empty.
 """
 
 import asyncio
@@ -80,10 +79,22 @@ from urllib.parse import urlsplit
 from ..core import state
 from .activity import Activity, Approval
 from .hands import Hands
-from .session import (ACTIVITY_KEEP, DEFAULT_EFFORT, EFFORT_NAMES, EFFORTS,
-                      MODELS)
 
 log = logging.getLogger(__name__)
+
+# What Ctrl+M and Ctrl+T cycle through in the call, sent to the hub with
+# each line. Aliases: Claude Code resolves each to the newest model of
+# its line.
+MODELS = ("opus", "sonnet", "haiku", "fable")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# What the call calls them: chrome pushed harder. The hub keeps the real
+# levels.
+EFFORT_NAMES = {"low": "idle", "medium": "stock", "high": "boost",
+                "xhigh": "overclock", "max": "redline"}
+# Claude Code's own default for the current models, when none is set.
+DEFAULT_EFFORT = "medium"
+# Everything the agent did this turn, so the overlay can expand it.
+ACTIVITY_KEEP = 80
 
 PROTOCOL = 1
 # What this connection is to the hub.
@@ -198,7 +209,7 @@ class _NoJobs:
 
 class _Session:
     """A past conversation, as the call's history list reads one (the
-    fields of the SDK's session info, which the local agent lists)."""
+    fields of the SDK's session info, as the hub lists them)."""
 
     __slots__ = ("session_id", "summary", "first_prompt", "last_modified")
 
@@ -257,7 +268,7 @@ def save_download(name: str, data: bytes, folder: str = "~/Downloads"
 
 
 class RemoteAgent:
-    """The hub's agent, read like the desktop's `Agent`.
+    """The hub's agent, as the call reads it.
 
     A SERVICES entry (it needs the loop for its line), with a `CallHost`
     and a `CallStatus` of its own and a `CallRouter` watching it. Give it

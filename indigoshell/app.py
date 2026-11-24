@@ -52,7 +52,7 @@ def main() -> None:
     # URLs to the running one) whether or not the shell is up, and the
     # hand-off still exits before Qt is loaded.
     if argv and argv[0] == "browser":
-        from .browser.qt.__main__ import main as browser_main
+        from flux.qt.__main__ import main as browser_main
         sys.exit(browser_main(argv[1:], prog=f"{CLI} browser"))
 
     parser = argparse.ArgumentParser(prog=APP)

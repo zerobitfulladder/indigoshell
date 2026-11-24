@@ -368,9 +368,9 @@ def near(a: tuple, b: tuple, tol: int = 40) -> bool:
 
 # ── 1. pure parts ───────────────────────────────────────────────────────
 def test_pure() -> None:
-    from indigoshell.agent.hands import Hand
-    from indigoshell.browser import protocol
-    from indigoshell.browser.hands import browser_hands
+    from indigoshell.core.hands import Hand
+    from flux import protocol
+    from flux.hands import browser_hands
 
     section("1. pure parts")
     parsed = {v: protocol.parse_ref(v) for v in (14, "14", "f2:14", " f12:3 ", "f0:1", "x",
@@ -446,12 +446,12 @@ def test_in_process() -> None:
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QWidget
 
-    from indigoshell.agent.hands import Call
-    from indigoshell.browser import control, protocol
-    from indigoshell.browser.hands import browser_hands
-    from indigoshell.browser.qt import app as browser_app
-    from indigoshell.browser.qt import instance, startup
-    from indigoshell.browser.qt.profile import make_profile
+    from indigoshell.core.hands import Call
+    from flux import control, protocol
+    from flux.hands import browser_hands
+    from flux.qt import app as browser_app
+    from flux.qt import instance, startup
+    from flux.qt.profile import make_profile
     from indigoshell.core.paths import config_dir
 
     records: list = []

@@ -1,5 +1,5 @@
 """The shell's top bar and its line to the shell's own apps
-(indigoshell/applink, browser/context.py), and the shell code under it.
+(indigoshell/applink, applink/flux.py), and the shell code under it.
 
     .venv/bin/python tests/topbar.py              all of it, about a minute;
                                                   a test browser window shows in
@@ -444,7 +444,7 @@ def test_xlib_guard(scratch: Path) -> None:
 # ── 3. Flux ─────────────────────────────────────────────────────────────
 
 def test_desktop(scratch: Path) -> None:
-    from indigoshell.browser import desktop
+    from flux import desktop
     from indigoshell.services import apps, desktop_entry
     from indigoshell.services.icons import Icons
 
@@ -579,7 +579,7 @@ def hex_rgb(hex_: str) -> tuple[int, int, int]:
 
 def flux_state(titles, current=0, *, host="127.0.0.1", secure=False, loading=False,
                progress=100, bookmarked=False, find=None) -> dict:
-    from indigoshell.browser import protocol
+    from flux import protocol
     tabs = [protocol.tab(t, host, loading and i == current) for i, t in enumerate(titles)]
     return protocol.state(tabs, current, progress, secure, url=f"http://{host}/",
                           bookmarked=bookmarked, find=find)
@@ -590,8 +590,8 @@ def flux_state(titles, current=0, *, host="127.0.0.1", secure=False, loading=Fal
 def test_content(scratch: Path) -> None:
     from indigoshell import theme
     from indigoshell.applink.service import AppService
-    from indigoshell.browser import protocol
-    from indigoshell.browser.context import (FIND_FG, HOST_FG, INSECURE_FG, FluxWindow,
+    from flux import protocol
+    from indigoshell.applink.flux import (FIND_FG, HOST_FG, INSECURE_FG, FluxWindow,
                                              NO_MATCHES_FG, PROGRESS_FG, PROGRESS_THICK,
                                              TAB_CURRENT_FG, TAB_FG, fit_tabs)
 
@@ -838,11 +838,11 @@ async def test_service(scratch: Path) -> None:
     from indigoshell.applink.context import AppContext
     from indigoshell.applink.service import AppService, AppWindow
     from indigoshell.backend.x11 import Display
-    from indigoshell.browser import protocol
-    from indigoshell.browser.context import FluxWindow, TAB_CURRENT_FG
+    from flux import protocol
+    from indigoshell.applink.flux import FluxWindow, TAB_CURRENT_FG
 
     section("5. the app service: announces both ways, focus, losses, key grabs going and coming")
-    rec = Records("indigoshell.applink.service", "indigoshell.browser.context")
+    rec = Records("indigoshell.applink.service", "indigoshell.applink.flux")
     loop = asyncio.get_running_loop()
     display = Display()
     display.attach_loop(loop)
@@ -1099,8 +1099,8 @@ def test_grabs(scratch: Path) -> None:
 
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
-    from indigoshell.browser import protocol
-    from indigoshell.browser.context import FluxWindow
+    from flux import protocol
+    from indigoshell.applink.flux import FluxWindow
     from indigoshell.services.addresses import AddressMode
     from indigoshell.services.modes import Choices
 
@@ -1109,7 +1109,7 @@ def test_grabs(scratch: Path) -> None:
     saved_env = {k: os.environ.get(k) for k in ("XDG_CONFIG_HOME", "XDG_DATA_HOME")}
     os.environ.update(XDG_CONFIG_HOME=str(scratch / "grabs-config"),
                       XDG_DATA_HOME=str(scratch / "grabs-data"))
-    rec = Records("indigoshell.applink.service", "indigoshell.browser.context")
+    rec = Records("indigoshell.applink.service", "indigoshell.applink.flux")
     display = Display()
     real_core = display.conn.core
     core = CoreRecorder(real_core)
@@ -1322,7 +1322,7 @@ def test_placement() -> None:
 
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
-    from indigoshell.browser.context import FluxWindow
+    from indigoshell.applink.flux import FluxWindow
     from indigoshell.window import Placement
 
     section("6. where Flux's launcher drops from")
@@ -1395,7 +1395,7 @@ def test_spec(scratch: Path) -> None:
     from indigoshell.applink.context import AppContext
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Monitor
-    from indigoshell.browser.context import FluxWindow, TAB_CURRENT_FG
+    from indigoshell.applink.flux import FluxWindow, TAB_CURRENT_FG
     from indigoshell.core.paths import config_dir
     from indigoshell.widgets.label import Label
     from indigoshell.window import Anchor, Layer, Window
@@ -1645,10 +1645,10 @@ async def on_screen(scratch: Path) -> None:
     from indigoshell.applink.service import AppService
     from indigoshell.backend import gl
     from indigoshell.backend.x11 import Display
-    from indigoshell.browser.context import HOST_FG, INSECURE_FG, FluxWindow, TAB_CURRENT_FG, TAB_FG
+    from indigoshell.applink.flux import HOST_FG, INSECURE_FG, FluxWindow, TAB_CURRENT_FG, TAB_FG
 
     section("8. on screen: the real service and the real browser")
-    rec = Records("indigoshell.applink.service", "indigoshell.browser.context",
+    rec = Records("indigoshell.applink.service", "indigoshell.applink.flux",
                   "indigoshell.backend.x11")
     tag = f"{APP}-tbs-{os.getpid()}"
     sock = os.path.join(runtime_dir(), f"{tag}-apps.sock")

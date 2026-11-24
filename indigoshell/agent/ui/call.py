@@ -100,7 +100,7 @@ from ... import theme
 from ...core import state
 from ...widgets.base import KeyEvent, Size, Widget
 from ...widgets.text_input import ctrl_letter
-from ..session import Agent
+from ..remote import RemoteAgent
 from .agent_plate import AgentPlate
 from .chip import Chip
 from ...widgets.holo import Projection
@@ -166,7 +166,7 @@ class CallHost(Widget):
     which reads the same; each call keeps its unsent line under its own
     `draft_key`."""
 
-    def __init__(self, agent: Agent, *, draft_key: str = DRAFT_KEY) -> None:
+    def __init__(self, agent: RemoteAgent, *, draft_key: str = DRAFT_KEY) -> None:
         super().__init__()
         self.agent = agent
         self.draft_key = draft_key
@@ -343,7 +343,7 @@ class CallHost(Widget):
         it in its usual app, brought forward on its workspace. The agent
         keeps working if it was."""
         from ...core.daemon import get_daemon
-        from ..tools import open_target
+        from ..desk import open_target
         if self.window is not None:
             get_daemon().close(self.window.spec.name)
         asyncio.get_running_loop().create_task(
@@ -399,7 +399,7 @@ class CallHost(Widget):
 
     async def _ask_flux(self, look: _Look) -> None:
         try:
-            from ...browser.control import look as flux_look
+            from flux.control import look as flux_look
         except ImportError:
             blocks, note = [], "Flux isn't here"
         else:

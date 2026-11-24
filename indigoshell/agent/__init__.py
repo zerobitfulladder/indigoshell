@@ -1,58 +1,38 @@
-"""The call: Claude on the line, from a corner of the screen.
+"""The call: the agent on the line, from a corner of the screen.
 
-Press the keybinding (`indigoshell toggle call`), type, and the agent —
-Claude Code, run through the Agent SDK on its own account — answers in a
-frosted overlay; hang up and it keeps working, then rings you back.
+The agent lives on a hub, a machine of its own (lilac, on a Raspberry
+Pi): one mind with two voices, Indigo and Lilac. This package is the
+shell's side of it. Press the keybinding (`indigoshell toggle call`),
+type, and the agent answers in a frosted overlay; hang up and it keeps
+working, then rings you back through the top bar's chip. While it works
+it uses this machine's hands: the tools the laptop lends it.
 
 The package, by job:
 
-    session.py       `Agent`: the conversation, its Claude Code process,
-                     turns, approvals, ring-backs, past conversations.
-                     No drawing; the overlay only reads and subscribes.
-    prompts.py       what the agent is told: the call protocol, the
-                     persona (its voice), its notebook in the workspace
-    permissions.py   `ASK_FIRST`: what always asks you, on top of auto mode
+    remote.py        `RemoteAgent`: the line to the hub (a WebSocket with
+                     TLS) and the conversation as the call reads it:
+                     turns, approvals, ring-backs, past conversations,
+                     voices. No drawing; the overlay only reads and
+                     subscribes.
     activity.py      the agent's steps and questions, as the overlay
                      shows them
-    progress.py      `Jobs`: how far its long commands have got. A socket
-                     the commands report to ($INDIGO_PROGRESS), each job
-                     matched to the step that started it, and the shims
-                     that put yt-dlp, ffmpeg, curl and rsync under...
-    watch.py         ...the wrapper that reads their progress; and
-                     `Reporter`, the sending end (standard library only)
-    tools.py         `ShellTools`: the desktop as tools — screenshots,
-                     opening links and files (brought forward on their
-                     workspace), apps, workspaces, the clipboard,
-                     Spotify, WiZ lights, Firefox
-    glance.py        the desktop as the call opened: workspace, focused
-                     window, Firefox's tab, what is playing, the
-                     highlighted text and a screenshot without the call,
-                     taken before the overlay maps; sent with the first
-                     line of each call
-    spotify.py       the Spotify app and Web API, with its own sign-in
-    wiz.py           WiZ lights on the LAN: discovery, scenes, names
-    connections.py   where those two keep settings and keys:
-                     ~/.config/indigoshell/connections/<name>/
-    remote.py        `RemoteAgent`: a call to the agent on the hub
-                     (lilac, on a Raspberry Pi), read like `Agent`
     hands.py         `Hands`: the tools this machine lends the hub's
-                     agent, and the calls to them
+                     agent, and the calls to them (what a tool is:
+                     indigoshell/core/hands.py)
     laptop.py        the desktop as those tools: open, screenshot,
                      windows, apps, the clipboard, a shell (root asks
                      first, in the call), background jobs and files
-    firefox.py       `Firefox`: the shell's end of the INDIGO bridge
-                     add-on (extension/) and its native host
-                     (browser_host.py) — the everyday Firefox, no port
-    workspace/       the agent's starting files: its notebook
-                     (CLAUDE.md, including how you want to be shown
-                     things), its report skill (steps, page template)
-                     and new-skill: how it builds itself new abilities,
-                     each a skill folder (SKILL.md, tools/ with uv
-                     scripts, data/), nothing installed outside it
-    seed.py          puts those in its workspace when missing — never
-                     over its own copies, which it edits when you ask it
-                     to work differently — and regenerates the report
-                     palette from theme.py on every call
+    desk.py          the desktop helpers those and the call share:
+                     running a program, qtile, opening a link or a file
+                     brought forward on its workspace
+    progress.py      `Jobs`: how far long commands have got, which the
+                     call can draw as progress bars. A socket the
+                     commands report to ($INDIGO_PROGRESS), each job
+                     matched to the step that started it, and the shims
+                     that put yt-dlp, ffmpeg, curl and rsync under...
+    watch.py         ...the wrapper that reads their progress; and
+                     `Reporter`, the sending end (standard library only).
+                     Nothing on the hub reports them yet.
 
     ui/style.py      sizes, colours, motion; the shared frame and heading
     ui/rows.py       text on the monospace grid: wrapping, Markdown rows,
@@ -62,49 +42,29 @@ The package, by job:
                      the two lines of the call
     ui/bars.py       progress bars: under a step, and on the status chip
     ui/call.py       `CallHost`: the call window and its keys
-    ui/status.py     `AgentChip` + `CallRouter` (+ the old `CallStatus`
-                     plate): the top bar's chip while a hung-up call
-                     works or rings
+    ui/status.py     `AgentChip` + `CallRouter` (+ the old corner plate,
+                     `CallStatus`): the top bar's chip while a hung-up
+                     call works or rings
 
-The account: the agent signs in from `~/.config/indigoshell/claude`
-(CLAUDE_CONFIG_DIR, passed only to its own process), so it can be a
-different account from a `claude` in a terminal. Its working directory is
-`~/.config/indigoshell/assistant`, whose CLAUDE.md is its notebook for
-this machine. Wiring it into a config:
+Flux, the shell's browser, lends its own hands (flux/hands.py), which
+`laptop_hands()` adds when Flux is here.
 
-    FIREFOX = Firefox()
-    AGENT = Agent(name="INDIGO", model="opus",
-                  tools=ShellTools(firefox=FIREFOX))
-    SERVICES = [..., FIREFOX, AGENT, CallRouter(AGENT)]
-    WINDOWS = [..., WindowSpec(name=CALL_WINDOW, content=CallHost(AGENT), ...),
-               WindowSpec(name=STATUS_WINDOW, content=CallStatus(AGENT), ...)]
-
-The call can talk to the agent on the hub instead, one mind with two
-voices: `RemoteAgent` (remote.py) reads like `Agent`, from the hub's
-events over a WebSocket with TLS, says each line in the voice the call
-has switched to (Ctrl+S), and lends the hub this machine's `hands`
-(hands.py). Put it where `AGENT` was (the call's content, and the
-services, with a router that keeps the corner plate shut; the top bar's
-chip shows its work and rings) and leave `AGENT` out:
+Wiring it into a config: config_default's `call(hub)` gives the call
+window and the services it needs (the hub's line, and the router the
+top bar's chip reads):
 
     HUB = RemoteAgent(voice="indigo", endpoints=[...],
                       tls={"ca": ..., "cert": ..., "key": ...},
                       hands=laptop_hands())
-    SERVICES = [..., FIREFOX, HUB, CallRouter(HUB, show_working=False)]
-    WINDOWS = [..., WindowSpec(name=CALL_WINDOW, content=CallHost(HUB), ...)]
-    # (and no STATUS_WINDOW: nothing opens in the corner)
-
-A second call works too: its own CallHost (with its own `draft_key`),
-CallStatus (`call=` its window, `side=` its screen edge) and CallRouter
-(`call=`, `status=`).
+    CALL, CALL_SERVICES = call(HUB)
+    WINDOWS = [*WINDOWS, CALL]
+    SERVICES = [*SERVICES, *CALL_SERVICES]
 """
 
-from .firefox import Firefox
-from .session import Agent
+from .hands import laptop_hands
 from .remote import RemoteAgent
-from .tools import ShellTools
 from .ui.call import CALL_WINDOW, CallHost
 from .ui.status import STATUS_WINDOW, CallRouter, CallStatus
 
-__all__ = ["Agent", "RemoteAgent", "ShellTools", "Firefox", "CallHost",
-           "CallStatus", "CallRouter", "CALL_WINDOW", "STATUS_WINDOW"]
+__all__ = ["RemoteAgent", "laptop_hands", "CallHost", "CallStatus", "CallRouter",
+           "CALL_WINDOW", "STATUS_WINDOW"]

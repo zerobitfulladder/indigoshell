@@ -13,7 +13,7 @@ import skia
 from ... import shapes, text, theme
 from ...widgets.base import Size, Widget
 from ...services import clipboard
-from ..session import Agent
+from ..remote import RemoteAgent
 from .bars import Bars
 from .choice import CHOICE_GAP, CHOICE_H, Choice
 from .frame import TRACE_BLEED, Trace
@@ -40,7 +40,7 @@ class AgentPlate(Widget):
     always agree on where everything is.
     """
 
-    def __init__(self, agent: Agent, width: int = PLATE_W) -> None:
+    def __init__(self, agent: RemoteAgent, width: int = PLATE_W) -> None:
         super().__init__(on_drag=self._on_drag)
         self.agent = agent
         self.width = width

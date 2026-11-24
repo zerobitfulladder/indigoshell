@@ -57,14 +57,14 @@ import skia
 
 from ..core import paths
 from ..services import clipboard
-from . import tools as desk
-from .hands import DECLINED, Call, Hand, HandError, text_block
+from . import desk
+from ..core.hands import DECLINED, Call, Hand, HandError, text_block
 
 log = logging.getLogger(__name__)
 
 # The desktop's helpers, looked up here so tests can stand in for them.
-_run = desk._run
-_qtile = desk._qtile
+_run = desk.run
+_qtile = desk.qtile
 decode = desk.decode
 open_target = desk.open_target
 bring_forward = desk.bring_forward

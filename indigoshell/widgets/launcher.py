@@ -8,7 +8,7 @@ opens — so it differs from them only in what is inside.
 What it lists: the installed apps, unless the open came with a mode
 (services/modes.py) that lists something else instead, for that open
 only: Flux's addresses (Ctrl+L, Ctrl+T) and actions (Ctrl+M), opened by
-the shell's side of Flux (browser/context.py) through `open_launcher`.
+the shell's side of Flux (applink/flux.py) through `open_launcher`.
 A mode's row can lead to a further list, a step, in the same window.
 
     type                filter (see services/apps.py for the apps' ranking)

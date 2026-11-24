@@ -1,4 +1,4 @@
-"""The agent's page effects in Flux (browser/qt/effects.py): the shell's
+"""The agent's page effects in Flux (flux/qt/effects.py): the shell's
 glitch, Indigo's tint and the panels' scanlines over a page it drives.
 
     .venv/bin/python tests/browser_fx.py              a small floating test window (and the
@@ -240,10 +240,10 @@ def small_corner(browser_app) -> None:
 def start_browser(unattended: bool):
     from PySide6.QtTest import QTest
 
-    from indigoshell.browser import control
-    from indigoshell.browser.qt import app as browser_app
-    from indigoshell.browser.qt import instance, startup
-    from indigoshell.browser.qt.profile import make_profile
+    from flux import control
+    from flux.qt import app as browser_app
+    from flux.qt import instance, startup
+    from flux.qt.profile import make_profile
     small_corner(browser_app)
     startup.apply_flags()
     app = browser_app.make_application()
@@ -270,7 +270,7 @@ def stop_browser(app, profile, lock, browser, client, flux) -> None:
 
 # ── 1. the shaders ──────────────────────────────────────────────────────
 def test_shaders() -> None:
-    from indigoshell.browser.qt import effects
+    from flux.qt import effects
     section("1. the shaders")
     qsb = effects.find_qsb()
     if qsb is None:
@@ -293,7 +293,7 @@ def headless_part() -> int:
     """Run in a child with QT_QPA_PLATFORM=offscreen."""
     from PySide6.QtTest import QTest
 
-    from indigoshell.browser.qt import effects
+    from flux.qt import effects
     os.environ[env("BROWSER_SOCKET")] = SOCK["browser"]     # this process's own
     os.environ[env("APPS_SOCKET")] = SOCK["apps"]
     logs = Log("browser-headless.log")
@@ -415,8 +415,8 @@ def test_on_screen() -> None:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
 
-    from indigoshell.browser import protocol
-    from indigoshell.browser.qt import effects
+    from flux import protocol
+    from flux.qt import effects
 
     logs = Log("browser-on-screen.log")
     stamps: dict[int, list[float]] = {}     # fx id -> its frames' times
