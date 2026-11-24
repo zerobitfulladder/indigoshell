@@ -1,4 +1,4 @@
-"""The launcher's modes for Jack, and what they read and open.
+"""The launcher's modes for Flux, and what they read and open.
 
     .venv/bin/python tests/browser_launcher.py              all of it; the
                                                              launcher shows for
@@ -25,7 +25,7 @@
    Delete still the query's.
 4. `open_launcher` against a stand-in daemon: pending mode, in-place
    swap, the placement passed on, no launcher configured.
-5. The shell's side of Jack (browser/context.py, `JackWindow`) with the
+5. The shell's side of Flux (browser/context.py, `FluxWindow`) with the
    launcher and the keyboard grab replaced by recorders: the keys a main
    window gives the shell and a single one does not; Ctrl+L, Ctrl+T,
    Ctrl+M as the service hands them over (the keyboard held first, the
@@ -674,10 +674,10 @@ def test_open_launcher() -> None:
           is False)
 
 
-# ── 5. the shell's side of Jack ─────────────────────────────────────────
+# ── 5. the shell's side of Flux ─────────────────────────────────────────
 
 class Line:
-    """What a JackWindow has of its connection: the service, and a send
+    """What a FluxWindow has of its connection: the service, and a send
     that keeps what was sent."""
 
     def __init__(self, service):
@@ -688,22 +688,22 @@ class Line:
         self.out.append(msg)
 
 
-def test_jack_flow() -> None:
+def test_flux_flow() -> None:
     from indigoshell.applink.service import AppService
     from indigoshell.browser import protocol
-    from indigoshell.browser.context import JackWindow
+    from indigoshell.browser.context import FluxWindow
     from indigoshell.services.addresses import AddressMode
     from indigoshell.services.modes import Choices
 
-    section("5. the shell's side of Jack, the launcher and the keyboard grab replaced by recorders")
-    service = AppService({"jack": JackWindow}, path="/nonexistent")   # no X here: no display
+    section("5. the shell's side of Flux, the launcher and the keyboard grab replaced by recorders")
+    service = AppService({"flux": FluxWindow}, path="/nonexistent")   # no X here: no display
     held = []
     service.hold_keyboard = lambda w: held.append(("hold", w.wid)) or True
     service.release_keyboard = lambda: held.append("release")
     shown = []
 
     class Host:
-        """The launcher, as Jack's side needs it."""
+        """The launcher, as Flux's side needs it."""
         window = types.SimpleNamespace(keyboard_grabbed=True)
 
         def __init__(self):
@@ -732,23 +732,23 @@ def test_jack_flow() -> None:
 
     service.show_launcher = show
 
-    def jack(wid, single=False):
+    def flux(wid, single=False):
         line = Line(service)
-        return JackWindow(line, wid, protocol.announce(wid, single)), line
+        return FluxWindow(line, wid, protocol.announce(wid, single)), line
 
     def page(url, bookmarked=False):
         return protocol.state([protocol.tab("Cats", "x.org", False)], 0, 100, True, url=url,
                               bookmarked=bookmarked, find=None)
 
     ctrl = {c: key(ord(c), ctrl=True) for c in "ltm"}
-    s, line = jack(0x400001)
+    s, line = flux(0x400001)
     w = types.SimpleNamespace(out=line.out)
     check("a main window gives the shell Ctrl+L, Ctrl+T and Ctrl+M; a single one (a popup, the "
           "inspector) none, and nor does one whose announce says neither",
           s.keys == {"ctrl+l": "address", "ctrl+t": "new_tab", "ctrl+m": "actions"}
-          and jack(0x400005, True)[0].keys == {}
-          and JackWindow(Line(service), 0x400006,
-                         protocol.message("announce", app="jack", wid=0x400006)).keys == {})
+          and flux(0x400005, True)[0].keys == {}
+          and FluxWindow(Line(service), 0x400006,
+                         protocol.message("announce", app="flux", wid=0x400006)).keys == {})
     s.on_message(page("https://x.org/cats"))
     s.on_key("address", ctrl["l"])
     mode, where = shown[-1]
@@ -847,7 +847,7 @@ def test_jack_flow() -> None:
     check("Shift+Delete on a bookmark: {type: bookmark, op: remove, url: the row's}",
           removed and w.out[-1] == {"type": "bookmark", "op": "remove",
                                     "url": "https://shop.example/cart"}, f"{w.out[-1:]}")
-    s3, _ = jack(0x400003)
+    s3, _ = flux(0x400003)
     s3.closed = True
     check("... and refused once that browser window is gone",
           s3._remove_bookmark("https://shop.example/cart") is False)
@@ -859,7 +859,7 @@ def test_jack_flow() -> None:
     check("the browser window gone: its launcher cancelled (closed if it still shows its mode), "
           "a late pick sends nothing",
           host.got[-1] == ("cancel", marks_mode) and s.request is None and len(w.out) == sent)
-    s2, _ = jack(0x400002)
+    s2, _ = flux(0x400002)
     s2.on_message({**page("x"), "future": [1, 2]})
     check("a state with keys it does not know: shown, those keys not kept",
           s2.state.get("url") == "x" and "future" not in s2.state)
@@ -962,7 +962,7 @@ async def on_screen() -> None:
     from indigoshell.backend.x11 import Display
     from indigoshell.applink.service import AppService
     from indigoshell.browser import protocol
-    from indigoshell.browser.context import JackWindow
+    from indigoshell.browser.context import FluxWindow
     from indigoshell.core import daemon as daemon_mod
     from indigoshell.widgets.launcher import Launcher, open_launcher
     from indigoshell.window import Window
@@ -998,7 +998,7 @@ async def on_screen() -> None:
     d = daemon_mod.Daemon({"windows": [spec]})
     d.display, d.loop = display, loop
     sock = os.path.join(runtime_dir(), f"{APP}-blt-{os.getpid()}-apps.sock")
-    service = AppService({"jack": JackWindow}, path=sock, display=display)
+    service = AppService({"flux": FluxWindow}, path=sock, display=display)
     service.show_launcher = lambda mode, placement: open_launcher(
         d, mode, name="test-launcher", placement=placement)
     # The keyboard is never taken here: the service's hold is recorded.
@@ -1171,7 +1171,7 @@ def main() -> int:
         test_addresses()
         test_launcher_widget()
         test_open_launcher()
-        test_jack_flow()
+        test_flux_flow()
         test_placement()
         if not args.off_screen:
             asyncio.run(on_screen())

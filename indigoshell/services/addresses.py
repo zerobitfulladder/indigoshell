@@ -1,9 +1,9 @@
 """Addresses: the launcher's list for a browser's Ctrl+L and Ctrl+T.
 
 A launcher mode (services/modes.py) beside the app catalog: the same
-window, the same rows and keys, other things in the rows. Reads Jack's
+window, the same rows and keys, other things in the rows. Reads Flux's
 history and bookmarks (browser/places.py), read-only; picking a row
-hands its address to `on_load`, which the shell's side of Jack
+hands its address to `on_load`, which the shell's side of Flux
 (browser/context.py) turns into a `load` command for the browser window
 that asked.
 

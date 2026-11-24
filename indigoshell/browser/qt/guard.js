@@ -1,12 +1,12 @@
-// Jack's guard on the agent's own scripts (script.py, the `js` request),
+// Flux's guard on the agent's own scripts (script.py, the `js` request),
 // run in their world (script.WORLD) of a document before any of their
-// code, and in that world only: the page's own scripts and Jack's reader
+// code, and in that world only: the page's own scripts and Flux's reader
 // (other worlds, other copies of every prototype) keep all of it.
 //
 // What it does: storage, cookies and sign-ins throw when touched; frames
 // and new windows (a realm of their own, where none of this would be
 // guarded) give no way in through their elements; a password field's
-// value reads "(password)", as Jack's reads say it, a form's FormData
+// value reads "(password)", as Flux's reads say it, a form's FormData
 // says the same, and a password field keeps its type. Fixed in place (not
 // configurable), and what it checks with taken before any of the agent's
 // code ran (a global the code replaces later fools nothing here).
@@ -22,7 +22,7 @@
 // Kept to what Chromium 122 has (Qt 6.8's QtWebEngine).
 (() => {
 "use strict";
-if (typeof window.__jackJs === "object") return;
+if (typeof window.__fluxJs === "object") return;
 
 const PASSWORD = "(password)";
 const RESULT_MAX = __RESULT_MAX__;      // characters of an answer's JSON kept (script.py)
@@ -35,7 +35,7 @@ const toList = Array.from;
 const Fault = Error;
 
 function refuse(what) {
-  return function () { throw new Fault(`${what} is kept from the agent's scripts (Jack's guard)`); };
+  return function () { throw new Fault(`${what} is kept from the agent's scripts (Flux's guard)`); };
 }
 
 // `name` on `obj` and on every prototype above it that has it: a getter
@@ -92,7 +92,7 @@ const inputs = Document.prototype.querySelectorAll.bind(document, "input");
 const isInput = brand(type.get);
 const isAttr = brand(ownerOf);
 const isPassword = el => isInput(el) && type.get.call(el) === "password";
-const staysPassword = () => { throw new Fault("a password field keeps its type (Jack's guard)"); };
+const staysPassword = () => { throw new Fault("a password field keeps its type (Flux's guard)"); };
 const local = qualified => String(qualified).split(":").pop().toLowerCase();
 const isMap = brand(describe(NamedNodeMap.prototype, "length").get);
 
@@ -177,7 +177,7 @@ define(window, "FormData", {value: GuardedFormData, writable: false, enumerable:
 // The code's answer as JSON: nodes as "<tag#id.class>", a window as
 // "[window]", functions by name, Maps and Sets and node lists as lists, a
 // value met again (a cycle) as "[seen]"; at most RESULT_MAX characters and
-// a margin (Jack takes the passwords out first, then cuts).
+// a margin (Flux takes the passwords out first, then cuts).
 const [NodeOf, WindowOf, MapOf, SetOf, ListOf, CollectionOf, WeakSetOf] =
   [Node, Window, Map, Set, NodeList, HTMLCollection, WeakSet];
 const resolve = Promise.resolve.bind(Promise), reject = Promise.reject.bind(Promise);
@@ -249,6 +249,6 @@ function drop(id) {
   return "true";
 }
 
-define(window, "__jackJs", {value: Object.freeze({start, take, drop}), writable: false,
+define(window, "__fluxJs", {value: Object.freeze({start, take, drop}), writable: false,
                             enumerable: false, configurable: false});
 })();

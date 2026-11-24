@@ -121,7 +121,7 @@ def unload_message() -> str:
 
 # An empty page (a new tab, a new window, before anything is loaded)
 # shows the shell's background instead of Chromium's white. Only empty
-# pages Jack made itself: a real page that sets no background keeps
+# pages Flux made itself: a real page that sets no background keeps
 # white under it, or its default black text would be unreadable, and so
 # does a blank page a site opened and writes into (`opened_by_page`).
 BLANK_BACKGROUND = QColor("#050310")    # theme.BG

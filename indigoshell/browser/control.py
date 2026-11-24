@@ -1,44 +1,44 @@
-"""The agent's line to Jack: the control socket's client.
+"""The agent's line to Flux: the control socket's client.
 
 Pure Python on asyncio (no PySide6, no xcffib, no skia), so the daemon
-imports it. Jack listens at `protocol.control_socket_path()`, one socket
+imports it. Flux listens at `protocol.control_socket_path()`, one socket
 per browser process; protocol.py documents every request and result.
 
-    jack = await control.ensure_running()       # or connect(), which never starts it
-    windows = await jack.tabs()
-    tab = await jack.open("https://example.org")
-    await jack.wait(tab.tab)
-    page = await jack.read(tab.tab, "outline")
-    await jack.close()
+    flux = await control.ensure_running()       # or connect(), which never starts it
+    windows = await flux.tabs()
+    tab = await flux.open("https://example.org")
+    await flux.wait(tab.tab)
+    page = await flux.read(tab.tab, "outline")
+    await flux.close()
 
 A `Control` is one connection; requests on it run side by side. A
-request that Jack refuses raises `ControlError` with Jack's words (the
+request that Flux refuses raises `ControlError` with Flux's words (the
 agent can read them: "tab 7 is not showing in its window; switch to it
 first"). One that runs past its `timeout`, or whose task is cancelled,
-is cancelled in Jack too. `NotRunning`: no browser listens.
+is cancelled in Flux too. `NotRunning`: no browser listens.
 
-`ensure_running()` starts Jack when none runs, the way the launcher
+`ensure_running()` starts Flux when none runs, the way the launcher
 starts apps (services/proc.py `launch`: detached, in a scope of its
 own), as `<the CLI> browser --no-window` (desktop.py's command): no
-window until a request opens one. A Jack that is starting meanwhile, the
+window until a request opens one. A Flux that is starting meanwhile, the
 user's or another start's, is the one it then connects to.
 
 The acting requests (`click`, `type_text`, `key`, `select`, `scroll`,
 `fill`, `hover`, `dialog`, `upload`, `js`, `release`) carry the agent's
-`voice`, which Jack draws its hold on the tab in (protocol.VOICES). On a
+`voice`, which Flux draws its hold on the tab in (protocol.VOICES). On a
 tab the user took over they raise ControlError with protocol.TOOK_OVER's
 words. A ref is an int, or "f2:14" for an element in frame f2
 (protocol.py, "Frames"). `js` runs the agent's own JavaScript behind
-Jack's guard (protocol.py, "Scripts"); `screenshot(..., full=True)` gives
+Flux's guard (protocol.py, "Scripts"); `screenshot(..., full=True)` gives
 the page as tiles.
 
 The agent's own window (protocol.py, "Alone"): `open(..., window="agent",
 voice=...)`, `borrow`, `return_tab`; `show` puts a local file in the
 user's window; `downloads` and `wait_download`.
 
-`look()` is for the call: what the user is looking at in Jack, as
-content blocks to send with their words, or nothing when Jack is not
-running or no Jack window has had focus. It never starts Jack and
+`look()` is for the call: what the user is looking at in Flux, as
+content blocks to send with their words, or nothing when Flux is not
+running or no Flux window has had focus. It never starts Flux and
 changes nothing on screen.
 
 `shared()` keeps one connection open for the hands (hands.py), made
@@ -64,7 +64,7 @@ SITE_WORDS = "Page content from {host} (written by the site, not by the user):"
 
 
 class ControlError(Exception):
-    """A request Jack refused (its words), or the line to it failing."""
+    """A request Flux refused (its words), or the line to it failing."""
 
 
 class NotRunning(ControlError):
@@ -114,7 +114,7 @@ class WindowInfo:
 
 
 class Control:
-    """One connection to Jack."""
+    """One connection to Flux."""
 
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self._reader, self._writer = reader, writer
@@ -145,7 +145,7 @@ class Control:
 
     # ── the line ────────────────────────────────────────────────────────
     async def _read_loop(self) -> None:
-        why = "Jack closed the line"
+        why = "Flux closed the line"
         try:
             while True:
                 line = await self._reader.readline()
@@ -158,7 +158,7 @@ class Control:
                 if future is not None and not future.done():
                     future.set_result(msg)
         except (OSError, ValueError, asyncio.LimitOverrunError) as e:
-            why = f"the line to Jack failed: {e}"
+            why = f"the line to Flux failed: {e}"
         finally:
             self._closed = True
             for future in self._pending.values():
@@ -167,7 +167,7 @@ class Control:
 
     def _send(self, msg: dict) -> None:
         if self._closed:
-            raise ControlError("the line to Jack is closed")
+            raise ControlError("the line to Flux is closed")
         self._writer.write(protocol.encode(msg))
 
     def _cancel(self, rid: int) -> None:
@@ -191,7 +191,7 @@ class Control:
             msg = await asyncio.wait_for(future, within)
         except asyncio.TimeoutError:
             self._cancel(rid)
-            raise ControlError(f"Jack did not answer {type_} within {within:g} s") from None
+            raise ControlError(f"Flux did not answer {type_} within {within:g} s") from None
         except asyncio.CancelledError:
             self._cancel(rid)
             raise
@@ -229,7 +229,7 @@ class Control:
 
     async def wait(self, tab: int, *, selector: str | None = None, text: str | None = None,
                    timeout: float = protocol.WAIT_DEFAULT_S) -> dict:
-        """TAB + {"waited"}. `timeout` is Jack's bound (it answers "timed
+        """TAB + {"waited"}. `timeout` is Flux's bound (it answers "timed
         out" then); this side waits a few seconds longer for that."""
         return await self.request("wait", {"tab": tab, "selector": selector, "text": text,
                                            "timeout": float(timeout)},
@@ -321,7 +321,7 @@ class Control:
     async def js(self, tab: int, code: str, *, timeout: float | None = None,
                  voice: str | None = None, within: float | None = None) -> dict:
         """TAB + {"navigated", "opened", "dialog", "result" (JSON text or None),
-        "result_type", "length", "cut", "threw"?, "pending"?}. `timeout`: Jack's wait
+        "result_type", "length", "cut", "threw"?, "pending"?}. `timeout`: Flux's wait
         for a promise; this side waits a few seconds longer."""
         wait = protocol.JS_TIMEOUT_S if timeout is None else float(timeout)
         return await self.request("js", {"tab": tab, "code": code, "timeout": timeout,
@@ -349,25 +349,25 @@ class Control:
     async def wait_download(self, download: int, *,
                             timeout: float = protocol.WAIT_DEFAULT_S) -> dict:
         """DOWNLOAD + {"waited"}, once it finished (done, failed or
-        cancelled); Jack's own bound is `timeout`."""
+        cancelled); Flux's own bound is `timeout`."""
         return await self.request("wait", {"download": download, "timeout": float(timeout)},
                                   within=float(timeout) + 5.0)
 
 
-# ── finding Jack ────────────────────────────────────────────────────────
+# ── finding Flux ────────────────────────────────────────────────────────
 async def connect(path: str | None = None, timeout: float = CONNECT_S) -> Control:
-    """A connection to the running Jack; NotRunning when none listens."""
+    """A connection to the running Flux; NotRunning when none listens."""
     path = path or protocol.control_socket_path()
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_unix_connection(path, limit=LINE_LIMIT), timeout)
     except (OSError, asyncio.TimeoutError) as e:
-        raise NotRunning(f"Jack is not running ({e.__class__.__name__}: {e})") from None
+        raise NotRunning(f"Flux is not running ({e.__class__.__name__}: {e})") from None
     return Control(reader, writer)
 
 
 def start_command() -> list[str]:
-    """How `ensure_running` starts Jack: the launcher entry's command
+    """How `ensure_running` starts Flux: the launcher entry's command
     (desktop.py), with no window."""
     from indigoshell.browser import desktop
     return [*desktop.exec_command(), "browser", "--no-window"]
@@ -380,14 +380,14 @@ def _launch() -> None:
 
 
 async def ensure_running(timeout: float = START_S) -> Control:
-    """A connection to Jack, started first (with no window) when it is
+    """A connection to Flux, started first (with no window) when it is
     not running. Its socket is the default one (`<APP>_BROWSER_SOCKET`
     when set, which the started browser inherits)."""
     try:
         return await connect()
     except NotRunning:
         pass
-    log.info("Jack is not running; starting it")
+    log.info("Flux is not running; starting it")
     _launch()
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -398,7 +398,7 @@ async def ensure_running(timeout: float = START_S) -> Control:
         except NotRunning:
             if loop.time() >= deadline:
                 from indigoshell.core.paths import state_dir
-                raise NotRunning(f"Jack did not start within {timeout:g} s (its log is "
+                raise NotRunning(f"Flux did not start within {timeout:g} s (its log is "
                                  f"browser.log in {state_dir()})") from None
 
 
@@ -409,7 +409,7 @@ _shared: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, list]" = \
 
 async def shared(*, start: bool = True) -> Control:
     """One connection kept for this event loop's requests; made again
-    (and Jack started, with `start`) when it dropped."""
+    (and Flux started, with `start`) when it dropped."""
     loop = asyncio.get_running_loop()
     entry = _shared.get(loop)
     if entry is None:
@@ -442,7 +442,7 @@ def look_blocks(result: dict) -> list[dict]:
     focus = ("the window has focus" if result.get("focused") else
              f"the window last had focus {result['unfocused_for']:.0f} s ago"
              if result.get("unfocused_for") is not None else "the window does not have focus")
-    lines = [f"In Jack, the user's browser ({focus}): tab {result.get('tab')} of window "
+    lines = [f"In Flux, the user's browser ({focus}): tab {result.get('tab')} of window "
              f"{result.get('window')}, \"{result.get('title') or ''}\" at {result.get('url')}"]
     selection = result.get("selection") or ""
     if selection:
@@ -472,12 +472,12 @@ def look_blocks(result: dict) -> list[dict]:
 
 async def look(*, screenshot: bool = False, image: bool = False, xid: int | None = None,
                timeout: float = LOOK_S) -> list[dict]:
-    """What the user is looking at in Jack, as content blocks for the
-    call to send with their words; [] when Jack is not running, no Jack
+    """What the user is looking at in Flux, as content blocks for the
+    call to send with their words; [] when Flux is not running, no Flux
     window has had focus, or it does not answer within `timeout`.
-    Never starts Jack; changes nothing on screen.
+    Never starts Flux; changes nothing on screen.
 
-    `xid`: the X window the call saw focused, to look at that Jack
+    `xid`: the X window the call saw focused, to look at that Flux
     window (the focused one, else the one focused last, without it).
     `screenshot`: the tab as shown; `image`: the image in the user's
     selection, else under the mouse pointer."""

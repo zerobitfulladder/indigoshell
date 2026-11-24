@@ -16,7 +16,7 @@ from .agent import (CALL_WINDOW, STATUS_WINDOW, Agent, CallHost,
 from .agent.ui.status import AgentChip
 from .applink.context import AppContext
 from .applink.service import AppService
-from .browser.context import JackWindow
+from .browser.context import FluxWindow
 from .widgets.clock import Clock
 from .widgets.fastfetch import Fastfetch
 from .widgets.hardware_panel import HardwarePanel
@@ -38,7 +38,7 @@ from .window import Anchor, Layer, WindowSpec
 SYSTEM_PANEL = "system"
 HARDWARE_PANEL = "hardware"
 NETWORK_PANEL = "network"
-LAUNCHER = LAUNCHER_WINDOW       # also where Jack's Ctrl+L/T/M open it
+LAUNCHER = LAUNCHER_WINDOW       # also where Flux's Ctrl+L/T/M open it
 TOP_BAR = "topbar"
 
 # Which MPRIS source the now-playing widgets follow. None watches every
@@ -134,11 +134,11 @@ AGENT = Agent(name="INDIGO", model="opus",
 # it rings back, and its corner plate shows while it works; FIREFOX
 # is the socket the browser add-on's host connects to. APPS is the
 # socket the shell's own apps connect to, one line per window, and knows
-# which of their windows has focus (applink/): today Jack, the browser
+# which of their windows has focus (applink/): today Flux, the browser
 # (`indigoshell browser`), whose windows the top bar shows
 # (browser/context.py) and whose Ctrl+L, Ctrl+T, Ctrl+M open the
 # launcher. Another app kind is one more entry in `kinds`.
-APPS = AppService(kinds={"jack": JackWindow})
+APPS = AppService(kinds={"flux": FluxWindow})
 
 SERVICES = [
     NotificationManager(effects=(PANEL_SPAWN,), effect_scale=0.35, holo=True),
@@ -239,8 +239,8 @@ clock_cluster = Row(
 # Always there, like the bottom bar and in its look, a little thinner,
 # its space reserved the same way (and, like it, under a fullscreen
 # window: the window manager stacks a focused fullscreen window over
-# docks). Its left is the focused indigoshell app's: Jack's tabs, host
-# and load line while a Jack window has focus, nothing while any other
+# docks). Its left is the focused indigoshell app's: Flux's tabs, host
+# and load line while a Flux window has focus, nothing while any other
 # window does. `widgets` go after it, at the right; the right end itself
 # is the agent's: `AgentChip` (agent/ui/status.py), always there, shows
 # the name of the voice on the task and breathes while the agent works,

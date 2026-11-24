@@ -1,4 +1,4 @@
-"""Jack's control socket (browser/qt/control.py), its client
+"""Flux's control socket (browser/qt/control.py), its client
 (browser/control.py) and the agent's hands (browser/hands.py).
 
     .venv/bin/python tests/browser_control.py              off screen, about a minute
@@ -7,7 +7,7 @@
 
 Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
   1. pure parts: the messages; the client against a stand-in browser
-     (results as Python values, Jack's errors, several requests in
+     (results as Python values, Flux's errors, several requests in
      flight answered out of order, a request past its time and one whose
      task is cancelled both cancelled on the line, a line that drops);
      the hands' schemas (valid JSON Schema, what `hello` lends) and the
@@ -34,7 +34,7 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      the hand-off still answered; the log (a line per request, no page
      content); every hand run against it (content blocks, the site's
      words marked).
-  3. Jack not running: `ensure_running` in a namespace of the test's own
+  3. Flux not running: `ensure_running` in a namespace of the test's own
      (sockets, XDG directories) starts it detached with no window,
      connects, a second call connects to the same one, `--no-window`
      with one running does nothing, `look` never starts one; then that
@@ -231,7 +231,7 @@ def url(path: str) -> str:
 
 
 # ── 1. pure parts ───────────────────────────────────────────────────────
-class FakeJack:
+class FakeFlux:
     """A stand-in browser on a socket: answers what `script` says, by
     request type, and keeps every message."""
 
@@ -317,29 +317,29 @@ def test_pure() -> None:
             return out
         return [protocol.failure(rid, f"no request named {kind!r}")] if rid is not None else []
 
-    fake = FakeJack(SOCK["fake"], script)
+    fake = FakeFlux(SOCK["fake"], script)
 
     async def run():
-        jack = await control.connect(SOCK["fake"])
+        flux = await control.connect(SOCK["fake"])
         out = {}
-        windows = await jack.tabs()
+        windows = await flux.tabs()
         out["tabs"] = windows
         try:
-            await jack.read(5, "text")
+            await flux.read(5, "text")
         except control.ControlError as e:
             out["refused"] = str(e)
         # Two in flight: the wait is answered after the switch sent after it.
-        wait = asyncio.ensure_future(jack.wait(5, text="x", timeout=10))
+        wait = asyncio.ensure_future(flux.wait(5, text="x", timeout=10))
         await asyncio.sleep(0.05)
-        out["switch"] = await jack.switch(5)
+        out["switch"] = await flux.switch(5)
         out["wait"] = await wait
         # Past its time: cancelled on the line.
         try:
-            await jack.request("wait", {"tab": 5}, within=0.2)
+            await flux.request("wait", {"tab": 5}, within=0.2)
         except control.ControlError as e:
             out["late"] = str(e)
         # The task cancelled: cancelled on the line too.
-        task = asyncio.ensure_future(jack.wait(5, timeout=30))
+        task = asyncio.ensure_future(flux.wait(5, timeout=30))
         await asyncio.sleep(0.1)
         task.cancel()
         try:
@@ -348,15 +348,15 @@ def test_pure() -> None:
             out["task_cancelled"] = True
         await asyncio.sleep(0.1)
         # The line drops with a request in flight.
-        pending = asyncio.ensure_future(jack.wait(5, timeout=30))
+        pending = asyncio.ensure_future(flux.wait(5, timeout=30))
         await asyncio.sleep(0.1)
         fake.drop()
         try:
             await asyncio.wait_for(pending, 3)
         except control.ControlError as e:
             out["dropped"] = str(e)
-        out["closed"] = jack.closed
-        await jack.close()
+        out["closed"] = flux.closed
+        await flux.close()
         try:
             await control.connect(SOCK["fake"] + ".none")
         except control.NotRunning:
@@ -374,7 +374,7 @@ def test_pure() -> None:
     check("client: results as Python values (WindowInfo, TabInfo)",
           w is not None and w.window == 1 and w.focused and w.xid == 99
           and w.tabs[0].tab == 5 and w.current().title == "T", f"{out.get('tabs')}")
-    check("client: Jack's refusal raised as ControlError with Jack's words",
+    check("client: Flux's refusal raised as ControlError with Flux's words",
           out.get("refused") == "tab 5 is not showing in its window; switch to it first")
     check("client: two requests in flight, answered out of order, each to its own",
           out["switch"].title == "S" and out["wait"]["waited"] == 0.5
@@ -566,24 +566,24 @@ def test_in_process(on_screen: bool = False) -> None:
     check("the control socket: in the runtime directory, mode 0600",
           os.path.dirname(SOCK["browser"]) == runtime_dir() and mode == 0o600, f"{mode:o}")
     client = Client(QTest.qWait)
-    jack = client.run(control.connect())
+    flux = client.run(control.connect())
     J = lambda coro, t=30.0: client.attempt(coro, t)      # noqa: E731
 
     def loaded(tab_id, timeout=15.0):
-        return J(jack.wait(tab_id, timeout=timeout), timeout + 6)
+        return J(flux.wait(tab_id, timeout=timeout), timeout + 6)
 
     # ── tabs, open, switch ──────────────────────────────────────────────
-    windows, err = J(jack.tabs())
+    windows, err = J(flux.tabs())
     check("tabs with no window: an empty list, nothing focused", windows == [] and not err,
           f"{windows} {err}")
-    t1, err = J(jack.open(url("/form")))
+    t1, err = J(flux.open(url("/form")))
     ok = t1 is not None and loaded(t1.tab)[1] is None
     w1 = browser.windows[0] if browser.windows else None
     check("open with no window: a window made, the tab current in it, its id answered",
           ok and w1 is not None and t1.current and t1.window == w1.id
           and w1.current_tab().id == t1.tab, f"{t1} {err}")
-    t2, _ = J(jack.open(url("/page/Two"), window=w1.id))
-    t3, _ = J(jack.open(url("/page/Three"), background=True))
+    t2, _ = J(flux.open(url("/page/Two"), window=w1.id))
+    t3, _ = J(flux.open(url("/page/Three"), background=True))
     loaded(t2.tab)
     wait(lambda: w1.tabs[-1].page.title() == "Three")
     check("open in a window, current; another in the background, not current",
@@ -596,7 +596,7 @@ def test_in_process(on_screen: bool = False) -> None:
     wait(lambda: w2.tabs[0].page.title() == "Other")
     w1.activateWindow()
     wait(lambda: QApplication.activeWindow() is w1, 3)
-    windows, _ = J(jack.tabs())
+    windows, _ = J(flux.tabs())
     ids = [(w.window, [t.tab for t in w.tabs]) for w in windows or []]
     check("tabs: every window (most recently used first) and tab, the focused window, X "
           "window ids, titles, addresses, which tab is current",
@@ -611,7 +611,7 @@ def test_in_process(on_screen: bool = False) -> None:
           len(set(all_ids)) == len(all_ids)
           and all(t.id == t.page.id for w in browser.windows for t in w.tabs))
     w1.move_tab(2, 0)
-    windows, _ = J(jack.tabs())
+    windows, _ = J(flux.tabs())
     order = [(t.tab, t.index) for t in windows[0].tabs]
     check("a tab moved within its window keeps its id; its index follows",
           order == [(t3.tab, 0), (t1.tab, 1), (t2.tab, 2)], f"{order}")
@@ -627,7 +627,7 @@ def test_in_process(on_screen: bool = False) -> None:
     active_before = QApplication.activeWindow()
     w2.activateWindow()
     wait(lambda: QApplication.activeWindow() is w2, 3)
-    sw, err = J(jack.switch(t1.tab))
+    sw, err = J(flux.switch(t1.tab))
     QTest.qWait(200)
     check("switch: the tab current in its window; that window neither raised nor focused",
           sw is not None and sw.current and w1.current_tab().id == t1.tab
@@ -637,76 +637,76 @@ def test_in_process(on_screen: bool = False) -> None:
 
     # ── showing ─────────────────────────────────────────────────────────
     refused = {}
-    for name, coro in (("read", jack.read(t3.tab, "text")), ("screenshot", jack.screenshot(t3.tab)),
-                       ("go", jack.go(t3.tab, url("/page/X"))),
-                       ("wait", jack.wait(t3.tab, timeout=1)), ("close", jack.close_tab(t3.tab))):
+    for name, coro in (("read", flux.read(t3.tab, "text")), ("screenshot", flux.screenshot(t3.tab)),
+                       ("go", flux.go(t3.tab, url("/page/X"))),
+                       ("wait", flux.wait(t3.tab, timeout=1)), ("close", flux.close_tab(t3.tab))):
         refused[name] = J(coro)[1]
     check("a tab not showing in its window refused by read, screenshot, go, wait, close, "
           "with the words the agent acts on",
           all(e == f"tab {t3.tab} is not showing in its window; switch to it first"
               for e in refused.values()) and len(w1.tabs) == 3, f"{refused}")
-    _, err = J(jack.read(9999, "text"))
+    _, err = J(flux.read(9999, "text"))
     check("a tab that does not exist: no tab N", err == "no tab 9999", f"{err}")
 
     # ── go ──────────────────────────────────────────────────────────────
-    J(jack.switch(t2.tab))
-    gone, err = J(jack.go(t2.tab, url("/page/Went")))
+    J(flux.switch(t2.tab))
+    gone, err = J(flux.go(t2.tab, url("/page/Went")))
     loaded(t2.tab)
-    back, _ = J(jack.go(t2.tab, action="back"))
+    back, _ = J(flux.go(t2.tab, action="back"))
     loaded(t2.tab)
     at_back = w1.current_tab().page.title()
-    J(jack.go(t2.tab, action="forward"))
+    J(flux.go(t2.tab, action="forward"))
     loaded(t2.tab)
     at_forward = w1.current_tab().page.title()
     n_before = js(w1.current_tab().page, "window.__n = 1; 1")
-    J(jack.go(t2.tab, action="reload"))
+    J(flux.go(t2.tab, action="reload"))
     loaded(t2.tab)
     reloaded = js(w1.current_tab().page, "typeof window.__n")
     check("go: an address, back, forward, reload",
           gone is not None and at_back == "Two" and at_forward == "Went"
           and n_before == 1 and reloaded == "undefined", f"{at_back} {at_forward} {reloaded}")
-    _, err = J(jack.go(t2.tab, action="forward"))
-    _, err2 = J(jack.go(t2.tab))
+    _, err = J(flux.go(t2.tab, action="forward"))
+    _, err2 = J(flux.go(t2.tab))
     check("go: nowhere to go forward to, and neither url nor action, refused",
           err == f"tab {t2.tab} has no page to go forward to" and err2 == "give `url` or `action`",
           f"{err} / {err2}")
 
     # ── wait ────────────────────────────────────────────────────────────
     began = time.monotonic()
-    J(jack.go(t2.tab, url("/slow")))
-    done, err = J(jack.wait(t2.tab, timeout=10), 20)
+    J(flux.go(t2.tab, url("/slow")))
+    done, err = J(flux.wait(t2.tab, timeout=10), 20)
     took = time.monotonic() - began
     check("wait (load) straight after go: not before the slow page (1.5 s) is there",
           done is not None and done["title"] == "Slow" and not done["loading"] and took >= 1.4,
           f"{took:.2f} s {err}")
-    J(jack.go(t2.tab, url("/late")))
+    J(flux.go(t2.tab, url("/late")))
     loaded(t2.tab)
-    sel, err = J(jack.wait(t2.tab, selector="#late", timeout=5), 12)
+    sel, err = J(flux.wait(t2.tab, selector="#late", timeout=5), 12)
     check("wait (selector): until it matches (the element comes 0.8 s after the load)",
           sel is not None and 0.4 <= sel["waited"] <= 3, f"{sel and sel['waited']} {err}")
-    J(jack.go(t2.tab, url("/late")))
+    J(flux.go(t2.tab, url("/late")))
     loaded(t2.tab)
-    txt, err = J(jack.wait(t2.tab, text="MARKER appeared", timeout=5), 12)
+    txt, err = J(flux.wait(t2.tab, text="MARKER appeared", timeout=5), 12)
     check("wait (text): until it is on the page", txt is not None and txt["waited"] >= 0.4,
           f"{txt and txt['waited']} {err}")
-    J(jack.go(t2.tab, url("/marker")))
+    J(flux.go(t2.tab, url("/marker")))
     loaded(t2.tab)
     began = time.monotonic()
-    J(jack.go(t2.tab, url("/late")))
-    txt, err = J(jack.wait(t2.tab, text="MARKER", timeout=5), 12)
+    J(flux.go(t2.tab, url("/late")))
+    txt, err = J(flux.wait(t2.tab, text="MARKER", timeout=5), 12)
     took = time.monotonic() - began
     check("wait (text) straight after go: not found on the page being left",
           txt is not None and txt["title"] == "Late" and took >= 0.7, f"{took:.2f} s {err}")
     began = time.monotonic()
-    _, err = J(jack.wait(t2.tab, selector="#never", timeout=0.5), 8)
+    _, err = J(flux.wait(t2.tab, selector="#never", timeout=0.5), 8)
     took = time.monotonic() - began
     check("wait: timed out after the caller's timeout",
           err == "timed out after 0.5 s waiting for the selector '#never'" and took < 2,
           f"{err} {took:.2f} s")
-    _, err = J(jack.wait(t2.tab, selector="!!", timeout=5), 8)
+    _, err = J(flux.wait(t2.tab, selector="!!", timeout=5), 8)
     check("wait: a selector that is no selector refused at once, with the page's reason",
           err is not None and "is not a valid selector" in err, f"{err}")
-    pending = client.start(jack.wait(t2.tab, selector="#never", timeout=10))
+    pending = client.start(flux.wait(t2.tab, selector="#never", timeout=10))
     pump(400)
     w1.select(0)
     wait(lambda: pending.done(), 3)
@@ -715,10 +715,10 @@ def test_in_process(on_screen: bool = False) -> None:
           and err.startswith(f"tab {t2.tab} stopped showing while waiting"), f"{err}")
 
     # ── read ────────────────────────────────────────────────────────────
-    J(jack.switch(t1.tab))
+    J(flux.switch(t1.tab))
     page1 = w1.current_tab().page
     html_before = js(page1, "document.documentElement.outerHTML")
-    outline, err = J(jack.read(t1.tab, "outline"))
+    outline, err = J(flux.read(t1.tab, "outline"))
     lines = outline["outline"] if outline else []
     text_all = "\n".join(lines)
     expect = ['heading 1 "Your account"', 'navigation "Main"', 'link "Orders" -> /orders',
@@ -741,10 +741,10 @@ def test_in_process(on_screen: bool = False) -> None:
           and any(ln.startswith("  [") and "Orders" in ln for ln in lines))
     check("read outline: hidden elements left out (display:none button, link)",
           "Hidden button" not in text_all and "Hidden link" not in text_all)
-    hidden, _ = J(jack.read(t1.tab, "outline", hidden=True))
+    hidden, _ = J(flux.read(t1.tab, "outline", hidden=True))
     check("read outline hidden=true: they are in", hidden and "Hidden button"
           in "\n".join(hidden["outline"]) and "Hidden link" in "\n".join(hidden["outline"]))
-    forms, err = J(jack.read(t1.tab, "forms"))
+    forms, err = J(flux.read(t1.tab, "forms"))
     fs = forms["forms"] if forms else []
     login = next((f for f in fs if f.get("name") == "Sign in form"), None)
     by_name = {f["name"]: f for f in login["fields"]} if login else {}
@@ -761,17 +761,17 @@ def test_in_process(on_screen: bool = False) -> None:
     check("read forms: a password field's value reads (password)",
           by_name.get("pw", {}).get("value") == protocol.PASSWORD_VALUE
           and by_name["pw"]["type"] == "password")
-    forms_h, _ = J(jack.read(t1.tab, "forms", hidden=True))
+    forms_h, _ = J(flux.read(t1.tab, "forms", hidden=True))
     check("read forms hidden=true: the hidden input is in",
           forms_h and any(f["name"] == "csrf" for f in forms_h["forms"][0]["fields"]))
-    links, err = J(jack.read(t1.tab, "links"))
+    links, err = J(flux.read(t1.tab, "links"))
     ls = links["links"] if links else []
     check("read links: text, absolute address, ref; hidden ones left out",
           {"text": "Orders", "url": url("/orders")} in [{"text": x["text"], "url": x["url"]}
                                                        for x in ls]
           and all(isinstance(x["ref"], int) for x in ls)
           and not any(x["text"] == "Hidden link" for x in ls), f"{ls}")
-    text, _ = J(jack.read(t1.tab, "text"))
+    text, _ = J(flux.read(t1.tab, "text"))
     everything = json.dumps([outline, hidden, forms, forms_h, links, text])
     check("the password field's value is in none of the reads (outline, forms, links, text, "
           "hidden or not)", SECRET not in everything)
@@ -781,7 +781,7 @@ def test_in_process(on_screen: bool = False) -> None:
         if ln.strip().startswith("["):
             n, rest = ln.strip()[1:].split("] ", 1)
             ref_of[rest.split(" (")[0].split(" =")[0]] = int(n)
-    again, _ = J(jack.read(t1.tab, "outline"))
+    again, _ = J(flux.read(t1.tab, "outline"))
     ref_again = {}
     for ln in again["outline"]:
         if ln.strip().startswith("["):
@@ -793,30 +793,30 @@ def test_in_process(on_screen: bool = False) -> None:
           ref_of == ref_again and email_ref == by_name["email"]["ref"]
           and orders_ref == next(x["ref"] for x in ls if x["text"] == "Orders"),
           f"{email_ref} {orders_ref}")
-    after = {"globals": js(page1, "typeof window.__jack"),
+    after = {"globals": js(page1, "typeof window.__flux"),
              "mutations": js(page1, "window.__mutations"),
              "new keys": js(page1, "Object.keys(window).filter(k => !window.__keys.includes(k)"
                                    " && k !== '__keys').join(',')"),
              "html": js(page1, "document.documentElement.outerHTML") == html_before}
-    check("refs invisible to the page: nothing in its world (no __jack, no new globals), no "
+    check("refs invisible to the page: nothing in its world (no __flux, no new globals), no "
           "DOM change (its MutationObserver saw none, the HTML the same)",
           after == {"globals": "undefined", "mutations": 0, "new keys": "", "html": True},
           f"{after}")
-    J(jack.go(t1.tab, action="reload"))
+    J(flux.go(t1.tab, action="reload"))
     loaded(t1.tab)
-    fresh, _ = J(jack.read(t1.tab, "outline"))
+    fresh, _ = J(flux.read(t1.tab, "outline"))
     first_ref = min(int(ln.strip()[1:].split("]")[0]) for ln in fresh["outline"]
                     if ln.strip().startswith("["))
     check("refs: begun again for a new document (a reload)", first_ref == 1
           and min(ref_of.values()) == 1 and max(ref_again.values()) == max(ref_of.values()),
           f"first ref {first_ref}")
 
-    J(jack.go(t1.tab, url("/long")))
+    J(flux.go(t1.tab, url("/long")))
     loaded(t1.tab)
     parts, pos, guard = [], 0, 0
-    first, _ = J(jack.read(t1.tab, "text", length=5000))
+    first, _ = J(flux.read(t1.tab, "text", length=5000))
     while guard < 20:
-        part, err = J(jack.read(t1.tab, "text", offset=pos, length=5000))
+        part, err = J(flux.read(t1.tab, "text", offset=pos, length=5000))
         if part is None:
             break
         parts.append(part["text"])
@@ -829,26 +829,26 @@ def test_in_process(on_screen: bool = False) -> None:
           first and first["offset"] == 0 and first["more"] and first["next"] == 5000
           and len(first["text"]) == 5000 and whole.split() == LONG_WORDS
           and first["total"] == len(whole), f"{len(parts)} parts, {len(whole)} chars")
-    J(jack.go(t1.tab, url("/many")))
+    J(flux.go(t1.tab, url("/many")))
     loaded(t1.tab)
-    many, _ = J(jack.read(t1.tab, "outline"))
-    rest, _ = J(jack.read(t1.tab, "outline", offset=many["next"], length=5000))
+    many, _ = J(flux.read(t1.tab, "outline"))
+    rest, _ = J(flux.read(t1.tab, "outline", offset=many["next"], length=5000))
     check("read outline, a long page: OUTLINE_LENGTH lines, `more` and `next` to go on, the "
           "rest from there", many and len(many["outline"]) == protocol.OUTLINE_LENGTH
           and many["more"] and many["next"] == protocol.OUTLINE_LENGTH
           and many["total"] == 1000 and rest["outline"][0].endswith('button "B400"')
           and not rest["more"] and len(rest["outline"]) == 600,
           f"{many and (len(many['outline']), many['total'], many['next'])}")
-    _, err = J(jack.read(t1.tab, "everything"))
-    _, err2 = J(jack.read(t1.tab, "text", offset=-1))
+    _, err = J(flux.read(t1.tab, "everything"))
+    _, err2 = J(flux.read(t1.tab, "text", offset=-1))
     check("read: an unknown kind and a negative offset refused",
           err == "`what` must be one of text, links, forms, outline, article"
           and err2 == "`offset` must be 0 or more and `length` 1 or more", f"{err} / {err2}")
 
     # ── screenshot ──────────────────────────────────────────────────────
-    J(jack.go(t1.tab, url("/color#red")))
+    J(flux.go(t1.tab, url("/color#red")))
     loaded(t1.tab)
-    shot, err = J(jack.screenshot(t1.tab))
+    shot, err = J(flux.screenshot(t1.tab))
     view = w1.current_tab().view
     img = decode_png(shot["png"]) if shot else None
     c = img.pixelColor(img.width() // 2, img.height() // 2) if img else None
@@ -861,8 +861,8 @@ def test_in_process(on_screen: bool = False) -> None:
           f"{shot and (shot['width'], shot['height'])}, centre {c and (c.red(), c.green(), c.blue())}")
     freshness = []
     for colour, rgb in (("blue", (0, 0, 255)), ("lime", (0, 255, 0)), ("red", (255, 0, 0))):
-        J(jack.go(t1.tab, url(f"/color#{colour}")))
-        s, _ = J(jack.screenshot(t1.tab))
+        J(flux.go(t1.tab, url(f"/color#{colour}")))
+        s, _ = J(flux.screenshot(t1.tab))
         im = decode_png(s["png"])
         px = im.pixelColor(im.width() // 2, im.height() // 2)
         freshness.append((colour, (px.red(), px.green(), px.blue()) == rgb))
@@ -870,7 +870,7 @@ def test_in_process(on_screen: bool = False) -> None:
           "move to an anchor just before each)", all(ok for _c, ok in freshness), f"{freshness}")
     w1.resize(2400, 1400)
     QTest.qWait(400)
-    big, _ = J(jack.screenshot(t1.tab))
+    big, _ = J(flux.screenshot(t1.tab))
     sw_, sh_ = big["source_width"], big["source_height"]
     check(f"screenshot: a big view scaled to {protocol.SHOT_MAX_SIDE} px on its long side, "
           "aspect kept",
@@ -882,7 +882,7 @@ def test_in_process(on_screen: bool = False) -> None:
     QTest.qWait(300)
 
     # ── look ────────────────────────────────────────────────────────────
-    J(jack.go(t1.tab, url("/select")))
+    J(flux.go(t1.tab, url("/select")))
     loaded(t1.tab)
     QTest.qWait(200)
     w1.activateWindow()
@@ -891,7 +891,7 @@ def test_in_process(on_screen: bool = False) -> None:
     state = ("JSON.stringify({sel: String(getSelection()), active: document.activeElement.tagName,"
              " y: scrollY, mutations: window.__mutations})")
     before = js(page1, state)
-    looked, err = J(jack.look(screenshot=True, image=True))
+    looked, err = J(flux.look(screenshot=True, image=True))
     after_look = js(page1, state)
     check("look: the focused window's current tab, the selection in the page",
           looked is not None and looked["window"] == w1.id and looked["tab"] == t1.tab
@@ -925,39 +925,39 @@ def test_in_process(on_screen: bool = False) -> None:
     other.activateWindow()
     wait(lambda: QApplication.activeWindow() is other, 3)
     QTest.qWait(300)
-    last, err = J(jack.look())
+    last, err = J(flux.look())
     check("look with no browser window focused: the one focused last, and for how long it "
           "has not been", last is not None and last["window"] == w1.id and not last["focused"]
           and last["unfocused_for"] is not None and last["unfocused_for"] >= 0.2, f"{last} {err}")
-    named, err = J(jack.look(xid=int(w2.internalWinId())))
+    named, err = J(flux.look(xid=int(w2.internalWinId())))
     check("look at a window named by its X window", named and named["window"] == w2.id
           and named["title"] == "Other", f"{err}")
     other.close()
     w1.activateWindow()
     wait(lambda: QApplication.activeWindow() is w1, 3)
     for path, want, where in (("/field", "words", "field"), ("/framesel", "FRAME-WORDS", "frame")):
-        J(jack.go(t1.tab, url(path)))
+        J(flux.go(t1.tab, url(path)))
         loaded(t1.tab)
         QTest.qWait(400)
-        seen, err = J(jack.look())
+        seen, err = J(flux.look())
         check(f"look: a selection in a {where}", seen is not None
               and seen["selection"].strip() == want and seen["selection_in"] == where,
               f"{seen and (seen['selection'], seen['selection_in'])} {err}")
-    J(jack.go(t1.tab, url("/pwsel")))
+    J(flux.go(t1.tab, url("/pwsel")))
     loaded(t1.tab)
     QTest.qWait(400)
     qt_says = w1.current_tab().page.selectedText()
-    seen, err = J(jack.look(screenshot=True))
+    seen, err = J(flux.look(screenshot=True))
     check("look: text selected in a password field is never read (Qt's own selectedText "
           "would give it away)", seen is not None and seen["selection"] == ""
           and SECRET not in json.dumps(seen), f"Qt says {qt_says!r}; look {seen and seen['selection']!r}")
-    J(jack.go(t1.tab, url("/image")))
+    J(flux.go(t1.tab, url("/image")))
     loaded(t1.tab)
     QTest.qWait(300)
     view = w1.current_tab().view
     QCursor.setPos(view.mapToGlobal(QPoint(160, 140)))
     QTest.qWait(100)
-    pointed, err = J(jack.look(image=True))
+    pointed, err = J(flux.look(image=True))
     im = decode_png(pointed["image"]["png"]) if pointed and pointed.get("image") else None
     about = ({k: v for k, v in pointed["image"].items() if k != "png"}
              if pointed and pointed.get("image") else pointed)
@@ -966,7 +966,7 @@ def test_in_process(on_screen: bool = False) -> None:
           and pointed["image"]["from"] == "page" and im.width() == 120,
           f"{about} {err} pointer {QCursor.pos()}")
     QCursor.setPos(view.mapToGlobal(QPoint(460, 140)))
-    away, err = J(jack.look(image=True))
+    away, err = J(flux.look(image=True))
     im = decode_png(away["image"]["png"]) if away and away.get("image") else None
     px = im.pixelColor(im.width() // 2, im.height() // 2) if im else None
     check("look image: a cross-origin image the page may not read: the part of the screen it "
@@ -976,7 +976,7 @@ def test_in_process(on_screen: bool = False) -> None:
           f"{away and away.get('image') and {k: v for k, v in away['image'].items() if k != 'png'}}"
           f" {err}")
     QCursor.setPos(view.mapToGlobal(QPoint(600, 500)))
-    nothing, _ = J(jack.look(image=True))
+    nothing, _ = J(flux.look(image=True))
     check("look image: none where the pointer is on no image", nothing and nothing["image"] is None)
 
     # ── cancel, ids, unknown requests, the hand-off ─────────────────────
@@ -1031,7 +1031,7 @@ def test_in_process(on_screen: bool = False) -> None:
 
     async def give_up():
         try:
-            await asyncio.wait_for(jack.wait(t1.tab, selector="#never", timeout=30), 0.3)
+            await asyncio.wait_for(flux.wait(t1.tab, selector="#never", timeout=30), 0.3)
         except asyncio.TimeoutError:
             return "timeout"
 
@@ -1104,7 +1104,7 @@ def test_in_process(on_screen: bool = False) -> None:
           "image)", not errors and all(blocks_ok(v) for v in out.values()),
           f"{errors} {[k for k, v in out.items() if not blocks_ok(v)]}")
     site = f"Page content from 127.0.0.1 (written by the site, not by the user):"
-    check("browser_read: a block of Jack's (tab, part, how to go on), then the page's own, "
+    check("browser_read: a block of Flux's (tab, part, how to go on), then the page's own, "
           "its first line saying whose words they are",
           all(len(out[k]) == 2 and out[k][1]["text"].startswith(site + "\n")
               and "tab " in out[k][0]["text"] for k in ("read", "outline", "text", "links"))
@@ -1118,14 +1118,14 @@ def test_in_process(on_screen: bool = False) -> None:
           and "\"Gone\"" in out["go"][0]["text"], f"{out['open']} {out['go']}")
     check("browser_screenshot: the image, then what it is; browser_look: the tab, the "
           "screenshot", out["shot"][0]["type"] == "image" and out["shot"][1]["type"] == "text"
-          and "In Jack" in out["look"][0]["text"] and out["look"][-1]["type"] == "image")
-    check("a hand refused by Jack: its words as the hand's error", refused
+          and "In Flux" in out["look"][0]["text"] and out["look"][-1]["type"] == "image")
+    check("a hand refused by Flux: its words as the hand's error", refused
           == f"tab {t3.tab} is not showing in its window; switch to it first", f"{refused}")
     check("browser_close: the tab gone", out["close"] and f"Closed tab {t2.tab}"
           in out["close"][0]["text"] and all(t.id != t2.tab for t in w1.tabs))
 
     # ── the end ─────────────────────────────────────────────────────────
-    client.run(jack.close())
+    client.run(flux.close())
     errors = [r.getMessage() for r in logs.records if r.levelno >= logging.ERROR]
     check("no errors logged by the browser during the run", not errors, f"{errors[:3]}")
     browser.shutdown()
@@ -1136,11 +1136,11 @@ def test_in_process(on_screen: bool = False) -> None:
     del app
 
 
-# ── 3. Jack not running ─────────────────────────────────────────────────
+# ── 3. Flux not running ─────────────────────────────────────────────────
 def test_not_running() -> None:
     from indigoshell.browser import control
 
-    section("3. Jack not running: ensure_running, in the test's own namespace")
+    section("3. Flux not running: ensure_running, in the test's own namespace")
     state = SCRATCH / "state-started"
     os.environ.update({env("BROWSER_SOCKET"): SOCK["started"], env("APPS_SOCKET"): SOCK["apps2"],
                        "XDG_STATE_HOME": str(state), "QT_QPA_PLATFORM": "offscreen"})
@@ -1158,17 +1158,17 @@ def test_not_running() -> None:
     async def run():
         out = {"look": await control.look(timeout=1)}
         began = time.monotonic()
-        jack = await control.ensure_running(timeout=60)
+        flux = await control.ensure_running(timeout=60)
         out["started_s"] = time.monotonic() - began
-        out["windows"] = await jack.tabs()
+        out["windows"] = await flux.tabs()
         out["pid"] = pid_of()
         second = await control.ensure_running(timeout=5)
         out["second_pid"] = pid_of()
         await second.close()
-        tab = await jack.open(url("/page/Started"))
-        await jack.wait(tab.tab, timeout=20)
-        out["after_open"] = await jack.tabs()
-        await jack.close()
+        tab = await flux.open(url("/page/Started"))
+        await flux.wait(tab.tab, timeout=20)
+        out["after_open"] = await flux.tabs()
+        await flux.close()
         return out
 
     out = {}
@@ -1196,8 +1196,8 @@ def test_not_running() -> None:
                            env=dict(os.environ), capture_output=True)
 
         async def windows_now():
-            async with await control.connect() as jack:
-                return await jack.tabs()
+            async with await control.connect() as flux:
+                return await flux.tabs()
         now = asyncio.run(windows_now())
         check("`browser --no-window` with one running: exits 0 at once, hands it nothing",
               r.returncode == 0 and len(now) == before and len(now[0].tabs) == 1,
@@ -1249,8 +1249,8 @@ def test_on_screen() -> None:
     tab = window.add_tab(QUrl(url("/color#gray")))
     window.show()
     client = Client(QTest.qWait)
-    jack = client.run(control.connect())
-    client.run(jack.wait(tab.id, timeout=15), 20)
+    flux = client.run(control.connect())
+    client.run(flux.wait(tab.id, timeout=15), 20)
 
     c = xcffib.connect()
     root = c.get_setup().roots[0].root
@@ -1277,8 +1277,8 @@ def test_on_screen() -> None:
         c.flush()
 
     def shot_colour(colour: str) -> tuple:
-        client.run(jack.go(tab.id, url(f"/color#{colour}")))
-        s = client.run(jack.screenshot(tab.id))
+        client.run(flux.go(tab.id, url(f"/color#{colour}")))
+        s = client.run(flux.screenshot(tab.id))
         im = decode_png(s["png"])
         px = im.pixelColor(im.width() // 2, im.height() // 2)
         return (px.red(), px.green(), px.blue())
@@ -1302,7 +1302,7 @@ def test_on_screen() -> None:
               f"map_state {mapped}, {hidden}")
         check("back on the user's workspace: fresh; the user's workspace never switched",
               back == (255, 0, 0) and user_desktop == current, f"{back}, desktop {user_desktop}")
-    client.run(jack.close())
+    client.run(flux.close())
     browser.shutdown()
     shiboken6.delete(browser)
     shiboken6.delete(profile)

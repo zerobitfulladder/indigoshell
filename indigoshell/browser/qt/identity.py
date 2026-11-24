@@ -46,7 +46,7 @@ kept from the agent"), with the same keys:
 
 "never" is the one policy: every agent request on a tab at that host is
 refused. The table is optional and empty unless the user writes it;
-Jack never adds to it. It applies from the next request after an edit.
+Flux never adds to it. It applies from the next request after an edit.
 """
 
 import json

@@ -1,6 +1,6 @@
 """A browser window's line to the shell.
 
-The window says it is a Jack window, which X window, and whether it is
+The window says it is a Flux window, which X window, and whether it is
 a single one (protocol.py), then pushes its state whenever it changes.
 The shell answers that it has the window (`attached`) and may send
 commands, handed on as the `command` signal.

@@ -41,7 +41,7 @@ SCROLLBAR_CSS = f"""
 ::-webkit-scrollbar-button {{ display: none; }}
 """
 SCROLLBAR_SCRIPT = "indigoshell-scrollbars"
-# Its own world: Jack's reader uses 3, identity the main world.
+# Its own world: Flux's reader uses 3, identity the main world.
 SCROLLBAR_WORLD = 2
 
 

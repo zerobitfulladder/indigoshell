@@ -1,20 +1,20 @@
-"""What Jack (the browser) and the shell say to each other.
+"""What Flux (the browser) and the shell say to each other.
 
 Pure Python: imported by the browser (Qt) and by the daemon's side of
-Jack (`browser/context.py`, xcffib and skia), so it imports neither.
+Flux (`browser/context.py`, xcffib and skia), so it imports neither.
 
 The line itself is every indigoshell app's (applink/protocol.py): one
 unix socket connection per browser window, the shell listening, one
 JSON object per line both ways, each with its `type`; a type a side
-does not know is ignored. This module is what Jack says on it.
+does not know is ignored. This module is what Flux says on it.
 
 Browser -> shell
-    announce   {"type": "announce", "app": "jack", "wid": <X window>, "single": bool,
+    announce   {"type": "announce", "app": "flux", "wid": <X window>, "single": bool,
                 "agent"?: <voice>}
                First on every connection, then the current state.
                `single`: a window of one page that takes no tabs (a page's
                sign-in popup, the inspector). The shell takes KEYS from
-               Jack's other windows, the main ones; a single window keeps
+               Flux's other windows, the main ones; a single window keeps
                them (its own handling, below). `agent`: the agent's own
                window ("Alone", below), and whose: the top bar says so.
                The agent's window, and a popup of it, also asks the shell
@@ -234,7 +234,7 @@ focus or changing the workspace; `open` and `tabs` work on any.
                page scrolls no further). `more`: the page goes on below
                the last tile. Elements fixed or sticky on the page (a
                header that stays, a cookie banner) are hidden from the
-               second tile on, by a style sheet adopted from Jack's
+               second tile on, by a style sheet adopted from Flux's
                isolated world, taken away after: no element, attribute or
                class of the page changes and no mutation is seen; only a
                page listing document.adoptedStyleSheets meanwhile would
@@ -268,7 +268,7 @@ focus or changing the workspace; `open` and `tabs` work on any.
 <object>'s page; same-origin and cross-origin, nested), through Qt's
 QWebEngineFrame (6.8 on; with an older Qt, frames are not read): each
 in its own isolated world, as the page is. A frame's document is named
-"f<N>", a number Jack gives it in its tab and never gives another; a
+"f<N>", a number Flux gives it in its tab and never gives another; a
 frame that loads another document is named anew (an old "f2:14" then
 says there is no frame f2: read again, as after the page's own load).
 An element in a frame has the REF "f<N>:<M>" (the main page's stay plain
@@ -402,12 +402,12 @@ TAB, in every result since acting came, also says {"agent": null |
 **Alone.** The agent's own window, a main window like the user's, in
 their sight only when they go and look. `open` with "window": "agent"
 and `borrow` make it when there is none, one per voice. Before it is
-first shown Jack asks the shell to put it on an empty workspace no
+first shown Flux asks the shell to put it on an empty workspace no
 screen shows (applink `place`), so it never appears where the user is
 looking and their view never moves; with no shell (or one too old to
 answer within applink's PLACE_WAIT_S) it shows where the window manager
-puts it. Jack never raises it or gives it focus. Its title is "<Voice>
-· Jack" and its page's, its WM_WINDOW_ROLE AGENT_ROLE, its class Jack's
+puts it. Flux never raises it or gives it focus. Its title is "<Voice>
+· Flux" and its page's, its WM_WINDOW_ROLE AGENT_ROLE, its class Flux's
 own; its announce names the voice (`agent`). The showing rule, the
 Watch's lock and take-over hold in it as in any window. A popup a page
 in it opens goes to the same workspace, and the tabs such a popup asks
@@ -455,7 +455,7 @@ from. Each window in `tabs` also says {"agent": null | <voice>}.
                a file is refused.
                -> TAB + {"background": bool}
 
-**Downloads.** Jack takes every download into the profile's download
+**Downloads.** Flux takes every download into the profile's download
 folder, no question asked.
     downloads  {} -> {"downloads": [DOWNLOAD, ...]}  newest first, this
                run's, at most DOWNLOADS_KEPT
@@ -475,7 +475,7 @@ An acting request's answer lists the downloads it started, when it did
     upload     {"tab", "ref", "paths": [str, ...], "voice"?: str}
                An acting request: the files reach the page as from its
                file chooser, with no dialog. `ref` is a file field, or
-               what opens one (a button, a drop zone's "browse"): Jack
+               what opens one (a button, a drop zone's "browse"): Flux
                arms the answer to the next chooser the page opens with the
                paths, then clicks with real input (the field, or its label
                when the field is hidden; a hidden field with no label gets
@@ -551,7 +551,7 @@ from indigoshell.applink.protocol import (  # noqa: F401  (part of this module's
 from indigoshell.core.naming import APP, env
 from indigoshell.core.paths import runtime_dir
 
-KIND = "jack"                   # the app kind Jack announces
+KIND = "flux"                   # the app kind Flux announces
 
 # ── where ───────────────────────────────────────────────────────────────
 INSTANCE_SOCKET_ENV = env("BROWSER_SOCKET")
@@ -812,7 +812,7 @@ def frame_name(frame: int) -> str:
 # ── alone, downloads, uploads, kept sites ───────────────────────────────
 AGENT_WINDOW = "agent"          # `open`'s window: the agent's own
 AGENT_ROLE = f"{APP}-agent"     # its WM_WINDOW_ROLE
-AGENT_TITLE = "{name} · Jack"
+AGENT_TITLE = "{name} · Flux"
 DOWNLOAD_LIST_STATES = ("running", "done", "failed", "cancelled")
 DOWNLOADS_KEPT = 50
 UPLOAD_PATHS_MAX = 20

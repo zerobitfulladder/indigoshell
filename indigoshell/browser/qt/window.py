@@ -97,7 +97,7 @@ call returned, out of the window meanwhile.
 
 The agent's own window (`agent`, its voice: protocol.py, "Alone") is a
 main window made for the agent's requests. It is never raised or given
-focus by Jack (shown without activating), its title says whose it is
+focus by Flux (shown without activating), its title says whose it is
 (protocol.agent_title) and its WM_WINDOW_ROLE is protocol.AGENT_ROLE.
 It is shown only once placed (`show_placed`): its native window made
 but not mapped, its line to the shell started early, the shell asked to
@@ -282,7 +282,7 @@ class Window(QWidget):
         self._place_timer: QTimer | None = None
         if agent or (opener is not None and opener.agent):
             # The agent's: never activated by its showing (and so never
-            # by Jack, which raises or activates only the user's).
+            # by Flux, which raises or activates only the user's).
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         if agent:
             self.setWindowRole(protocol.AGENT_ROLE)

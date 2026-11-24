@@ -1,4 +1,4 @@
-"""The agent acting in Jack: the acting requests, the Watch, the hands.
+"""The agent acting in Flux: the acting requests, the Watch, the hands.
 
     .venv/bin/python tests/browser_act.py              off screen, about a minute
     .venv/bin/python tests/browser_act.py --on-screen  one floating test window, a few seconds
@@ -10,7 +10,7 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      (JSON Schema), what their descriptions tell the agent.
   2. one browser in this process, its control socket and a stand-in
      shell on sockets of the test's, the client on an asyncio loop in a
-     thread, Jack's window not the active one (the user is elsewhere):
+     thread, Flux's window not the active one (the user is elsewhere):
      click by ref and by point (the page's events trusted), double and
      with the middle button, a covered
      element refused naming what covers it, no right click, a <select>,
@@ -37,9 +37,9 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      key and its release reaching nothing) and by a click on the mark,
      the next request failing with the exact words, switch and open in
      that window refused, open in the background not; the hand-back
-     through the shell's actions (the real JackWindow, in a child
+     through the shell's actions (the real FluxWindow, in a child
      process, given the state the stand-in shell got, its command sent
-     back to Jack); a pause ending by itself; a session ending when
+     back to Flux); a pause ending by itself; a session ending when
      quiet (and not while a request runs), on release, on a switch, on
      the tab closing; the overlay: in the window's own pixels (frame and
      mark in the voice's colour), in no screenshot, gone with the
@@ -47,7 +47,7 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      never what was typed); every acting hand run against it, in the
      call's voice.
   3. the shell's side (a child process, so skia and Qt stay apart): the
-     top bar's Jack renderer painted off screen, the tab the agent
+     top bar's Flux renderer painted off screen, the tab the agent
      drives with its number in the voice's colour, a paused one dimmed,
      the titles untouched; the window's actions with "Let Lilac drive
      again" only while a tab is paused, picking it sending `resume`.
@@ -117,7 +117,7 @@ def shell_side(path: str) -> None:
     from indigoshell import theme
     from indigoshell.applink.service import AppService
     from indigoshell.browser import protocol
-    from indigoshell.browser.context import TAB_CURRENT_FG, TAB_FG, JackWindow, agent_color
+    from indigoshell.browser.context import TAB_CURRENT_FG, TAB_FG, FluxWindow, agent_color
     from indigoshell.widgets.base import Size
 
     given = json.loads(Path(path).read_text())
@@ -151,9 +151,9 @@ def shell_side(path: str) -> None:
         rgb = np.array([int(hex_[i:i + 2], 16) for i in (1, 3, 5)])
         return int((np.abs(region - rgb).max(axis=-1) <= tol).sum())
 
-    service = AppService({"jack": JackWindow}, path="/nonexistent")
+    service = AppService({"flux": FluxWindow}, path="/nonexistent")
     out = {}
-    j = JackWindow(Line(service), 0x400001, {"single": False})
+    j = FluxWindow(Line(service), 0x400001, {"single": False})
     host = Host()
     j.content.attach(host)
     W, H = 1200, theme.TOP_BAR_HEIGHT
@@ -197,7 +197,7 @@ def shell_side(path: str) -> None:
     bad["agent"] = [{"voice": 3, "state": "flying"}]
     out["bad_state_problems"] = protocol.state_problems(bad)
 
-    # The window's actions for the state the stand-in shell got from Jack.
+    # The window's actions for the state the stand-in shell got from Flux.
     j.on_message(given["state"])
     rows, start = j.actions().search("")
     out["rows"] = [[e.title, e.enabled, e.detail] for e in rows]
@@ -560,11 +560,11 @@ def test_in_process() -> None:
     browser.listen(SOCK["browser"])
     watch = browser.watch
     client = Client(QTest.qWait)
-    jack = client.run(control.connect())
+    flux = client.run(control.connect())
     J = lambda coro, t=30.0: client.attempt(coro, t)      # noqa: E731
 
-    tab0, err = J(jack.open(url("/act")))
-    J(jack.wait(tab0.tab, timeout=15), 20)
+    tab0, err = J(flux.open(url("/act")))
+    J(flux.wait(tab0.tab, timeout=15), 20)
     w = browser.windows[0]
     T = tab0.tab
     page = w.current_tab().page
@@ -589,7 +589,7 @@ def test_in_process() -> None:
         js("window.__log && (window.__log.length = 0); 1")
 
     def refs_of(tab_id):
-        page_, _ = J(jack.read(tab_id, "outline", hidden=True))
+        page_, _ = J(flux.read(tab_id, "outline", hidden=True))
         out = {}
         for line in (page_ or {}).get("outline", []):
             line = line.strip()
@@ -599,9 +599,9 @@ def test_in_process() -> None:
         return out
 
     def reload_act():
-        J(jack.switch(T))
-        J(jack.go(T, url("/act")))
-        J(jack.wait(T, timeout=15), 20)
+        J(flux.switch(T))
+        J(flux.go(T, url("/act")))
+        J(flux.wait(T, timeout=15), 20)
         return refs_of(T)
 
     R = refs_of(T)
@@ -609,13 +609,13 @@ def test_in_process() -> None:
         'button "Press"', 'button "Under"', 'textbox "Name"', 'combobox "Country"',
         'checkbox "Agree"', 'button "Upload"', 'textbox "Note"', 'clickable "Box"')),
         f"{sorted(R)}")
-    check("Jack's window is not the active one (the user is elsewhere); the stand-in shell has it",
+    check("Flux's window is not the active one (the user is elsewhere); the stand-in shell has it",
           QApplication.activeWindow() is elsewhere and attached)
 
     # ── click ───────────────────────────────────────────────────────────
     clear_log()
     press = R['button "Press"']
-    done, err = J(jack.click(T, press, voice="lilac"))
+    done, err = J(flux.click(T, press, voice="lilac"))
     page_says = js("document.getElementById('press').textContent")
     clicks = events("click")
     check("click by ref: the page's own click, trusted (mousedown, mouseup, click all "
@@ -629,31 +629,31 @@ def test_in_process() -> None:
           and done["navigated"] is False and done["opened"] == [] and done["dialog"] is None
           and done["tab"] == T and done["current"])
     clear_log()
-    done, err = J(jack.click(T, x=80, y=40))
+    done, err = J(flux.click(T, x=80, y=40))
     check("click by point (CSS px of the viewport): what is there named; a click of its own, "
           "not the second half of a double click with the one just before at the same spot",
           done is not None and len(events("click")) == 1 and not events("dblclick")
           and done["what"].endswith('button "pressed"'), f"{err} {events()}")
     clear_log()
-    done, err = J(jack.click(T, press, double=True))
+    done, err = J(flux.click(T, press, double=True))
     dbl = events("dblclick")
     clear_log()
-    middle, err2 = J(jack.click(T, press, button="middle"))
+    middle, err2 = J(flux.click(T, press, button="middle"))
     downs = events("mousedown")
     check("double: the page's own dblclick, trusted; the middle button: its mousedown says "
           "button 1", done is not None and len(dbl) == 1 and dbl[0]["trusted"]
           and middle is not None and downs and downs[0]["button"] == 1 and downs[0]["trusted"],
           f"{err} {err2} {dbl} {downs[:1]}")
     clear_log()
-    _, err = J(jack.click(T, R['button "Under"']))
+    _, err = J(flux.click(T, R['button "Under"']))
     check("a covered element: not clicked; the error names what covers it (with a ref to act on)",
           err is not None and "is covered at" in err and 'clickable' not in err
           and '"Cookie banner"' in err and not events("click")
           and js("document.getElementById('under').textContent") == "Under", f"{err}")
-    _, e_right = J(jack.click(T, R['button "Press"'], button="right"))
-    _, e_select = J(jack.click(T, R['combobox "Country"']))
-    _, e_file = J(jack.click(T, R['button "Upload"']))
-    _, e_date = J(jack.click(T, R['textbox "Day"']))
+    _, e_right = J(flux.click(T, R['button "Press"'], button="right"))
+    _, e_select = J(flux.click(T, R['combobox "Country"']))
+    _, e_file = J(flux.click(T, R['button "Upload"']))
+    _, e_date = J(flux.click(T, R['textbox "Day"']))
     check("refused: a right click, a <select> (its popup), a file field (upload gives it "
           "files), a date field (its picker); no popup ever shown",
           e_right and e_right.startswith("no right clicks") and e_select
@@ -662,40 +662,40 @@ def test_in_process() -> None:
                         "with upload" and e_date and "picker" in e_date
           and QApplication.activePopupWidget() is None,
           f"{e_right} / {e_select} / {e_file} / {e_date}")
-    _, e_stale = J(jack.click(T, 9999))
-    _, e_out = J(jack.click(T, x=5000, y=10))
+    _, e_stale = J(flux.click(T, 9999))
+    _, e_out = J(flux.click(T, x=5000, y=10))
     check("a ref that is not on the page, a point outside it: refused, saying why",
           e_stale and e_stale.startswith("no element [9999] on this page")
           and e_out and "outside the visible page" in e_out, f"{e_stale} / {e_out}")
 
-    done, err = J(jack.click(T, R['link "Go there"']))
+    done, err = J(flux.click(T, R['link "Go there"']))
     nav_loading = done and done["navigated"]
-    J(jack.wait(T, timeout=10), 15)
+    J(flux.wait(T, timeout=10), 15)
     titled = w.current_tab().page.title()
     check("a link: `navigated`, so the agent knows to wait; then the new page",
           nav_loading and titled == "Went", f"{err} {done and done['navigated']} {titled}")
-    J(jack.go(T, action="back"))
-    J(jack.wait(T, timeout=10), 15)
+    J(flux.go(T, action="back"))
+    J(flux.wait(T, timeout=10), 15)
     R = refs_of(T)
     before_tabs = len(w.tabs)
-    done, err = J(jack.click(T, R['link "New tab"']))
+    done, err = J(flux.click(T, R['link "New tab"']))
     opened = done["opened"] if done else []
     check("a link to a new tab: `opened` names it (the tab id, its window, its address)",
           len(opened) == 1 and opened[0]["window"] == w.id and len(w.tabs) == before_tabs + 1
           and opened[0]["url"].endswith("/page/Fresh"), f"{err} {opened}")
     session_after_new_tab = watch.driving(T)
     if w.current_tab().id != T:
-        J(jack.switch(T))
+        J(flux.switch(T))
     for t in list(w.tabs):
         if t.id != T:
-            J(jack.close_tab(t.id))
+            J(flux.close_tab(t.id))
     check("... it became the window's current tab, so the session on the first ended (its window "
           "shows another tab)", not session_after_new_tab, f"{session_after_new_tab}")
 
     # ── type ────────────────────────────────────────────────────────────
     R = reload_act()
     clear_log()
-    done, err = J(jack.type_text(T, TURKISH, ref=R['textbox "Name"']))
+    done, err = J(flux.type_text(T, TURKISH, ref=R['textbox "Name"']))
     value = js("document.getElementById('name').value")
     downs = events("keydown")
     check("type into a field by ref: the text as typed, Turkish letters too, each a trusted key "
@@ -705,29 +705,29 @@ def test_in_process() -> None:
           and all(e["trusted"] for e in downs) and [e["key"] for e in downs[:3]] == ["A", "ğ", "a"]
           and "ş" in [e["key"] for e in downs] and "İ" in [e["key"] for e in downs],
           f"{err} {value!r} {[e['key'] for e in downs[:6]]}")
-    done, err = J(jack.type_text(T, "Jack", ref=R['textbox "Name"'], clear=True))
+    done, err = J(flux.type_text(T, "Flux", ref=R['textbox "Name"'], clear=True))
     check("clear: emptied first (ctrl+a, Backspace), then typed",
-          js("document.getElementById('name').value") == "Jack", f"{err}")
-    spot, _ = J(jack.hover(T, R['textbox "Name"']))
+          js("document.getElementById('name').value") == "Flux", f"{err}")
+    spot, _ = J(flux.hover(T, R['textbox "Name"']))
     js("document.activeElement.blur(); 1")
-    done, err = J(jack.type_text(T, "at a point", x=spot["x"], y=spot["y"], clear=True))
+    done, err = J(flux.type_text(T, "at a point", x=spot["x"], y=spot["y"], clear=True))
     check("type at a point: clicked there first, then typed into what took the focus",
           done is not None and js("document.getElementById('name').value") == "at a point"
           and done["what"].endswith('textbox "Name"'), f"{err} {done and done['what']}")
     long_text = "ğüşiöç " * 60
     clear_log()
-    done, err = J(jack.type_text(T, long_text, ref=R['textbox "Note"']))
+    done, err = J(flux.type_text(T, long_text, ref=R['textbox "Note"']))
     check(f"a text longer than {protocol.TYPE_KEYS_MAX} characters: one input method commit "
           "(trusted input, no keydowns), whole",
           done is not None and done["via"] == "input method"
           and js("document.getElementById('note').value") == long_text
           and not events("keydown") and all(e["trusted"] for e in events("input")), f"{err}")
-    done, err = J(jack.type_text(T, "one\ntwo", ref=R['textbox "Note"'], clear=True))
+    done, err = J(flux.type_text(T, "one\ntwo", ref=R['textbox "Note"'], clear=True))
     check("a newline is Enter: two lines in a textarea",
           js("document.getElementById('note').value") == "one\ntwo", f"{err}")
-    done, err = J(jack.type_text(T, "typed after", ref=R['textbox "Name"'], clear=True,
+    done, err = J(flux.type_text(T, "typed after", ref=R['textbox "Name"'], clear=True,
                                  submit=True))
-    J(jack.wait(T, timeout=10), 15)
+    J(flux.wait(T, timeout=10), 15)
     check("submit: Enter after; the form sent (a navigation, the field's value in the address)",
           done is not None and done["navigated"]
           and w.current_tab().url().toString().startswith(url("/page/Sent?name=typed+after")),
@@ -735,17 +735,17 @@ def test_in_process() -> None:
 
     # ── key ─────────────────────────────────────────────────────────────
     R = reload_act()
-    J(jack.type_text(T, "abc", ref=R['textbox "Name"']))
+    J(flux.type_text(T, "abc", ref=R['textbox "Name"']))
     clear_log()
-    J(jack.key(T, "ctrl+a"))
-    J(jack.key(T, "Backspace"))
+    J(flux.key(T, "ctrl+a"))
+    J(flux.key(T, "Backspace"))
     emptied = js("document.getElementById('name').value")
-    J(jack.key(T, "x", count=3))
+    J(flux.key(T, "x", count=3))
     xs = js("document.getElementById('name').value")
     js("document.activeElement.blur(); scrollTo(0, 0); 1")
-    J(jack.key(T, "PageDown"))
+    J(flux.key(T, "PageDown"))
     scrolled = js("scrollY")
-    _, e_key = J(jack.key(T, "hyper+q"))
+    _, e_key = J(flux.key(T, "hyper+q"))
     check("key: ctrl+a and Backspace empty the focused field, a count types x three times, "
           "PageDown scrolls the page; a key with no name refused",
           emptied == "" and xs == "xxx" and scrolled and scrolled > 100
@@ -764,12 +764,12 @@ def test_in_process() -> None:
     spy = PopupSpy()
     app.installEventFilter(spy)
     clear_log()
-    by_value, err1 = J(jack.select(T, R['combobox "Country"'], value="fr"))
+    by_value, err1 = J(flux.select(T, R['combobox "Country"'], value="fr"))
     v1 = js("document.getElementById('country').value")
-    by_label, err2 = J(jack.select(T, R['combobox "Country"'], label="türkiye"))
+    by_label, err2 = J(flux.select(T, R['combobox "Country"'], label="türkiye"))
     v2 = js("document.getElementById('country').value")
-    _, err3 = J(jack.select(T, R['combobox "Country"'], value="xx"))
-    _, err4 = J(jack.select(T, R['textbox "Name"'], value="x"))
+    _, err3 = J(flux.select(T, R['combobox "Country"'], value="xx"))
+    _, err4 = J(flux.select(T, R['textbox "Name"'], value="x"))
     app.removeEventFilter(spy)
     changes = events("change")
     check("select by value and by label (case aside): set without its popup (no popup window "
@@ -783,7 +783,7 @@ def test_in_process() -> None:
 
     # ── fill ────────────────────────────────────────────────────────────
     R = reload_act()
-    done, err = J(jack.fill(T, [
+    done, err = J(flux.fill(T, [
         {"ref": R['textbox "Name"'], "value": "Filled Name"},
         {"ref": R['textbox "Password"'], "value": SECRET},
         {"ref": R['checkbox "Agree"'], "value": True},
@@ -807,33 +807,33 @@ def test_in_process() -> None:
                                              "error": f"[{R[UPLOAD_FIELD]}] is a file field: "
                                                       "give it files with upload"}
           and not fields[8]["ok"] and "no element [9999]" in fields[8]["error"], f"{fields[7:]}")
-    pw_read, _ = J(jack.read(T, "forms"))
+    pw_read, _ = J(flux.read(T, "forms"))
     check("the password typed is never read back (the answer, the forms read)",
           SECRET not in json.dumps(done) and SECRET not in json.dumps(pw_read))
 
     # ── hover, scroll ───────────────────────────────────────────────────
     clear_log()
-    done, err = J(jack.hover(T, R['button "Menu"']))
+    done, err = J(flux.hover(T, R['button "Menu"']))
     shown = js("getComputedStyle(document.getElementById('sub')).display")
     check("hover: the pointer moved there (a trusted mousemove), the menu that opens on "
           "mouseover open, nothing clicked", done is not None and shown == "block"
           and not events("click") and any(e["trusted"] for e in events("mousemove")),
           f"{err} {shown}")
     js("scrollTo(0, 0); 1")
-    done, err = J(jack.scroll(T, dy=400))
+    done, err = J(flux.scroll(T, dy=400))
     check("scroll by pixels: real wheel turns (a trusted wheel event), the page about that far "
           "down", done is not None and abs((done["scroll_y"] or 0) - 400) <= 40
           and any(e["trusted"] for e in events("wheel")), f"{err} {done and done['scroll_y']}")
     js("scrollTo(0, 0); 1")
-    done, err = J(jack.scroll(T, dy=200, ref=R['clickable "Box"']))
+    done, err = J(flux.scroll(T, dy=200, ref=R['clickable "Box"']))
     inner = js("document.getElementById('box').scrollTop")
     check("scroll over an element: that box scrolls, the page not",
           done is not None and inner and inner > 100 and done["scroll_y"] == 0, f"{err} {inner}")
-    done, err = J(jack.scroll(T, to=R['button "Send"']))
-    J(jack.scroll(T, to=R['button "Press"']))
+    done, err = J(flux.scroll(T, to=R['button "Send"']))
+    J(flux.scroll(T, to=R['button "Press"']))
     check("scroll to a ref: into view", done is not None and "Send" in done.get("what", ""),
           f"{err}")
-    _, e_none = J(jack.scroll(T))
+    _, e_none = J(flux.scroll(T))
     check("scroll with nothing to do: refused", e_none and "give `dy`" in e_none, f"{e_none}")
 
     # ── dialogs ─────────────────────────────────────────────────────────
@@ -841,24 +841,24 @@ def test_in_process() -> None:
 
     async def dialogs():
         out = {}
-        out["alert"] = await jack.click(T, R['button "Alert"'])
+        out["alert"] = await flux.click(T, R['button "Alert"'])
         try:
-            await jack.read(T, "text")
+            await flux.read(T, "text")
         except control.ControlError as e:
             out["read"] = str(e)
         try:
-            await jack.click(T, R['button "Press"'])
+            await flux.click(T, R['button "Press"'])
         except control.ControlError as e:
             out["click"] = str(e)
-        out["wait"] = await jack.wait(T, timeout=5)
-        out["tabs"] = await jack.tabs()
-        out["alert_done"] = await jack.dialog(T, True)
-        out["confirm"] = await jack.click(T, R['button "Confirm"'])
-        out["confirm_done"] = await jack.dialog(T, False)
-        out["prompt"] = await jack.click(T, R['button "Prompt"'])
-        out["prompt_done"] = await jack.dialog(T, True, text="Ayşe")
+        out["wait"] = await flux.wait(T, timeout=5)
+        out["tabs"] = await flux.tabs()
+        out["alert_done"] = await flux.dialog(T, True)
+        out["confirm"] = await flux.click(T, R['button "Confirm"'])
+        out["confirm_done"] = await flux.dialog(T, False)
+        out["prompt"] = await flux.click(T, R['button "Prompt"'])
+        out["prompt_done"] = await flux.dialog(T, True, text="Ayşe")
         try:
-            await jack.dialog(T, True)
+            await flux.dialog(T, True)
         except control.ControlError as e:
             out["none"] = str(e)
         return out
@@ -889,9 +889,9 @@ def test_in_process() -> None:
     protocol.DIALOG_S = 1.0
 
     async def unanswered():
-        first = await jack.click(T, R['button "Confirm"'])
+        first = await flux.click(T, R['button "Confirm"'])
         await asyncio.sleep(2.0)
-        later = await jack.click(T, R['button "Press"'])
+        later = await flux.click(T, R['button "Press"'])
         return first, later
     pair, err = J(unanswered(), 30)
     protocol.DIALOG_S = 60.0
@@ -900,7 +900,7 @@ def test_in_process() -> None:
           and pair[1]["dialog"] is None and js("window.__confirmed") is False
           and any("dismissed" in n for n in pair[1].get("notes", [])), f"{err} {pair and pair[1]}")
 
-    J(jack.release(T))
+    J(flux.release(T))
     users.clear()
     js("setTimeout(() => { window.__mine = confirm('Mine?'); }, 0); 1")
     wait(lambda: users, 5)
@@ -908,15 +908,15 @@ def test_in_process() -> None:
           users == [("confirm", "Mine?")] and js("window.__mine") is True, f"{users}")
     users.clear()
 
-    J(jack.go(T, url("/leave")))
-    J(jack.wait(T, timeout=10), 15)
+    J(flux.go(T, url("/leave")))
+    J(flux.wait(T, timeout=10), 15)
 
     async def leave():
-        await jack.click(T, x=30, y=30)             # a gesture: the page may ask
-        await jack.go(T, url("/page/Away"))
-        asked = await jack.wait(T, timeout=10)
-        left = await jack.dialog(T, True)
-        await jack.wait(T, timeout=10)
+        await flux.click(T, x=30, y=30)             # a gesture: the page may ask
+        await flux.go(T, url("/page/Away"))
+        asked = await flux.wait(T, timeout=10)
+        left = await flux.dialog(T, True)
+        await flux.wait(T, timeout=10)
         return asked, left
     out, err = J(leave(), 40)
     check("beforeunload: leaving a page that asks, the question held as type beforeunload; "
@@ -924,9 +924,9 @@ def test_in_process() -> None:
           and out[0]["dialog"] == {"type": "beforeunload", "message": "", "default": ""}
           and w.current_tab().page.title() == "Away" and not users, f"{err} {out and out[0]}")
 
-    J(jack.go(T, url("/files")))
-    J(jack.wait(T, timeout=10), 15)
-    done, err = J(jack.click(T, refs_of(T)['button "Pick a file"']))
+    J(flux.go(T, url("/files")))
+    J(flux.wait(T, timeout=10), 15)
+    done, err = J(flux.click(T, refs_of(T)['button "Pick a file"']))
     check("a file chooser the page opens while the agent drives: refused, said in the answer; "
           "Qt's chooser never asked", done is not None and not users
           and any("only upload gives a page files" in n for n in done.get("notes", [])),
@@ -934,7 +934,7 @@ def test_in_process() -> None:
 
     # ── the lock ────────────────────────────────────────────────────────
     R = reload_act()
-    J(jack.click(T, R['button "Press"'], voice="lilac"))
+    J(flux.click(T, R['button "Press"'], voice="lilac"))
     proxy = w.current_tab().view.focusProxy()
     seen = []
 
@@ -957,7 +957,7 @@ def test_in_process() -> None:
     pump(300)
     user_events = events()
     still = watch.driving(T)
-    J(jack.click(T, R['button "Press"']))
+    J(flux.click(T, R['button "Press"']))
     agent_clicks = events("click")
     check("locked: the user's clicks (through the window, as X gives them, and straight at the "
           "view) and moves reach nothing; the mark flashes; Shift alone is swallowed and takes "
@@ -984,7 +984,7 @@ def test_in_process() -> None:
                for y in range(mg.y(), mg.y() + mg.height())] if mg else []
     lilac_text = sum(1 for p in mark_px if near(p, lilac, 40))
     dark = sum(1 for p in mark_px if near(p, (5, 3, 16), 6))
-    shot, err = J(jack.screenshot(T))
+    shot, err = J(flux.screenshot(T))
     simg = decode_png(shot["png"]) if shot else None
     points = [(g.x(), mid_y), (g.x() + g.width() // 2, g.y()),
               (g.x() + g.width() // 2, g.y() + g.height() - 1)]
@@ -1007,7 +1007,7 @@ def test_in_process() -> None:
     check("... and in no screenshot (the page's own white at those edges and that corner)",
           shot_px and all(near(p, (255, 255, 255), 3) for p in shot_px)
           and shot["viewport_width"] == shot["width"], f"{shot_px} {err}")
-    J(jack.click(T, R['button "Press"'], voice="indigo"))
+    J(flux.click(T, R['button "Press"'], voice="indigo"))
     indigo_px = rgb(w.grab().toImage().pixelColor(g.x(), mid_y))
     check("another voice: the frame and mark in Indigo's colour, the mark naming her",
           near(indigo_px, hex_rgb("#b967ff")) and overlay.mark.text().startswith("Indigo is "),
@@ -1027,16 +1027,16 @@ def test_in_process() -> None:
     w.on_command({"type": "resume", "index": w.tabs.index(w.current_tab())})
 
     # ── take-over by a key ──────────────────────────────────────────────
-    J(jack.click(T, R['button "Press"'], voice="lilac"))
+    J(flux.click(T, R['button "Press"'], voice="lilac"))
     w.activateWindow()                  # keys come to the window that has the focus
     wait(lambda: QApplication.activeWindow() is w, 3)
     clear_log()
     QTest.keyClick(w.windowHandle(), Qt.Key.Key_Q)
     pump(300)
     after_key = events()
-    _, e_next = J(jack.click(T, R['button "Press"']))
-    _, e_read = J(jack.read(T, "text"))
-    windows_, _ = J(jack.tabs())
+    _, e_next = J(flux.click(T, R['button "Press"']))
+    _, e_read = J(flux.read(T, "text"))
+    windows_, _ = J(flux.tabs())
     paused_state = [s for s in shell.states() if s.get("agent") and s["agent"][0]][-1]
     check("take-over by a key: the key and its release reach nothing; the session paused; the "
           "overlay gone; the shell told",
@@ -1047,9 +1047,9 @@ def test_in_process() -> None:
           "too; tabs say paused", e_next == f"the user took over tab {T}"
           and e_read == f"the user took over tab {T}"
           and windows_ and windows_[0].tabs[0].agent == "paused", f"{e_next} / {e_read}")
-    other, _ = J(jack.open(url("/page/Other"), window=w.id, background=True))
-    _, e_switch = J(jack.switch(other.tab)) if other else (None, "no tab")
-    _, e_open = J(jack.open(url("/page/More"), window=w.id))
+    other, _ = J(flux.open(url("/page/Other"), window=w.id, background=True))
+    _, e_switch = J(flux.switch(other.tab)) if other else (None, "no tab")
+    _, e_open = J(flux.open(url("/page/More"), window=w.id))
     check("while paused, nothing changes what that window shows: switch and open refused with the "
           "same words; open in the background allowed",
           other is not None and e_switch == f"the user took over tab {T}"
@@ -1062,8 +1062,8 @@ def test_in_process() -> None:
     check("the user's own clicks reach the page again while paused",
           len(events("click")) == 1 and events("click")[0]["trusted"])
 
-    # The hand-back: the state the shell got, the real JackWindow's actions
-    # (a child process), the command it sends, given to Jack.
+    # The hand-back: the state the shell got, the real FluxWindow's actions
+    # (a child process), the command it sends, given to Flux.
     given = SCRATCH / "shell-state.json"
     given.write_text(json.dumps({"state": shell.states()[-1]}))
     proc = subprocess.run([PY, "-B", __file__, "--shell-side", str(given)], capture_output=True,
@@ -1080,8 +1080,8 @@ def test_in_process() -> None:
     if side.get("command"):
         shell.send(side["command"])
     resumed = wait(lambda: not watch.paused(T), 5)
-    done, err = J(jack.click(T, R['button "Press"']))
-    check("... sent to Jack by the shell: the tab handed back, the agent acting again",
+    done, err = J(flux.click(T, R['button "Press"']))
+    check("... sent to Flux by the shell: the tab handed back, the agent acting again",
           resumed and done is not None and done["agent"] == "driving", f"{err}")
 
     # ── take-over by a click on the mark ────────────────────────────────
@@ -1090,7 +1090,7 @@ def test_in_process() -> None:
     QTest.mouseClick(w.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      mg.center())
     pump(200)
-    _, e_next = J(jack.hover(T, R['button "Press"']))
+    _, e_next = J(flux.hover(T, R['button "Press"']))
     check("take-over by a click on the mark: paused, the click and its release reaching nothing",
           watch.paused(T) and events() == [] and e_next == f"the user took over tab {T}",
           f"{events()[:3]} {e_next}")
@@ -1099,7 +1099,7 @@ def test_in_process() -> None:
     # A pause that ends by itself; its clock starts again with the user's input.
     watch.release()
     protocol.PAUSE_S = 2.0
-    J(jack.click(T, R['button "Press"']))
+    J(flux.click(T, R['button "Press"']))
     QTest.keyClick(w.windowHandle(), Qt.Key.Key_Q)
     pump(1200)
     QTest.mouseClick(w.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
@@ -1114,11 +1114,11 @@ def test_in_process() -> None:
     wait(lambda: QApplication.activeWindow() is elsewhere, 3)
 
     # The user's dialog after a take-over.
-    J(jack.click(T, R['button "Press"']))
+    J(flux.click(T, R['button "Press"']))
     users.clear()
     QTimer.singleShot(700, lambda: (w.activateWindow(), QTest.keyClick(w.windowHandle(),
                                                                        Qt.Key.Key_Q)))
-    done, err = J(jack.click(T, R['button "Confirm"']), 20)
+    done, err = J(flux.click(T, R['button "Confirm"']), 20)
     pump(300)
     check("a dialog held when the user takes over: theirs then (shown as without the agent)",
           users == [("confirm", "Really?")] and watch.paused(T), f"{users} {err}")
@@ -1130,14 +1130,14 @@ def test_in_process() -> None:
     # ── the session's end ───────────────────────────────────────────────
     watch.release()
     protocol.QUIET_S = 1.0
-    J(jack.click(T, R['button "Press"']))
+    J(flux.click(T, R['button "Press"']))
     alive_at_half = (pump(500), watch.driving(T))[1]
     quiet_end = wait(lambda: not watch.driving(T), 3)
     hidden = not overlay.shown()
-    J(jack.go(T, url("/late")))
-    J(jack.wait(T, timeout=10), 15)
-    J(jack.click(T, x=10, y=10))
-    pending = client.start(jack.wait(T, selector="#late", timeout=10))
+    J(flux.go(T, url("/late")))
+    J(flux.wait(T, timeout=10), 15)
+    J(flux.click(T, x=10, y=10))
+    pending = client.start(flux.wait(T, selector="#late", timeout=10))
     pump(1800)
     during_wait = watch.driving(T)
     wait(lambda: pending.done(), 5)
@@ -1148,27 +1148,27 @@ def test_in_process() -> None:
           alive_at_half and quiet_end and hidden and during_wait and after_wait,
           f"{alive_at_half} {quiet_end} {hidden} {during_wait} {after_wait}")
     R = reload_act()
-    J(jack.click(T, R['button "Press"']))
-    released, _ = J(jack.release(T))
+    J(flux.click(T, R['button "Press"']))
+    released, _ = J(flux.release(T))
     check("release: the tab let go of, the overlay gone, the state says no hold",
           released == [T] and not watch.driving(T) and not overlay.shown()
           and w.state()["agent"][w.tabs.index(w.current_tab())] is None)
-    second, _ = J(jack.open(url("/page/Second"), window=w.id))
-    J(jack.wait(second.tab, timeout=10), 15)
-    J(jack.switch(T))
-    J(jack.click(T, R['button "Press"']))
-    J(jack.switch(second.tab))
+    second, _ = J(flux.open(url("/page/Second"), window=w.id))
+    J(flux.wait(second.tab, timeout=10), 15)
+    J(flux.switch(T))
+    J(flux.click(T, R['button "Press"']))
+    J(flux.switch(second.tab))
     switched = not watch.driving(T)
-    J(jack.click(second.tab, x=10, y=10))
-    J(jack.close_tab(second.tab))
+    J(flux.click(second.tab, x=10, y=10))
+    J(flux.close_tab(second.tab))
     closed = second.tab not in watch.sessions
     check("a session ends when the agent switches away from its tab, and with its tab closed",
           switched and closed)
 
     # ── a page inside a held dialog, closed under it ────────────────────
-    J(jack.switch(T))
-    extra, _ = J(jack.open(url("/act"), window=w.id))
-    J(jack.wait(extra.tab, timeout=10), 15)
+    J(flux.switch(T))
+    extra, _ = J(flux.open(url("/act"), window=w.id))
+    J(flux.wait(extra.tab, timeout=10), 15)
     RX = refs_of(extra.tab)
     view = next(t.view for t in w.tabs if t.id == extra.tab)
     w2 = browser.new_window()
@@ -1179,12 +1179,12 @@ def test_in_process() -> None:
     view2 = t2.view
 
     async def close_under():
-        out = {"held": await jack.click(extra.tab, RX['button "Confirm"'])}
-        out["looked"] = await jack.look(window=w.id, screenshot=True, within=5)
-        out["closed"] = await jack.close_tab(extra.tab)
-        out["held2"] = await jack.click(t2.id, R2['button "Confirm"'])
-        out["closed2"] = await jack.close_tab(t2.id)
-        out["tabs"] = await jack.tabs()
+        out = {"held": await flux.click(extra.tab, RX['button "Confirm"'])}
+        out["looked"] = await flux.look(window=w.id, screenshot=True, within=5)
+        out["closed"] = await flux.close_tab(extra.tab)
+        out["held2"] = await flux.click(t2.id, R2['button "Confirm"'])
+        out["closed2"] = await flux.close_tab(t2.id)
+        out["tabs"] = await flux.tabs()
         return out
     began = time.monotonic()
     under, err = J(close_under(), 40)
@@ -1201,7 +1201,7 @@ def test_in_process() -> None:
           and under["closed2"] == {"tab": t2.id, "window_closed": True}
           and all(t.tab != extra.tab for w_ in under["tabs"] for t in w_.tabs)
           and gone and not users, f"{err} {users}")
-    J(jack.switch(T))
+    J(flux.switch(T))
 
     # ── the log ─────────────────────────────────────────────────────────
     lines = [r.getMessage() for r in logs.records
@@ -1252,7 +1252,7 @@ def test_in_process() -> None:
     ok_blocks = all(isinstance(b, list) and b and all(x.get("type") == "text" for x in b)
                     for b in blocks.values() if b is not None)
     site = "Page content from 127.0.0.1 (written by the site, not by the user):"
-    check("every acting hand runs against Jack in the call's voice (Indigo here) and answers "
+    check("every acting hand runs against Flux in the call's voice (Indigo here) and answers "
           "text blocks", not errors and ok_blocks and voice_seen == "indigo", f"{errors}")
     prompt_blocks = blocks.get("prompt") or []
     check("the hands mark the page's words: what was clicked, the dialog's message, in a block "
@@ -1269,19 +1269,19 @@ def test_in_process() -> None:
           and "Let go of tab" in (blocks.get("release") or [{}])[0].get("text", ""),
           f"{go_text[:200]!r}")
     taken = None
-    J(jack.go(T, url("/act")))
-    J(jack.wait(T, timeout=10), 15)
+    J(flux.go(T, url("/act")))
+    J(flux.wait(T, timeout=10), 15)
     R = refs_of(T)
     call("browser_click", {"tab": T, "ref": R['button "Press"']})
     w.activateWindow()
     wait(lambda: QApplication.activeWindow() is w, 3)
     QTest.keyClick(w.windowHandle(), Qt.Key.Key_Q)
     _, taken = call("browser_click", {"tab": T, "ref": R['button "Press"']})
-    check("a hand on a tab the user took over: Jack's exact words as its error",
+    check("a hand on a tab the user took over: Flux's exact words as its error",
           taken == f"the user took over tab {T}", f"{taken}")
 
     # ── the end ─────────────────────────────────────────────────────────
-    client.run(jack.close())
+    client.run(flux.close())
     errors = [r.getMessage() for r in logs.records if r.levelno >= logging.ERROR]
     check("no errors logged by the browser during the run", not errors, f"{errors[:3]}")
     elsewhere.close()
@@ -1409,9 +1409,9 @@ def test_on_screen() -> None:
     browser = browser_app.Browser(profile, unattended=True)
     browser.listen(SOCK["browser"])
     client = Client(QTest.qWait)
-    jack = client.run(control.connect())
-    tab = client.run(jack.open(url("/act")))
-    client.run(jack.wait(tab.tab, timeout=15), 20)
+    flux = client.run(control.connect())
+    tab = client.run(flux.open(url("/act")))
+    client.run(flux.wait(tab.tab, timeout=15), 20)
     w = browser.windows[0]
     reader = Reader()
     wid = int(w.winId())
@@ -1428,7 +1428,7 @@ def test_on_screen() -> None:
         return frame, mark
 
     before, _ = pixels()
-    done = client.run(jack.click(tab.tab, x=80, y=40, voice="lilac"))
+    done = client.run(flux.click(tab.tab, x=80, y=40, voice="lilac"))
     QTest.qWait(500)
     frame, mark = pixels()
     lilac_px = int((np.abs(mark - lilac).max(-1) <= 40).sum()) if mark is not None else 0
@@ -1441,19 +1441,19 @@ def test_on_screen() -> None:
           and dark_px > mark.shape[0] * mark.shape[1] * 0.4,
           f"frame {frame.tolist() if frame is not None else None}, mark lilac {lilac_px} "
           f"dark {dark_px}")
-    shot = client.run(jack.screenshot(tab.tab))
+    shot = client.run(flux.screenshot(tab.tab))
     simg = decode_png(shot["png"])
     edge = rgb(simg.pixelColor(0, simg.height() // 2))
     check("... and a screenshot taken meanwhile has neither (the page's white at that edge)",
           near(edge, (255, 255, 255), 3), f"{edge}")
-    client.run(jack.release(tab.tab))
+    client.run(flux.release(tab.tab))
     QTest.qWait(500)
     after, _ = pixels()
     check("released: the frame gone from the window's pixels (the page's white again)",
           before is not None and after is not None and np.abs(after - 255).max() <= 3,
           f"before {before.tolist() if before is not None else None}, "
           f"after {after.tolist() if after is not None else None}")
-    client.run(jack.close())
+    client.run(flux.close())
     browser.shutdown()
     shiboken6.delete(browser)
     shiboken6.delete(profile)

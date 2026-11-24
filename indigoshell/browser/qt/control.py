@@ -814,7 +814,7 @@ class Requests:
             return
         deadline = time.monotonic() + FRAME_TIMEOUT_S
         while time.monotonic() < deadline:
-            painted = await job.read(tab.page, reader.expression("window.__jack.painted"),
+            painted = await job.read(tab.page, reader.expression("window.__flux.painted"),
                                      timeout=FRAME_TIMEOUT_S, quiet=True)
             if painted is None or painted >= n:
                 break
@@ -1394,7 +1394,7 @@ class Requests:
         did = _int(msg, "download")
         timeout = _seconds(msg, "timeout", protocol.WAIT_DEFAULT_S, protocol.WAIT_MAX_S)
         if self.browser.download(did) is None:
-            raise RequestError(f"no download {did} in this run of Jack (downloads lists them)")
+            raise RequestError(f"no download {did} in this run of Flux (downloads lists them)")
         began = time.monotonic()
         while True:
             now = self.browser.download(did)

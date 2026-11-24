@@ -1,4 +1,4 @@
-// Jack's page reader: what the agent reads of a page, and the numbers
+// Flux's page reader: what the agent reads of a page, and the numbers
 // (refs) it names elements by. Run by reader.py in the agent's isolated
 // world only, never the page's own: the page's scripts can see neither
 // this code nor the refs. Reading writes nothing to the page (no
@@ -6,24 +6,24 @@
 // part at the end does, for the agent's acting requests, what the user's
 // hands would: it scrolls an element into view, focuses a field, and
 // sets what no key can (a <select>'s option, a date). The clicks, keys
-// and wheel turns themselves are real input, sent by Jack as Qt events.
-// Every request sends this file again; it defines `window.__jack` once
+// and wheel turns themselves are real input, sent by Flux as Qt events.
+// Every request sends this file again; it defines `window.__flux` once
 // per document (the world starts empty with each new document, so the
 // refs last as long as the page load does).
 //
 // Frames (frames.py). Each frame's document has its own world and its own
-// `__jack`: Jack reads and acts in it the same way. The first call gives
-// the document its name (`__jack.frameName`, "f2"; "" in the main page),
+// `__flux`: Flux reads and acts in it the same way. The first call gives
+// the document its name (`__flux.frameName`, "f2"; "" in the main page),
 // which it keeps while it lasts, and the refs it hands out carry it
 // ("f2:14"). The reads say where each
 // frame element sits in what they read and which of the document's windows
 // it holds (`frameIndex`), and a frame says which of its parent's windows
-// it is (`whoami`): that pair is how Jack matches an element to its frame.
+// it is (`whoami`): that pair is how Flux matches an element to its frame.
 //
 // Kept to what Chromium 122 has (Qt 6.8's QtWebEngine).
 (() => {
 "use strict";
-if (window.__jack) return;
+if (window.__flux) return;
 
 const NAME_MAX = 100;            // characters of an element's name
 const VALUE_MAX = 80;            // ... of a field's value in the outline
@@ -52,12 +52,12 @@ function ref(el) {
 // A ref as the agent names it: the number, or "f2:14" in frame f2.
 function refOf(el) {
   const n = ref(el);
-  const f = window.__jack && window.__jack.frameName;
+  const f = window.__flux && window.__flux.frameName;
   return f ? `${f}:${n}` : n;
 }
 
 function refName(n) {
-  const f = window.__jack && window.__jack.frameName;
+  const f = window.__flux && window.__flux.frameName;
   return f ? `${f}:${n}` : String(n);
 }
 
@@ -288,7 +288,7 @@ function line(el, r) {
   let s = `[${refOf(el)}] ${r} ${quote(n)}`;
   if (r === "link" && el.hasAttribute("href")) s += " -> " + where(el.getAttribute("href"));
   if (r === "iframe") {
-    // Jack says what it read of the frame here (frames.py), by its window.
+    // Flux says what it read of the frame here (frames.py), by its window.
     const src = el.src || el.data || "";
     const index = frameIndex(el);
     s += (src ? " -> " + where(src) : "") + HOLE + (index === null ? "x" : index) + HOLE;
@@ -542,8 +542,8 @@ function imageAt(x, y) {
 let painted = 0;
 function frame() {
   const n = ++painted;
-  window.__jack.painted = 0;
-  requestAnimationFrame(() => requestAnimationFrame(() => { window.__jack.painted = n; }));
+  window.__flux.painted = 0;
+  requestAnimationFrame(() => requestAnimationFrame(() => { window.__flux.painted = n; }));
   return n;
 }
 
@@ -659,7 +659,7 @@ function point(o) {
                     "CSS px)");
   const hit = hitAt(x, y);
   if (hit && FRAME_TAGS.has(hit.tagName)) {
-    // Over a frame's page: Jack asks the frame what is there (frames.py).
+    // Over a frame's page: Flux asks the frame what is there (frames.py).
     const index = frameIndex(hit);
     if (index !== null) {
       const b = frameBox(hit);
@@ -722,7 +722,7 @@ function focusField(n) {
   return {what: describe(el), ...middle(el)};
 }
 
-// The middle of an element's visible part (or of its box), for Jack to
+// The middle of an element's visible part (or of its box), for Flux to
 // bring the frame it is in into view in the frames above.
 function middle(el) {
   const r = visibleRect(el);
@@ -811,10 +811,10 @@ function fileField(el) {
   return c && c.tagName === "INPUT" && c.type === "file" ? c : null;
 }
 
-// What `upload` clicks for ref n (Jack answers the chooser that opens):
+// What `upload` clicks for ref n (Flux answers the chooser that opens):
 // aim "element", n itself (an opener: a button, a drop zone, a label; or
 // the field, shown), "label" (a hidden field's shown label, its ref in
-// `label`), or "script" (a hidden field with no label shown: Jack lets
+// `label`), or "script" (a hidden field with no label shown: Flux lets
 // the page open a chooser with a key press, then clicks it here).
 function uploadTarget(n) {
   const el = target(n);
@@ -892,11 +892,11 @@ function whoami() {
       for (let i = 0; i < count; i++) if (parent[i] === window) { index = i; break; }
     }
   } catch (e) { /* no parent to ask */ }
-  return {index, count, url: location.href, name: window.__jack.frameName || ""};
+  return {index, count, url: location.href, name: window.__flux.frameName || ""};
 }
 
 function survey(what, o) {
-  return {me: whoami(), read: window.__jack[what](o)};
+  return {me: whoami(), read: window.__flux[what](o)};
 }
 
 // The frame's page in its element: where its (0, 0) is in this
@@ -955,7 +955,7 @@ function framePoint(o) {
 // dialogs, fixed boxes (a cookie banner, a chat bubble), text for screen
 // readers only, and boxes whose class or id says ads, sharing, comments,
 // newsletters and the like. A frame inside the content leaves a HOLE
-// where it sits, for Jack to fill (frames.py).
+// where it sits, for Flux to fill (frames.py).
 const ARTICLE_MIN = 200;          // characters an <article> or <main> needs to count
 const words = list => new RegExp(list.join("|"), "i");
 const UNLIKELY = words(["-ad-", "ai2html", "banner", "breadcrumb", "combx", "comment", "community",
@@ -1440,7 +1440,7 @@ function scrub(text, min) {
   return text;
 }
 
-window.__jack = {text, links, forms, outline, article, has, info, selection, imageAt, frame,
+window.__flux = {text, links, forms, outline, article, has, info, selection, imageAt, frame,
                  element, painted: 0, point, focusField, focused, fieldKind, choose, setValue,
                  scrollTo, scrolled, uploadTarget, fileClick, fileNames, whoami, survey,
                  framePoint, pageSize, tile, endTiles, hasSecrets, scrub, frameName: ""};

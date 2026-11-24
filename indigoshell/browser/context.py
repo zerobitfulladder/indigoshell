@@ -1,10 +1,10 @@
-"""Jack in the shell: the top bar's content for a focused browser window,
+"""Flux in the shell: the top bar's content for a focused browser window,
 and the launcher for its Ctrl+L, Ctrl+T and Ctrl+M.
 
 A browser window (`browser.qt`) connects to the shell's app service
-(applink/service.py) and announces itself as a "jack" window; the
-service gives it a `JackWindow`, which takes the state the browser
-pushes (protocol.py) into `JackContent`. While that window has focus the
+(applink/service.py) and announces itself as a "flux" window; the
+service gives it a `FluxWindow`, which takes the state the browser
+pushes (protocol.py) into `FluxContent`. While that window has focus the
 top bar's context area shows it (applink/context.py); the browser
 itself draws nothing of it.
 
@@ -35,7 +35,7 @@ browser window (protocol.KEYS, grabbed by the app service: applink/
 service.py); a single window (a sign-in popup, the inspector) keeps
 them. The press arrives here (`on_key`) with the keyboard: it is held
 past the key's release at once (`hold_keyboard`), and the shell's
-launcher opens (widgets/launcher.py, `open_launcher`) on Jack's addresses
+launcher opens (widgets/launcher.py, `open_launcher`) on Flux's addresses
 (services/addresses.py: Ctrl+L with the page's address as the query,
 selected; Ctrl+T empty) or its actions (a services/modes.Choices of "Add
 bookmark" and "Remove bookmark", the one that does not apply dimmed),
@@ -352,7 +352,7 @@ class Owner(Widget):
                   theme.color(self.color))
 
 
-class JackContent(Widget):
+class FluxContent(Widget):
     """Tabs and host in a row, and the progress line along the bottom
     edge: what the top bar shows for one browser window; for the agent's
     own window (`owner`, its voice), its name first."""
@@ -396,7 +396,7 @@ class JackContent(Widget):
 
 # ── one browser window ──────────────────────────────────────────────────
 
-class JackWindow(AppWindow):
+class FluxWindow(AppWindow):
     """One browser window: what it shows in the top bar, and its
     launcher."""
 
@@ -414,7 +414,7 @@ class JackWindow(AppWindow):
         self.keys = {} if single else dict(protocol.KEYS)
         agent = announce.get(protocol.AGENT)
         self.agent = protocol.voice_id(agent) if isinstance(agent, str) and agent else None
-        self.content = JackContent(owner=self.agent)
+        self.content = FluxContent(owner=self.agent)
         self.request = None             # the launcher mode last opened for this window
         self.state = protocol.state([], 0, 100, True, url="", bookmarked=False, find=None)
 

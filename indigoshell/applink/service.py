@@ -5,7 +5,7 @@ and the keys the shell takes from them.
 on the daemon's loop; each connection is one app window (`Link`), which
 announces itself first (protocol.py) and is then handed to an
 `AppWindow` of its kind, from the `kinds` the service was given
-(config_default: `{"jack": browser.context.JackWindow}`). A kind the
+(config_default: `{"flux": browser.context.FluxWindow}`). A kind the
 service does not know still gets a plain `AppWindow`: kept, answered,
 shown as nothing.
 
@@ -18,7 +18,7 @@ context area, applink/context.py) calls `follow`. A window manager that
 reparents would name its frame here instead of the app's window; qtile
 does not, and none other is supported.
 
-Keys. A kind's class names chords (`AppWindow.keys`: Jack's Ctrl+L,
+Keys. A kind's class names chords (`AppWindow.keys`: Flux's Ctrl+L,
 Ctrl+T, Ctrl+M) that the shell answers itself. On the announce the
 service grabs each on that window, passively (Display.grab_keys), once
 per combination of the lock modifiers so Caps Lock and Num Lock change
@@ -33,7 +33,7 @@ press on. The press reaches the window's `on_key`; keys pressed while
 the shell still holds the keyboard for the window arrive on the app's
 window too (routed here by `Display.on`, for that window only) and
 reach `on_typed`. `hold_keyboard` keeps the keyboard past the chord's
-release, until whatever answers it (Jack's launcher) takes it with a
+release, until whatever answers it (Flux's launcher) takes it with a
 grab of its own, or `release_keyboard`.
 
 The grabs go when the connection closes or the service stops; the X
@@ -43,7 +43,7 @@ another client holds already on the window (BadAccess) is said once as a
 warning, and that chord is left to the app.
 
 Placing. An app may ask for a window it has made but not yet shown to
-go to a workspace before it maps (protocol `place`): Jack's window for
+go to a workspace before it maps (protocol `place`): Flux's window for
 the agent, which works on a workspace of its own, never the one the user
 is looking at. The service sets the window's `_NET_WM_DESKTOP` (EWMH's
 "desktop", qtile's group by index) and reads it back before it answers
@@ -71,7 +71,7 @@ Lifecycle. A connection that closes (the app window closed, the app
 quit, or it replaced its X window and announced again on a new
 connection) drops its `AppWindow`. `stop()` (the daemon stopping or
 reloading) closes the socket and every connection; each app shows its
-own state if the shell stays away (Jack after a few seconds, so that a
+own state if the shell stays away (Flux after a few seconds, so that a
 reload, which is back sooner, never makes its page jump; a reload says
 so first, `restarting`, and the app waits longer still) and connects
 again to the next daemon.
@@ -266,7 +266,7 @@ class AppService:
     windows on, which of those windows has focus, and the keys the shell
     takes from them.
 
-    `kinds` maps an app kind ("jack") to its `AppWindow` subclass.
+    `kinds` maps an app kind ("flux") to its `AppWindow` subclass.
     `path` and `display` are for tests, which run it on a socket and an
     X connection of their own; the daemon's are used otherwise.
     """
@@ -288,7 +288,7 @@ class AppService:
         self._followers: list = []
         # What shows the focused window: the context area tells the
         # service where it is, for things placed against the top bar
-        # (Jack's launcher). See `bar_bottom`.
+        # (Flux's launcher). See `bar_bottom`.
         self.context = None
         self.grabs: dict[int, Grabs] = {}           # by app X window
         self._refused: set[tuple[str, str]] = set()     # (kind, chord) said once
@@ -705,7 +705,7 @@ class AppService:
         window = self.window_for(wid)
         if window is not None or self.display is None:
             return window
-        # A dialog of an app's (Jack's address prompt, a permission
+        # A dialog of an app's (Flux's address prompt, a permission
         # question) is the app's too: one round trip, once per window.
         parent = self._transient.get(wid)
         if parent is None:

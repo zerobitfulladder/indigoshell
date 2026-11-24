@@ -1,7 +1,7 @@
 """Frames: a page's iframes, read and acted in, through QWebEngineFrame (Qt 6.8).
 
 protocol.py ("Frames") has the rules as the agent meets them; this is
-how Jack keeps them.
+how Flux keeps them.
 
 **The tree.** `page.mainFrame()` and each frame's `children()` give the
 page's frames, every one, cross-origin ones (in another renderer
@@ -16,7 +16,7 @@ not read, and say so.
 **Names.** A frame's document is "f<N>": the first call into it offers
 it the tab's next number (Tab.next_frame) and it keeps that name in its
 own world (reader.js `frameName`) as long as it lasts, its refs carrying
-it; Jack never keeps a frame object to know it again, it asks (`whoami`
+it; Flux never keeps a frame object to know it again, it asks (`whoami`
 answers the name). So a name is found again by asking every frame, a
 frame that loads another document gets a new name with its new refs (an
 old "f2:14" then says no frame f2 is there), and no number is given
@@ -27,7 +27,7 @@ already wastes no number: the counter moves past the ones taken only.
 holds a frame, and the obvious clues mislead: name() is the frame's
 window.name, which its own script may change; url() is where the frame
 is now, not its element's src; size() is its viewport; a position it
-has none. So Jack matches by identity, asked of both sides: the frame,
+has none. So Flux matches by identity, asked of both sides: the frame,
 in its world, finds which of its parent's windows it is (reader.js
 `whoami`: `parent[i] === window`, comparing windows being allowed across
 origins); the parent's read says, for each frame element, which of its
@@ -49,7 +49,7 @@ page for the part asked (that is the answer when the page has no
 frames, one call as before frames were read) and in every frame for
 nothing but its size and where its own frames sit ("survey": items or
 characters, and marks: after which outline line, at which character of
-the article, or after everything for text, links and forms). Jack then
+the article, or after everything for text, links and forms). Flux then
 lays the page out as one sequence (each frame's content where its mark
 is, with the lines that say which frame it is) and asks each document
 in a second pass for just the part of it the window `offset`, `length`
@@ -261,11 +261,11 @@ def _status(node: Node, index: str) -> str:
     child = node.child(int(index))
     if child is None:
         if node.frame is None:
-            return " (not read: Jack reads frames with Qt 6.8 on)"
+            return " (not read: Flux reads frames with Qt 6.8 on)"
         if _root_of(node).skipped:
             return (f" (not read: past the {protocol.FRAMES_MAX} frames, "
-                    f"{protocol.FRAMES_DEPTH} deep, Jack reads at once)")
-        return " (not read: Jack found no frame for it)"
+                    f"{protocol.FRAMES_DEPTH} deep, Flux reads at once)")
+        return " (not read: Flux found no frame for it)"
     if child.why:
         return (f" (frame {child.name}, not read: {child.why})" if child.name
                 else f" (not read: {child.why})")
@@ -306,7 +306,7 @@ def _around(child: Node, what: str, mark: dict | None, indent: int) -> list:
 
 def _segments(node: Node, what: str, indent: int = 0) -> list:
     """The document's read laid out with its frames': _Doc parts, and
-    what Jack says between them (str for characters, [lines] for the
+    what Flux says between them (str for characters, [lines] for the
     outline)."""
     info = node.info or {}
     total = info.get("total") or 0
@@ -426,7 +426,7 @@ async def path(job, tab, n: int, kept) -> list[Node]:
     and place at once. FrameError: gone, kept, or not answering."""
     page = tab.page
     if not supported(page):
-        raise FrameError("frames are reached with Qt 6.8 on; this Jack runs an older Qt")
+        raise FrameError("frames are reached with Qt 6.8 on; this Flux runs an older Qt")
     tree = _tree(tab)
     answers = await job.many([(f, reader.script("whoami", frame=offer)) for (f, _p), offer
                               in zip(tree, _offers(tab, len(tree)))], ANSWER_S) if tree else []

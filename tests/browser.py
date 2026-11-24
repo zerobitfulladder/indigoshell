@@ -409,7 +409,7 @@ def test_pure() -> None:
     check("every message has its type: one without, or with one that is no string, is no "
           "message; the announce, a download, a launcher, a command, the instance's open",
           [protocol.decode(x) for x in lines] == [{"type": "attached"}, None, None, None, None]
-          and protocol.announce(7, False) == {"type": "announce", "app": "jack", "wid": 7,
+          and protocol.announce(7, False) == {"type": "announce", "app": "flux", "wid": 7,
                                               "single": False}
           and protocol.download("f", "done", 100) == {"type": "download", "name": "f",
                                                       "state": "done", "percent": 100}
@@ -814,8 +814,8 @@ def test_in_process() -> None:
     conn = shell.conns[0] if shell.conns else None
     wait(lambda: conn and conn.states())
     first = conn.msgs[0] if conn and conn.msgs else {}
-    check("announce first: {type: announce, app: jack, wid, single: false} (a main window)",
-          first == {"type": "announce", "app": "jack", "wid": int(w.winId()), "single": False},
+    check("announce first: {type: announce, app: flux, wid, single: false} (a main window)",
+          first == {"type": "announce", "app": "flux", "wid": int(w.winId()), "single": False},
           f"{first}")
     states = conn.states() if conn else []
     check("then the state, in the documented shape, every key there",
@@ -920,7 +920,7 @@ def test_in_process() -> None:
     if inspector is not None:
         inspector.close()
     check("the inspector (a single window) announces itself {single: true}: the shell leaves "
-          "its keys to it", told and said == {"type": "announce", "app": "jack", "wid": wid,
+          "its keys to it", told and said == {"type": "announce", "app": "flux", "wid": wid,
                                                "single": True}, f"{said}")
 
     # ── identity ────────────────────────────────────────────────────────
@@ -1054,7 +1054,7 @@ def test_in_process() -> None:
         return json.loads(js(tab.page, "JSON.stringify(window.keys)") or "null")
 
     def clear_keys():
-        """And the window active again, as a person's focused Jack is: the
+        """And the window active again, as a person's focused Flux is: the
         dialogs above take the activation, and an inactive window here
         hands its keys to no widget."""
         w.activateWindow()

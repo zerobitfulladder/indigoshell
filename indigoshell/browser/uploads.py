@@ -1,6 +1,6 @@
 """What the agent may hand a page as files: the refused places, in one list.
 
-Pure Python (os, the shell's `core.paths`): Jack's side of the `upload`
+Pure Python (os, the shell's `core.paths`): Flux's side of the `upload`
 request (browser/qt/control.py) asks `refusal` of every path before a
 page gets anything, and so may anyone who wants to know the rule.
 
@@ -28,8 +28,8 @@ The places (`places()`), each under the home:
 and, where the XDG directories are set elsewhere, the same under them
 ($XDG_DATA_HOME/keyrings, $XDG_DATA_HOME/rbw, $XDG_CACHE_HOME/rbw,
 $XDG_CONFIG_HOME/rbw, $XDG_CONFIG_HOME/mozilla); the shell's own data
-directory (Jack's profile with its cookies, its history, everything
-else the shell keeps there), Jack's cache, and the shell's connections
+directory (Flux's profile with its cookies, its history, everything
+else the shell keeps there), Flux's cache, and the shell's connections
 (`<config_dir>/connections`).
 
 The names (`secret_name`): `id_*` not ending in `.pub` (id_rsa,
@@ -85,8 +85,8 @@ def places(home_dir: str | None = None) -> list[tuple[str, str]]:
     for var, what in ENV_PLACES:
         if os.environ.get(var):
             out.append((os.environ[var], what))
-    out += [(data_dir(), "the shell's data (Jack's profile, cookies and history)"),
-            (os.path.join(cache_dir(), "browser"), "Jack's cache"),
+    out += [(data_dir(), "the shell's data (Flux's profile, cookies and history)"),
+            (os.path.join(cache_dir(), "browser"), "Flux's cache"),
             (os.path.join(config_dir(), "connections"), "the shell's connections")]
     return out
 

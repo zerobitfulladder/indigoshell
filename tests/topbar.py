@@ -17,21 +17,21 @@
    on EGL's connection is logged once and the process lives; the same
    error kills a process whose guard was taken away (so 1 means
    something); EGL drawing to a window destroyed under it.
-3. Jack: the repository's desktop file, its install into a scratch
+3. Flux: the repository's desktop file, its install into a scratch
    data dir, and the launcher's own catalog code finding, showing and
    launching it, and rescanning when it appears.
-4. Jack's content for the top bar, painted off screen and read back as
+4. Flux's content for the top bar, painted off screen and read back as
    pixels: the tabs (the current one strong, the rest muted, long titles
    shortened with an ellipsis to fit), the host with the not-secure
    padlock and the bookmark glyph, find while typing (the caret) and
    while stepping (none), "no matches" in the error colour, the load
    line along the bottom edge.
 5. The app service on a socket of its own: the announce and the answer
-   both ways (Jack; an app kind it does not know; an announce naming no
+   both ways (Flux; an app kind it does not know; an announce naming no
    kind; windows that are no window; lines that are no message, types
-   it does not know), focus followed between two Jack windows, a dialog
+   it does not know), focus followed between two Flux windows, a dialog
    of one of them and a window that is no app's (the context area
-   empty), a Jack window in the background changing without repainting
+   empty), a Flux window in the background changing without repainting
    the bar, a connection lost and back, the service stopped and
    started; the root listener path; the key grabs going with the
    connection and the service, and made again on the next announce,
@@ -40,7 +40,7 @@
 5b. The keys the shell takes, on real unmapped windows of the test's
    own, the service's X connection wrapped in a recorder (keyboard
    grabs recorded and never sent): GrabKey for Ctrl+L, Ctrl+T, Ctrl+M on
-   a main Jack window, by the keycodes the keymap gives (an oracle read
+   a main Flux window, by the keycodes the keymap gives (an oracle read
    on another connection), once per combination of Caps Lock and Num
    Lock, asynchronous, and none on a single window; another client's
    grab of one chord refused (the warning once, that chord left to the
@@ -49,7 +49,7 @@
    order, a release ignored); a keymap change (MappingNotify) re-making
    the grabs; the grabs released with the window, not when an older
    connection for the same window goes.
-6. Where Jack's launcher drops from: centred on its window, its top at
+6. Where Flux's launcher drops from: centred on its window, its top at
    the top bar's bottom edge, or at the window's own top edge with no
    bar over it (real unmapped windows of the test's own; no launcher).
 7. The top bar's spec, as computed data: anchors, size, layer, the
@@ -62,7 +62,7 @@
 8. On screen: the real `AppService` on an X connection, loop and socket
    of its own, and the real browser (`--unattended`: floating in the
    corner, never focused) on sockets and XDG directories of its own.
-   The browser announces itself as a main Jack window, and the service
+   The browser announces itself as a main Flux window, and the service
    grabs its keys (another client's grab of them refused, so X itself
    says so); its state reaches the service; the context area draws it;
    the browser's window has nothing of the shell's in it, no child
@@ -441,19 +441,19 @@ def test_xlib_guard(scratch: Path) -> None:
           code == 0 and any("survived" in ln for ln in lines), f"exit {code}; {lines}")
 
 
-# ── 3. Jack ─────────────────────────────────────────────────────────────
+# ── 3. Flux ─────────────────────────────────────────────────────────────
 
 def test_desktop(scratch: Path) -> None:
     from indigoshell.browser import desktop
     from indigoshell.services import apps, desktop_entry
     from indigoshell.services.icons import Icons
 
-    section("3. Jack: the desktop file, its install, the launcher's catalog")
+    section("3. Flux: the desktop file, its install, the launcher's catalog")
     text = Path(desktop.TEMPLATE).read_text()
     values = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
     home = os.path.expanduser("~")
-    check("repository copy: Name=Jack, Exec through the CLI, the window class, a stock icon",
-          values.get("Name") == "Jack" and values.get("Exec") == f"{CLI} browser %U"
+    check("repository copy: Name=Flux, Exec through the CLI, the window class, a stock icon",
+          values.get("Name") == "Flux" and values.get("Exec") == f"{CLI} browser %U"
           and values.get("StartupWMClass") == desktop.WM_CLASS == f"{APP}-browser"
           and values.get("Icon") == "web-browser" and values.get("Terminal") == "false"
           and values.get("Categories") == "Network;WebBrowser;", f"Exec={values.get('Exec')}")
@@ -483,14 +483,14 @@ def test_desktop(scratch: Path) -> None:
     os.utime(data / "applications", (t0 + 2, t0 + 2))   # mtime granularity
     rescanned = catalog.refresh()
     names = [a.entry.name for a in catalog.apps]
-    check("the catalog rescans on its next open and shows Jack (visible(): its program runs)",
-          before == [] and rescanned and names == ["Jack"]
+    check("the catalog rescans on its next open and shows Flux (visible(): its program runs)",
+          before == [] and rescanned and names == ["Flux"]
           and desktop_entry.visible(entry, desktop_entry.current_desktops()), f"{names}")
-    hits = [r.app.entry.name for r in catalog.search("jack")]
+    hits = [r.app.entry.name for r in catalog.search("flux")]
     browse = [r.app.entry.name for r in catalog.search("browser")]
-    check("searching 'jack' and 'browser' finds it", hits[:1] == ["Jack"] and "Jack" in browse)
+    check("searching 'flux' and 'browser' finds it", hits[:1] == ["Flux"] and "Flux" in browse)
     with_mime = desktop.render(mime_types=True)
-    check("install(mime_types=True) would keep the MIME types (for when Jack is to be the default)",
+    check("install(mime_types=True) would keep the MIME types (for when Flux is to be the default)",
           "MimeType=text/html;" in with_mime)
     odd = ["/tmp/a dir/py$thon", "/x/main\\.py", "50%"]
     line = desktop.render(command=odd).split("Exec=", 1)[1].splitlines()[0]
@@ -577,7 +577,7 @@ def hex_rgb(hex_: str) -> tuple[int, int, int]:
     return tuple(int(hex_[i:i + 2], 16) for i in (1, 3, 5))
 
 
-def jack_state(titles, current=0, *, host="127.0.0.1", secure=False, loading=False,
+def flux_state(titles, current=0, *, host="127.0.0.1", secure=False, loading=False,
                progress=100, bookmarked=False, find=None) -> dict:
     from indigoshell.browser import protocol
     tabs = [protocol.tab(t, host, loading and i == current) for i, t in enumerate(titles)]
@@ -585,22 +585,22 @@ def jack_state(titles, current=0, *, host="127.0.0.1", secure=False, loading=Fal
                           bookmarked=bookmarked, find=find)
 
 
-# ── 4. Jack's content ───────────────────────────────────────────────────
+# ── 4. Flux's content ───────────────────────────────────────────────────
 
 def test_content(scratch: Path) -> None:
     from indigoshell import theme
     from indigoshell.applink.service import AppService
     from indigoshell.browser import protocol
-    from indigoshell.browser.context import (FIND_FG, HOST_FG, INSECURE_FG, JackWindow,
+    from indigoshell.browser.context import (FIND_FG, HOST_FG, INSECURE_FG, FluxWindow,
                                              NO_MATCHES_FG, PROGRESS_FG, PROGRESS_THICK,
                                              TAB_CURRENT_FG, TAB_FG, fit_tabs)
 
-    section("4. Jack's content for the top bar, painted off screen")
-    service = AppService({"jack": JackWindow}, path="/nonexistent")
+    section("4. Flux's content for the top bar, painted off screen")
+    service = AppService({"flux": FluxWindow}, path="/nonexistent")
     W, H = 1600, theme.TOP_BAR_HEIGHT
 
-    def jack():
-        j = JackWindow(Line(service), 0x400001, {"single": False})
+    def flux():
+        j = FluxWindow(Line(service), 0x400001, {"single": False})
         host = Host()
         j.content.attach(host)
         return j, host
@@ -608,8 +608,8 @@ def test_content(scratch: Path) -> None:
     def in_rect(img, x, w):
         return img[:, max(0, int(x)):int(x + w) + 1]
 
-    j, host = jack()
-    j.on_message(jack_state(["Alpha", "Beta", "Gamma"]))
+    j, host = flux()
+    j.on_message(flux_state(["Alpha", "Beta", "Gamma"]))
     img = paint(j.content, W, H)
     save(scratch / "content-tabs.png", img)
     tabs = j.content.tabs.layout()
@@ -632,15 +632,15 @@ def test_content(scratch: Path) -> None:
           f"{line} px")
 
     host.damaged.clear()
-    j.on_message(jack_state(["Alpha", "Beta", "Gamma"]))
+    j.on_message(flux_state(["Alpha", "Beta", "Gamma"]))
     same = list(host.damaged)
-    j.on_message(jack_state(["Alpha", "Beta", "Gamma"], 1))
+    j.on_message(flux_state(["Alpha", "Beta", "Gamma"], 1))
     check("the same state again damages nothing; a change does", same == [] and host.damaged,
           f"{len(same)} then {len(host.damaged)} damage(s)")
 
     titles = [f"A rather long page title number {i} about nothing in particular"
               for i in range(1, 13)]
-    j.on_message(jack_state(titles, 5))
+    j.on_message(flux_state(titles, 5))
     img = paint(j.content, 900, H)
     save(scratch / "content-many.png", img)
     tabs = j.content.tabs.layout()
@@ -664,7 +664,7 @@ def test_content(scratch: Path) -> None:
           and max(x + w for _i, _t, x, w in few) <= 120
           and all(t == str(i + 1) for i, t, *_ in few), f"{[t for _i, t, *_ in few]}")
 
-    j.on_message(jack_state(["Alpha"], secure=True, host="example.org", bookmarked=True))
+    j.on_message(flux_state(["Alpha"], secure=True, host="example.org", bookmarked=True))
     img = paint(j.content, W, H)
     h = j.content.host.layout()
     glyph = count_color(in_rect(img, h["bookmark_x"], h["bookmark_w"] - 1), HOST_FG)
@@ -674,7 +674,7 @@ def test_content(scratch: Path) -> None:
     save(scratch / "content-bookmarked.png", img)
 
     def find_line(f):
-        j.on_message(jack_state(["Alpha", "Beta"], find=f))
+        j.on_message(flux_state(["Alpha", "Beta"], find=f))
         img_ = paint(j.content, W, H)
         return img_, {p["role"]: p for p in j.content.tabs.layout()}
 
@@ -700,7 +700,7 @@ def test_content(scratch: Path) -> None:
     img, parts = find_line(protocol.find("cats", None, None, True))
     check("before the page has counted: no count", "count" not in parts)
 
-    j.on_message(jack_state(["Alpha", "Beta"], loading=True, progress=40))
+    j.on_message(flux_state(["Alpha", "Beta"], loading=True, progress=40))
     img = paint(j.content, W, H)
     save(scratch / "content-loading.png", img)
     rows = [count_color(img[-1 - i:H - i], PROGRESS_FG, 6) for i in range(PROGRESS_THICK)]
@@ -710,7 +710,7 @@ def test_content(scratch: Path) -> None:
     check("loading at 40%: the load line along the bottom edge, 40% of the width, nothing just "
           "above it", all(abs(r - 0.4 * W) <= 2 for r in rows) and above == 0
           and j.content.progress == 40, f"{rows} px in the bottom rows of {W}, {above} above")
-    j.on_message(jack_state(["Alpha", "Beta"], loading=False, progress=100))
+    j.on_message(flux_state(["Alpha", "Beta"], loading=False, progress=100))
     img = paint(j.content, W, H)
     check("done: the line gone", count_color(img[-PROGRESS_THICK:], PROGRESS_FG, 6) == 0)
 
@@ -839,7 +839,7 @@ async def test_service(scratch: Path) -> None:
     from indigoshell.applink.service import AppService, AppWindow
     from indigoshell.backend.x11 import Display
     from indigoshell.browser import protocol
-    from indigoshell.browser.context import JackWindow, TAB_CURRENT_FG
+    from indigoshell.browser.context import FluxWindow, TAB_CURRENT_FG
 
     section("5. the app service: announces both ways, focus, losses, key grabs going and coming")
     rec = Records("indigoshell.applink.service", "indigoshell.browser.context")
@@ -857,7 +857,7 @@ async def test_service(scratch: Path) -> None:
     C = xw.make(transient_for=A)            # a dialog of A's
     L, CTRL = keycodes_of(xw.conn, "l")[0], xp.ModMask.Control
     sock = os.path.join(runtime_dir(), f"{APP}-tbt-{os.getpid()}-apps.sock")
-    service = AppService({"jack": JackWindow}, path=sock, display=display)
+    service = AppService({"flux": FluxWindow}, path=sock, display=display)
     service.show_launcher = lambda mode, placement: False      # no key is pressed here
     apps: list[App] = []
     try:
@@ -874,18 +874,18 @@ async def test_service(scratch: Path) -> None:
                 a.send(m)
             return a
 
-        a = await app(protocol.announce(A, False), jack_state(["Alpha", "Beta"]))
+        a = await app(protocol.announce(A, False), flux_state(["Alpha", "Beta"]))
         got = await a.answer()
         wa = await until(lambda: service.window_for(A) is not None
                          and len(service.window_for(A).state["tabs"]) == 2 and service.window_for(A))
-        check("a main Jack window: answered {type: attached}; kept as a jack window with its "
+        check("a main Flux window: answered {type: attached}; kept as a flux window with its "
               "state; Ctrl+L, Ctrl+T, Ctrl+M grabbed on it (X refuses another client the same "
               "grab of Ctrl+L)",
-              got == ATTACHED and isinstance(wa, JackWindow) and wa.kind == "jack"
+              got == ATTACHED and isinstance(wa, FluxWindow) and wa.kind == "flux"
               and not wa.single and A in service.grabs
               and sorted(set(service.grabs[A].chords.values())) == ["actions", "address", "new_tab"]
               and held_by_another(xw.conn, A, L, CTRL), f"{got}")
-        b = await app(protocol.announce(B, False), jack_state(["Gamma"]))
+        b = await app(protocol.announce(B, False), flux_state(["Gamma"]))
         await b.answer()
         wb = await until(lambda: service.window_for(B))
 
@@ -913,17 +913,17 @@ async def test_service(scratch: Path) -> None:
         service.set_active(B)
         img = paint(ctx, 1600, theme.TOP_BAR_HEIGHT)
         texts = [t["text"] for t in wb.content.tabs.layout()]
-        check("focus on the other Jack window: its tabs; the first's content let go (no window)",
+        check("focus on the other Flux window: its tabs; the first's content let go (no window)",
               ctx.shown is wb.content and texts == ["1 Gamma"]
               and all(w_.window is None for w_ in wa.content.walk())
               and count_color(img, TAB_CURRENT_FG) > 20, f"{texts}")
         host.damaged.clear()
-        a.send(jack_state(["Alpha", "Beta", "Delta"]))
+        a.send(flux_state(["Alpha", "Beta", "Delta"]))
         await until(lambda: len(wa.state["tabs"]) == 3)
         quiet = list(host.damaged)
-        b.send(jack_state(["Gamma", "Epsilon"]))
+        b.send(flux_state(["Gamma", "Epsilon"]))
         await until(lambda: len(wb.state["tabs"]) == 2)
-        check("a Jack window in the background changing: the bar not repainted for it; the "
+        check("a Flux window in the background changing: the bar not repainted for it; the "
               "focused one changing: repainted", quiet == [] and bool(host.damaged),
               f"{len(quiet)} then {len(host.damaged)}")
 
@@ -933,7 +933,7 @@ async def test_service(scratch: Path) -> None:
               service.focused is None and ctx.shown is None
               and share_of(img, hex_rgb(theme.BAR_BG)) == 1.0)
         service.set_active(C)
-        check("focus on a dialog of the first Jack window's (transient for it): that window's",
+        check("focus on a dialog of the first Flux window's (transient for it): that window's",
               service.focused is wa and ctx.shown is wa.content)
         service.set_active(0)
         check("no window with focus: empty", ctx.shown is None)
@@ -946,7 +946,7 @@ async def test_service(scratch: Path) -> None:
               bool(gone) and ctx.shown is None and service.focused is None
               and wa.closed and wb in service.windows and A not in service.grabs
               and not held_by_another(xw.conn, A, L, CTRL))
-        a2 = await app(protocol.announce(A, False), jack_state(["Alpha again"]))
+        a2 = await app(protocol.announce(A, False), flux_state(["Alpha again"]))
         await a2.answer()
         wa2 = await until(lambda: service.window_for(A))
         check("... and back (a new connection, as after its X window was replaced): shown again, "
@@ -954,7 +954,7 @@ async def test_service(scratch: Path) -> None:
               wa2 is not None and wa2 is not wa and ctx.shown is wa2.content
               and wa2.content.tabs.titles == ["Alpha again"]
               and held_by_another(xw.conn, A, L, CTRL))
-        a3 = await app(protocol.announce(A, False), jack_state(["Alpha third"]))
+        a3 = await app(protocol.announce(A, False), flux_state(["Alpha third"]))
         await a3.answer()
         wa3 = await until(lambda: service.window_for(A) is not wa2 and service.window_for(A))
         a2.close()
@@ -964,10 +964,10 @@ async def test_service(scratch: Path) -> None:
               wa3 is not None and service.grabs.get(A) is not None
               and service.grabs[A].window is wa3 and held_by_another(xw.conn, A, L, CTRL))
 
-        e = await app(protocol.announce(E, True), jack_state(["Popup"]))
+        e = await app(protocol.announce(E, True), flux_state(["Popup"]))
         got = await e.answer()
         we = await until(lambda: service.window_for(E))
-        check("a single Jack window (a sign-in popup, the inspector): attached and shown, no key "
+        check("a single Flux window (a sign-in popup, the inspector): attached and shown, no key "
               "grabbed on it (X lets another client take Ctrl+L there)",
               got == ATTACHED and we is not None and we.single and E not in service.grabs
               and not held_by_another(xw.conn, E, L, CTRL))
@@ -987,26 +987,26 @@ async def test_service(scratch: Path) -> None:
 
         bad = []
         for wid in (0, display.root, "x", True, 1 << 30, display.conn.generate_id()):
-            z = await app(protocol.message("announce", app="jack", wid=wid, single=False))
+            z = await app(protocol.message("announce", app="flux", wid=wid, single=False))
             bad.append(await z.answer(0.3))
         for msg in (protocol.message("announce", wid=xw.make(), single=False),
                     protocol.message("announce", app="", wid=xw.make())):
             z = await app(msg)
             bad.append(await z.answer(0.3))
-        early = await app(jack_state(["Early"]), protocol.announce(xw.make(), False))
+        early = await app(flux_state(["Early"]), protocol.announce(xw.make(), False))
         got_early = await early.answer()
         check("announces that are no window (0, the root, not a number, too large, one of the "
               "shell's own) or name no kind: ignored, no answer; a state before the announce: "
               "ignored", bad == [None] * 8 and got_early == ATTACHED
               and not any(w_.content and w_.content.tabs.titles == ["Early"]
-                          for w_ in service.windows if isinstance(w_, JackWindow)),
+                          for w_ in service.windows if isinstance(w_, FluxWindow)),
               f"{bad}")
 
         mark = len(rec.records)
         b.w.write(b'not json\n{"no": "type"}\n[1, 2]\n')
         b.send(protocol.message("from-the-future", x=1))
-        b.send(protocol.message("announce", app="jack", wid=B, single=False))
-        b.send(jack_state(["Gamma", "Epsilon", "Zeta"]))
+        b.send(protocol.message("announce", app="flux", wid=B, single=False))
+        b.send(flux_state(["Gamma", "Epsilon", "Zeta"]))
         await until(lambda: len(wb.state["tabs"]) == 3)
         said = [m for m in rec.at_least(logging.DEBUG, mark)
                 if "no message" in m or "not understood" in m or "announced again" in m]
@@ -1031,7 +1031,7 @@ async def test_service(scratch: Path) -> None:
               and not held_by_another(xw.conn, B, L, CTRL), f"{notes} {eofs}")
         service.start()
         await until(lambda: service.listening, 2)
-        b2 = await app(protocol.announce(B, False), jack_state(["Gamma back"]))
+        b2 = await app(protocol.announce(B, False), flux_state(["Gamma back"]))
         got = await b2.answer()
         wb2 = await until(lambda: service.window_for(B))
         check("started again: apps announce again, focus as it was (still on that window), the "
@@ -1100,7 +1100,7 @@ def test_grabs(scratch: Path) -> None:
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
     from indigoshell.browser import protocol
-    from indigoshell.browser.context import JackWindow
+    from indigoshell.browser.context import FluxWindow
     from indigoshell.services.addresses import AddressMode
     from indigoshell.services.modes import Choices
 
@@ -1122,13 +1122,13 @@ def test_grabs(scratch: Path) -> None:
     num = numlock_mask(other)
     locks = sorted({0, LOCK, num, LOCK | num})
     codes = {c: keycodes_of(other, c) for c in "ltmyo"}
-    service = AppService({"jack": JackWindow}, path="/nonexistent", display=display)
+    service = AppService({"flux": FluxWindow}, path="/nonexistent", display=display)
     service.running = True                  # started, as far as the keys go (no socket here)
     display.add_keymap_listener(service._keymap_changed)
     typed, shown = [], []
 
     class Launcher:
-        """What Jack's side needs of the launcher: shows a mode, takes
+        """What Flux's side needs of the launcher: shows a mode, takes
         keys for it, holds the keyboard (or not)."""
         window = types.SimpleNamespace(keyboard_grabbed=True)
         modes: list = []
@@ -1156,9 +1156,9 @@ def test_grabs(scratch: Path) -> None:
 
     service.show_launcher = show
 
-    def jack(wid, announce):
+    def flux(wid, announce):
         line = Line(service)
-        window = JackWindow(line, wid, announce)
+        window = FluxWindow(line, wid, announce)
         service.added(window)
         return window, line
 
@@ -1169,11 +1169,11 @@ def test_grabs(scratch: Path) -> None:
         display.dispatch(ev)
 
     try:
-        wa, la = jack(A, protocol.announce(A, False))
-        wa.on_message(jack_state(["Alpha"], host="a.example"))
+        wa, la = flux(A, protocol.announce(A, False))
+        wa.on_message(flux_state(["Alpha"], host="a.example"))
         grabs = core.of("grab")
         want = {(A, codes[c][0], CTRL | lock) for c in "ltm" for lock in locks}
-        check("a main Jack window announced: GrabKey on its window for Ctrl+L, Ctrl+T, Ctrl+M, by "
+        check("a main Flux window announced: GrabKey on its window for Ctrl+L, Ctrl+T, Ctrl+M, by "
               "the keycodes the keymap gives (read on another connection), once per combination "
               "of Caps Lock and Num Lock, owner_events off, asynchronous for both devices",
               {(w_, k, m) for _, w_, k, m, *_ in grabs} == want and len(grabs) == len(want)
@@ -1192,8 +1192,8 @@ def test_grabs(scratch: Path) -> None:
                       if w_ != A))
 
         n = len(core.calls)
-        ws, _ = jack(S, protocol.announce(S, True))
-        wn, _ = jack(N, protocol.message("announce", app="jack", wid=N))
+        ws, _ = flux(S, protocol.announce(S, True))
+        wn, _ = flux(N, protocol.message("announce", app="flux", wid=N))
         check("a single window's announce (a popup, the inspector), and one that says neither: no "
               "grab at all, no routing", core.calls[n:] == [] and not ws.keys and not wn.keys
               and S not in service.grabs and N not in service.grabs
@@ -1203,8 +1203,8 @@ def test_grabs(scratch: Path) -> None:
         for wid in (E, F):
             other.core.GrabKeyChecked(False, wid, CTRL, codes["m"][0], ASYNC, ASYNC).check()
         mark, n = len(rec.records), len(core.calls)
-        we, _ = jack(E, protocol.announce(E, False))
-        wf, _ = jack(F, protocol.announce(F, False))
+        we, _ = flux(E, protocol.announce(E, False))
+        wf, _ = flux(F, protocol.announce(F, False))
         warned = rec.at_least(logging.WARNING, mark)
         check("another client already holding Ctrl+M on a window: one warning (not again for the "
               "next such window), Ctrl+M left to the app (the lock combinations that went "
@@ -1322,15 +1322,15 @@ def test_placement() -> None:
 
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
-    from indigoshell.browser.context import JackWindow
+    from indigoshell.browser.context import FluxWindow
     from indigoshell.window import Placement
 
-    section("6. where Jack's launcher drops from")
+    section("6. where Flux's launcher drops from")
     display = Display()
     xw = Windows()
     P = xw.make(300, 150, 1000, 700)
-    service = AppService({"jack": JackWindow}, path="/nonexistent", display=display)
-    jw = JackWindow(Line(service), P, {"single": False})
+    service = AppService({"flux": FluxWindow}, path="/nonexistent", display=display)
+    jw = FluxWindow(Line(service), P, {"single": False})
     alone = jw.placement()
 
     def bar(x, y, w, h):
@@ -1395,7 +1395,7 @@ def test_spec(scratch: Path) -> None:
     from indigoshell.applink.context import AppContext
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Monitor
-    from indigoshell.browser.context import JackWindow, TAB_CURRENT_FG
+    from indigoshell.browser.context import FluxWindow, TAB_CURRENT_FG
     from indigoshell.core.paths import config_dir
     from indigoshell.widgets.label import Label
     from indigoshell.window import Anchor, Layer, Window
@@ -1421,7 +1421,7 @@ def test_spec(scratch: Path) -> None:
     first = list(top.content.children())[0]
     check("its row: the context area first, taking the room, on the service in SERVICES",
           isinstance(first, AppContext) and first.flex == 1 and first.service is cd.APPS
-          and cd.APPS in cd.SERVICES and cd.APPS.kinds == {"jack": JackWindow})
+          and cd.APPS in cd.SERVICES and cd.APPS.kinds == {"flux": FluxWindow})
 
     class FakeDisplay:
         screen = types.SimpleNamespace(root_depth=24)
@@ -1469,7 +1469,7 @@ def test_spec(scratch: Path) -> None:
           and bpartial2[10:12] == [1920, 4479], f"{geo2} {partial2}")
 
     # The whole bar painted, with a widget of the user's at the right.
-    svc = AppService({"jack": JackWindow}, path="/nonexistent")
+    svc = AppService({"flux": FluxWindow}, path="/nonexistent")
     spec = cd.top_bar(Label("MINE", color=theme.CYAN_BRIGHT), apps=svc)
     fd = FakeDisplay(one, (2560, 1440))
     win = Window(fd, spec)
@@ -1477,8 +1477,8 @@ def test_spec(scratch: Path) -> None:
     win.content_rect = skia.Rect.MakeWH(W, H)
     win.content_root, win.width, win.height = (0, 0, W, H), W, H
     spec.content.attach(win)
-    jw = JackWindow(Line(svc), 0x400001, {"single": False})
-    jw.on_message(jack_state(["Alpha", "Beta"], loading=True, progress=50))
+    jw = FluxWindow(Line(svc), 0x400001, {"single": False})
+    jw.on_message(flux_state(["Alpha", "Beta"], loading=True, progress=50))
     svc.added(jw)
     svc.set_active(0x400001)
     win._layout_content()
@@ -1488,7 +1488,7 @@ def test_spec(scratch: Path) -> None:
     save(scratch / "topbar-whole.png", img)
     ctx, label, chip = list(spec.content.children())
     h = jw.content.host.layout()
-    check("the whole bar off screen: Jack's tabs from the left, its host just before the user's "
+    check("the whole bar off screen: Flux's tabs from the left, its host just before the user's "
           "widget, the widget at the right end, the load line under the context area only",
           ctx.shown is jw.content and jw.content.tabs.layout()[0]["x"] < 10
           and h["x"] + h["w"] <= label.rect.left() and label.rect.right() >= W - 10
@@ -1523,7 +1523,7 @@ def test_spec(scratch: Path) -> None:
           "WINDOWS, so the top bar is there after the bottom bar, its context on the one app "
           "service in its SERVICES",
           bool(out) and out["names"][:2] == ["bar", cd.TOP_BAR] and out["context"]
-          and out["same_service"] and out["kinds"] == ["jack"] and before == after,
+          and out["same_service"] and out["kinds"] == ["flux"] and before == after,
           f"exit {p.returncode}; {out.get('names', [])[:3]} ... {len(out.get('names', []))} "
           f"windows; {p.stderr.strip()[-200:] if p.returncode else ''}")
     check("... and a widget of its own added the documented way: the context area then it, the "
@@ -1645,7 +1645,7 @@ async def on_screen(scratch: Path) -> None:
     from indigoshell.applink.service import AppService
     from indigoshell.backend import gl
     from indigoshell.backend.x11 import Display
-    from indigoshell.browser.context import HOST_FG, INSECURE_FG, JackWindow, TAB_CURRENT_FG, TAB_FG
+    from indigoshell.browser.context import HOST_FG, INSECURE_FG, FluxWindow, TAB_CURRENT_FG, TAB_FG
 
     section("8. on screen: the real service and the real browser")
     rec = Records("indigoshell.applink.service", "indigoshell.browser.context",
@@ -1674,7 +1674,7 @@ async def on_screen(scratch: Path) -> None:
     loop.add_reader(display.fd, pump)
     x = Reader()
     backend = gl.backend(display)
-    service = AppService({"jack": JackWindow}, path=sock, display=display)
+    service = AppService({"flux": FluxWindow}, path=sock, display=display)
     # No daemon and no launcher here (no key is pressed: that would take
     # input injected into the display); a launcher wanted is answered
     # `prompt`, the browser's own dialog, none in an unattended run.
@@ -1686,8 +1686,8 @@ async def on_screen(scratch: Path) -> None:
     ctx.attach(Host(display))
     browser = None
 
-    def jacks():
-        return [w for w in service.windows if isinstance(w, JackWindow)]
+    def fluxes():
+        return [w for w in service.windows if isinstance(w, FluxWindow)]
 
     def titles(w):
         return [t["title"] for t in w.state["tabs"]]
@@ -1731,12 +1731,12 @@ async def on_screen(scratch: Path) -> None:
                 [PY, str(REPO / "main.py"), "browser", "--unattended", f"{base}/painted",
                  f"{base}/page/Beta", f"{base}/page/Gamma"],
                 cwd=REPO, env=benv, stdout=err, stderr=err)
-        jw = await until(lambda: next((w for w in jacks() if titles(w) == ["Painted", "Beta",
+        jw = await until(lambda: next((w for w in fluxes() if titles(w) == ["Painted", "Beta",
                                                                             "Gamma"]
                                        and idle(w)), None), 40)
-        check("the browser announced its window as a main Jack window; its three tabs reached "
-              "the service", jw is not None and jw.kind == "jack" and not jw.single,
-              f"{[titles(w) for w in jacks()]}")
+        check("the browser announced its window as a main Flux window; its three tabs reached "
+              "the service", jw is not None and jw.kind == "flux" and not jw.single,
+              f"{[titles(w) for w in fluxes()]}")
         if jw is None:
             return
         top = jw.wid
@@ -1747,7 +1747,7 @@ async def on_screen(scratch: Path) -> None:
               "another client the same grabs", all(held.values()), f"{held}")
         await asyncio.sleep(0.5)
         check("one window, never replaced after showing; nothing of the shell's inside it",
-              [w.wid for w in jacks()] == [top] and x.children(top) == [],
+              [w.wid for w in fluxes()] == [top] and x.children(top) == [],
               f"children {x.children(top)}")
         viewable = await shown(top)
         page = await rows_until(top, PAINTED_BG, 10)
@@ -1801,7 +1801,7 @@ async def on_screen(scratch: Path) -> None:
               f"line {took:.2f} s after the stop")
         service.start()
         t0 = time.monotonic()
-        back = await until(lambda: any(w.wid == top for w in jacks()), 5)
+        back = await until(lambda: any(w.wid == top for w in fluxes()), 5)
         gone = await rows_until(top, PAINTED_BG, 5)
         regrabbed = bool(back) and held_by_another(x.conn, top, chord["l"], CTRL)
         check("the shell back: the browser announces again (its retry is every 2 s while the "
@@ -1811,11 +1811,11 @@ async def on_screen(scratch: Path) -> None:
         n_gl = backend is not None
         browser.send_signal(signal.SIGINT)
         code = browser.wait(20)
-        dropped = await until(lambda: not jacks(), 5)
+        dropped = await until(lambda: not fluxes(), 5)
         check("the browser quits: exit 0, its window dropped by the service", code == 0
               and bool(dropped), f"exit {code}; GL here {n_gl}")
         bad = rec.at_least(logging.WARNING)
-        check("no warnings or errors from the service, Jack's side, or the display", not bad,
+        check("no warnings or errors from the service, Flux's side, or the display", not bad,
               f"{bad[:3]}")
     finally:
         if browser is not None and browser.poll() is None:

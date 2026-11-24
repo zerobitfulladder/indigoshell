@@ -1,8 +1,8 @@
 """Launcher modes: lists the launcher shows instead of the apps.
 
 MOD+D opens the launcher (widgets/launcher.py) on the installed apps. A
-mode replaces that list for one open: Jack's addresses
-(services/addresses.py), Jack's actions (a `Choices`). Picking a row
+mode replaces that list for one open: Flux's addresses
+(services/addresses.py), Flux's actions (a `Choices`). Picking a row
 may close the launcher, refuse (the row flashes and the launcher stays),
 or bring the next step, another mode, in the same window: Escape and
 Ctrl+H go back a step, and close it from the first.

@@ -8,7 +8,7 @@ at `socket_path()` (`<APP>-apps-<uid>.sock` in the runtime directory),
 the app connecting. One JSON object per line, both ways, each with its
 `type`: a side dispatches on it, ignores a type it does not know (with
 one debug line), and ignores keys it does not use. What a kind of app
-says after its announce is its own (Jack's: browser/protocol.py).
+says after its announce is its own (Flux's: browser/protocol.py).
 
 App -> shell
     announce    {"type": "announce", "app": <kind>, "wid": <X window>, ...}
@@ -16,7 +16,7 @@ App -> shell
                 names the kind, whose class on the shell's side decides
                 how the top bar draws the window and which keys the shell
                 takes from it (applink/service.py); a kind may say more
-                here (Jack: browser/protocol.py).
+                here (Flux: browser/protocol.py).
 
 App -> shell, any time after the announce
     place       {"type": "place", "with"?: <X window>}

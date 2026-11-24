@@ -15,7 +15,7 @@ window; no URL asks it for a new window) and exits.
     --log-level L    debug, info, warning, error (default: $<APP>_LOG_LEVEL or info);
                      the log is <state_dir>/browser.log, and the terminal
                      when stderr is one (logs.py)
-    --install        put Jack, the browser's entry, in the launcher
+    --install        put Flux, the browser's entry, in the launcher
                      (browser/desktop.py) and exit
 
 The shell's CLI runs this as `indigoshell browser [url ...]` (app.py),
@@ -65,7 +65,7 @@ def main(argv: list[str], prog: str | None = None) -> int:
                              "with a browser running, do nothing")
     parser.add_argument("--log-level", choices=shell_log.LEVELS)
     parser.add_argument("--install", action="store_true",
-                        help="put Jack, the browser's entry, in the launcher "
+                        help="put Flux, the browser's entry, in the launcher "
                              "($XDG_DATA_HOME/applications) and exit; the default "
                              "browser is left as it is")
     args = parser.parse_args(argv)

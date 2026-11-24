@@ -7,8 +7,8 @@ opens — so it differs from them only in what is inside.
 
 What it lists: the installed apps, unless the open came with a mode
 (services/modes.py) that lists something else instead, for that open
-only: Jack's addresses (Ctrl+L, Ctrl+T) and actions (Ctrl+M), opened by
-the shell's side of Jack (browser/context.py) through `open_launcher`.
+only: Flux's addresses (Ctrl+L, Ctrl+T) and actions (Ctrl+M), opened by
+the shell's side of Flux (browser/context.py) through `open_launcher`.
 A mode's row can lead to a further list, a step, in the same window.
 
     type                filter (see services/apps.py for the apps' ranking)
@@ -19,7 +19,7 @@ A mode's row can lead to a further list, a step, in the same window.
                         plain Return does that too when nothing matches;
                         in a mode, take the typed text itself
     Shift+Delete        take the selected row out, where the mode lets it
-                        (a bookmark in Jack's addresses): the list follows
+                        (a bookmark in Flux's addresses): the list follows
                         in place, the query stays; refused with the flash
                         anywhere else. Plain Delete edits the query.
     Escape, Ctrl+H      back one step; close from the first

@@ -1,4 +1,4 @@
-"""The agent reading deeper in Jack: the article, frames, its own scripts, whole pages.
+"""The agent reading deeper in Flux: the article, frames, its own scripts, whole pages.
 
     .venv/bin/python tests/browser_read.py          off screen, about a minute
 
@@ -480,7 +480,7 @@ def test_in_process() -> None:
     browser = browser_app.Browser(profile, unattended=False)
     browser.listen(SOCK["browser"])
     client = Client(QTest.qWait)
-    jack = client.run(control.connect())
+    flux = client.run(control.connect())
     J = lambda coro, t=30.0: client.attempt(coro, t)      # noqa: E731
     elsewhere = QWidget()
     elsewhere.resize(200, 100)
@@ -507,11 +507,11 @@ def test_in_process() -> None:
 
     def load(path, host="127.0.0.1", tab=None, settle=600):
         if tab is None:
-            got, err = J(jack.open(url(path, host)))
+            got, err = J(flux.open(url(path, host)))
             tab = got.tab if got else None
         else:
-            J(jack.go(tab, url(path, host)))
-        J(jack.wait(tab, timeout=15), 20)
+            J(flux.go(tab, url(path, host)))
+        J(flux.wait(tab, timeout=15), 20)
         QTest.qWait(settle)
         return tab
 
@@ -519,7 +519,7 @@ def test_in_process() -> None:
         """Every part of a read, offset by offset: the whole, and the parts."""
         whole, parts, offset = [] if what not in ("text", "article") else "", 0, 0
         while True:
-            page, err = J(jack.read(tab, what, offset=offset, **kw))
+            page, err = J(flux.read(tab, what, offset=offset, **kw))
             if err or page is None:
                 return None, err
             whole += page[what]
@@ -530,7 +530,7 @@ def test_in_process() -> None:
 
     # ── article ─────────────────────────────────────────────────────────
     t = load("/article")
-    page, err = J(jack.read(t, "article"))
+    page, err = J(flux.read(t, "article"))
     md = page["article"] if page else ""
     want = ["# Moths at night",
             "Moths find their way by the *moon*, or so the **old story** goes. See "
@@ -552,7 +552,7 @@ def test_in_process() -> None:
           whole == md and parts == -(-len(md) // 40), f"{parts} parts")
 
     t2 = load("/docs", tab=t)
-    page, err = J(jack.read(t2, "article"))
+    page, err = J(flux.read(t2, "article"))
     md = page["article"] if page else ""
     check("article: a docs page: the fenced code keeping its indents, its blank line and its "
           "language, inline code (a backtick in one), a definition; the table of contents and "
@@ -563,7 +563,7 @@ def test_in_process() -> None:
           and "Intro" not in md and "Version 2.1" not in md
           and page["found"] == "the page's <main>", f"{err or ''}\n{md}")
     load("/table", tab=t)
-    page, err = J(jack.read(t, "article"))
+    page, err = J(flux.read(t, "article"))
     md = page["article"] if page else ""
     check("article: a page with neither <article> nor <main>: the densest block, a table with "
           "its header, a pipe kept in a cell, a spanned cell; menu, ads and footer left out",
@@ -573,7 +573,7 @@ def test_in_process() -> None:
           and not any(w in md for w in ("Home", "Ad one", "Footer words"))
           and page["found"] == "the densest block (<div#content.post-body>)", f"{err or ''}\n{md}")
     load("/article-frame", tab=t)
-    page, err = J(jack.read(t, "article"))
+    page, err = J(flux.read(t, "article"))
     md = page["article"] if page else ""
     i_before = md.find("Before the frame")
     i_head = md.find("[frame f")
@@ -588,7 +588,7 @@ def test_in_process() -> None:
 
     # ── frames ──────────────────────────────────────────────────────────
     tf = load("/frames", tab=t, settle=1200)
-    page, err = J(jack.read(tf, "outline"))
+    page, err = J(flux.read(tf, "outline"))
     lines = page["outline"] if page else []
     text_all = "\n".join(lines)
     names = {}
@@ -643,14 +643,14 @@ def test_in_process() -> None:
           f"{kept_line!r} {kept_entry}")
     check("frames: a hidden frame's content left out; with `hidden`, in",
           "Inner 4" not in text_all and "Inner 4" in "\n".join(
-              (J(jack.read(tf, "outline", hidden=True))[0] or {}).get("outline", [])))
+              (J(flux.read(tf, "outline", hidden=True))[0] or {}).get("outline", [])))
     check("frames: the read lists each frame met: its name, where it is, its address, read or not",
           len(met) >= 9 and all(set(f) >= {"frame", "in", "url", "read"} for f in met)
           and any(f["in"] == names.get("Nest") and "n=3" in f["url"] for f in met), f"{met}")
     whole, parts = full(tf, "outline", length=3)
     check("frames: the outline in parts across the frames, the parts making the whole",
           whole == lines and parts == -(-len(lines) // 3), f"{parts} parts, {len(lines)} lines")
-    text_page, _ = J(jack.read(tf, "text"))
+    text_page, _ = J(flux.read(tf, "text"))
     text = text_page["text"] if text_page else ""
     same = names.get("Same", "?")
     check("frames: text: the page's, then each frame's between the lines naming it",
@@ -661,7 +661,7 @@ def test_in_process() -> None:
     whole, parts = full(tf, "text", length=97)
     check("frames: text in parts, the parts making the whole", whole == text and parts > 3,
           f"{parts} parts")
-    links_page, _ = J(jack.read(tf, "links"))
+    links_page, _ = J(flux.read(tf, "links"))
     links = links_page["links"] if links_page else []
     by_text = {ln["text"]: ln for ln in links}
     check("frames: links: a frame's with refs naming their frame and absolute addresses",
@@ -669,7 +669,7 @@ def test_in_process() -> None:
           and by_text.get("Link 2", {}).get("url") == url("/page/Link2", "localhost")
           and str(by_text.get("Link 2", {}).get("ref", "")).startswith("f")
           and "Link 7" not in by_text, f"{list(by_text)}")
-    forms_page, _ = J(jack.read(tf, "forms"))
+    forms_page, _ = J(flux.read(tf, "forms"))
     forms_json = json.dumps(forms_page["forms"] if forms_page else [])
     check("frames: forms: a frame's form and fields with their refs; a password there never read",
           '"Login 2"' in forms_json and "framepw" not in forms_json
@@ -682,77 +682,77 @@ def test_in_process() -> None:
             else None
 
     r1 = ref_in("Same", 'button "Press 1"')
-    done, err = J(jack.click(tf, r1, voice="lilac"))
+    done, err = J(flux.click(tf, r1, voice="lilac"))
     check("act in a frame by ref: same origin, trusted, at the frame's point plus its element's "
           "(border and padding) in the page", done is not None and clicked(1) == "hit 1|true"
           and (done["x"], done["y"]) == (85, 165) and done["what"].startswith(f"[{r1}] button"),
           f"{err} {done and (done['x'], done['y'], done['what'])} {clicked(1)}")
     r2 = ref_in("Cross", 'button "Press 2"')
-    done, err = J(jack.click(tf, r2, voice="lilac"))
+    done, err = J(flux.click(tf, r2, voice="lilac"))
     check("act in a frame by ref: cross origin", done is not None and clicked(2) == "hit 2|true"
           and (done["x"], done["y"]) == (415, 155), f"{err} {clicked(2)}")
     r3 = ref_in("Deep", 'button "Press 3"')
-    done, err = J(jack.click(tf, r3, voice="lilac"))
+    done, err = J(flux.click(tf, r3, voice="lilac"))
     check("act in a frame by ref: a cross-origin frame inside a frame", done is not None
           and clicked(3) == "hit 3|true" and (done["x"], done["y"]) == (95, 395),
           f"{err} {done and (done['x'], done['y'])} {clicked(3)}")
     rf = ref_in("Cross", 'textbox "Field 2"')
-    done, err = J(jack.type_text(tf, "hello frame", ref=rf, voice="lilac"))
+    done, err = J(flux.type_text(tf, "hello frame", ref=rf, voice="lilac"))
     f2 = frame_of(tf, "n=2")
     check("type into a field in a cross-origin frame by its ref",
           done is not None and js(f2, "document.getElementById('f').value") == "hello frame",
           f"{err}")
-    done, err = J(jack.fill(tf, [{"ref": ref_in("Same", 'textbox "Field 1"'), "value": "filled"}],
+    done, err = J(flux.fill(tf, [{"ref": ref_in("Same", 'textbox "Field 1"'), "value": "filled"}],
                             voice="lilac"))
     f1 = frame_of(tf, "n=1")
     check("fill a field in a frame", done is not None and done["fields"][0]["ok"]
           and js(f1, "document.getElementById('f').value") == "filled", f"{err} {done}")
     js(f2, "document.getElementById('b').textContent = 'Press 2'")
-    done, err = J(jack.click(tf, x=415, y=155, voice="lilac"))
+    done, err = J(flux.click(tf, x=415, y=155, voice="lilac"))
     check("a point over a frame: acted on in the frame, what is there named with its frame ref",
           done is not None and done["what"].startswith(f"[{r2}] button")
           and clicked(2) == "hit 2|true", f"{err} {done and done['what']}")
     r5 = ref_in("Low", 'button "Press 5"')
     page_main = tab_of(tf).page
-    done, err = J(jack.click(tf, r5, voice="lilac"))
+    done, err = J(flux.click(tf, r5, voice="lilac"))
     scrolled = js(page_main, "scrollY")
     check("a frame below the fold: scrolled into view in the page, then clicked",
           done is not None and clicked(5) == "hit 5|true" and scrolled and scrolled > 1000
           and 0 <= done["y"] <= 800, f"{err} scrollY {scrolled}")
     js(page_main, "scrollTo(0, 0)")
     QTest.qWait(100)
-    done, err = J(jack.scroll(tf, to=r5, voice="lilac"))
+    done, err = J(flux.scroll(tf, to=r5, voice="lilac"))
     check("scroll to an element in a frame: the frame brought into view in the page",
           done is not None and (js(page_main, "scrollY") or 0) > 1000, f"{err}")
     js(page_main, "scrollTo(0, 0)")
     QTest.qWait(100)
     r6 = ref_in("Under", 'button "Press 6"')
-    done, err = J(jack.click(tf, r6, voice="lilac"))
+    done, err = J(flux.click(tf, r6, voice="lilac"))
     check("a covered frame: refused, nothing clicked, the answer naming what covers it",
           done is None and err and "whose element is covered" in err and "Overlay" in err
           and clicked(6) == "Press 6|undefined", f"{err}")
-    done, err = J(jack.click(tf, x=755, y=355, voice="lilac"))
+    done, err = J(flux.click(tf, x=755, y=355, voice="lilac"))
     check("a point over the kept site's frame: refused with the kept words",
           done is None and err == protocol.kept("kept.localhost"), f"{err}")
     js(f1, "window.__before = 1; location.reload()")
     wait(lambda: js(f1, "String(window.__before)") == "undefined"
          and js(f1, "document.readyState") == "complete", 5)
-    done, err = J(jack.click(tf, r1, voice="lilac"))
+    done, err = J(flux.click(tf, r1, voice="lilac"))
     check("a frame's refs go with its document (it reloaded, and is named anew)",
           done is None and err and f"no frame {r1.split(':')[0]} in this page now" in err,
           f"{err}")
-    lines = (J(jack.read(tf, "outline"))[0] or {}).get("outline", [])
+    lines = (J(flux.read(tf, "outline"))[0] or {}).get("outline", [])
     renamed = next((ln for ln in lines if ' iframe "Same"' in ln), "")
     check("... and read again, it has a new name, its refs with it",
           "(frame f" in renamed and f"(frame {r1.split(':')[0]})" not in renamed, renamed)
-    J(jack.release(tf))
+    J(flux.release(tf))
 
     # ── js ──────────────────────────────────────────────────────────────
     tj = load("/js", tab=t, settle=800)
     pj = tab_of(tj).page
 
     def run(code, **kw):
-        return J(jack.js(tj, code, voice="lilac", **kw), 40)
+        return J(flux.js(tj, code, voice="lilac", **kw), 40)
 
     done, err = run("document.title")
     check("js: one line, an expression: its value", done is not None
@@ -812,7 +812,7 @@ return out;"""
                         "typeof window.open, !!indexedDB, !!caches, !!navigator.credentials, "
                         "document.getElementById('pw').value, document.getElementById('pw').type,"
                         " !!document.getElementById('child').contentWindow, "
-                        "typeof window.__jackJs, typeof FormData.prototype.constructor, "
+                        "typeof window.__fluxJs, typeof FormData.prototype.constructor, "
                         "new FormData(document.getElementById('login')).get('pw')])")
     check("js: the page's own scripts keep them all: its cookie, localStorage, sessionStorage, "
           "open, indexedDB, caches, credentials, the password's value and type, the frame's "
@@ -827,7 +827,7 @@ return out;"""
           and json.loads(done["result"] or "null") == {"mirror": "(password)",
                                                        "raw": "(password)!"}
           and "ter2" not in (done["result"] or ""), f"{err} {done and done['result']}")
-    outline, _ = J(jack.read(tj, "outline"))
+    outline, _ = J(flux.read(tj, "outline"))
     check("js: the reader's world untouched by it: the outline reads, the password as (password)",
           outline is not None and any('textbox "" = (password)' in ln or "= (password)" in ln
                                       for ln in outline["outline"]))
@@ -847,7 +847,7 @@ return out;"""
     check("js: a promise past its time: pending, answered at once after it",
           done is not None and done.get("pending") and done["result"] is None and took < 3,
           f"{err} {took:.1f} s")
-    J(jack.js(tj, "window.HTMLInputElement = function () {}; return 1", voice="lilac"))
+    J(flux.js(tj, "window.HTMLInputElement = function () {}; return 1", voice="lilac"))
     # Its own call may answer anything (its last statement is no answer Qt
     # can pass); what matters is the next one.
     hoisted, err_h = run("}); function Object() { return {}; } (() => {")
@@ -863,16 +863,16 @@ return out;"""
     mutations = js(pj, "window.__mutations")
     check("js: the page saw no mutation from the guard or the reads", mutations == 0,
           f"{mutations}")
-    J(jack.go(tj, url("/page/Start")))        # no password field: nothing to scrub
-    J(jack.wait(tj, timeout=10), 15)
+    J(flux.go(tj, url("/page/Start")))        # no password field: nothing to scrub
+    J(flux.wait(tj, timeout=10), 15)
     done, err = run("location.href = '/page/Went'; return 1")
-    J(jack.wait(tj, timeout=10), 15)
+    J(flux.wait(tj, timeout=10), 15)
     check("js: a navigation it starts said (navigated)", done is not None and done["navigated"]
           and done["result"] == "1", f"{err} {done and done.get('navigated')}")
     load("/js", tab=tj, settle=400)
     done, err = run("const v = document.getElementById('pw').getAttribute('data-mirror'); "
                     "location.href = '/page/Gone'; return v")
-    J(jack.wait(tj, timeout=10), 15)
+    J(flux.wait(tj, timeout=10), 15)
     check("js: an answer the page left before it was checked: scrubbed or withheld, never the "
           "password", done is not None and (done["result"] == '"(password)"'
                                             or (done.get("withheld") and done["result"] is None)),
@@ -880,12 +880,12 @@ return out;"""
     tk = load("/page/Before")             # the agent opens no kept site: the page goes there
     js(tab_of(tk).page, f"location.href = {json.dumps(url('/js', 'kept.localhost'))}")
     wait(lambda: tab_of(tk).host() == "kept.localhost" and not tab_of(tk).busy(), 10)
-    _, err_kept = J(jack.js(tk, "1"))
-    _, err_hidden = J(jack.js(tj, "1"))       # behind the kept tab in its window
+    _, err_kept = J(flux.js(tk, "1"))
+    _, err_hidden = J(flux.js(tj, "1"))       # behind the kept tab in its window
     check("js: refused on a kept site, and on a tab not showing",
           err_kept == protocol.kept("kept.localhost")
           and err_hidden == protocol.not_showing(tj), f"{err_kept} | {err_hidden}")
-    J(jack.switch(tj))
+    J(flux.switch(tj))
     kept_tab = tab_of(tk)
     # The user's to close: the agent's close is refused there too.
     next(w for w in browser.windows if kept_tab in w.tabs).close_tab(kept_tab)
@@ -893,7 +893,7 @@ return out;"""
     check("the log: the scripts said (ran, answered), never their code",
           any("agent: js tab" in m for m in said) and not any(MARKER in m for m in said)
           and not any("ter2" in m for m in said))
-    J(jack.release())
+    J(flux.release())
 
     # ── full-page screenshots ───────────────────────────────────────────
     tt = load("/tall?h=3000", tab=tj, settle=400)
@@ -901,7 +901,7 @@ return out;"""
     js(pt, "scrollTo(0, 700)")
     QTest.qWait(200)
     sheets_before = js(pt, "document.adoptedStyleSheets.length")
-    shot, err = J(jack.screenshot(tt, full=True), 60)
+    shot, err = J(flux.screenshot(tt, full=True), 60)
     tiles = shot["tiles"] if shot else []
     vh = shot["viewport_height"] if shot else 0
     height = shot["page_height"] if shot else 0
@@ -934,7 +934,7 @@ return out;"""
     check("full: the scroll put back, no sheet left, no mutation the page saw",
           after == [700, sheets_before, 0], f"{after} (sheets before {sheets_before})")
     load("/tall?h=12000", tab=tt, settle=300)
-    shot2, err = J(jack.screenshot(tt, full=True), 60)
+    shot2, err = J(flux.screenshot(tt, full=True), 60)
     check("full: a page past six tiles: six, and more below said",
           shot2 is not None and len(shot2["tiles"]) == protocol.SHOT_TILES_MAX and shot2["more"]
           and [t_["y"] for t_ in shot2["tiles"]] == [i * shot2["viewport_height"]
@@ -948,7 +948,7 @@ return out;"""
 
     load("/article", tab=tt)
     blocks, err = call("browser_read", {"tab": tt, "what": "article"})
-    check("hands: browser_read article: Jack's words (where it was found), then the site's words "
+    check("hands: browser_read article: Flux's words (where it was found), then the site's words "
           "marked, the Markdown", blocks is not None and len(blocks) == 2
           and "found in the page's <article>" in blocks[0]["text"]
           and blocks[1]["text"].startswith("Page content from 127.0.0.1 (written by the site")

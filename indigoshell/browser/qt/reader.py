@@ -11,7 +11,7 @@ world of that frame (frames.py), its refs named after the frame.
 
 The script worlds of a page, by number:
     0  the MainWorld: the page's own; identity.py's navigator script
-    1  the ApplicationWorld: Jack's own (find's selection clearing)
+    1  the ApplicationWorld: Flux's own (find's selection clearing)
     2  the scrollbars' sheet (profile.py)
     3  the agent's reading and acting (WORLD, here)
     4  the agent's own scripts, behind their guard (script.py)
@@ -45,7 +45,7 @@ from PySide6.QtGui import QImage
 
 from indigoshell.browser import protocol
 
-# The agent's isolated world: not the page's (MainWorld, 0), not Jack's
+# The agent's isolated world: not the page's (MainWorld, 0), not Flux's
 # own (ApplicationWorld, 1), not the first one for user scripts (2).
 WORLD = 3
 
@@ -57,8 +57,8 @@ def script(fn: str, *args, frame: str = "") -> str:
     its `fn(*args)` and answers JSON text. `frame`: the name ("f2") a
     frame's document takes if it has none yet (frames.py); its refs carry
     the name it has."""
-    call = f"window.__jack.{fn}({', '.join(json.dumps(a) for a in args)})"
-    return (SOURCE + "\n(() => { try { window.__jack.frameName = window.__jack.frameName || "
+    call = f"window.__flux.{fn}({', '.join(json.dumps(a) for a in args)})"
+    return (SOURCE + "\n(() => { try { window.__flux.frameName = window.__flux.frameName || "
             + json.dumps(frame) + "; return JSON.stringify({ok: true, value: " + call
             + "}); } catch (e) { return JSON.stringify({ok: false, error: "
             "String(e && e.message || e)}); } })()")

@@ -1,9 +1,9 @@
-"""Jack: the browser's entry in the launcher, and installing it.
+"""Flux: the browser's entry in the launcher, and installing it.
 
 Pure Python (no Qt, no X), so `indigoshell browser --install` never
 loads either.
 
-`jack.desktop`, next to this file, is the entry as the repository keeps
+`flux.desktop`, next to this file, is the entry as the repository keeps
 it: no path, no user, `Exec=<CLI> browser %U`, the browser's window
 class, a stock icon, and the web MIME types so that it can be made the
 default browser.
@@ -39,7 +39,7 @@ import sys
 
 from indigoshell.core.naming import APP, CLI
 
-TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jack.desktop")
+TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "flux.desktop")
 DESKTOP_ID = f"{APP}-browser.desktop"
 WM_CLASS = f"{APP}-browser"                 # browser/qt/window.py's NAME
 
@@ -56,7 +56,7 @@ def applications_dir(data_home: str | None = None) -> str:
 
 
 def exec_command() -> list[str]:
-    """What Jack runs, before ` browser %U` (see the module docstring)."""
+    """What Flux runs, before ` browser %U` (see the module docstring)."""
     script = os.path.realpath(sys.argv[0]) if sys.argv and sys.argv[0] else ""
     on_path = shutil.which(CLI)
     if on_path and script and os.path.realpath(on_path) == script:
@@ -119,6 +119,6 @@ def main() -> int:
     path = install()
     with open(path, encoding="utf-8") as f:
         exec_line = next((line for line in f if line.startswith("Exec=")), "").strip()
-    print(f"Jack is in the launcher: {path}\n  {exec_line}\n"
+    print(f"Flux is in the launcher: {path}\n  {exec_line}\n"
           "  (the default browser is unchanged)")
     return 0

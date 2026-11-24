@@ -252,7 +252,7 @@ class Browser(QObject):
         if home is None:
             users = self.user_windows()
             if not users:
-                raise LookupError("the user has no Jack window open")
+                raise LookupError("the user has no Flux window open")
             home = users[0]
         at = origin["index"] if origin and home is origin["window"] else None
         placeholder = origin.get("placeholder") if origin else None

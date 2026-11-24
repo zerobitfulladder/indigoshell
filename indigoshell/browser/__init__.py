@@ -1,4 +1,4 @@
-"""The shell's web browser, Jack: a QtWebEngine process, and what the
+"""The shell's web browser, Flux: a QtWebEngine process, and what the
 shell shows of it in its top bar.
 
 Two halves, two processes, two toolkits:
@@ -11,16 +11,16 @@ Two halves, two processes, two toolkits:
 
 - `context.py` is the shell's: while a browser window has focus, the
   shell's top bar shows its tabs, the current page's host and its load
-  line, drawn with the shell's own skia text (`JackWindow`, an app kind
+  line, drawn with the shell's own skia text (`FluxWindow`, an app kind
   of applink/, the shell's line to its own apps). It also opens the
   shell's launcher for the browser's Ctrl+L, Ctrl+T and Ctrl+M.
 
 `indigoshell browser [url ...]` runs the browser from the shell's CLI,
-and `desktop.py` installs its launcher entry, Jack.
+and `desktop.py` installs its launcher entry, Flux.
 
 They talk over a unix socket, one JSON object per line
-(applink/protocol.py for the line, `protocol.py` here for what Jack
-says on it). The browser is the client: it connects, says it is a Jack
+(applink/protocol.py for the line, `protocol.py` here for what Flux
+says on it). The browser is the client: it connects, says it is a Flux
 window and which X window, then pushes its state whenever it changes;
 the shell answers that it has the window and may send commands back.
 The shell grabs Ctrl+L, Ctrl+T and Ctrl+M on the browser's main windows
@@ -43,7 +43,7 @@ screenshots tabs through it, with `control.py` as the client (pure
 asyncio; it starts the browser when none runs) and `hands.py` as the
 tools the laptop lends (`browser_hands()`). `control.look()` is the
 call's: what the user is looking at in the browser, as content blocks.
-The agent also has a Jack window of its own, placed by the shell on a
+The agent also has a Flux window of its own, placed by the shell on a
 workspace the user is not looking at, where it borrows the user's tabs
 and returns them (protocol.py, "Alone"); it shows the user local files,
 lists downloads and uploads files, never from the places `uploads.py`
