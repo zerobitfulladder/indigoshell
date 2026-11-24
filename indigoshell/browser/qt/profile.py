@@ -43,6 +43,9 @@ def make_profile() -> QWebEngineProfile:
     settings = profile.settings()
     A = QWebEngineSettings.WebAttribute
     for attribute in (A.FullScreenSupportEnabled, A.PdfViewerEnabled, A.PluginsEnabled,
-                      A.JavascriptCanOpenWindows, A.ScrollAnimatorEnabled):
+                      A.JavascriptCanOpenWindows):
         settings.setAttribute(attribute, True)
+    # The user wants scrolling to land at once, not glide (startup.py
+    # also turns Chromium's own smooth scrolling off).
+    settings.setAttribute(A.ScrollAnimatorEnabled, False)
     return profile

@@ -11,6 +11,9 @@ Flags added to whatever the environment already has:
   not implement the request, qt6ct among them, so Blink is told directly.
 - `--widevine-path=<libwidevinecdm.so>`: protected streams (Netflix and
   the like). QtWebEngine does not find a Widevine module by itself.
+- `--disable-smooth-scrolling`: wheel and keys scroll at once, without
+  an animation (the user's choice; the profile's ScrollAnimatorEnabled
+  is off too). A page's own CSS `scroll-behavior: smooth` still glides.
 
 Hardware video decoding is deliberately not enabled: on NVIDIA it
 decodes, and the picture is black (Chromium's dmabuf frames have no way
@@ -42,6 +45,7 @@ FLAGS_ENV = "QTWEBENGINE_CHROMIUM_FLAGS"
 WIDEVINE_ENV = env("BROWSER_WIDEVINE")
 WIDEVINE_SO = "libwidevinecdm.so"
 DARK = "--blink-settings=preferredColorScheme=0"
+NO_SMOOTH = "--disable-smooth-scrolling"
 
 
 def firefox_roots() -> list[Path]:
@@ -127,8 +131,9 @@ def resolve_widevine(own_dir: Path | None = None,
 def chromium_flags(existing: str, widevine: Path | None) -> str:
     """`existing` with ours appended; a widevine path already there wins."""
     flags = existing.split()
-    if DARK not in flags:
-        flags.append(DARK)
+    for flag in (DARK, NO_SMOOTH):
+        if flag not in flags:
+            flags.append(flag)
     if widevine is not None and not any(f.startswith("--widevine-path") for f in flags):
         flags.append(f"--widevine-path={widevine}")
     return " ".join(flags)

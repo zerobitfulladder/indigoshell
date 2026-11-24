@@ -444,9 +444,9 @@ def test_pure() -> None:
           and startup.resolve_widevine(own_dir=root / "none", roots=[], override=str(got)) == got)
     flags = startup.chromium_flags("--foo --bar=1", got)
     flags2 = startup.chromium_flags("--widevine-path=/x.so", got)
-    check("Chromium flags keep what was there, add dark and Widevine",
-          flags == f"--foo --bar=1 {startup.DARK} --widevine-path={got}"
-          and flags2 == f"--widevine-path=/x.so {startup.DARK}", flags)
+    check("Chromium flags keep what was there, add dark, no smooth scrolling and Widevine",
+          flags == f"--foo --bar=1 {startup.DARK} {startup.NO_SMOOTH} --widevine-path={got}"
+          and flags2 == f"--widevine-path=/x.so {startup.DARK} {startup.NO_SMOOTH}", flags)
 
 
 # ── 2. one browser, in this process ─────────────────────────────────────
