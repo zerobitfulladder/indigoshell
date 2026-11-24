@@ -181,8 +181,9 @@ def shell_side(path: str) -> None:
         colours = {"lilac": lilac, "indigo": indigo, "paused": paused_lilac,
                    "strong": TAB_CURRENT_FG, "muted": TAB_FG, "cyan": NUMBER_CURRENT_FG}
         for t in tabs:
-            number = img[6:36, int(t["number_x"]):int(t["number_x"] + t["number_w"]) + 1]
-            title = img[6:34, int(t["x"]):int(t["x"] + t["w"]) + 1]
+            # Inside the box, clear of its outline: the number's spot, the title's band.
+            number = img[11:32, int(t["number_x"]):int(t["number_x"] + t["number_w"])]
+            title = img[9:34, int(t["x"]):int(t["x"] + t["w"]) + 1]
             n = {k: count(number, c, 10) for k, c in colours.items()}
             ti = {k: count(title, c, 10) for k, c in colours.items()}
             row.append({"number": max(n, key=n.get) if max(n.values()) > 8 else None,

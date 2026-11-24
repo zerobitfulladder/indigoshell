@@ -222,10 +222,9 @@ clock_cluster = Row(
 # Always there, like the bottom bar and in its look, a little thinner,
 # its space reserved the same way (and, like it, under a fullscreen
 # window: the window manager stacks a focused fullscreen window over
-# docks). Along its bottom edge the bar's rule, its frame, which the
-# bottom bar does without. Its left is the focused indigoshell app's:
-# Flux's tabs and host while a Flux window has focus, the current tab
-# rising out of the rule; nothing while any other window does. `widgets` go after it, at the right; the right end itself
+# docks). Its left is the focused indigoshell app's: Flux's tabs, a box
+# each, and its host while a Flux window has focus; nothing while any
+# other window does. `widgets` go after it, at the right; the right end itself
 # is the agent's: `AgentChip` (agent/ui/status.py), always there, the
 # old corner status made short: a box saying what the agent is doing and
 # the call's small CALL chip, its arcs turning while it works, yellow
@@ -248,11 +247,6 @@ def top_bar(*widgets, apps: AppService = APPS) -> WindowSpec:
         exclusive=True,
         focusable=False,
         background=theme.BAR_BG,
-        # The bar's frame along its bottom edge, which Flux's current tab
-        # rises out of (applink/flux.py draws that part, over it).
-        rule=theme.BAR_RULE,
-        rule_thick=theme.BAR_RULE_THICK,
-        rule_glow=theme.BAR_RULE_GLOW,
         padding=Insets.xy(theme.BAR_MARGIN, 0),
         autostart=True,
         content=Row(

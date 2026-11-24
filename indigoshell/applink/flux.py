@@ -8,25 +8,23 @@ pushes (protocol.py) into `FluxContent`. While that window has focus the
 top bar's context area shows it (applink/context.py); the browser
 itself draws nothing of it.
 
-What it shows stands on the top bar's rule, the glowing magenta line
-the bar's window draws along its bottom edge (config_default.top_bar),
-there whatever has focus. The window's tabs from the left, each in a
-slot of the same width (SLOT_W, all narrower alike when they do not
-fit, down to SLOT_MIN, then the run around the current one): its number
-in a spot of its own and its title, shortened with an ellipsis to the
-slot, in the muted tone; the current tab rises out of the rule as one
-unbroken stroke (up its left edge, across its top with the agent chip's
-chamfer at the top right, down its right edge), the rule open under it
-and a faint light inside, its title in the strong colour and its number
-cyan in small corner brackets. At the right end of the context area
-the current page's host, after an open padlock when its connection is
-not secure and a bookmark when the page is one. Loading runs along the
-rule: a tab behind runs a comet under its slot; while the current one
-loads its raised outline lights from the left foot round to the right
-as the load goes, the rest of it dimmed. While the browser's find is
-open it rises in the tabs' place as one tab: a search mark in the
-bracketed spot, `query▏` (the caret only while the query is typed),
-the count small, "no matches" in the error colour.
+What it shows: the window's tabs from the left, each a box of its own
+in a slot of the same width (SLOT_W, all narrower alike when they do
+not fit, down to SLOT_MIN, then the run around the current one), a few
+pixels apart, outlined with the agent chip's bevel at the top right:
+its number in a spot of its own and its title, shortened with an
+ellipsis to the box, in the muted tone, the outline dim; the current
+tab's outline bright with a faint light inside, its title in the strong
+colour and its number cyan in small corner brackets. At the right end
+of the context area the current page's host, after an open padlock when
+its connection is not secure and a bookmark when the page is one.
+Loading goes round a box's own outline: a tab behind runs a comet round
+its box; while the current one loads its outline lights round from the
+bottom-left corner as the load goes, the rest of it dimmed. While the
+browser's find is open it stands in the tabs' place as one lit box: a
+search mark in the bracketed spot, `query▏` (the caret only while the
+query is typed), the count small, "no matches" in the error colour.
+Nothing is drawn along the bar's edge.
 
 The mouse on the tabs (TabList): a left or right press switches to the
 tab, a middle click closes it, a drag along the bar moves it, a drag
@@ -35,15 +33,16 @@ command to the browser (protocol.py: `tab`, `close`, `move`, `detach`)
 naming the tab by its id. The press is held by the bar's window from
 button down to button up (window.py, Widget.press); for the drag it
 takes the keyboard too, so that Escape can put the tab back. A tab
-under the pointer shows the faint shape it would rise into, its title
-brighter; a dragged tab lifts off the rule as a closed outline over
-the others, the rule flat, the others making room where two ticks
-rising from the rule say it lands; past the tear-out line the rule
-opens under it and it says NEW WINDOW. Switching slides the raised
-part to the new tab; a tab closed wipes out and the others slide over.
+under the pointer has its outline a step brighter and its title
+brighter; a dragged tab lifts a little over the others, which close up,
+a thin upright line between two boxes saying where it lands; past the
+tear-out line it dims and says NEW WINDOW. Switching slides the current
+tab's light to the new box; a tab closed wipes out and the others slide
+over.
 
 The agent. While the agent drives a tab (protocol `agent`), that tab's
-number and its corner brackets are drawn in the voice's colour
+number, its corner brackets and its box's outline are drawn in the
+voice's colour
 (protocol.VOICES); while the user has taken it over and the agent
 waits, in that colour dimmed a third of the way to the bar's
 background. The title keeps its own colour. The window's
@@ -88,7 +87,7 @@ from functools import partial
 import skia
 import xcffib.xproto as xp
 
-from .. import shapes, text, theme
+from .. import text, theme
 from .service import AppWindow
 from ..services.addresses import BOOKMARK, AddressMode
 from ..services.modes import Choice, Choices
@@ -102,9 +101,7 @@ log = logging.getLogger(__name__)
 # ── look ────────────────────────────────────────────────────────────────
 # The bar's own vocabulary: its text size, its strong neon for the tab in
 # front and the muted tone for the rest, its plain foreground for the
-# host. The tabs stand on the top bar's rule, the glowing magenta line
-# the bar's window draws along its bottom edge (config_default.top_bar),
-# and the current tab rises out of it (TabList).
+# host. Each tab is a box of its own (TabList).
 TAB_FG = theme.BASE_MUTED
 TAB_CURRENT_FG = theme.FG_STRONG
 TAB_HOVER_FG = theme.FG             # the title of a tab under the pointer
@@ -132,31 +129,35 @@ RESUME_MARK = ""              # Nerd Font: fa-play
 
 # The tabs' slots: all the same width, SLOT_W while they fit, narrower
 # alike down to SLOT_MIN, then the run of them around the current tab.
-# Inside one: SLOT_PAD, the number's spot (bracketed on the current tab),
-# NUMBER_GAP, the title, SLOT_PAD; the number never moves.
+# Each slot is a box of its own, SLOT_GAP apart. Inside one: SLOT_PAD,
+# the number's spot (bracketed on the current tab), NUMBER_GAP, the
+# title, SLOT_PAD; the number never moves.
 SLOT_W = 240
 SLOT_MIN = 110
-SLOT_GAP = 2                        # between two slots
+SLOT_GAP = 6                        # between two boxes
 SLOT_PAD = 12
 NUMBER_SPOT = 20
 NUMBER_GAP = 6
 BRACKET_ARM = 4
-TEXT_CY = 22                        # the tabs' text centre, from the bar's top edge
 
-# The rule and what rises out of it. Its stroke's centre is one pixel
-# above the bar's bottom edge, as the window draws it.
-RULE = theme.BAR_RULE
-RULE_THICK = theme.BAR_RULE_THICK
-RULE_GLOW = theme.BAR_RULE_GLOW     # the glow's blur sigma
-RULE_GLOW_A = 0.55                  # ... and its strength, the window's
-RULE_BRIGHT = theme.MAGENTA_BLOOM   # a load, running along it
-RAISE_TOP = 5                       # the raised tab's top: its stroke centre
-RAISE_BEVEL = 8                     # its top-right corner, the agent chip's bevel
-RAISE_FILL_A = 0.10                 # the light rising off the rule inside it
-GHOST_A = 0.35                      # hover: the shape the tab would rise into
-LIFT = 4                            # a dragged tab, this far off the rule
-TICK_H = 7                          # where it lands: two ticks rising from the rule
-TEAR_FADE = 24                      # the torn rule's ends fade over this
+# The boxes: each tab enclosed by its own outline, the agent chip's
+# height and bevel (top right), centred on the bar. The current one's
+# outline bright with a faint light inside, the others' dim.
+BOX_H = 32
+BOX_BEVEL = 8
+BOX_THICK = 2
+OUTLINE = theme.FG_STRONG
+OUTLINE_DIM_A = 0.28                # the tabs behind
+OUTLINE_HOVER_A = 0.6               # ... one under the pointer
+OUTLINE_GLOW = 3.0                  # the current one's glow: blur sigma
+OUTLINE_GLOW_A = 0.45
+FILL_A = 0.10                       # the light inside the current one, at its foot
+LOAD_FG = theme.MAGENTA_BLOOM       # a load, going round a box's outline
+LOAD_DIM_A = 0.35                   # the current one's outline not yet lit
+COMET_LEN = 0.22                    # a tab behind loading: this share of its outline
+LIFT = 3                            # a dragged tab, this far up
+MARKER_W = 2                        # where it lands: an upright line between two boxes
+TEAR_A = 0.45                       # a tab tearing out, dimmed this far
 TEAR_TAG = "NEW WINDOW"
 TEAR_FG = theme.CYAN_BRIGHT
 
@@ -165,10 +166,10 @@ DRAG_START_PX = 6                   # a press moved this far lifts the tab
 TEAR_OUT_PX = 40                    # let go this far below the bar: a window of its own
 
 # Motion, on the window's frame clock; nothing runs while nothing moves.
-SWITCH_S = 0.24                     # the raised part sliding to another tab
-SLIDE_S = 0.22                      # tabs sliding to new places (a tab closed, a drag)
-WIPE_S = 0.16                       # a closed tab wiping out; the others slide after
-COMET_S = 1.1                       # a load's comet, once along its tab
+SWITCH_S = 0.11                     # the current tab's light sliding to another box
+SLIDE_S = 0.11                      # boxes sliding to new places (a tab closed, a drag)
+WIPE_S = 0.08                       # a closed tab wiping out; the others slide after it
+COMET_S = 1.1                       # a load's comet, once round its box
 MOTION_FPS = 60
 COMET_FPS = 30
 
@@ -262,13 +263,10 @@ def fit_find(find: dict, width: float) -> list[tuple[str, str, float, float]]:
 
 
 # ── the tabs' look ──────────────────────────────────────────────────────
-# The rule along the bar's bottom edge is the window's (WindowSpec.rule):
-# the bar's frame, there whatever has focus, under the host and the
-# agent chip too. Only the tabs know where they are, so the tab list
-# draws what rises out of it, in its own area: the current tab as one
-# unbroken stroke (up its left edge, across its top with the chamfer,
-# down its right edge) with the rule opened under it, and everything else
-# below. Each piece is one small function, the place to change it.
+# Each tab a box of its own in its slot, outlined: the current one's
+# outline bright with a faint light inside, the others' dim. Loading goes
+# round a box's own outline. Each piece is one small function, the place
+# to change it.
 
 def _paint(color: str, alpha: float | None = None, *, stroke: float | None = None,
            blur: float | None = None) -> skia.Paint:
@@ -278,7 +276,6 @@ def _paint(color: str, alpha: float | None = None, *, stroke: float | None = Non
         p.setStyle(skia.Paint.kStroke_Style)
         p.setStrokeWidth(stroke)
         p.setStrokeJoin(skia.Paint.kMiter_Join)
-        p.setStrokeCap(skia.Paint.kSquare_Cap)
     if blur:
         p.setMaskFilter(skia.MaskFilter.MakeBlur(skia.kNormal_BlurStyle, blur))
     return p
@@ -290,104 +287,101 @@ def _baseline(cy: float, size: float, bold: bool = False) -> float:
 
 
 @dataclass(frozen=True)
-class Rule:
-    """Where the rule and the raised tab sit in a rect the bar's height."""
-    bottom: float           # the bar's bottom edge
-    y: float                # the rule's stroke centre
-    top: float              # the raised top's stroke centre
+class Band:
+    """Where the boxes sit across a rect the bar's height."""
+    top: float
+    bottom: float
     cy: float               # the text's centre line
 
     @staticmethod
-    def of(rect: skia.Rect) -> "Rule":
-        return Rule(rect.bottom(), rect.bottom() - RULE_THICK / 2, rect.top() + RAISE_TOP,
-                    rect.top() + TEXT_CY)
+    def of(rect: skia.Rect) -> "Band":
+        top = rect.top() + round((rect.height() - BOX_H) / 2)
+        return Band(top, top + BOX_H, top + BOX_H / 2)
 
 
-def raised_path(l: float, r: float, rule: Rule, *, closed: bool = False,
-                lift: float = 0.0) -> skia.Path:
-    """The three sides of a tab rising out of the rule between l and r;
-    closed, the whole tab, `lift` px off it."""
-    t, y = rule.top - lift, rule.y - lift
-    l, r = l + RULE_THICK / 2, r - RULE_THICK / 2
+def box_path(x: float, w: float, band: Band, lift: float = 0.0) -> skia.Path:
+    """A tab's outline, its stroke inside the box: from the bottom-left
+    corner up, across the top to the bevel, down and back along the
+    bottom (the way a load goes round it)."""
+    h = BOX_THICK / 2
+    l, r, t, b = x + h, x + w - h, band.top + h - lift, band.bottom - h - lift
     p = skia.Path()
-    p.moveTo(l, y)
+    p.moveTo(l, b)
     p.lineTo(l, t)
-    p.lineTo(r - RAISE_BEVEL, t)
-    p.lineTo(r, t + RAISE_BEVEL)
-    p.lineTo(r, y)
-    if closed:
-        p.close()
+    p.lineTo(r - BOX_BEVEL, t)
+    p.lineTo(r, t + BOX_BEVEL)
+    p.lineTo(r, b)
+    p.close()
     return p
 
 
-def paint_raise(canvas: skia.Canvas, l: float, r: float, rule: Rule) -> None:
-    """The current tab risen out of the rule: the rule opened under it, a
-    faint light inside, the stroke with the rule's own glow."""
-    canvas.drawRect(skia.Rect.MakeLTRB(l, rule.top - RAISE_TOP, r, rule.bottom),
-                    _paint(theme.BAR_BG))
+def paint_box(canvas: skia.Canvas, x: float, w: float, band: Band, *, alpha: float,
+              color: str = OUTLINE) -> None:
+    """A tab behind: its outline, dim (`alpha`; brighter under the
+    pointer, in the voice's colour on a tab the agent holds)."""
+    canvas.drawPath(box_path(x, w, band), _paint(color, alpha, stroke=BOX_THICK))
+
+
+def paint_current(canvas: skia.Canvas, x: float, w: float, band: Band,
+                  lift: float = 0.0) -> None:
+    """The tab in front: the faint light inside, the bright outline with
+    a little glow."""
+    path = box_path(x, w, band, lift)
     light = skia.Paint(AntiAlias=True, Shader=skia.GradientShader.MakeLinear(
-        [(0, rule.top), (0, rule.y)], [theme.color(RULE, 0.0), theme.color(RULE, RAISE_FILL_A)]))
-    canvas.drawPath(shapes.beveled(l, rule.top, r - l, rule.y - rule.top, bevel=RAISE_BEVEL,
-                                   corners=("top-right",)), light)
-    path = raised_path(l, r, rule)
-    canvas.drawPath(path, _paint(RULE, RULE_GLOW_A, stroke=RULE_THICK, blur=RULE_GLOW))
-    canvas.drawPath(path, _paint(RULE, stroke=RULE_THICK))
+        [(0, band.top - lift), (0, band.bottom - lift)],
+        [theme.color(OUTLINE, 0.0), theme.color(OUTLINE, FILL_A)]))
+    canvas.drawPath(path, light)
+    canvas.drawPath(path, _paint(OUTLINE, OUTLINE_GLOW_A, stroke=BOX_THICK, blur=OUTLINE_GLOW))
+    canvas.drawPath(path, _paint(OUTLINE, stroke=BOX_THICK))
 
 
-def paint_trace(canvas: skia.Canvas, l: float, r: float, rule: Rule, frac: float) -> None:
-    """The current tab loading: its raised outline lit from the left foot
-    `frac` of the way round, the rest dimmed."""
-    m = skia.PathMeasure(raised_path(l, r, rule), False)
-    lit, rest = skia.Path(), skia.Path()
-    m.getSegment(0, m.getLength() * frac, lit, True)
-    m.getSegment(m.getLength() * frac, m.getLength(), rest, True)
-    canvas.drawPath(rest, _paint(theme.BAR_BG, 0.6, stroke=RULE_THICK + 1))
-    canvas.drawPath(lit, _paint(RULE_BRIGHT, stroke=RULE_THICK + 1, blur=4))
-    canvas.drawPath(lit, _paint(RULE_BRIGHT, stroke=RULE_THICK))
+def _segment(path: skia.Path, a: float, b: float) -> skia.Path:
+    """The part of a closed path from `a` to `b` (shares of its length,
+    0..1; past 1 wraps round)."""
+    m = skia.PathMeasure(path, True)
+    total = m.getLength()
+    out = skia.Path()
+    if b <= 1:
+        m.getSegment(total * a, total * b, out, True)
+    else:
+        m.getSegment(total * a, total, out, True)
+        m.getSegment(0, total * (b - 1), out, True)
+    return out
 
 
-def paint_comet(canvas: skia.Canvas, x: float, w: float, rule: Rule, phase: float) -> None:
-    """A tab behind loading: a bright run along the rule under it, its
-    head going left to right, `phase` (0..1) of the way."""
-    run = w * 0.35
-    head = x + (w + run) * phase
-    x0, x1 = max(x, head - run), min(x + w, head)
-    if x1 - x0 < 1:
+def paint_trace(canvas: skia.Canvas, x: float, w: float, band: Band, frac: float) -> None:
+    """The tab in front loading: its outline lit from the bottom-left
+    corner round, `frac` of the way, the rest dimmed."""
+    path = box_path(x, w, band)
+    canvas.drawPath(path, _paint(theme.BAR_BG, 1 - LOAD_DIM_A, stroke=BOX_THICK + 1))
+    if frac <= 0:
         return
-    band = skia.Rect.MakeLTRB(x0, rule.y - 1, x1, rule.y + 1)
-    canvas.save()
-    canvas.clipRect(skia.Rect.MakeLTRB(x, rule.top, x + w, rule.bottom))
-    canvas.drawRect(band.makeOutset(0, 1), _paint(RULE_BRIGHT, blur=5))
-    tail = skia.Paint(AntiAlias=True, Shader=skia.GradientShader.MakeLinear(
-        [(head - run, 0), (head, 0)], [theme.color(RULE_BRIGHT, 0.0), theme.color(RULE_BRIGHT)]))
-    canvas.drawRect(band, tail)
-    canvas.drawRect(skia.Rect.MakeLTRB(max(x0, head - 10), band.top(), x1, band.bottom()),
-                    _paint("#ffffff", 0.8))
-    canvas.restore()
+    lit = _segment(path, 0.0, min(1.0, frac))
+    canvas.drawPath(lit, _paint(LOAD_FG, stroke=BOX_THICK + 1, blur=3))
+    canvas.drawPath(lit, _paint(LOAD_FG, stroke=BOX_THICK))
 
 
-def paint_ghost(canvas: skia.Canvas, l: float, r: float, rule: Rule) -> None:
-    """Hover: the shape the tab would rise into, faint, no glow."""
-    p = _paint(RULE, GHOST_A, stroke=1)
-    p.setStrokeCap(skia.Paint.kButt_Cap)
-    canvas.drawPath(raised_path(l, r, rule), p)
+def paint_comet(canvas: skia.Canvas, x: float, w: float, band: Band, phase: float) -> None:
+    """A tab behind loading: a bright run going round its outline, its
+    head `phase` (0..1) of the way, its tail fading."""
+    path = box_path(x, w, band)
+    pieces = 6
+    for k in range(pieces):
+        a = phase + COMET_LEN * k / pieces
+        canvas.drawPath(_segment(path, a % 1.0, a % 1.0 + COMET_LEN / pieces),
+                        _paint(LOAD_FG, (k + 1) / pieces, stroke=BOX_THICK))
+    head = (phase + COMET_LEN) % 1.0
+    canvas.drawPath(_segment(path, max(0.0, head - 0.02), head + (0.0 if head >= 0.02 else 0)),
+                    _paint("#ffffff", 0.8, stroke=BOX_THICK))
 
 
-def paint_ticks(canvas: skia.Canvas, l: float, r: float, rule: Rule) -> None:
-    """Where a dragged tab lands: two ticks rising from the rule at the
-    edges of its place."""
-    for x in (l + 1, r - 1):
-        canvas.drawRect(skia.Rect.MakeXYWH(x - 1, rule.y - TICK_H, 2, TICK_H), _paint(RULE))
-
-
-def paint_gap(canvas: skia.Canvas, l: float, r: float, rule: Rule) -> None:
-    """A tab tearing out: the rule open under it, its ends fading."""
-    top = rule.y - 2 * RULE_GLOW
-    canvas.drawRect(skia.Rect.MakeLTRB(l, top, r, rule.bottom), _paint(theme.BAR_BG))
-    for x0, x1, a0, a1 in ((l - TEAR_FADE, l, 0.0, 1.0), (r, r + TEAR_FADE, 1.0, 0.0)):
-        fade = skia.Paint(Shader=skia.GradientShader.MakeLinear(
-            [(x0, 0), (x1, 0)], [theme.color(theme.BAR_BG, a0), theme.color(theme.BAR_BG, a1)]))
-        canvas.drawRect(skia.Rect.MakeLTRB(x0, top, x1, rule.bottom), fade)
+def paint_marker(canvas: skia.Canvas, x: float, rect: skia.Rect) -> None:
+    """Where a dragged tab lands: an upright line between two boxes, the
+    bar's height, over the dragged box (which is nearly always over it)."""
+    p = skia.Paint(AntiAlias=False)
+    p.setColor(theme.color(OUTLINE))
+    canvas.drawRect(skia.Rect.MakeXYWH(round(x - MARKER_W / 2), rect.top() + 1, MARKER_W,
+                                       rect.height() - 2), p)
 
 
 def brackets(canvas: skia.Canvas, spot: skia.Rect, color: str) -> None:
@@ -427,51 +421,53 @@ def paint_cell(canvas: skia.Canvas, x: float, cy: float, number: str, title: str
               theme.color(fg))
 
 
-def paint_lifted(canvas: skia.Canvas, x: float, w: float, rule: Rule, number: str,
+def paint_lifted(canvas: skia.Canvas, x: float, w: float, band: Band, number: str,
                  title: str, mark: str | None, *, out: bool, right: float) -> None:
-    """The tab being dragged: closed, lifted off the rule, over what it
-    passes; while letting go would tear it out, said so beside it (before
+    """The tab being dragged: its box LIFT up, over what it passes; while
+    letting go would tear it out, dimmed and saying so beside it (before
     it when there is no room after, up to `right`)."""
-    path = raised_path(x, x + w, rule, closed=True, lift=LIFT)
-    canvas.drawPath(path, _paint(theme.BAR_BG, 0.92))
-    canvas.drawPath(path, _paint(RULE, 0.45, stroke=RULE_THICK, blur=4))
-    canvas.drawPath(path, _paint(RULE, stroke=RULE_THICK))
-    paint_cell(canvas, x, rule.cy - LIFT / 2, number, title, current=True, hovered=False,
+    canvas.drawPath(box_path(x, w, band, LIFT), _paint(theme.BAR_BG, 1.0 if out else 0.92))
+    if out:
+        canvas.saveLayerAlpha(None, round(255 * (1 - TEAR_A)))
+    paint_current(canvas, x, w, band, LIFT)
+    paint_cell(canvas, x, band.cy - LIFT, number, title, current=True, hovered=False,
                mark=mark)
     if out:
+        canvas.restore()
         tag_w = text.measure(TEAR_TAG, TAG_SIZE, True)
         tx = x + w + 10 if x + w + 10 + tag_w <= right else x - 10 - tag_w
-        text.draw(canvas, TEAR_TAG, tx, _baseline(rule.cy - LIFT / 2, TAG_SIZE, True), TAG_SIZE,
+        text.draw(canvas, TEAR_TAG, tx, _baseline(band.cy - LIFT, TAG_SIZE, True), TAG_SIZE,
                   theme.color(TEAR_FG), True)
 
 
-def paint_wipe(canvas: skia.Canvas, x: float, w: float, rule: Rule, number: str, title: str,
+def paint_wipe(canvas: skia.Canvas, x: float, w: float, band: Band, number: str, title: str,
                k: float) -> None:
-    """A closed tab wiping out, `k` (0..1) of the way: what is left of it
-    from the left."""
+    """A closed tab wiping out, `k` (0..1) of the way: what is left of its
+    box from the left."""
     canvas.save()
-    canvas.clipRect(skia.Rect.MakeLTRB(x, rule.top - RAISE_TOP, x + w * (1 - k), rule.y - 1))
-    paint_cell(canvas, x, rule.cy, number, title, current=False, hovered=False, mark=None)
+    canvas.clipRect(skia.Rect.MakeLTRB(x - 2, band.top - 2, x + w * (1 - k), band.bottom + 2))
+    paint_box(canvas, x, w, band, alpha=OUTLINE_DIM_A)
+    paint_cell(canvas, x, band.cy, number, title, current=False, hovered=False, mark=None)
     canvas.restore()
 
 
-def paint_find(canvas: skia.Canvas, x: float, pieces: list, rule: Rule) -> float:
-    """The find line as one raised tab from x: the search mark in the
-    bracketed spot, the query with its caret, the count small; its right
-    edge."""
+def paint_find(canvas: skia.Canvas, x: float, pieces: list, band: Band) -> float:
+    """The find line as one box from x, lit as the current tab's: the
+    search mark in the bracketed spot, the query with its caret, the
+    count small; its right edge."""
     end = max(px + pw for _role, _t, px, pw in pieces) + SLOT_PAD
-    paint_raise(canvas, x, x + end, rule)
+    paint_current(canvas, x, end, band)
     for role, piece, px, _pw in pieces:
         if role == "mark":
-            spot = number_spot(x, rule.cy)
+            spot = number_spot(x, band.cy)
             brackets(canvas, spot, BRACKET_FG)
             paint_number(canvas, piece, spot, NUMBER_CURRENT_FG, bold=False)
         elif role == "query":
-            text.draw(canvas, piece, x + px, _baseline(rule.cy, SIZE), SIZE,
+            text.draw(canvas, piece, x + px, _baseline(band.cy, SIZE), SIZE,
                       theme.color(FIND_QUERY_FG))
         else:
             color = NO_MATCHES_FG if piece == protocol.NO_MATCHES else FIND_COUNT_FG
-            text.draw(canvas, piece, x + px, _baseline(rule.cy, NUMBER_SIZE, True),
+            text.draw(canvas, piece, x + px, _baseline(band.cy, NUMBER_SIZE, True),
                       NUMBER_SIZE, theme.color(color), True)
     return x + end
 
@@ -520,26 +516,28 @@ class TabDrag:
 
 
 class TabList(Widget):
-    """The window's tabs from the left of the context area, each in a
-    slot of the same width (`fit_slots`), standing on the bar's rule, the
-    current one risen out of it; the find line in their place while find
-    is open, risen as one tab.
+    """The window's tabs from the left of the context area, each a box
+    of its own in a slot of the same width (`fit_slots`): the current
+    one's outline bright with a faint light inside, the others' dim; the
+    find line in their place while find is open, as one lit box.
 
-    Loading is on the rule: a tab behind runs a comet along it under its
-    slot, and the current tab's raised outline lights from its left foot
-    round to its right as the page loads, the rest of it dimmed.
+    Loading goes round a box's own outline: a tab behind runs a comet
+    round its box, and the current tab's outline lights from its
+    bottom-left corner round as the page loads, the rest of it dimmed.
 
     Motion (`animation_fps`, nothing while nothing moves): switching
-    slides the raised part to the new tab (SWITCH_S); a tab gone wipes out
-    (WIPE_S) while the others slide to close the gap (SLIDE_S), as they
-    slide to make room for a dragged tab. Positions are glides by tab id
-    (`Glide`), retargeted at each paint from where the tabs are now.
+    slides the current tab's light to the new box (SWITCH_S); a tab gone
+    wipes out (WIPE_S), then the others slide to close the gap (SLIDE_S),
+    as they slide closed up under a dragged tab. Positions are glides by
+    tab id (`Glide`), retargeted at each paint from where the tabs are
+    now.
 
     The mouse (the window holds the press: Widget.press). A left or right
     press on a tab switches to it at once; a middle click closes it (let
     go over the same tab). Pressed and moved DRAG_START_PX, the tab lifts
-    and follows the pointer along the bar, the others making room where
-    it would land, and letting go over the bar moves it there; dragged
+    and follows the pointer along the bar, the others closed up and a
+    marker between two of them where it would land, and letting go over
+    the bar moves it there; dragged
     more than TEAR_OUT_PX below the bar and let go, it tears out into a
     window of its own (not a window's only tab). Escape while dragging
     puts it back (the window takes the keyboard for it, when it can).
@@ -567,12 +565,13 @@ class TabList(Widget):
         self.send = None                        # send(name, **args): to the browser
         self.loading: list[bool] = []
         self.progress: int | None = None        # the current tab's load, while it loads
-        # Motion: each tab's slot x as drawn (by id), the raised part's x,
+        # Motion: each tab's slot x as drawn (by id), the current tab's
+        # light's x,
         # the tabs gone and wiping out (since, index, title, x), what the
         # last paint drew (id -> (index, title, x)), and whether something
         # moved since (the next frame retargets).
         self._glides: dict[int, Glide] = {}
-        self._raise: Glide | None = None
+        self._front: Glide | None = None
         self._leaving: list[tuple[float, int, str, float]] = []
         self._drawn_ids: dict[int, tuple[int, str, float]] = {}
         self._due = False
@@ -644,10 +643,10 @@ class TabList(Widget):
 
     def arrangement(self) -> tuple[list[tuple[int, int]], dict | None]:
         """Each shown tab's slot, as (index, x from the left of the list);
-        while one is lifted, the others making room where it lands (closed
-        up while it would tear out), and the lifted one: {"index", "x"
-        (its slot's, following the pointer), "to" (the index it lands
-        at), "slot_x" (where), "out" (letting go tears it out)}."""
+        while one is lifted, the others closed up, and the lifted one:
+        {"index", "x" (its box's, following the pointer), "to" (the index
+        it lands at), "slot_x" (where: the left edge of the place between
+        two boxes it goes into), "out" (letting go tears it out)}."""
         run = range(self.first, self.first + self.count)
         d = self.drag
         held = self.ids.index(d.tab) if d is not None and d.tab in self.ids else None
@@ -657,8 +656,7 @@ class TabList(Widget):
         out = self._tears_out(d.y)
         k = landing(at, self.count, self.slot_w)
         others = [i for i in run if i != held]
-        spots = [p for p in range(self.count) if out or p != k]
-        return ([(i, p * self.pitch) for i, p in zip(others, spots)],
+        return ([(i, p * self.pitch) for p, i in enumerate(others)],
                 {"index": held, "x": at, "to": self.first + k, "slot_x": k * self.pitch,
                  "out": out})
 
@@ -726,11 +724,12 @@ class TabList(Widget):
             return                      # its tab went from the list meanwhile
         # It goes down where it was let go: torn out, it wipes out from
         # there once the browser says it went; moved, it slides into its
-        # place, risen.
+        # place, lit.
         self._glides[d.tab] = Glide(SLIDE_S, lift["x"])
         if not lift["out"]:
-            self._raise = Glide(SWITCH_S, lift["x"])
+            self._front = Glide(SWITCH_S, lift["x"])
             self._glides[d.tab].to(lift["slot_x"], time.monotonic())
+            self._front.to(lift["slot_x"], time.monotonic())
         if lift["out"]:
             self._send("detach", tab=d.tab, **self._root(x, y))
         elif lift["to"] != lift["index"]:
@@ -753,7 +752,7 @@ class TabList(Widget):
         self._glides.clear()
         self._leaving.clear()
         self._drawn_ids.clear()
-        self._raise = None
+        self._front = None
         self._fresh = True
 
     def detach(self) -> None:
@@ -803,7 +802,7 @@ class TabList(Widget):
     @property
     def animation_fps(self) -> int:
         now = time.monotonic()
-        if (self._due or self._leaving or (self._raise is not None and self._raise.moving(now))
+        if (self._due or self._leaving or (self._front is not None and self._front.moving(now))
                 or any(g.moving(now) for g in self._glides.values())):
             return MOTION_FPS
         return COMET_FPS if self._comets() else 0
@@ -814,7 +813,7 @@ class TabList(Widget):
     def settle(self) -> None:
         """Everything where it is going, at once (offline renders, tests)."""
         self._retarget(time.monotonic())
-        for g in (*self._glides.values(), *((self._raise,) if self._raise else ())):
+        for g in (*self._glides.values(), *((self._front,) if self._front else ())):
             g.settle()
         self._leaving.clear()
 
@@ -858,10 +857,10 @@ class TabList(Widget):
             (self.current - self.first) * self.pitch
             if self.first <= self.current < self.first + self.count else None)
         if target is not None:
-            if self._raise is None or fresh:
-                self._raise = Glide(SWITCH_S, target)
+            if self._front is None or fresh:
+                self._front = Glide(SWITCH_S, target)
             else:
-                self._raise.to(target, now, delay)
+                self._front.to(target, now, delay)
         self._due = False
 
     # ── paint ───────────────────────────────────────────────────────────
@@ -869,12 +868,12 @@ class TabList(Widget):
         now = time.monotonic()
         self._retarget(now)
         r = self.rect
-        rule = Rule.of(r)
+        band = Band.of(r)
         canvas.save()
         canvas.clipRect(r)
         if self.find_drawn:
-            x = r.left() + (self._raise.at(now) if self._raise is not None else 0.0)
-            paint_find(canvas, x, self.find_drawn, rule)
+            x = r.left() + (self._front.at(now) if self._front is not None else 0.0)
+            paint_find(canvas, x, self.find_drawn, band)
             canvas.restore()
             return
         placed, lift = self.arrangement()
@@ -884,37 +883,36 @@ class TabList(Widget):
             g = self._glides.get(self.ids[i])
             return r.left() + (g.at(now) if g is not None else x)
 
-        if lift is None and self._raise is not None and \
+        for i, x in placed:
+            mark = self._mark(i)
+            paint_box(canvas, at(i, x), w, band, color=mark or OUTLINE,
+                      alpha=OUTLINE_HOVER_A if i == self.hover and lift is None
+                      else OUTLINE_DIM_A)
+        if lift is None and self._front is not None and \
                 self.first <= self.current < self.first + self.count:
-            rx = r.left() + self._raise.at(now)
-            paint_raise(canvas, rx, rx + w, rule)
+            fx = r.left() + self._front.at(now)
+            paint_current(canvas, fx, w, band)
             if self.progress is not None:
-                paint_trace(canvas, rx, rx + w, rule, max(0.0, min(1.0, self.progress / 100)))
-        if lift is not None and lift["out"]:
-            paint_gap(canvas, r.left() + lift["x"], r.left() + lift["x"] + w, rule)
-        if self.hover is not None and self.hover != self.current and lift is None:
-            x = dict(placed).get(self.hover)
-            if x is not None:
-                hx = at(self.hover, x)
-                paint_ghost(canvas, hx, hx + w, rule)
+                paint_trace(canvas, fx, w, band, max(0.0, min(1.0, self.progress / 100)))
         phase = (now / COMET_S) % 1.0
         for i in self._comets():
             x = dict(placed).get(i)
             if x is not None:
-                paint_comet(canvas, at(i, x), w, rule, phase)
-        if lift is not None and not lift["out"]:
-            paint_ticks(canvas, r.left() + lift["slot_x"], r.left() + lift["slot_x"] + w, rule)
+                paint_comet(canvas, at(i, x), w, band, phase)
         for i, x in placed:
-            paint_cell(canvas, at(i, x), rule.cy, str(i + 1), self._label(i),
+            paint_cell(canvas, at(i, x), band.cy, str(i + 1), self._label(i),
                        current=i == self.current and lift is None,
                        hovered=i == self.hover, mark=self._mark(i))
         for since, i, title, x in self._leaving:
-            paint_wipe(canvas, r.left() + x, w, rule, str(i + 1), title,
+            paint_wipe(canvas, r.left() + x, w, band, str(i + 1), title,
                        min(1.0, (now - since) / WIPE_S))
         if lift is not None:
             i = lift["index"]
-            paint_lifted(canvas, r.left() + lift["x"], w, rule, str(i + 1), self._label(i),
+            paint_lifted(canvas, r.left() + lift["x"], w, band, str(i + 1), self._label(i),
                          self._mark(i), out=lift["out"], right=r.right())
+            if not lift["out"]:
+                paint_marker(canvas, r.left() + max(MARKER_W / 2,
+                                                     lift["slot_x"] - SLOT_GAP / 2), r)
         canvas.restore()
 
     def layout(self) -> list[dict]:
@@ -925,7 +923,7 @@ class TabList(Widget):
             return [{"role": role, "text": piece, "x": r.left() + x, "w": w}
                     for role, piece, x, w in self.find_drawn]
         placed, _lift = self.arrangement()
-        cy = Rule.of(r).cy
+        cy = Band.of(r).cy
         out = []
         for i, x in placed:
             left = r.left() + x
@@ -1022,7 +1020,7 @@ class Owner(Widget):
 class FluxContent(Widget):
     """Tabs and host in a row: what the top bar shows for one browser
     window; for the agent's own window (`owner`, its voice), its name
-    first. The current tab's load is drawn by the tabs, on the rule."""
+    first. The current tab's load is drawn by the tabs, round its box."""
 
     def __init__(self, owner: str | None = None) -> None:
         super().__init__()
