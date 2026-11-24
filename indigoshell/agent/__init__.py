@@ -79,16 +79,24 @@ this machine. Wiring it into a config:
     WINDOWS = [..., WindowSpec(name=CALL_WINDOW, content=CallHost(AGENT), ...),
                WindowSpec(name=STATUS_WINDOW, content=CallStatus(AGENT), ...)]
 
-A second call can talk to the agent on the hub, one mind with two
+The call can talk to the agent on the hub instead, one mind with two
 voices: `RemoteAgent` (remote.py) reads like `Agent`, from the hub's
-events over a WebSocket with TLS, says its lines in its `voice`, and
-lends the hub this machine's `hands` (hands.py). It gets its own
-CallHost (with its own `draft_key`), CallStatus (`call=` its window,
-`side=` its screen edge) and CallRouter (`call=`, `status=`):
+events over a WebSocket with TLS, says each line in the voice the call
+has switched to (Ctrl+S), and lends the hub this machine's `hands`
+(hands.py). Put it where `AGENT` was — the call's and the corner chip's
+content, and the services, with a router that shows the chip only to
+ring or ask — and leave `AGENT` out:
 
-    LILAC = RemoteAgent(voice="lilac", endpoints=[...],
-                        tls={"ca": ..., "cert": ..., "key": ...},
-                        hands=laptop_hands())
+    HUB = RemoteAgent(voice="indigo", endpoints=[...],
+                      tls={"ca": ..., "cert": ..., "key": ...},
+                      hands=laptop_hands())
+    SERVICES = [..., FIREFOX, HUB, CallRouter(HUB, show_working=False)]
+    WINDOWS = [..., WindowSpec(name=CALL_WINDOW, content=CallHost(HUB), ...),
+               WindowSpec(name=STATUS_WINDOW, content=CallStatus(HUB), ...)]
+
+A second call works too: its own CallHost (with its own `draft_key`),
+CallStatus (`call=` its window, `side=` its screen edge) and CallRouter
+(`call=`, `status=`).
 """
 
 from .firefox import Firefox

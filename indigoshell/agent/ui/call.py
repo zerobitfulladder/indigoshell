@@ -58,6 +58,9 @@ Keys in the call:
                         are online or when last seen, their connections,
                         the hands each lends, which wake by push. Escape
                         or Ctrl+D to leave the list
+    Ctrl+S              who answers your next line: Indigo or Lilac (a
+                        call to the hub only; shown in your plate's
+                        heading, and remembered)
     Ctrl+N              a new conversation, from scratch (also Ctrl+L)
     Ctrl+M              next model: opus, sonnet, haiku, fable (Shift:
                         back). Switches the live conversation.
@@ -242,7 +245,8 @@ class CallHost(Widget):
         self.agent_plate.invalidate()
         a = self.agent
         you_key = (a.busy, a.heard, getattr(a, "heard_on", None),
-                   tuple(a.queued), a.approval is None)
+                   getattr(a, "voice", None), tuple(a.queued),
+                   a.approval is None)
         if you_key != self._you_key:
             self._you_key = you_key
             self.you_plate.invalidate()
@@ -405,6 +409,9 @@ class CallHost(Widget):
             return True
         if letter == "d" and plate.has_devices():
             plate.toggle_devices()
+            return True
+        if letter == "s" and hasattr(a, "switch_voice"):
+            a.switch_voice()                # who answers the next line
             return True
         if letter in ("l", "n"):
             if a.new_conversation():

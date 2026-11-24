@@ -10,9 +10,9 @@ from ...widgets.base import Size, Widget
 from ...widgets.text_input import TextInput
 from ..session import Agent
 from .frame import Comet
-from .style import (ACT_SIZE, BODY_SIZE, MAX_HEARD_LINES, NAME_SIZE, PAD_X,
-                    PAD_Y, PLATE_W, TAG_SIZE, YOU_ACCENT, YOU_FILL, line_h,
-                    paint_heading, paint_plate)
+from .style import (ACT_SIZE, AGENT_ACCENT, BODY_SIZE, MAX_HEARD_LINES,
+                    NAME_SIZE, PAD_X, PAD_Y, PLATE_W, TAG_SIZE, YOU_ACCENT,
+                    YOU_FILL, line_h, paint_heading, paint_plate)
 
 
 # ── your plate ──────────────────────────────────────────────────────────
@@ -76,6 +76,48 @@ class YouPlate(Widget):
             rect.left() + PAD_X + prompt, top,
             self.inner_w - prompt, self._input_h))
 
+    def _paint_keys(self, canvas, box, left: float, right: float) -> None:
+        """The keys, right-aligned in the heading, led by the hub's voice
+        switch: who answers your next line, in their colour (^S). The
+        least needed keys go when the heading is short of room."""
+        a = self.agent
+        hub = getattr(a, "devices", None) is not None
+        if a.busy:
+            keys = ["⏎ send", "^C stop", "^D devices" if hub else "",
+                    "esc hang up"]
+        else:
+            keys = ["⏎ send", "^H history", "^D devices" if hub else "",
+                    "^N new", "esc hang up"]
+        keys = [k for k in keys if k]
+        switch = getattr(a, "voice_switch", None)
+        gap = "   "
+        lead = text.measure("^S ", TAG_SIZE) if switch else 0.0
+        name_w = text.measure(switch[0], TAG_SIZE, bold=True) \
+            if switch else 0.0
+
+        def width(ks) -> float:
+            w = text.measure(gap.join(ks), TAG_SIZE)
+            return w + (lead + name_w + text.measure(gap, TAG_SIZE)
+                        if switch else 0.0)
+
+        for drop in ("^D devices", "^H history", "^N new"):
+            if left + 12 + width(keys) <= right:
+                break
+            if drop in keys:
+                keys.remove(drop)
+        hint = gap.join(keys)
+        base = text.baseline_in(box, TAG_SIZE)
+        x = right - text.measure(hint, TAG_SIZE)
+        text.draw(canvas, hint, x, base, TAG_SIZE,
+                  theme.color(theme.BASE_MUTED))
+        if switch:
+            name, color = switch
+            x -= text.measure(gap, TAG_SIZE) + name_w
+            text.draw(canvas, name, x, base, TAG_SIZE,
+                      theme.color(color or AGENT_ACCENT), bold=True)
+            text.draw(canvas, "^S ", x - lead, base, TAG_SIZE,
+                      theme.color(theme.BASE_MUTED))
+
     def paint(self, canvas: skia.Canvas) -> None:
         a = self.agent
         paint_plate(canvas, self.rect, YOU_ACCENT, YOU_FILL)
@@ -89,17 +131,11 @@ class YouPlate(Widget):
         # The hub's conversation is shared: a line asked on another of
         # your devices says which.
         on = getattr(a, "heard_on", None)
-        paint_heading(canvas, box, NAME_SIZE,
-                      (("YOU", YOU_ACCENT, True),
-                       (f"on {on}" if on else "", theme.BASE_MUTED, False)))
-        devices = "^D devices   " if getattr(a, "devices", None) is not None \
-            else ""
-        hint = f"⏎ send   ^H history   {devices}^N new   esc hang up"
-        if a.busy:
-            hint = f"⏎ send   ^C stop   {devices}esc hang up"
-        w = text.measure(hint, TAG_SIZE)
-        text.draw(canvas, hint, right - w, text.baseline_in(box, TAG_SIZE),
-                  TAG_SIZE, theme.color(theme.BASE_MUTED))
+        head_end = paint_heading(
+            canvas, box, NAME_SIZE,
+            (("YOU", YOU_ACCENT, True),
+             (f"on {on}" if on else "", theme.BASE_MUTED, False)))
+        self._paint_keys(canvas, box, head_end, right)
         y += hh
 
         for line in self._heard():

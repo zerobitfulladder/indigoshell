@@ -20,11 +20,14 @@ is closed still rings. It comes back by itself when either machine was
 away, with a growing pause between tries; opening the call or saying a
 line cuts the pause short.
 
-**Voices:** the lines said in this call go to the agent in `voice`. The
-conversation is shared, so the turn on show may be in the other voice
-(asked from the phone, say): `name` and `accent`, which the overlay
-paints the agent's plate and chip with, follow the voice of the turn on
-show, in the name and colour the hub gives it (`welcome.voices`).
+**Voices:** each line said in the call goes to the agent in `voice`,
+which the call switches (`switch_voice`, Ctrl+S) and remembers across
+reloads; the voices themselves (names, colours) are the hub's, from
+`welcome.voices`, and are remembered too, so the call can name them
+while the line is down. The conversation is shared, so the turn on show
+may be in the other voice (asked from the phone, or before a switch):
+`name` and `accent`, which the overlay paints the agent's plate and
+chip with, follow the voice of the turn on show.
 
 **Ringing:** the hub says who rings (its `ring` event names devices,
 `*` for all): what was asked from this laptop rings here, what was asked
@@ -61,6 +64,7 @@ from collections import deque
 from typing import Callable
 from urllib.parse import urlsplit
 
+from ..core import state
 from .activity import Activity, Approval
 from .hands import Hands
 from .session import (ACTIVITY_KEEP, DEFAULT_EFFORT, EFFORT_NAMES, EFFORTS,
@@ -214,20 +218,24 @@ class RemoteAgent:
 
     A SERVICES entry (it needs the loop for its line), with a `CallHost`
     and a `CallStatus` of its own and a `CallRouter` watching it. Give it
-    the `voice` its lines are said in, `endpoints` and `tls`, and the
-    `hands` this machine lends (hands.py), if any. `accent` is the
-    voice's colour until the hub gives its own.
+    the `voice` that answers until the call switches it, `endpoints` and
+    `tls`, and the `hands` this machine lends (hands.py), if any.
+    `state_key` names what it remembers in the shell's state file (the
+    voice chosen, the hub's voices); None remembers nothing. `accent` is
+    the voice's colour until the hub gives its own.
     """
 
     def __init__(self, *, voice: str, endpoints: list[str], tls: dict,
                  server_name: str = "lilac", hands: Hands | None = None,
-                 accent: str | None = None,
+                 accent: str | None = None, state_key: str | None = "hub",
                  workspace: str | None = None) -> None:
         if not endpoints:
             raise ValueError("RemoteAgent needs the hub's endpoints")
         if not all(tls.get(k) for k in ("ca", "cert", "key")):
             raise ValueError("RemoteAgent needs tls: {ca, cert, key}")
-        self.voice = voice
+        self.voice = voice              # who answers the next line
+        self.default_voice = voice
+        self.state_key = state_key
         self.endpoints = list(endpoints)
         self.tls = dict(tls)
         self.server_name = server_name
@@ -236,7 +244,7 @@ class RemoteAgent:
         # Where a relative link in a reply would be opened from.
         self.workspace = workspace or os.path.expanduser("~")
         self.jobs = _NoJobs()
-        self._tag = f"{voice} call"     # in the log
+        self._tag = "hub call"          # in the log
 
         # ── mirrored from the hub ───────────────────────────────────
         self.phase = "offline"
@@ -262,6 +270,7 @@ class RemoteAgent:
         self.hangup_line: str | None = None
         self.turn_started = 0.0
         self.queued: list[str] = []     # said while the line was down
+        self._queued_voices: list[str] = []
 
         # ── ours ────────────────────────────────────────────────────
         self.call_open = False
@@ -277,7 +286,8 @@ class RemoteAgent:
         self._ring_turn = None          # the turn rung for
         self._unseen = None             # the hub's unseen turn
         self._seen_sent = None
-        self._mine: deque[str] = deque()    # said here, not yet echoed
+        # Said here and not yet heard back: (text, voice).
+        self._mine: deque[tuple[str, str]] = deque()
         self._local_turn = False        # begun here, the hub's `turn` due
         self._turn_ours = False         # the turn on show was asked here
         self._segments: list[str] = []
@@ -303,13 +313,51 @@ class RemoteAgent:
     @property
     def accent(self) -> str | None:
         """The colour of the voice of the turn on show."""
-        voice = self._voices.get(self.shown_voice) or {}
+        return self._color(self.shown_voice)
+
+    def _color(self, voice_id: str) -> str | None:
+        voice = self._voices.get(voice_id) or {}
         if voice.get("color"):
             return voice["color"]
-        return self._accent if self.shown_voice == self.voice else None
+        return self._accent if voice_id == self.default_voice else None
+
+    @property
+    def voice_switch(self) -> tuple[str, str | None]:
+        """Who answers the next line, as the call's switch shows it: the
+        voice's name and colour."""
+        voice = self._voices.get(self.voice) or {}
+        return (str(voice.get("name") or self.voice.capitalize()),
+                self._color(self.voice))
+
+    def switch_voice(self) -> None:
+        """The next line goes to the other voice (the next, if the hub
+        ever has more); remembered across reloads."""
+        ids = list(self._voices) or [self.default_voice]
+        if self.voice not in ids:
+            ids.insert(0, self.voice)
+        self.voice = ids[(ids.index(self.voice) + 1) % len(ids)]
+        self._remember("voice", self.voice)
+        if not self.busy and not self.heard and not self.message:
+            self.shown_voice = self.voice   # an empty call: whose it is
+        self._emit()
+
+    def _remember(self, what: str, value) -> None:
+        if self.state_key:
+            state.set(f"{self.state_key}.{what}", value)
+
+    def _recall(self, what: str):
+        return state.get(f"{self.state_key}.{what}") if self.state_key \
+            else None
 
     # ── service hooks ───────────────────────────────────────────────────
     def start(self) -> None:
+        voices = self._recall("voices")
+        if isinstance(voices, dict):
+            self._voices = {str(k): v for k, v in voices.items()
+                            if isinstance(v, dict)}
+        voice = self._recall("voice")
+        if isinstance(voice, str) and voice:
+            self.voice = self.shown_voice = voice
         self._wake = asyncio.Event()
         self._task = asyncio.get_running_loop().create_task(self._line())
 
@@ -362,6 +410,7 @@ class RemoteAgent:
             return
         if not self.connected:
             self.queued.append(line)
+            self._queued_voices.append(self.voice)
             self._poke()
             self._emit()
             return
@@ -372,12 +421,16 @@ class RemoteAgent:
             self._begin_turn(line)
             self._local_turn = self._turn_ours = True
             self.shown_voice = self.voice
-        self._mine.append(line)
-        self._send({"type": "say", "text": line, "voice": self.voice})
+        self._say(line, self.voice)
         self._emit()
+
+    def _say(self, line: str, voice: str) -> None:
+        self._mine.append((line, voice))
+        self._send({"type": "say", "text": line, "voice": voice})
 
     def interrupt(self) -> None:
         self.queued.clear()
+        self._queued_voices.clear()
         if self.busy:
             self._interrupted = True
         self._send({"type": "stop"})
@@ -734,10 +787,16 @@ class RemoteAgent:
                     "name": str(v.get("name") or v["id"]),
                     "color": color if isinstance(color, str)
                     and _COLOR.fullmatch(color) else None}
-        self._voices = voices
+        if voices:
+            self._voices = voices
+            self._remember("voices", voices)
         if self.voice not in voices:
-            log.warning("%s: the hub has no voice %r (it has %s)", self._tag,
-                        self.voice, ", ".join(voices) or "none")
+            fallback = self.default_voice if self.default_voice in voices \
+                else next(iter(voices), self.voice)
+            log.warning("%s: the hub has no voice %r (it has %s); %s answers",
+                        self._tag, self.voice, ", ".join(voices) or "none",
+                        fallback)
+            self.voice = fallback
         log.info("%s: on the line via %s as %s", self._tag, self.via,
                  self.device)
         self._apply_state(ev.get("state") or {})
@@ -766,18 +825,19 @@ class RemoteAgent:
                 self._ring("done" if unseen.get("ok") else "error",
                            self._unseen, _notify_line(unseen.get("notify")))
         if self.queued:                     # said while the line was down
-            if not self.busy:
-                self._begin_turn(self.queued[0])
-                self._local_turn = self._turn_ours = True
-                self.shown_voice = self.voice
-            else:
-                for line in self.queued:
-                    self._you_segment(line)
-            for line in self.queued:
-                self._mine.append(line)
-                self._send({"type": "say", "text": line,
-                            "voice": self.voice})
+            said = list(zip(self.queued, self._queued_voices))
             self.queued.clear()
+            self._queued_voices.clear()
+            if not self.busy:
+                self._begin_turn(said[0][0])
+                self._local_turn = self._turn_ours = True
+                self.shown_voice = said[0][1]
+            else:
+                for line, _voice in said:
+                    self._you_segment(line)
+            for line, voice in said:
+                self._say(line, voice if voice in self._voices
+                          else self.voice)
         self._send({"type": "history"})
         if self.call_open:
             self._send({"type": "warm"})
@@ -793,10 +853,9 @@ class RemoteAgent:
             self._apply_state(ev)
         elif kind == "line":
             text = str(ev.get("text") or "").strip()
-            if self._mine and text == self._mine[0] \
+            if self._mine and (text, ev.get("voice")) == self._mine[0] \
                     and ev.get("device") == self.device \
-                    and ev.get("client") == CLIENT \
-                    and ev.get("voice") == self.voice:
+                    and ev.get("client") == CLIENT:
                 self._mine.popleft()        # ours, already on show
                 return
             if self.busy and not self._local_turn:
