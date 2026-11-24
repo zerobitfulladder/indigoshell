@@ -46,6 +46,17 @@ anyway (WinIdChange) the filter moves to the new one and the shell is
 told the new X window. The release of a key we took (a shortcut, a key
 typed into find) never reaches the page either.
 
+The mouse on the tabs. The shell's top bar draws the tabs, so clicks on
+them arrive as commands (protocol.py): `tab` (a left or right press),
+`close` (a middle click; the tab is remembered for Ctrl+Shift+T as on
+Ctrl+W), `move` (a tab dragged along the bar: Alt+Shift+N's move) and
+`detach` (one dragged off the bar: app.py `detach_tab`), each naming
+the tab by its id, which the state carries. A tab the agent holds gets
+what the same path does with no mouse: switching away from one it drives
+ends its session (the Watch, `shown`), closing ends it with the tab,
+moving it changes nothing of it, and one torn out takes its session
+along (as `borrow` does).
+
 The launcher. On a main window the shell grabs Ctrl+L, Ctrl+T and
 Ctrl+M (protocol.py, KEYS): while a shell has the window they never get
 here, and the shell's launcher answers them; the tab Ctrl+T is for is
@@ -1062,13 +1073,37 @@ class Window(QWidget):
                 self.bookmark(msg["op"], url.strip() if url else None)
             else:
                 log.debug("bookmark command with a url that is no address: %s", msg)
-        elif cmd == "tab" and isinstance(msg.get("index"), int):
-            self.select(msg["index"])
-        elif cmd == "close":
-            index = msg.get("index")
-            self.close_tab(index if isinstance(index, int) else tab)
+        elif cmd == "close" and protocol.TAB_ID not in msg:
+            self.close_tab(tab)
+        elif cmd in ("tab", "close", "move", "detach"):
+            self.on_tab_command(cmd, msg)
         else:
             log.debug("shell command not understood: %s", msg)
+
+    def on_tab_command(self, cmd: str, msg: dict) -> None:
+        """`tab`, `close`, `move` or `detach` for one tab, named by its
+        id (the mouse on the shell's top bar): the tab the user clicked,
+        wherever it is in the list now; nothing when it is gone."""
+        tab_id = msg.get(protocol.TAB_ID)
+        target = next((t for t in self.tabs if t.id == tab_id), None) \
+            if protocol.is_id(tab_id) else None
+        if target is None:
+            log.debug("%s for a tab this window does not hold: %s", cmd, msg)
+            return
+        if cmd == "tab":
+            self.select(self.tabs.index(target))
+        elif cmd == "close":
+            self.close_tab(target)
+        elif cmd == "move":
+            to = msg.get("to")
+            if self.single or not protocol.is_id(to) or to < 0:
+                log.debug("move not taken: %s", msg)
+                return
+            self.move_tab(self.tabs.index(target), min(to, len(self.tabs) - 1))
+        else:
+            x, y = msg.get("x"), msg.get("y")
+            at = (x, y) if protocol.is_id(x) and protocol.is_id(y) else None
+            self.browser.detach_tab(target, at=at)
 
     def state(self) -> dict | None:
         tab = self.current_tab()

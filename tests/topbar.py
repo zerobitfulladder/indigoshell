@@ -49,6 +49,20 @@
    order, a release ignored); a keymap change (MappingNotify) re-making
    the grabs; the grabs released with the window, not when an older
    connection for the same window goes.
+4b. The mouse on Flux's tabs, through the top bar's own Window (no X:
+   a stand-in display whose keyboard grabs are counted, never made) fed
+   real X events built from their bytes: which tab is under x (slots,
+   gaps, past the last); a left and a right click switching by tab id;
+   a middle click closing (let go elsewhere: nothing); the drag threshold;
+   a drag lifting the tab (the keyboard taken once, for Escape), the
+   others making room, the marker, `move` to where it lands (both ways;
+   dropped in place: nothing); below the bar still a move, past
+   TEAR_OUT_PX `detach` with the root point (never a window's only tab);
+   Escape cancelling, other keys swallowed, a late Escape never closing
+   the bar; the keyboard refused; the keyboard given back on every way
+   out (the tab closing, the Flux window going, an exception, a release
+   never seen, the window going), every grab once; hover; the bar's
+   other widgets (a handler, a position, a slider) as before.
 6. Where Flux's launcher drops from: centred on its window, its top at
    the top bar's bottom edge, or at the window's own top edge with no
    bar over it (real unmapped windows of the test's own; no launcher).
@@ -580,7 +594,8 @@ def hex_rgb(hex_: str) -> tuple[int, int, int]:
 def flux_state(titles, current=0, *, host="127.0.0.1", secure=False, loading=False,
                progress=100, bookmarked=False, find=None) -> dict:
     from flux import protocol
-    tabs = [protocol.tab(t, host, loading and i == current) for i, t in enumerate(titles)]
+    tabs = [protocol.tab(t, host, loading and i == current, id_=101 + i)
+            for i, t in enumerate(titles)]
     return protocol.state(tabs, current, progress, secure, url=f"http://{host}/",
                           bookmarked=bookmarked, find=find)
 
@@ -591,9 +606,9 @@ def test_content(scratch: Path) -> None:
     from indigoshell import theme
     from indigoshell.applink.service import AppService
     from flux import protocol
-    from indigoshell.applink.flux import (FIND_FG, HOST_FG, INSECURE_FG, FluxWindow,
-                                             NO_MATCHES_FG, PROGRESS_FG, PROGRESS_THICK,
-                                             TAB_CURRENT_FG, TAB_FG, fit_tabs)
+    from indigoshell.applink.flux import (FIND_FG, HOST_FG, INSECURE_FG, SLOT_MIN, SLOT_W,
+                                             FluxWindow, NO_MATCHES_FG, PROGRESS_FG,
+                                             PROGRESS_THICK, TAB_CURRENT_FG, TAB_FG, fit_slots)
 
     section("4. Flux's content for the top bar, painted off screen")
     service = AppService({"flux": FluxWindow}, path="/nonexistent")
@@ -615,9 +630,13 @@ def test_content(scratch: Path) -> None:
     tabs = j.content.tabs.layout()
     strong = [count_color(in_rect(img, t["x"], t["w"]), TAB_CURRENT_FG) for t in tabs]
     muted = [count_color(in_rect(img, t["x"], t["w"]), TAB_FG) for t in tabs]
-    check("three tabs from the left, numbered: the current one in the strong colour, the rest "
-          "muted", [t["text"] for t in tabs] == ["1 Alpha", "2 Beta", "3 Gamma"]
-          and tabs[0]["x"] < 8 and strong[0] > 20 and muted[0] < 5
+    slots = [(t["slot_x"], t["slot_w"]) for t in tabs]
+    check("three tabs from the left, numbered, each in a slot of the same width: the current "
+          "one in the strong colour, the rest muted",
+          [t["text"] for t in tabs] == ["1 Alpha", "2 Beta", "3 Gamma"]
+          and tabs[0]["slot_x"] < 8 and all(w == SLOT_W for _x, w in slots)
+          and slots[1][0] - slots[0][0] == slots[2][0] - slots[1][0] > SLOT_W
+          and strong[0] > 20 and muted[0] < 5
           and all(m > 20 for m in muted[1:]) and all(v < 5 for v in strong[1:]),
           f"strong {strong}, muted {muted}")
     h = j.content.host.layout()
@@ -646,23 +665,31 @@ def test_content(scratch: Path) -> None:
     tabs = j.content.tabs.layout()
     room = j.content.tabs.rect
     numbered = all(t["text"].startswith(str(t["index"] + 1)) for t in tabs)
-    ends = max(t["x"] + t["w"] for t in tabs)
-    current = next(t for t in tabs if t["current"])
-    check("twelve long titles in 900 px: each keeps its number, the titles shortened with an "
-          "ellipsis to fit, the current one still strong",
-          len(tabs) == 12 and numbered and all("…" in t["text"] for t in tabs)
-          and ends <= room.right() + 0.5 and current["index"] == 5
+    ends = max(t["slot_x"] + t["slot_w"] for t in tabs)
+    inside = all(t["x"] + t["w"] <= t["slot_x"] + t["slot_w"] for t in tabs)
+    current = next((t for t in tabs if t["current"]), {})
+    idx = [t["index"] for t in tabs]
+    check("twelve long titles in 900 px: slots of the narrowest width, the run of them that fits "
+          "around the current one, each title cut with an ellipsis inside its slot, the "
+          "current one still strong",
+          len(tabs) == int((room.width() + 2) // (SLOT_MIN + 2))
+          and idx == list(range(idx[0], idx[-1] + 1))
+          and 5 in idx and numbered and inside and all("…" in t["text"] for t in tabs)
+          and all(t["slot_w"] == SLOT_MIN for t in tabs) and ends <= room.right() + 0.5
+          and current.get("index") == 5
           and count_color(in_rect(img, current["x"], current["w"]), TAB_CURRENT_FG) > 20,
-          f"{tabs[0]['text']!r}; ends at {ends:.0f}, room to {room.right():.0f}")
+          f"{idx}: {tabs[0]['text']!r}; ends at {ends:.0f}, room to {room.right():.0f}")
 
-    def measure(s):
-        return 10.0 * len(s)
-    few = fit_tabs(["x"] * 30, 20, 120, measure)
-    idx = [i for i, *_ in few]
-    check("too many even for their numbers: the numbers alone, as many as fit, around the "
-          "current one", idx == list(range(idx[0], idx[-1] + 1)) and 20 in idx
-          and max(x + w for _i, _t, x, w in few) <= 120
-          and all(t == str(i + 1) for i, t, *_ in few), f"{[t for _i, t, *_ in few]}")
+    fits = [fit_slots(3, 0, 1600), fit_slots(14, 5, 1600), fit_slots(30, 20, 1600),
+            fit_slots(30, 0, 1600), fit_slots(30, 29, 1600), fit_slots(2, 1, 50)]
+    first, count, w = fits[2]
+    check("the slots: SLOT_W while they fit; narrower alike as more come (14 in 1600 px); "
+          "SLOT_MIN at the least, then the run around the current tab (kept inside the list "
+          "at either end); one, as wide as the room, when not even that fits",
+          fits[0] == (0, 3, SLOT_W) and fits[1][:2] == (0, 14) and SLOT_MIN <= fits[1][2] < SLOT_W
+          and 14 * fits[1][2] + 13 * 2 <= 1600 and w == SLOT_MIN and first <= 20 < first + count
+          and count == 1602 // (SLOT_MIN + 2) and fits[3][0] == 0
+          and fits[4][0] + fits[4][1] == 30 and fits[5] == (1, 1, 50), f"{fits}")
 
     j.on_message(flux_state(["Alpha"], secure=True, host="example.org", bookmarked=True))
     img = paint(j.content, W, H)
@@ -713,6 +740,409 @@ def test_content(scratch: Path) -> None:
     j.on_message(flux_state(["Alpha", "Beta"], loading=False, progress=100))
     img = paint(j.content, W, H)
     check("done: the line gone", count_color(img[-PROGRESS_THICK:], PROGRESS_FG, 6) == 0)
+
+
+# ── 4b. the mouse on Flux's tabs ────────────────────────────────────────
+
+class StubDisplay:
+    """What a Window needs of its display for input, no X: every
+    keyboard grab and ungrab counted (never sent), the pointer's buttons
+    as a test sets them, Escape and "a" as the keymap."""
+
+    def __init__(self) -> None:
+        import types
+        self.grabs = self.ungrabs = self.pumps = 0
+        self.refuse = False
+        self.buttons = 0                # the pointer's button mask, as QueryPointer says
+        self.root = 1
+        self.screen = types.SimpleNamespace(root_depth=24)
+        query = types.SimpleNamespace(
+            QueryPointer=lambda root: types.SimpleNamespace(
+                reply=lambda: types.SimpleNamespace(mask=self.buttons)))
+        self.conn = types.SimpleNamespace(core=query)
+
+    def grab_keyboard(self, wid: int) -> bool:
+        if self.refuse:
+            return False
+        self.grabs += 1
+        return True
+
+    def ungrab_keyboard(self) -> None:
+        self.ungrabs += 1
+
+    def pump(self) -> int:
+        self.pumps += 1
+        return 0
+
+    def keysym(self, keycode: int, state: int = 0) -> int:
+        return 0xFF1B if keycode == 9 else 0x61
+
+    def mod_mask(self, role: str) -> int:
+        return 0
+
+    @property
+    def held(self) -> int:
+        return self.grabs - self.ungrabs
+
+
+def x_event(kind: str, wid: int, x: int, y: int, detail: int = 0):
+    """A real xcffib event, built from its wire bytes: a button press or
+    release, a motion, a key press, or a leave."""
+    import struct
+
+    import xcffib
+    import xcffib.xproto as xp
+    code, cls = {"press": (4, xp.ButtonPressEvent), "release": (5, xp.ButtonReleaseEvent),
+                 "motion": (6, xp.MotionNotifyEvent), "key": (2, xp.KeyPressEvent),
+                 "leave": (8, xp.LeaveNotifyEvent)}[kind]
+    raw = struct.pack("=BBHIIIIhhhhHBB", code, detail, 0, 0, 1, wid, 0, x, y, x, y, 0, 1, 0)
+    ev = cls(xcffib.MemoryUnpacker(raw))
+    ev.response_type = code         # the connection sets it on events it reads
+    return ev
+
+
+def test_mouse(scratch: Path) -> None:
+    import asyncio
+
+    import skia
+
+    from flux import protocol
+    from indigoshell import theme
+    from indigoshell.applink.context import AppContext
+    from indigoshell.applink.flux import (DRAG_START_PX, MARKER_FG, SLOT_GAP, SLOT_W,
+                                          TAB_CURRENT_FG, TAB_HOVER_FG, TEAR_FG, TEAR_OUT_PX,
+                                          FluxWindow, landing, slot_at)
+    from indigoshell.applink.service import AppService
+    from indigoshell.widgets.base import Size, Widget
+    from indigoshell.widgets.layout import Align, Row
+    from indigoshell.window import Window, WindowSpec
+
+    section("4b. the mouse on Flux's tabs: the bar's window driven with synthetic X events "
+            "(no X: the keyboard grabs counted, never made)")
+    W, H = 1600, theme.TOP_BAR_HEIGHT
+    pitch = SLOT_W + SLOT_GAP
+    check("slots by x: each gap goes with the slot before it, nothing past the last; a dragged "
+          "tab lands in the slot its middle is over",
+          [slot_at(x, 3, 240) for x in (0, 239, 240, 241, 242, 723, 724, 900, -1)]
+          == [0, 0, 0, 0, 1, 2, None, None, None]
+          and [landing(at, 3, 240) for at in (0, 120, 122, 363, 364, 2000, -50)]
+          == [0, 0, 1, 1, 2, 2, 0])
+
+    service = AppService({"flux": FluxWindow}, path="/nonexistent")
+    j = FluxWindow(Line(service), 0x400001, {"single": False})
+    service.focused = j
+    # The bar's own widgets beside it, as they click today: one with a
+    # handler, one that reads the position (as the workspaces do), one
+    # that drags (as the call's plate does).
+    seen: list = []
+
+    class Spot(Widget):
+        def __init__(self, width, **kw):
+            super().__init__(**kw)
+            self.width = width
+
+        def measure(self, avail):
+            return Size(self.width, avail.height)
+
+        def paint(self, canvas):
+            pass
+
+    class Where(Spot):
+        def hit(self, x, y):
+            return self if self.rect.contains(x, y) else None
+
+        def click(self, button, x=0.0, y=0.0):
+            seen.append(("where", button, x, y))
+            return True
+
+    plain = Spot(40, on_left_click=lambda w: seen.append("left"),
+                 on_middle_click=lambda w: seen.append("middle"),
+                 on_scroll_up=lambda w: seen.append("up"))
+    where = Where(40)
+    drags = Spot(40, on_drag=lambda w, x, y, commit: seen.append(("drag", x, commit)))
+    row = Row([AppContext(service), plain, where, drags], spacing=20, align=Align.CENTER)
+    loop = asyncio.new_event_loop()
+    display = StubDisplay()
+    win = Window(display, WindowSpec(name="test-top-bar", content=row, focusable=False), loop)
+    win.wid, win.x, win.y = 0x500001, 0, 0
+    dismissed = []
+    win._dismiss_others = lambda: dismissed.append(1)
+    closes = []
+    win._request_close = lambda: closes.append(1)
+    row.attach(win)
+
+    def lay_out():
+        row.measure(Size(W, H))
+        row.arrange(skia.Rect.MakeWH(W, H))
+
+    def state(titles, current=0, ids=None):
+        ids = ids or [101 + i for i in range(len(titles))]
+        tabs = [protocol.tab(t, "x.org", False, id_=n) for t, n in zip(titles, ids)]
+        return protocol.state(tabs, current, 100, True, url="https://x.org/", bookmarked=False,
+                              find=None)
+
+    j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
+    lay_out()
+    tl = j.content.tabs
+    sent = j.link.out
+
+    def send(kind, x, y, detail=0):
+        win._on_event(x_event(kind, win.wid, int(x), int(y), detail))
+
+    def mid(i):
+        return tl.rect.left() + i * pitch + SLOT_W / 2
+
+    def since(n):
+        return [m for m in sent[n:]]
+
+    picked = [win._pick(mid(i), H / 2) is tl for i in range(4)]
+    beyond = win._pick(tl.rect.left() + 4 * pitch + 10, H / 2)
+    check("the bar's window finds the tab list through the context area, over each tab and "
+          "not past the last", all(picked) and beyond is None
+          and [tl.tab_at(mid(i)) for i in range(4)] == [0, 1, 2, 3], f"{picked}, {beyond}")
+
+    n = len(sent)
+    send("press", mid(1), 20, 1)
+    send("release", mid(1), 20, 1)
+    send("press", mid(2), 20, 3)
+    send("release", mid(2), 20, 3)
+    send("press", mid(0), 20, 1)            # the current one: nothing to switch to
+    send("release", mid(0), 20, 1)
+    check("a left and a right click switch to the tab, named by its id (no keyboard taken, open "
+          "panels dismissed as a press on the bar always did); the current one sends nothing",
+          since(n) == [{"type": "tab", "tab": 102}, {"type": "tab", "tab": 103}]
+          and display.grabs == 0 and win.holding is None and len(dismissed) == 3,
+          f"{since(n)}")
+
+    n = len(sent)
+    send("press", mid(3), 20, 2)
+    send("release", mid(3) + 30, 25, 2)
+    send("press", mid(3), 20, 2)
+    send("release", mid(2), 20, 2)
+    send("press", mid(3), 20, 2)
+    send("release", mid(3), H + 30, 2)
+    check("a middle click closes the tab under it, let go over the same tab; let go over "
+          "another, or off the bar, nothing", since(n) == [{"type": "close", "tab": 104}],
+          f"{since(n)}")
+
+    n = len(sent)
+    send("press", mid(0), 20, 1)
+    send("motion", mid(0) + DRAG_START_PX - 2, 21)
+    still = tl.lift_layout() is None and display.grabs == 0
+    send("motion", mid(0) + DRAG_START_PX + 1, 21)
+    lifted = tl.lift_layout()
+    send("motion", mid(2) + 10, 22)
+    over = tl.lift_layout()
+    placed = {i: x for i, x in tl.arrangement()[0]}
+    img = paint_window(win, W, H)
+    save(scratch / "mouse-drag.png", img)
+    mark = count_color(img[:, int(over["slot_x"]) - 1:int(over["slot_x"]) + 3], MARKER_FG, 30)
+    lift_px = count_color(img[:, int(over["x"]):int(over["x"] + SLOT_W)], TAB_CURRENT_FG, 40)
+    send("release", mid(2) + 10, 22, 1)
+    check("a press moved less than the threshold is still a click; past it the tab lifts (the "
+          "keyboard taken once, for Escape), follows the pointer, the others make room where it "
+          "lands, a marker there; let go: `move` to that place, the keyboard given back",
+          still and lifted is not None and lifted["to"] == 0 and display.grabs == 1
+          and over["to"] == 2 and placed == {1: 0, 2: pitch, 3: 3 * pitch}
+          and mark > 4 and lift_px > 20
+          and since(n) == [{"type": "move", "tab": 101, "to": 2}] and display.held == 0
+          and win.holding is None, f"{over}, {placed}, marker px {mark}, {since(n)}")
+
+    j.on_message(state(["Beta", "Gamma", "Alpha", "Delta"], 2, [102, 103, 101, 104]))
+    lay_out()
+    n = len(sent)
+    send("press", mid(2), 20, 1)
+    send("motion", mid(2) - 2 * pitch, 20)
+    send("release", mid(2) - 2 * pitch, 20, 1)
+    send("press", mid(1), 20, 1)
+    send("motion", mid(1) + 3, 22)          # under the threshold, then back
+    send("release", mid(1), 20, 1)
+    send("press", mid(3), 20, 1)
+    send("motion", mid(3) + 40, 20)
+    send("release", mid(3) + 40, 20, 1)     # dropped where it was
+    check("dragged back to the front: `move` to 0; a press barely moved: only the switch; "
+          "dropped where it was: nothing more", since(n) == [
+              {"type": "move", "tab": 101, "to": 0}, {"type": "tab", "tab": 103},
+              {"type": "tab", "tab": 104}] and display.held == 0, f"{since(n)}")
+
+    j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
+    lay_out()
+    n = len(sent)
+    send("press", mid(1), 20, 1)
+    send("motion", mid(1) + 20, H + 20)
+    near = tl.lift_layout()
+    send("motion", mid(1) + 20, H + TEAR_OUT_PX + 5)
+    far = tl.lift_layout()
+    others = sorted(x for _i, x in tl.arrangement()[0])
+    img = paint_window(win, W, H)
+    save(scratch / "mouse-tear-out.png", img)
+    cue = count_color(img, TEAR_FG, 30)
+    win.x, win.y = 100, 7
+    send("release", mid(1) + 20, H + TEAR_OUT_PX + 5, 1)
+    win.x = win.y = 0
+    check("dragged below the bar: within TEAR_OUT_PX still a move; past it the others close up, "
+          "no marker, the new-window mark by the lifted tab; let go: `detach`, with where "
+          "(root coordinates, a hint)", near["out"] is False and far["out"] is True
+          and others == [0, pitch, 2 * pitch] and cue > 10
+          and since(n) == [{"type": "tab", "tab": 102},
+                           {"type": "detach", "tab": 102, "x": int(100 + mid(1) + 20),
+                            "y": 7 + H + TEAR_OUT_PX + 5}] and display.held == 0,
+          f"{since(n)}, new-window mark px {cue}")
+
+    n = len(sent)
+    send("press", mid(1), 20, 1)
+    send("motion", mid(1) + 20, H + 20)
+    send("release", mid(1) + 20, H + 20, 1)
+    check("let go between the bar and the tear-out line: a move (here, to where it was: "
+          "nothing)", since(n) == [{"type": "tab", "tab": 102}] and display.held == 0)
+
+    j.on_message(state(["Solo"]))
+    lay_out()
+    n = len(sent)
+    send("press", mid(0), 20, 1)
+    send("motion", mid(0) + 30, H + TEAR_OUT_PX + 50)
+    solo = tl.lift_layout()
+    send("release", mid(0) + 30, H + TEAR_OUT_PX + 50, 1)
+    check("a window's only tab is never torn out: no mark, nothing sent",
+          solo is not None and not solo["out"] and since(n) == [] and display.held == 0,
+          f"{solo} {since(n)}")
+
+    j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
+    lay_out()
+    n = len(sent)
+    send("press", mid(0), 20, 1)
+    send("motion", mid(3), 20)
+    send("key", 0, 0, 10)                   # "a": swallowed, the drag goes on
+    going = tl.lift_layout() is not None
+    send("key", 0, 0, 9)                    # Escape
+    gone = tl.lift_layout() is None and win.holding is None and display.held == 0
+    send("motion", mid(3) + 5, 20)
+    send("release", mid(3), 20, 1)
+    send("key", 0, 0, 9)                    # late: the hold is over
+    check("Escape while dragging puts the tab back: the keyboard given back at once, the "
+          "release after it does nothing, another key in the drag is swallowed, and an Escape "
+          "after the hold reaches nothing (never the window's Escape-closes)",
+          going and gone and since(n) == [] and closes == [] and display.held == 0,
+          f"{since(n)}")
+
+    display.refuse = True
+    n = len(sent)
+    send("press", mid(0), 20, 1)
+    send("motion", mid(1) + 10, 20)
+    send("release", mid(1) + 10, 20, 1)
+    display.refuse = False
+    check("the keyboard refused: the drag works without Escape, nothing to give back",
+          since(n) == [{"type": "move", "tab": 101, "to": 1}] and display.ungrabs == display.grabs)
+
+    # Every way out of a hold gives the keyboard back.
+    j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
+    lay_out()
+    outs = {}
+
+    def lift_at(i):
+        send("press", mid(i), 20, 1)
+        send("motion", mid(i) + 40, 20)
+        return display.held == 1 and win.holding is tl
+
+    began = lift_at(0)
+    j.on_message(state(["Beta", "Gamma", "Delta"], 0, [102, 103, 104]))
+    outs["its tab closed meanwhile"] = began and display.held == 0 and win.holding is None \
+        and tl.drag is None
+    n = len(sent)
+    send("release", mid(1), 20, 1)
+    outs["... and its release then does nothing"] = since(n) == []
+    lay_out()
+
+    began = lift_at(0)
+    ctx = row.children()[0]
+    ctx._on_focus(None)
+    outs["the Flux window gone (its content taken off the bar)"] = began and display.held == 0 \
+        and win.holding is None and tl.window is None
+    send("motion", mid(1), 20)
+    send("release", mid(1), 20, 1)
+    service.focused = j
+    ctx._on_focus(j)
+    lay_out()
+
+    real_motion = tl.motion
+
+    def broken(x, y):
+        raise RuntimeError("a bug in motion")
+    began = lift_at(0)
+    tl.motion = broken
+    send("motion", mid(1), 20)
+    tl.motion = real_motion
+    outs["an exception in its handler"] = began and display.held == 0 and win.holding is None \
+        and tl.drag is None
+    send("release", mid(1), 20, 1)
+
+    began = lift_at(0)
+    display.buttons = 1 << 8                # still down
+    win._check_hold()
+    kept = win.holding is tl and win._hold_check is not None
+    display.buttons = 0                     # up, and no release ever came
+    win._check_hold()
+    outs["its release never seen (the button found up)"] = began and kept \
+        and display.held == 0 and win.holding is None and display.pumps >= 2
+    send("release", mid(1), 20, 1)
+
+    began = lift_at(0)
+    win._end_hold(cancel=True)              # what park, dismiss and destroy call first
+    outs["the window parked, dismissed or destroyed"] = began and display.held == 0 \
+        and tl.drag is None and win._hold_check is None
+    send("release", mid(1), 20, 1)
+    for name, ok in outs.items():
+        check(f"the keyboard given back: {name}", ok)
+    check("every grab given back, none twice", display.grabs == display.ungrabs > 0,
+          f"{display.grabs} grabs, {display.ungrabs} ungrabs")
+
+    j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
+    lay_out()
+    send("motion", mid(2), 20)
+    hovered = tl.hover
+    img = paint_window(win, W, H)
+    save(scratch / "mouse-hover.png", img)
+    t2 = next(t for t in tl.layout() if t["index"] == 2)
+    lit = count_color(img[:, int(t2["x"]):int(t2["x"] + t2["w"])], TAB_HOVER_FG, 15)
+    send("leave", 0, 0)
+    check("hover: the tab under the pointer a step brighter; gone when the pointer leaves",
+          hovered == 2 and lit > 10 and tl.hover is None, f"hover px {lit}")
+
+    # The bar's other widgets, exactly as before.
+    seen.clear()
+    n = len(sent)
+    px, wx, dx = (int(w_.rect.centerX()) for w_ in (plain, where, drags))
+    send("press", px, 20, 1)
+    on_press = list(seen)
+    send("release", px, 20, 1)
+    send("press", px, 20, 2)
+    send("release", px, 20, 2)
+    send("press", px, 20, 4)
+    send("press", wx, 21, 3)
+    send("release", wx, 21, 3)
+    send("press", dx, 20, 1)
+    send("motion", dx + 300, 20)
+    send("release", dx + 300, 20, 1)
+    check("the bar's other widgets click as before: on the press, by handler; one reading the "
+          "position gets button and place; a slider drags to its commit; none holds the press "
+          "or takes the keyboard", on_press == ["left"] and seen == [
+              "left", "middle", "up", ("where", 3, wx, 21), ("drag", dx, False),
+              ("drag", dx + 300, False), ("drag", dx + 300, True)]
+          and since(n) == [] and win.holding is None and win._pressed is None,
+          f"{seen}")
+    loop.close()
+
+
+def paint_window(win, w: int, h: int):
+    """The window's content painted off screen, as RGB."""
+    import skia
+
+    from indigoshell import theme
+    surface = skia.Surface(w, h)
+    canvas = surface.getCanvas()
+    canvas.clear(theme.color(theme.BAR_BG))
+    win.content.paint(canvas)
+    return rgb_of(surface.makeImageSnapshot())
 
 
 # ── 5. the app service ──────────────────────────────────────────────────
@@ -1490,7 +1920,7 @@ def test_spec(scratch: Path) -> None:
     h = jw.content.host.layout()
     check("the whole bar off screen: Flux's tabs from the left, its host just before the user's "
           "widget, the widget at the right end, the load line under the context area only",
-          ctx.shown is jw.content and jw.content.tabs.layout()[0]["x"] < 10
+          ctx.shown is jw.content and jw.content.tabs.layout()[0]["slot_x"] < 10
           and h["x"] + h["w"] <= label.rect.left() and label.rect.right() >= W - 10
           and count_color(img[:, int(label.rect.left()):], theme.CYAN_BRIGHT) > 20
           and count_color(img[:, :int(ctx.rect.left()) + 10], TAB_CURRENT_FG) > 0
@@ -1773,11 +2203,12 @@ async def on_screen(scratch: Path) -> None:
                                                                         "3 Gamma"]
               and strong[0] > 20 and all(m > 20 for m in muted[1:]) and h["text"] == "127.0.0.1"
               and mark > 10 and hpx > 20, f"strong {strong}, muted {muted}")
-        jw.command("tab", index=1)
+        ids = [t["tab"] for t in jw.state["tabs"]]
+        jw.command("tab", tab=ids[1])
         moved = await until(lambda: jw.state["current"] == 1, 5)
-        check("a command to it ({type: tab, index: 1}): the browser switches, the state follows",
-              bool(moved) and jw.content.tabs.current == 1)
-        jw.command("tab", index=0)
+        check("a command to it ({type: tab, tab: the second tab's id}): the browser switches, the "
+              "state follows", bool(moved) and jw.content.tabs.current == 1)
+        jw.command("tab", tab=ids[0])
         await until(lambda: jw.state["current"] == 0, 5)
         service.set_active(0)
         check("focus elsewhere: the context area empty", ctx.shown is None)
@@ -1848,6 +2279,7 @@ def main() -> int:
         test_xlib_guard(scratch)
         test_desktop(scratch)
         test_content(scratch)
+        test_mouse(scratch)
         asyncio.run(test_service(scratch))
         test_grabs(scratch)
         test_placement()

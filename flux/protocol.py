@@ -20,7 +20,8 @@ Browser -> shell
                The agent's window, and a popup of it, also asks the shell
                to `place` it before it is first shown (applink/protocol.py).
     state      {"type": "state",
-                "tabs": [{"title": str, "host": str, "loading": bool}, ...],
+                "tabs": [{"tab": id, "title": str, "host": str, "loading": bool},
+                         ...],
                 "current": <index into tabs>,
                 "progress": <0..100, the current tab's load>,
                 "secure": <bool, the current tab's connection>,
@@ -34,7 +35,12 @@ Browser -> shell
                 "agent": [null | {"voice": str, "state": "driving" | "paused"},
                           ...]}                  one per tab, in its order
                Always whole, every key there, and only when it differs
-               from the last one sent on this connection. `find` is the
+               from the last one sent on this connection. A tab's `tab`
+               is its id (the agent's, below: its page's, never reused in
+               the browser's process), which the shell names it by in the
+               commands that act on one tab, so a tab opened or closed
+               between the user's click and the command changes nothing
+               of what the click meant. `find` is the
                find-in-page line while it is open: `typing` while the
                query is being typed (a caret is drawn), false while
                stepping through the matches with n / N; `active`
@@ -54,9 +60,26 @@ Shell -> browser
     back, forward, reload
                {"type": "back"} ...                the current tab
     open       {"type": "open", "url": str}         a new tab in this window
-    tab        {"type": "tab", "index": int}        switch to that tab
+    tab        {"type": "tab", "tab": id}           switch to that tab
     close      {"type": "close"}                    close the current tab
-               {"type": "close", "index": int}      close that tab
+               {"type": "close", "tab": id}         close that tab
+               As Ctrl+W: Ctrl+Shift+T brings it back.
+    move       {"type": "move", "tab": id, "to": int}
+               That tab to position `to` (0-based, in the window's tabs as
+               the shell showed them), as Alt+Shift+N moves the current
+               one; a position past the end is the end.
+    detach     {"type": "detach", "tab": id, "x"?: int, "y"?: int}
+               That tab, its page as it is (as `borrow` moves one: a
+               half-filled form, the scroll, the page's scripts), into a
+               new window of its own, shown and focused where the window
+               manager puts it; `x`, `y` (root coordinates, where the
+               user let go) a hint it may follow (qtile's tiling does
+               not). Not a window's last tab (there is nothing to tear it
+               from), nor a single window's.
+    The shell sends `tab`, `close`, `move` and `detach` for the mouse on
+    its top bar's tabs (applink/flux.py); a tab id the window no longer
+    holds is ignored, as is a command for a single window that only a
+    tabbed one takes (`move`, `detach`).
     load       {"type": "load", "url": str, "where": "here" | "tab"}
                in the current tab, or a new one at the end
     bookmark   {"type": "bookmark", "op": "add" | "remove"}
@@ -621,7 +644,8 @@ ACTIONS = ("address", "new_tab", "actions")
 KEYS = {"ctrl+l": "address", "ctrl+t": "new_tab", "ctrl+m": "actions"}
 
 COMMANDS = ("back", "forward", "reload", "open", "tab", "close", "load", "bookmark",
-            PROMPT, "resume")
+            PROMPT, "resume", "move", "detach")
+TAB_ID = "tab"                  # a tab's id, in the state's tabs and the commands
 
 OPEN = "open"
 URLS = "urls"
@@ -636,7 +660,7 @@ STATE_KEYS = (TABS, CURRENT, PROGRESS, SECURE, URL, BOOKMARKED, FIND)
 # In every state since the agent could act, but not required: a browser
 # from before it sends none (no hold on any tab).
 OPTIONAL_STATE_KEYS = (AGENT,)
-TAB_KEYS = (TITLE, HOST, LOADING)
+TAB_KEYS = (TAB_ID, TITLE, HOST, LOADING)
 FIND_KEYS = ("query", "active", "total", "typing")
 
 
@@ -648,8 +672,8 @@ def announce(wid: int, single: bool, agent: str | None = None) -> dict:
     return _link.announce(KIND, wid, **{SINGLE: bool(single)}, **extra)
 
 
-def tab(title: str, host: str, loading: bool) -> dict:
-    return {TITLE: title, HOST: host, LOADING: bool(loading)}
+def tab(title: str, host: str, loading: bool, *, id_: int) -> dict:
+    return {TAB_ID: int(id_), TITLE: title, HOST: host, LOADING: bool(loading)}
 
 
 def find(query: str, active: int | None, total: int | None, typing: bool) -> dict:
@@ -714,9 +738,12 @@ def state_problems(msg: dict) -> list[str]:
     for i, t in enumerate(tabs):
         if not isinstance(t, dict) or set(t) != set(TAB_KEYS):
             problems.append(f"tab {i} is {t!r}")
-        elif not (isinstance(t[TITLE], str) and isinstance(t[HOST], str)
-                  and isinstance(t[LOADING], bool)):
+        elif not (is_id(t[TAB_ID]) and isinstance(t[TITLE], str)
+                  and isinstance(t[HOST], str) and isinstance(t[LOADING], bool)):
             problems.append(f"tab {i} field types: {t!r}")
+    ids = [t.get(TAB_ID) for t in tabs if isinstance(t, dict)]
+    if len(set(map(repr, ids))) != len(ids):
+        problems.append(f"tab ids repeat: {ids}")
     current = msg[CURRENT]
     if not isinstance(current, int) or not 0 <= current < len(tabs):
         problems.append(f"current {current!r} outside 0..{len(tabs) - 1}")

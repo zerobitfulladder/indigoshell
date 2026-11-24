@@ -43,6 +43,12 @@ MAX_PHASE_STEP = 2.0
 # long — see `_grab`.
 GRAB_RETRY_S = 0.01
 GRAB_GIVE_UP_S = 2.0
+# While a widget holds a press (`Widget.press`), the pointer's buttons are
+# looked at this often: a release that never reached the window (another
+# window of ours had the pointer grabbed when the press came, and the
+# release went to it) still ends the hold, and the keyboard it took.
+HOLD_CHECK_S = 0.25
+_ESCAPE = 0xFF1B
 
 
 class Layer(Enum):
@@ -269,6 +275,13 @@ class Window:
         # not the cursor, so the release pass needs its own record.
         self._dragging: Widget | None = None
         self._drag_xy: tuple[float, float] = (0.0, 0.0)
+        # A press a widget holds (`Widget.press`) and its button; whether
+        # the keyboard is ours for it (`hold_keyboard`); the timer that
+        # looks for a release that never came (HOLD_CHECK_S).
+        self._held: Widget | None = None
+        self._held_button = 0
+        self._held_keys = False
+        self._hold_check: asyncio.TimerHandle | None = None
         self._shown_sent = False
         # Hidden between opens with its content detached — see park().
         self._parked = False
@@ -768,8 +781,10 @@ class Window:
                 log.exception("on_dismiss failed in %s", self.spec.name)
         if (self._transition <= 0 or not self.mapped
                 or self.loop is None or self.surface is None):
+            self._end_hold(cancel=True)
             self._finish_dismiss()
             return
+        self._end_hold(cancel=True)
         self._ungrab_pointer()
         self._ungrab_keyboard()
         self._set_blur(False)
@@ -934,6 +949,7 @@ class Window:
         so the next `show()` starts as if from `create()`.
         """
         self.hide()
+        self._end_hold(cancel=True)
         self._ungrab_pointer()
         self._ungrab_keyboard()
         self._set_blur(False)
@@ -980,6 +996,7 @@ class Window:
     def destroy(self) -> None:
         if self.wid is None:
             return
+        self._end_hold(cancel=True)
         self._ungrab_pointer()
         self._ungrab_keyboard()
         self._stop_clock()
@@ -1663,16 +1680,19 @@ class Window:
         elif isinstance(ev, xp.ButtonPressEvent):
             self._on_press(ev)
         elif isinstance(ev, xp.ButtonReleaseEvent):
-            self._on_release()
+            self._on_release(ev)
         elif isinstance(ev, xp.MotionNotifyEvent):
             # A drag owns the pointer until release: motion goes to the
             # captured widget wherever the cursor is, and hover stops
             # tracking, or dragging a slider past its own edge would
             # both drop the drag and light up whatever is underneath.
-            if self._dragging is not None:
+            if self._held is not None:
+                self._held_motion(ev.event_x, ev.event_y)
+            elif self._dragging is not None:
                 self._deliver_drag(ev.event_x, ev.event_y, commit=False)
             else:
                 self._set_hover(self._pick(ev.event_x, ev.event_y))
+                self._hover_motion(ev.event_x, ev.event_y)
         elif (ev.response_type & 0x7F) == 3:
             # KeyRelease. Checked by opcode, ahead of the press branch:
             # xcffib gives releases the KeyPressEvent shape, and a grab
@@ -1697,6 +1717,16 @@ class Window:
         return self._phase in ("exit", "gone")
 
     def _on_key(self, ev) -> None:
+        if self._held_keys:
+            self._held_key(self._key_event(ev))
+            return
+        if not self.spec.grab_keyboard:
+            # Only a held press's grab brings keys to a window that does
+            # not take the keyboard (`hold_keyboard`); one typed as it
+            # ended is late, and must not reach the Escape below, which
+            # would close the window (the top bar).
+            log.debug("%s: a key after its hold ended, dropped", self.spec.name)
+            return
         if self.content is None or self._dismissing():
             return
         key = self._key_event(ev)
@@ -1714,6 +1744,8 @@ class Window:
             log.exception("key handler failed in %s", self.spec.name)
 
     def _on_key_release(self, ev) -> None:
+        if self._held_keys or not self.spec.grab_keyboard:
+            return              # a held press's keyboard: releases are nobody's
         if self.content is None or self._dismissing():
             return
         try:
@@ -1738,6 +1770,9 @@ class Window:
             widget.set_hovered(True)
 
     def _on_press(self, ev) -> None:
+        if self._held is not None:
+            # Another button while a press is held: the held one decides.
+            return
         if self.spec.dismiss_on_outside_click and self._phase not in ("exit", "gone"):
             # Under the grab, clicks anywhere else in the session arrive
             # here with coordinates relative to us — so "outside" is just
@@ -1765,6 +1800,8 @@ class Window:
             self._pressed = widget
             widget.pressed = True
             widget.invalidate()
+            if self._offer_press(widget, ev):
+                return
         if ev.detail == 1 and widget.on_drag is not None:
             self._dragging = widget
             self._deliver_drag(ev.event_x, ev.event_y, commit=False)
@@ -1795,7 +1832,18 @@ class Window:
         except Exception:
             log.exception("drag handler failed in %s", self.spec.name)
 
-    def _on_release(self) -> None:
+    def _on_release(self, ev) -> None:
+        if self._held is not None:
+            if ev.detail != self._held_button:
+                return          # another button's, while the held one is down
+            # Let go of everything first: the widget's answer may fail.
+            widget = self._end_hold()
+            try:
+                widget.release(ev.detail, ev.event_x, ev.event_y)
+            except Exception:
+                log.exception("release handler failed on %s", type(widget).__name__)
+            self._unpress()
+            return
         if self._dragging is not None:
             # The commit pass is what lets a control write once at the
             # end of a drag instead of firing a subprocess per motion
@@ -1803,10 +1851,167 @@ class Window:
             # processes crossing one slider.
             self._deliver_drag(*self._drag_xy, commit=True)
             self._dragging = None
+        self._unpress()
+
+    def _unpress(self) -> None:
         if self._pressed is not None:
             self._pressed.pressed = False
             self._pressed.invalidate()
             self._pressed = None
+
+    # ── a held press (`Widget.press`) ───────────────────────────────────
+    # From the press to its button's release the widget gets the motion
+    # and the release wherever the pointer goes. That needs no grab of
+    # ours: X keeps the pointer for the window a press went to until every
+    # button is up (the automatic grab), and its motion and release are
+    # reported to that window, below its edge too. An explicit
+    # GrabPointer would turn that into a grab that outlives the release
+    # until ungrabbed, the one way a drag could keep the desktop's
+    # pointer; none is made. The keyboard is taken only when the widget
+    # asks (`hold_keyboard`, for Escape), and given back on every way out
+    # of the hold: its release, Escape, the release never seen
+    # (`_check_hold`), the widget leaving the window, an exception in
+    # its handlers, the window parked, dismissed or destroyed.
+    def _offer_press(self, widget: Widget, ev) -> bool:
+        """Whether `widget` holds the press (no click then)."""
+        try:
+            taken = widget.press(ev.detail, ev.event_x, ev.event_y)
+        except Exception:
+            log.exception("press handler failed on %s", type(widget).__name__)
+            return True         # neither a hold nor a click after a half-done press
+        if not taken:
+            return False
+        self._held, self._held_button = widget, ev.detail
+        log.debug("button %d held by %s", ev.detail, type(widget).__name__)
+        self._watch_hold()
+        # As a press on the bar's empty part always did: open panels go.
+        self._dismiss_others()
+        return True
+
+    def hold_keyboard(self, widget: Widget) -> bool:
+        """Take the keyboard while `widget` holds a press, so that Escape
+        can cancel it (`Widget.cancel`); the other keys typed meanwhile go
+        to its `key` and no further. Once, no retries: refused (another
+        client has the keyboard, or a window of ours does, whose grab
+        this would replace), the hold goes on without Escape. Given back
+        when the hold ends, however it ends."""
+        if widget is not self._held or self.wid is None:
+            return False
+        if self._held_keys:
+            return True
+        if self._keyboard_taken_here():
+            log.debug("%s: a window of ours has the keyboard; no Escape for this hold",
+                      self.spec.name)
+            return False
+        if not self.display.grab_keyboard(self.wid):
+            log.debug("%s: keyboard refused; no Escape for this hold", self.spec.name)
+            return False
+        self._held_keys = True
+        return True
+
+    def release_hold(self, widget: Widget) -> None:
+        """`widget` lets go of the press it holds before its release
+        (its state went out from under it: the tab it drags closed)."""
+        if widget is self._held:
+            self._end_hold()
+
+    @property
+    def holding(self) -> Widget | None:
+        return self._held
+
+    def _keyboard_taken_here(self) -> bool:
+        """Whether another window of this shell holds the keyboard (a
+        grab of ours on this one would take it from it)."""
+        try:
+            from .core.daemon import get_daemon
+            windows = list(get_daemon().instances.values())
+        except RuntimeError:            # no daemon: a test's own window
+            return False
+        return any(w is not self and (w._kb_grabbed or "keyboard" in w._grab_retry)
+                   for w in windows)
+
+    def _end_hold(self, *, cancel: bool = False) -> Widget | None:
+        """The hold over: the keyboard given back, the check stopped;
+        with `cancel` the widget told (`Widget.cancel`). The widget that
+        held it, or None."""
+        widget, self._held = self._held, None
+        self._held_button = 0
+        if self._hold_check is not None:
+            self._hold_check.cancel()
+            self._hold_check = None
+        if self._held_keys:
+            self._held_keys = False
+            try:
+                self.display.ungrab_keyboard()
+            except Exception:
+                log.debug("%s: keyboard ungrab failed", self.spec.name, exc_info=True)
+        if cancel and widget is not None:
+            log.debug("%s's held press cancelled", type(widget).__name__)
+            try:
+                widget.cancel()
+            except Exception:
+                log.exception("cancel handler failed on %s", type(widget).__name__)
+        return widget
+
+    def _held_motion(self, x: float, y: float) -> None:
+        widget = self._held
+        if widget.window is not self:   # taken out of this window's tree meanwhile
+            self._end_hold(cancel=True)
+            return
+        try:
+            widget.motion(x, y)
+        except Exception:
+            log.exception("motion handler failed on %s", type(widget).__name__)
+            self._end_hold(cancel=True)
+
+    def _held_key(self, key: KeyEvent) -> None:
+        widget = self._held
+        if widget is None:
+            return
+        if key.keysym == _ESCAPE:
+            self._end_hold(cancel=True)
+            return
+        try:
+            widget.key(key)
+        except Exception:
+            log.exception("key handler failed on %s", type(widget).__name__)
+            self._end_hold(cancel=True)
+
+    def _hover_motion(self, x: float, y: float) -> None:
+        widget = self._hovered
+        if widget is None:
+            return
+        try:
+            widget.motion(x, y)
+        except Exception:
+            log.exception("motion handler failed on %s", type(widget).__name__)
+
+    def _watch_hold(self) -> None:
+        if self.loop is not None and self._held is not None:
+            self._hold_check = self.loop.call_later(HOLD_CHECK_S, self._check_hold)
+
+    def _check_hold(self) -> None:
+        """The held button still down, or the hold over: a release read
+        off the wire along with the answer is dispatched first, so a
+        release that did come is never taken for a lost one."""
+        self._hold_check = None
+        if self._held is None:
+            return
+        d = self.display
+        try:
+            mask = d.conn.core.QueryPointer(d.root).reply().mask
+        except Exception:
+            log.debug("%s: pointer query failed", self.spec.name, exc_info=True)
+            mask = 0                    # no way to know: let go rather than hold on
+        d.pump()
+        if self._held is None:
+            return
+        if not mask & (1 << (7 + self._held_button)):
+            log.info("%s: button %d came up unseen; its hold let go", self.spec.name,
+                     self._held_button)
+            self._end_hold(cancel=True)
+            return
+        self._watch_hold()
 
 
 def _wm_class_name() -> str:

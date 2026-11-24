@@ -32,6 +32,10 @@ agent's window (made, and placed before it shows, when there is none),
 remembering where it came from; `hand_back` sends a tab of the agent's
 window to the user's (back where it came from when it can); `give_back`
 does that for every borrowed tab of an agent's window that is closing.
+`detach_tab` moves one into a new window of the user's: a tab torn off
+the shell's top bar (protocol `detach`). From the agent's window that
+makes it the user's (it leaves `borrowed` there, as any tab leaving
+does); a session the agent drives on it follows it, as on a `borrow`.
 
 Downloads are taken, no question asked, into the profile's download
 folder, and recorded for the agent (`download_list`, newest first, the
@@ -233,6 +237,33 @@ class Browser(QObject):
             src.close()
         log.info("tab %d moved from window %d to window %d", tab.id, src.id, dest.id)
         return src, index
+
+    def detach_tab(self, tab, *, at: tuple[int, int] | None = None) -> Window | None:
+        """A tab torn off the shell's top bar (protocol `detach`): into a
+        new window of the user's, its page as it is (`move_tab`), the
+        size of the one it left, shown and focused like any window the
+        user opens; `at`, the root point where they let go, is where its
+        top left goes if the window manager lets it (qtile tiles it
+        wherever its layout says). None, and nothing done, for a
+        window's last tab and a single window's."""
+        src = self.window_of(tab.page)
+        if src is None or src.single or len(src.tabs) < 2:
+            log.info("tab %d not torn out: %s", tab.id,
+                     "no window holds it" if src is None else
+                     "a single window's" if src.single else "its window's last tab")
+            return None
+        window = self.new_window()
+        if not self.unattended:
+            window.resize(src.size())
+            if at is not None:
+                window.move(*at)
+        self.move_tab(tab, window)
+        window.show()
+        if not (self.unattended or self.headless):
+            window.raise_()
+            window.activateWindow()
+        log.info("tab %d torn out of window %d into window %d", tab.id, src.id, window.id)
+        return window
 
     def borrow(self, tab, voice) -> dict:
         """A user's tab into the agent's window, as its current tab; where

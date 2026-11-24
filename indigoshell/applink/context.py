@@ -10,6 +10,11 @@ Focus moving swaps the content: the one shown is attached to the bar's
 window, the one left is detached and forgets the window, so an app
 window in the background keeps its content up to date without
 repainting the bar for it.
+
+The pointer reaches the shown content as any widget in the bar: the
+bar's window hit-tests through this widget into it (Flux's tabs take
+their presses and drags: Widget.press). Content swapped out while it
+holds a press lets go of it in its `detach`, which the swap calls.
 """
 
 import logging

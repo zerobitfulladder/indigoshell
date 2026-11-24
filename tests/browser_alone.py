@@ -1036,7 +1036,7 @@ def shell_side() -> None:
 
     service = AppService({"flux": FluxWindow}, path="/nonexistent")
     lilac = np.array([int(protocol.voice_color("lilac")[i:i + 2], 16) for i in (1, 3, 5)])
-    state = protocol.state([protocol.tab("Alpha", "x.org", False)], 0, 100, True,
+    state = protocol.state([protocol.tab("Alpha", "x.org", False, id_=1)], 0, 100, True,
                            url="https://x.org/", bookmarked=False, find=None)
     for name, ann in (("hers", protocol.announce(0x400001, False, "lilac")),
                       ("users", protocol.announce(0x400002, False))):

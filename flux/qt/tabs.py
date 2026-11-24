@@ -275,7 +275,7 @@ class Tab(QObject):
         return not protocol.insecure_scheme(self.url().scheme())
 
     def describe(self) -> dict:
-        return protocol.tab(self.title(), self.host(), self.loading)
+        return protocol.tab(self.title(), self.host(), self.loading, id_=self.id)
 
     # ── the agent's loads ───────────────────────────────────────────────
     @property

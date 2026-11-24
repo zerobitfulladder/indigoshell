@@ -737,7 +737,7 @@ def test_flux_flow() -> None:
         return FluxWindow(line, wid, protocol.announce(wid, single)), line
 
     def page(url, bookmarked=False):
-        return protocol.state([protocol.tab("Cats", "x.org", False)], 0, 100, True, url=url,
+        return protocol.state([protocol.tab("Cats", "x.org", False, id_=1)], 0, 100, True, url=url,
                               bookmarked=bookmarked, find=None)
 
     ctrl = {c: key(ord(c), ctrl=True) for c in "ltm"}
@@ -1023,7 +1023,7 @@ async def on_screen() -> None:
     try:
         fake = Fake(sock)
         fake.send(protocol.announce(stand, False))
-        fake.send(protocol.state([protocol.tab("Stand-in", "example.org", False)], 0, 100, True,
+        fake.send(protocol.state([protocol.tab("Stand-in", "example.org", False, id_=1)], 0, 100, True,
                                  url="https://example.org/", bookmarked=False, find=None))
         attached = await until(lambda: any(m.get("type") == "attached" for m in fake.read()), 5)
         grabbed = await until(lambda: stand in service.grabs, 2)

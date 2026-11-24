@@ -9,16 +9,25 @@ top bar's context area shows it (applink/context.py); the browser
 itself draws nothing of it.
 
 What it shows is text, in the bar's vocabulary: the window's tabs from
-the left as `1 Title  2 Title  3 Title`, the current one in the strong
-colour and the rest muted, titles shortened with an ellipsis so the list
-fits; at the right end of the context area the current page's host,
+the left, each `N Title` in a slot of the same width (SLOT_W, all
+narrower alike when they do not fit, down to SLOT_MIN, then the run
+around the current one), the current one in the strong colour and the
+rest muted, titles shortened with an ellipsis to their slot; at the right end of the context area the current page's host,
 after an open padlock when its connection is not secure and a bookmark
 when the page is one; a thin line along the bar's bottom edge, under the
 context area, while the current tab loads (the bar has no rule of its
 own there, so the line reads as the one moving thing on the bar). While
 the browser's find is open its line takes the tabs' place:
 `find  query▏  3/12`, the caret only while the query is typed, "no
-matches" in the error colour. Nothing on it is clickable.
+matches" in the error colour.
+
+The mouse on the tabs (TabList): a left or right press switches to the
+tab, a middle click closes it, a drag along the bar moves it, a drag
+off the bar's bottom edge tears it out into a window of its own; each a
+command to the browser (protocol.py: `tab`, `close`, `move`, `detach`)
+naming the tab by its id. The press is held by the bar's window from
+button down to button up (window.py, Widget.press); for the drag it
+takes the keyboard too, so that Escape can put the tab back.
 
 The agent. While the agent drives a tab (protocol `agent`), that tab's
 number is drawn in the voice's colour (protocol.VOICES); while the user
@@ -57,6 +66,8 @@ nothing there imports this module.
 """
 
 import logging
+import math
+from dataclasses import dataclass
 from functools import partial
 
 import skia
@@ -98,6 +109,24 @@ PAUSED_DIM = 0.35                   # a taken-over tab's number: the voice's col
                                     # muted tabs' colour to tell apart)
 RESUME_MARK = "\uf04b"              # Nerd Font: fa-play
 
+# The tabs' slots: all the same width, SLOT_W while they fit, narrower
+# alike down to SLOT_MIN, then the run of them around the current tab.
+SLOT_W = 240
+SLOT_MIN = 110
+SLOT_GAP = 2                        # between two slots
+SLOT_PAD = 12                       # inside a slot, before and after its label
+
+# The mouse on them (TabList).
+DRAG_START_PX = 6                   # a press moved this far lifts the tab
+TEAR_OUT_PX = 40                    # let go this far below the bar: a window of its own
+TAB_HOVER_FG = "#787090"            # a muted tab under the pointer: a step brighter
+TAB_CURRENT_HOVER_FG = theme.MAGENTA_BLOOM
+MARKER_FG = theme.FG_STRONG         # where a dragged tab lands
+MARKER_W = 2
+TEAR_MARK = "\uf08e"                # Nerd Font: fa-external-link, "a new window"
+TEAR_FG = theme.CYAN_BRIGHT
+TEAR_DIM = 0.5                      # the lifted tab, this far to the background
+
 
 def _blend(a: str, b: str, t: float) -> str:
     """#rrggbb `t` of the way from `a` to `b`."""
@@ -119,67 +148,51 @@ def agent_color(agent: dict | None) -> str | None:
 # Page titles and hosts are text from elsewhere: drawn through the
 # shell's per-character fallback, not shaped (see text.py).
 
-def fit_tabs(titles: list[str], current: int, width: float,
-             measure=lambda s: text.measure(s, SIZE)) -> list[tuple[int, str, float, float]]:
-    """Lay the tabs out in `width` px: (index, label, x, width) for each
-    one drawn, x from 0.
+def fit_slots(n: int, current: int, width: float) -> tuple[int, int, int]:
+    """Lay `n` tabs out in `width` px as equal slots: (the first one
+    shown, how many, each one's width). SLOT_W each when they fit;
+    otherwise all narrower alike, down to SLOT_MIN; below that, as many
+    SLOT_MIN slots as fit, the run around the current tab. Slot k of the
+    run starts at k * (width + SLOT_GAP), whole pixels."""
+    if n <= 0 or width <= 0:
+        return 0, 0, 0
+    pitch = (width + SLOT_GAP) / n
+    w = int(min(SLOT_W, pitch - SLOT_GAP))
+    if w >= SLOT_MIN:
+        return 0, n, w
+    w = int(min(SLOT_MIN, width))
+    count = max(1, min(n, int((width + SLOT_GAP) // (w + SLOT_GAP))))
+    first = max(0, min(max(0, min(current, n - 1)) - count // 2, n - count))
+    return first, count, w
 
-    All as `N Title` with two spaces between when they fit. Otherwise
-    each keeps its number and the longest titles are shortened first,
-    all to the same cap (water-filling), with an ellipsis. When even
-    `N …` each is too much, the numbers alone; and when those do not
-    fit either, as many as do, around the current one.
-    """
-    n = len(titles)
-    if n == 0 or width <= 0:
-        return []
-    gap = measure("  ")
-    labels = [f"{i + 1} {t}" if t else str(i + 1) for i, t in enumerate(titles)]
-    natural = [measure(label) for label in labels]
-    room = width - gap * (n - 1)
 
-    def place(texts, widths, first=0):
-        out, x = [], 0.0
-        for i, (label, w) in enumerate(zip(texts, widths), start=first):
-            out.append((i, label, x, w))
-            x += w + gap
-        return out
+def slot_at(x: float, count: int, w: int) -> int | None:
+    """Which of `count` slots of width `w` holds local x (a gap goes with
+    the slot before it); None past the last."""
+    if count <= 0 or x < 0:
+        return None
+    k = int(x // (w + SLOT_GAP))
+    if k >= count or x >= k * (w + SLOT_GAP) + w + (SLOT_GAP if k < count - 1 else 0):
+        return None
+    return k
 
-    if sum(natural) <= room:
-        return place(labels, natural)
 
-    floor = [min(nat, measure(f"{i + 1} …")) for i, nat in enumerate(natural)]
-    if sum(floor) <= room:
-        lo, hi = 0.0, max(natural)
-        for _ in range(30):
-            cap = (lo + hi) / 2
-            total = sum(min(nat, max(f, cap)) for nat, f in zip(natural, floor))
-            lo, hi = (cap, hi) if total <= room else (lo, cap)
-        widths = [min(nat, max(f, lo)) for nat, f in zip(natural, floor)]
-        texts = [text.ellipsize(label, SIZE, w + 0.5) if w < nat else label
-                 for label, w, nat in zip(labels, widths, natural)]
-        return place(texts, [measure(t) for t in texts])
+def landing(at: float, count: int, w: int) -> int:
+    """The slot of a run of `count` that a tab dragged with its left edge
+    at local x `at` drops into: the one its middle is over."""
+    return max(0, min(count - 1, int((at + w / 2) // (w + SLOT_GAP))))
 
-    numbers = [str(i + 1) for i in range(n)]
-    sizes = [measure(s) for s in numbers]
-    gap = measure(" ")
-    a = b = max(0, min(current, n - 1))           # the run [a, b] that fits
-    used = sizes[a]
-    while True:
-        grew = False
-        for side in (1, -1):
-            j = b + 1 if side > 0 else a - 1
-            if 0 <= j < n and used + gap + sizes[j] <= width:
-                used += gap + sizes[j]
-                a, b = (a, j) if side > 0 else (j, b)
-                grew = True
-        if not grew:
-            break
-    out, x = [], 0.0
-    for i in range(a, b + 1):
-        out.append((i, numbers[i], x, sizes[i]))
-        x += sizes[i] + gap
-    return out
+
+def slot_label(index: int, title: str, room: float,
+               measure=lambda s: text.measure(s, SIZE)) -> str:
+    """`N Title` cut with an ellipsis to `room` px; the number alone,
+    and then nothing, when not even `N …` fits."""
+    label = f"{index + 1} {title}" if title else str(index + 1)
+    if measure(label) <= room:
+        return label
+    if measure(f"{index + 1} …") <= room:
+        return text.ellipsize(label, SIZE, room + 0.5)
+    return str(index + 1) if measure(str(index + 1)) <= room else ""
 
 
 def fit_find(find: dict, width: float,
@@ -208,33 +221,120 @@ def fit_find(find: dict, width: float,
     return out
 
 
+# ── the tabs' look (placeholders until the restyle) ─────────────────────
+# Small on purpose: the mouse's states drawn in today's text look, each
+# in one helper the new look replaces.
+
+def tab_color(current: bool, hovered: bool) -> str:
+    """A tab's title: strong in front, muted behind; a step brighter
+    under the pointer."""
+    if current:
+        return TAB_CURRENT_HOVER_FG if hovered else TAB_CURRENT_FG
+    return TAB_HOVER_FG if hovered else TAB_FG
+
+
+def paint_label(canvas: skia.Canvas, label: str, index: int, x: float, base: float,
+                color: str, mark: str | None) -> None:
+    """`N Title` at x; the number in `mark` (the agent's colour) when
+    there is one."""
+    number = str(index + 1)
+    if mark is not None and label.startswith(number):
+        text.draw(canvas, number, x, base, SIZE, theme.color(mark))
+        rest = label[len(number):]
+        if rest:
+            text.draw(canvas, rest, x + text.measure(number, SIZE), base, SIZE,
+                      theme.color(color))
+        return
+    text.draw(canvas, label, x, base, SIZE, theme.color(color))
+
+
+def paint_insertion(canvas: skia.Canvas, x: float, rect: skia.Rect) -> None:
+    """Where a dragged tab lands: a thin upright line at x."""
+    p = skia.Paint(AntiAlias=False)
+    p.setColor(theme.color(MARKER_FG))
+    h = rect.height()
+    canvas.drawRect(skia.Rect.MakeXYWH(round(x), rect.top() + h * 0.25, MARKER_W, h * 0.5), p)
+
+
+def paint_lifted(canvas: skia.Canvas, label: str, index: int, x: float, base: float,
+                 mark: str | None, out: bool) -> None:
+    """The tab being dragged, at the pointer; dimmed, with a new-window
+    mark after it, while letting go would tear it out."""
+    color = _blend(TAB_CURRENT_FG, theme.BAR_BG, TEAR_DIM) if out else TAB_CURRENT_FG
+    paint_label(canvas, label, index, x, base, color, mark)
+    if out:
+        text.draw(canvas, " " + TEAR_MARK, x + text.measure(label, SIZE), base, SIZE,
+                  theme.color(TEAR_FG))
+
+
+@dataclass
+class TabDrag:
+    """A tab pressed with button 1 or 3, by its id, and where the
+    pointer has been since (window-local)."""
+    tab: int
+    button: int
+    x0: float
+    y0: float
+    grab: float             # the press's x in the tab's slot
+    x: float
+    y: float
+    lifted: bool = False    # moved DRAG_START_PX: the tab follows the pointer
+
+
 class TabList(Widget):
-    """The window's tabs, numbered, from the left of the context area;
-    the find line in their place while find is open."""
+    """The window's tabs from the left of the context area, each in a
+    slot of the same width (`fit_slots`); the find line in their place
+    while find is open.
+
+    The mouse (the window holds the press: Widget.press). A left or right
+    press on a tab switches to it at once; a middle click closes it (let
+    go over the same tab). Pressed and moved DRAG_START_PX, the tab lifts
+    and follows the pointer along the bar, the others making room where
+    it would land, and letting go over the bar moves it there; dragged
+    more than TEAR_OUT_PX below the bar and let go, it tears out into a
+    window of its own (not a window's only tab). Escape while dragging
+    puts it back (the window takes the keyboard for it, when it can).
+    Each is a command to the browser naming the tab by its id (`send`,
+    FluxWindow's), so tabs coming or going meanwhile change nothing of
+    what the click meant; a tab dragged that goes away lets go of the
+    press.
+    """
 
     def __init__(self) -> None:
         super().__init__(flex=1)
         self.titles: list[str] = []
+        self.ids: list[int] = []
         self.current = 0
         self.agents: list[dict | None] = []
         self.find: dict | None = None
-        self.drawn: list[tuple[int, str, float, float]] = []
+        # The slots shown: the first tab's index, how many, their width;
+        # each one's label.
+        self.first = self.count = self.slot_w = 0
+        self.labels: list[str] = []
         self.find_drawn: list[tuple[str, str, float, float]] = []
+        self.hover: int | None = None           # the tab under the pointer
+        self.drag: TabDrag | None = None        # a left or right press on a tab
+        self.closing: int | None = None         # the tab a middle press is on
+        self.send = None                        # send(name, **args): to the browser
 
     def set_tabs(self, titles: list[str], current: int,
-                 agents: list[dict | None] | None = None) -> None:
+                 agents: list[dict | None] | None = None,
+                 ids: list[int] | None = None) -> None:
         agents = list(agents) if agents is not None else [None] * len(titles)
-        if titles != self.titles or current != self.current:
-            self.titles, self.current, self.agents = list(titles), current, agents
+        ids = list(ids) if ids is not None else list(range(len(titles)))
+        if titles != self.titles or current != self.current or ids != self.ids:
+            self.titles, self.current, self.agents, self.ids = list(titles), current, agents, ids
             self.invalidate(layout=True)
         elif agents != self.agents:
             self.agents = agents
             self.invalidate()
+        self._still_there()
 
     def set_find(self, find: dict | None) -> None:
         if find != self.find:
             self.find = dict(find) if find else None
             self.invalidate(layout=True)
+        self._still_there()
 
     def measure(self, avail: Size) -> Size:
         return Size(0.0, text.line_height(SIZE))
@@ -242,28 +342,188 @@ class TabList(Widget):
     def arrange(self, rect: skia.Rect) -> None:
         self.rect = rect
         if self.find is not None:
-            self.drawn, self.find_drawn = [], fit_find(self.find, rect.width())
-        else:
-            self.drawn = fit_tabs(self.titles, self.current, rect.width())
-            self.find_drawn = []
+            self.first = self.count = self.slot_w = 0
+            self.labels = []
+            self.find_drawn = fit_find(self.find, rect.width())
+            return
+        self.first, self.count, self.slot_w = fit_slots(len(self.titles), self.current,
+                                                        rect.width())
+        room = self.slot_w - 2 * SLOT_PAD
+        self.labels = [slot_label(i, self.titles[i], room)
+                       for i in range(self.first, self.first + self.count)]
+        self.find_drawn = []
 
+    # ── geometry ────────────────────────────────────────────────────────
+    @property
+    def pitch(self) -> int:
+        return self.slot_w + SLOT_GAP
+
+    def tab_at(self, x: float, y: float | None = None) -> int | None:
+        """The tab whose slot holds window x (and y, when given); None
+        between none, and while find shows."""
+        if self.find is not None or not self.count:
+            return None
+        if y is not None and not self.rect.top() <= y < self.rect.bottom():
+            return None
+        k = slot_at(x - self.rect.left(), self.count, self.slot_w)
+        return None if k is None else self.first + k
+
+    def arrangement(self) -> tuple[list[tuple[int, int]], dict | None]:
+        """Each shown tab's slot, as (index, x from the left of the list);
+        while one is lifted, the others making room where it lands (closed
+        up while it would tear out), and the lifted one: {"index", "x"
+        (its slot's, following the pointer), "to" (the index it lands
+        at), "slot_x" (where), "out" (letting go tears it out)}."""
+        run = range(self.first, self.first + self.count)
+        d = self.drag
+        held = self.ids.index(d.tab) if d is not None and d.tab in self.ids else None
+        if d is None or not d.lifted or held not in run:
+            return [(i, (i - self.first) * self.pitch) for i in run], None
+        at = max(0.0, min(d.x - d.grab - self.rect.left(), (self.count - 1) * self.pitch))
+        out = self._tears_out(d.y)
+        k = landing(at, self.count, self.slot_w)
+        others = [i for i in run if i != held]
+        spots = [p for p in range(self.count) if out or p != k]
+        return ([(i, p * self.pitch) for i, p in zip(others, spots)],
+                {"index": held, "x": at, "to": self.first + k, "slot_x": k * self.pitch,
+                 "out": out})
+
+    def _tears_out(self, y: float) -> bool:
+        return len(self.titles) > 1 and y > self.rect.bottom() + TEAR_OUT_PX
+
+    def _label(self, i: int) -> str:
+        k = i - self.first
+        return self.labels[k] if 0 <= k < len(self.labels) else ""
+
+    def _mark(self, i: int) -> str | None:
+        return agent_color(self.agents[i]) if i < len(self.agents) else None
+
+    # ── the mouse ───────────────────────────────────────────────────────
+    def hit(self, x: float, y: float) -> Widget | None:
+        return self if self.send is not None and self.tab_at(x, y) is not None else None
+
+    def press(self, button: int, x: float, y: float) -> bool:
+        i = self.tab_at(x, y)
+        if i is None or self.send is None or button not in (1, 2, 3):
+            return False
+        tab = self.ids[i]
+        if button == 2:
+            self.closing = tab
+            return True
+        if i != self.current:
+            self._send("tab", tab=tab)
+        left = self.rect.left() + (i - self.first) * self.pitch
+        self.drag = TabDrag(tab, button, x, y, x - left, x, y)
+        return True
+
+    def motion(self, x: float, y: float) -> None:
+        d = self.drag
+        if d is None:
+            if self.closing is None:
+                self._set_hover(self.tab_at(x, y))
+            return
+        d.x, d.y = x, y
+        if not d.lifted:
+            if math.hypot(x - d.x0, y - d.y0) < DRAG_START_PX:
+                return
+            d.lifted = True
+            self.hover = None
+            hold = getattr(self.window, "hold_keyboard", None)
+            if hold is not None:
+                hold(self)              # for Escape; the drag works without it
+        self.invalidate()
+
+    def release(self, button: int, x: float, y: float) -> None:
+        d, closing = self.drag, self.closing
+        if closing is not None:
+            self.closing = None
+            if button == 2 and self._id_at(x, y) == closing:
+                self._send("close", tab=closing)
+            return
+        if d is None or button != d.button:
+            return
+        d.x, d.y = x, y
+        _placed, lift = self.arrangement()
+        self.drag = None
+        if not d.lifted:
+            return                      # a click: switched at the press
+        self.invalidate()
+        if lift is None:
+            return                      # its tab went from the list meanwhile
+        if lift["out"]:
+            self._send("detach", tab=d.tab, **self._root(x, y))
+        elif lift["to"] != lift["index"]:
+            self._send("move", tab=d.tab, to=lift["to"])
+
+    def cancel(self) -> None:
+        if self.drag is not None or self.closing is not None:
+            self.drag = self.closing = None
+            self.invalidate()
+
+    def set_hovered(self, value: bool) -> None:
+        super().set_hovered(value)
+        if not value:
+            self._set_hover(None)
+
+    def detach(self) -> None:
+        self._let_go()
+        self.hover = None
+        super().detach()
+
+    def _set_hover(self, index: int | None) -> None:
+        if index != self.hover:
+            self.hover = index
+            self.invalidate()
+
+    def _id_at(self, x: float, y: float) -> int | None:
+        i = self.tab_at(x, y)
+        return None if i is None else self.ids[i]
+
+    def _still_there(self) -> None:
+        """A press on a tab that is gone (or under the find line) lets go."""
+        held = self.drag.tab if self.drag is not None else self.closing
+        if held is not None and (held not in self.ids or self.find is not None):
+            log.debug("the tab under the pointer went; its press let go")
+            self._let_go()
+
+    def _let_go(self) -> None:
+        """Drop the press, and the window's hold on it."""
+        if self.drag is None and self.closing is None:
+            return
+        self.drag = self.closing = None
+        release = getattr(self.window, "release_hold", None)
+        if release is not None:
+            release(self)
+        self.invalidate()
+
+    def _send(self, name: str, **args) -> None:
+        if self.send is not None:
+            self.send(name, **args)
+
+    def _root(self, x: float, y: float) -> dict:
+        """A window-local point in root coordinates (qtile does not
+        reparent: the window's origin is its root position)."""
+        w = self.window
+        if w is None or not hasattr(w, "x"):
+            return {}
+        return {"x": int(w.x + x), "y": int(w.y + y)}
+
+    # ── paint ───────────────────────────────────────────────────────────
     def paint(self, canvas: skia.Canvas) -> None:
         r = self.rect
         base = text.baseline_in(r, SIZE)
         canvas.save()
         canvas.clipRect(r)
-        for i, label, x, _w in self.drawn:
-            color = TAB_CURRENT_FG if i == self.current else TAB_FG
-            mark = agent_color(self.agents[i]) if i < len(self.agents) else None
-            number = str(i + 1)
-            if mark is not None and label.startswith(number):
-                text.draw(canvas, number, r.left() + x, base, SIZE, theme.color(mark))
-                rest = label[len(number):]
-                if rest:
-                    text.draw(canvas, rest, r.left() + x + text.measure(number, SIZE), base,
-                              SIZE, theme.color(color))
-                continue
-            text.draw(canvas, label, r.left() + x, base, SIZE, theme.color(color))
+        placed, lift = self.arrangement()
+        for i, x in placed:
+            paint_label(canvas, self._label(i), i, r.left() + x + SLOT_PAD, base,
+                        tab_color(i == self.current, i == self.hover), self._mark(i))
+        if lift is not None:
+            if not lift["out"]:
+                paint_insertion(canvas, r.left() + lift["slot_x"], r)
+            i = lift["index"]
+            paint_lifted(canvas, self._label(i), i, r.left() + lift["x"] + SLOT_PAD, base,
+                         self._mark(i), lift["out"])
         for role, piece, x, _w in self.find_drawn:
             color = {"label": FIND_FG, "query": FIND_QUERY_FG}.get(
                 role, NO_MATCHES_FG if piece == protocol.NO_MATCHES else FIND_FG)
@@ -272,16 +532,28 @@ class TabList(Widget):
 
     def layout(self) -> list[dict]:
         """Where each tab (or piece of the find line) was drawn, for tests
-        to find in pixels."""
+        to find in pixels: a tab's slot, and its label's text and place
+        in it."""
         r = self.rect
         if self.find_drawn:
             return [{"role": role, "text": piece, "x": r.left() + x, "w": w}
                     for role, piece, x, w in self.find_drawn]
-        return [{"index": i, "text": label, "x": r.left() + x, "w": w,
-                 "current": i == self.current,
+        placed, _lift = self.arrangement()
+        return [{"index": i, "text": self._label(i), "x": r.left() + x + SLOT_PAD,
+                 "w": text.measure(self._label(i), SIZE), "slot_x": r.left() + x,
+                 "slot_w": self.slot_w, "current": i == self.current,
+                 "hovered": i == self.hover, "tab": self.ids[i] if i < len(self.ids) else None,
                  "number_w": text.measure(str(i + 1), SIZE),
                  "agent": self.agents[i] if i < len(self.agents) else None}
-                for i, label, x, w in self.drawn]
+                for i, x in placed]
+
+    def lift_layout(self) -> dict | None:
+        """The lifted tab, window x, for tests; None when none is."""
+        _placed, lift = self.arrangement()
+        if lift is None:
+            return None
+        r = self.rect
+        return {**lift, "x": r.left() + lift["x"], "slot_x": r.left() + lift["slot_x"]}
 
 
 class Host(Widget):
@@ -415,6 +687,7 @@ class FluxWindow(AppWindow):
         agent = announce.get(protocol.AGENT)
         self.agent = protocol.voice_id(agent) if isinstance(agent, str) and agent else None
         self.content = FluxContent(owner=self.agent)
+        self.content.tabs.send = self._tab_command
         self.request = None             # the launcher mode last opened for this window
         self.state = protocol.state([], 0, 100, True, url="", bookmarked=False, find=None)
 
@@ -450,7 +723,8 @@ class FluxWindow(AppWindow):
         self.state = state
         tabs, current = state[protocol.TABS], state[protocol.CURRENT]
         self.content.tabs.set_tabs([str(t[protocol.TITLE]) for t in tabs], current,
-                                   protocol.agents_of(state))
+                                   protocol.agents_of(state),
+                                   [t[protocol.TAB_ID] for t in tabs])
         here = tabs[current] if tabs else {protocol.HOST: "", protocol.LOADING: False}
         self.content.host.set(str(here[protocol.HOST]), bool(state[protocol.SECURE]),
                               bool(state[protocol.BOOKMARKED]))
@@ -576,6 +850,15 @@ class FluxWindow(AppWindow):
             log.info("the browser window that asked is gone; no bookmark %s", op)
             return
         self.command("bookmark", op=op)
+
+    def _tab_command(self, name: str, **args) -> None:
+        """The mouse on the top bar's tabs (TabList): `tab`, `close`,
+        `move` or `detach` for the browser."""
+        if self.closed:
+            log.info("the browser window is gone; %s not sent", name)
+            return
+        log.debug("browser 0x%x: %s %s", self.wid, name, args)
+        self.command(name, **args)
 
     def _resume(self, index: int) -> None:
         if self.closed:

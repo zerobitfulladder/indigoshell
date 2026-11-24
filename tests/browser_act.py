@@ -159,7 +159,8 @@ def shell_side(path: str) -> None:
     W, H = 1200, theme.TOP_BAR_HEIGHT
 
     def state(agents, current=0):
-        tabs = [protocol.tab(t, "x.org", False) for t in ("Alpha", "Beta", "Gamma")]
+        tabs = [protocol.tab(t, "x.org", False, id_=n)
+                for n, t in enumerate(("Alpha", "Beta", "Gamma"), start=1)]
         return protocol.state(tabs, current, 100, True, url="https://x.org/", bookmarked=False,
                               find=None, agent=agents)
 
@@ -422,7 +423,7 @@ def test_pure() -> None:
           protocol.took_over(7) == "the user took over tab 7"
           and protocol.FILE_FIELD.format(what="[3]") == "[3] is a file field: give it files "
                                                         "with upload")
-    tabs = [protocol.tab("A", "a.org", False), protocol.tab("B", "b.org", False)]
+    tabs = [protocol.tab("A", "a.org", False, id_=1), protocol.tab("B", "b.org", False, id_=2)]
     good = protocol.state(tabs, 0, 100, True, url="https://a.org/", bookmarked=False, find=None,
                           agent=[protocol.agent("indigo", "paused"), None])
     plain = protocol.state(tabs, 0, 100, True, url="https://a.org/", bookmarked=False, find=None)
@@ -1301,7 +1302,7 @@ def test_shell_side() -> None:
     given = SCRATCH / "shell-state-pure.json"
     from flux import protocol
     given.write_text(json.dumps({"state": protocol.state(
-        [protocol.tab("A", "a.org", False)], 0, 100, True, url="https://a.org/",
+        [protocol.tab("A", "a.org", False, id_=1)], 0, 100, True, url="https://a.org/",
         bookmarked=False, find=None)}))
     proc = subprocess.run([PY, "-B", __file__, "--shell-side", str(given)], capture_output=True,
                           text=True, timeout=120)

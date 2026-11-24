@@ -315,7 +315,8 @@ class Widget:
         overriding this rather than by setting a handler — `x`/`y` are
         window-local. Such a widget must override `hit()` too, since with
         no handler set it is not `interactive` and the default `hit()`
-        would skip it.
+        would skip it. One that drags what it draws holds the press
+        instead (`press`).
         """
         handler = {
             1: self.on_left_click,
@@ -328,3 +329,30 @@ class Widget:
             return False
         handler(self)
         return True
+
+    # A press held from button down to button up, for a widget that drags
+    # what it draws (Flux's tabs on the top bar). Nothing here unless a
+    # widget's `press` says so: every other widget clicks as above.
+    def press(self, button: int, x: float, y: float) -> bool:
+        """Button 1, 2 or 3 pressed on this widget, before any `click`.
+
+        True holds the press: no `click` follows, and until that button
+        comes up the widget gets every pointer `motion` and then its
+        `release`, wherever the pointer goes (X reports them to the window
+        that took the press until every button is up). False, the
+        default, leaves the press to `click` as ever.
+        """
+        return False
+
+    def motion(self, x: float, y: float) -> None:
+        """The pointer moved to (x, y), window-local: over this widget
+        while it is hovered, and anywhere while it holds a press."""
+
+    def release(self, button: int, x: float, y: float) -> None:
+        """The held press's button came up at (x, y)."""
+
+    def cancel(self) -> None:
+        """The held press ended with no `release` for it: Escape (when
+        the widget asked its window for the keyboard,
+        `Window.hold_keyboard`), its release never seen, its window or
+        its place in the tree gone."""

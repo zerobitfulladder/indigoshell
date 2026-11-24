@@ -389,20 +389,28 @@ def test_pure() -> None:
             pass
     check("sites.json rules: a wrong shape is refused as a whole", not bad, str(bad or ""))
 
-    good = protocol.state([protocol.tab("A", "a.org", False)], 0, 100, True, url="https://a.org/",
-                          bookmarked=True, find=protocol.find("q", None, None, True))
-    plain = protocol.state([protocol.tab("A", "a.org", False)], 0, 100, True, url="",
+    good = protocol.state([protocol.tab("A", "a.org", False, id_=1)], 0, 100, True,
+                          url="https://a.org/", bookmarked=True,
+                          find=protocol.find("q", None, None, True))
+    plain = protocol.state([protocol.tab("A", "a.org", False, id_=1)], 0, 100, True, url="",
                            bookmarked=False, find=None)
+    two = protocol.state([protocol.tab("A", "a.org", False, id_=1),
+                          protocol.tab("B", "b.org", False, id_=2)], 0, 100, True, url="",
+                         bookmarked=False, find=None)
     broken = [dict(good, current=3), dict(good, progress=101),
               dict(good, tabs=[{"title": "A"}]), dict(good, tabs=[]),
               {"type": "state", "tabs": good["tabs"], "current": 0, "progress": 100,
                "secure": True},
               dict(good, bookmarked="yes"), dict(good, find={"query": 1}),
-              dict(good, find=protocol.find("q", -1, 3, False)), dict(good, url=5)]
+              dict(good, find=protocol.find("q", -1, 3, False)), dict(good, url=5),
+              dict(good, tabs=[{"title": "A", "host": "a.org", "loading": False}]),
+              dict(good, tabs=[dict(good["tabs"][0], tab=True)]),
+              dict(two, tabs=[two["tabs"][0], dict(two["tabs"][1], tab=1)])]
     check("state check: the documented shape, every key there (find null or an object), "
           "unknown keys ignored; malformed or partial ones refused",
           good["type"] == "state" and protocol.state_problems(good) == []
-          and protocol.state_problems(plain) == []
+          and protocol.state_problems(plain) == [] and protocol.state_problems(two) == []
+          and good["tabs"][0] == {"tab": 1, "title": "A", "host": "a.org", "loading": False}
           and protocol.state_problems({**good, "future": 1}) == []
           and all(protocol.state_problems(b) for b in broken),
           f"{[protocol.state_problems(b) for b in broken if not protocol.state_problems(b)]}")
@@ -417,6 +425,9 @@ def test_pure() -> None:
           and protocol.launcher("address") == {"type": "launcher", "action": "address"}
           and protocol.command("load", url="u", where="tab") == {"type": "load", "url": "u",
                                                                  "where": "tab"}
+          and protocol.command("move", tab=3, to=0) == {"type": "move", "tab": 3, "to": 0}
+          and protocol.command("detach", tab=3, x=1, y=2) == {"type": "detach", "tab": 3,
+                                                              "x": 1, "y": 2}
           and protocol.open_urls(["u"]) == {"type": "open", "urls": ["u"]})
     check("the find line's count: n/total, no matches, nothing before the count",
           [protocol.find_count(protocol.find(q, a, t, True)) for q, a, t in
@@ -874,7 +885,7 @@ def test_in_process() -> None:
     bad = [p for s in every for p in protocol.state_problems(s)]
     check("every state on this connection well formed, none repeated",
           not bad and dupes == 0, f"{len(every)} states, problems {bad[:3]}, repeats {dupes}")
-    conn.send({"type": "tab", "index": 0})
+    conn.send({"type": "tab", "tab": w.tabs[0].id})
     wait(lambda: w.current == 0)
     conn.send({"type": "open", "url": url("/page/Opened")})
     wait(lambda: len(w.tabs) == 4)
@@ -884,6 +895,76 @@ def test_in_process() -> None:
     conn.send({"type": "close"})
     wait(lambda: len(w.tabs) == 3)
     check("commands from the shell: tab, open, close", opened and len(w.tabs) == 3
+          and titles(w) == ["Alpha", "Beta", "Gamma"], f"{titles(w)}")
+    w.select(0)
+
+    # The mouse on the top bar's tabs: commands naming a tab by its id.
+    ids = [t.id for t in w.tabs]
+    wait(lambda: conn.states() and conn.states()[-1]["current"] == 0)
+    said = [t.get("tab") for t in conn.states()[-1]["tabs"]]
+    check("the state names each tab by its id (its page's, as the agent's requests do)",
+          said == ids and len(set(ids)) == 3, f"{said} vs {ids}")
+    beta = w.tabs[1]
+    conn.send({"type": "close", "tab": beta.id})
+    closed_ok = wait(lambda: len(w.tabs) == 2) and beta not in w.tabs
+    press(w, K.Key_T, M.ControlModifier | M.ShiftModifier)
+    back = w.tabs[1] if len(w.tabs) == 3 else None
+    check("`close` with a tab's id (a middle click) closes that tab, not the current one; "
+          "Ctrl+Shift+T brings it back in its place", closed_ok and w.current == 1
+          and back is not None and back is not beta and loaded(back, "Beta"),
+          f"{titles(w)}, current {w.current}")
+    w.select(0)
+    alpha, gamma = w.tabs[0], w.tabs[2]
+    conn.send({"type": "move", "tab": alpha.id, "to": 2})
+    moved = wait(lambda: w.tabs[2] is alpha)
+    conn.send({"type": "move", "tab": gamma.id, "to": 99})
+    QTest.qWait(100)
+    end = w.tabs[-1] is gamma
+    conn.send({"type": "move", "tab": beta.id, "to": 0})      # closed: no such tab now
+    conn.send({"type": "move", "tab": alpha.id, "to": "first"})
+    conn.send({"type": "tab", "tab": beta.id})
+    conn.send({"type": "close", "tab": beta.id})
+    QTest.qWait(150)
+    stale = titles(w) == ["Beta", "Alpha", "Gamma"] and len(w.tabs) == 3
+    conn.send({"type": "move", "tab": alpha.id, "to": 0})
+    conn.send({"type": "move", "tab": back.id, "to": 1})
+    wait(lambda: titles(w) == ["Alpha", "Beta", "Gamma"])
+    check("`move` (a drag along the bar): that tab to that place, the current one kept in "
+          "front; past the end is the end; a tab no longer there, or a place that is no number: "
+          "nothing", moved and end and stale and w.current_tab() is alpha
+          and titles(w) == ["Alpha", "Beta", "Gamma"], f"{titles(w)}")
+
+    torn = w.tabs[1]
+    torn_id = torn.id
+    js(torn.page, "document.body.insertAdjacentHTML('beforeend', '<input id=f>');"
+                  "document.getElementById('f').value = 'typed by hand'; window.mark = 42;")
+    before = list(browser.windows)
+    conn.send({"type": "detach", "tab": torn.id, "x": 40, "y": 60})
+    wait(lambda: len(browser.windows) == len(before) + 1)
+    fresh = next((x for x in browser.windows if x not in before), None)
+    value = js(torn.page, "JSON.stringify([document.getElementById('f').value, window.mark])") \
+        if fresh is not None else None
+    check("`detach` (a tab dragged off the bar): a new window of the user's holding that tab, "
+          "the same page with its state (a typed field, the page's script), shown; the window "
+          "it left keeps the rest", fresh is not None and fresh.tabs == [torn]
+          and torn.id == torn_id and value == '["typed by hand",42]' and fresh.isVisible()
+          and not fresh.agent and not fresh.single
+          and titles(w) == ["Alpha", "Gamma"] and torn.view.parent() is not None,
+          f"{value}, {titles(w)}")
+    single = browser.new_window(single=True)
+    single.add_tab(QUrl("about:blank"))
+    refused = (fresh is not None and browser.detach_tab(torn) is None
+               and browser.detach_tab(single.tabs[0]) is None
+               and len(browser.windows) == len(before) + 2)
+    single.close()
+    if fresh is not None:
+        fresh.on_command({"type": "detach", "tab": torn.id})
+        QTest.qWait(50)
+        refused = refused and fresh.tabs == [torn]
+        browser.move_tab(torn, w, at=1)         # home again; the empty window closes
+    gone = wait(lambda: fresh is None or fresh not in browser.windows)
+    check("never a window's last tab, nor a single window's (nothing done); the tab moved home "
+          "again, its window closing", refused and gone
           and titles(w) == ["Alpha", "Beta", "Gamma"], f"{titles(w)}")
     w.select(0)
 
