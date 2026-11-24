@@ -157,6 +157,8 @@ class Site(BaseHTTPRequestHandler):
         if route.startswith("/page/"):
             name = route[len("/page/"):]
             self._send(PAGE.format(title=name, body=f"<p>{name}</p>"))
+        elif route == "/long":
+            self._send(PAGE.format(title="Long", body="<p>line</p>" * 300))
         elif route == "/links":
             self._send(PAGE.format(title="Links", body=LINKS))
         elif route == "/text":
@@ -675,6 +677,17 @@ def test_in_process() -> None:
         press(w, key, mods)
         zooms.append(round(w.tabs[3].page.zoomFactor(), 2))
     check("Ctrl++, Ctrl+=, Ctrl+-, Ctrl+0 zoom", zooms == [1.1, 1.25, 1.1, 1.0], f"{zooms}")
+    from indigoshell.browser.qt import profile as profile_mod
+    tab3 = w.tabs[3]
+    long_ok = navigate(tab3, lambda: tab3.page.load(QUrl(url("/long"))), title="Long")
+    QTest.qWait(300)
+    shot = tab3.view.grab().toImage()
+    edge = {shot.pixelColor(shot.width() - 1, y).name()
+            for y in range(40, shot.height() - 40, 40)}
+    thumb = {shot.pixelColor(shot.width() - 5, y).name() for y in range(0, 60, 2)}
+    check("pages' scrollbars wear the shell's colours: the bar's track, the launcher's cyan thumb",
+          long_ok and edge == {profile_mod.TRACK} and profile_mod.THUMB in thumb,
+          f"track {edge}, thumb column {sorted(thumb)[:3]}")
     press(w, K.Key_F12)
     inspector = w.tabs[3].inspector
     ok = inspector is not None and wait(lambda: inspector.isVisible()) and inspector.single
