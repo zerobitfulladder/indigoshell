@@ -60,14 +60,37 @@ measured: a modifier alone does not let it, F24 does), and answers once
 the chooser took them. A host sites.json keeps from the agent (identity.py)
 refuses every request on its tabs (`allowed`).
 
-Every request is logged at info: its type, the tab and the host, never
-what the page holds, never what the agent types, never a file's name.
+**Frames** (frames.py). Every read is the page's and its frames', each
+document read in its own world, laid out as one; a ref "f2:14" names an
+element in frame f2, and acting on it finds it there and carries its
+point up through the frames above it to the page's viewport (`spot`);
+a point over a frame is asked of the frame. `ask` runs a ref's reader.js
+call in the document the ref is in.
 
-Qt: nothing here is newer than 6.8 (the Pi's Debian). A selection in
-an iframe is read with QWebEngineFrame (6.8); with an older Qt that
-part is skipped.
+**Scripts** (`js`, script.py). The agent's own code, in a world of its
+own behind guard.js, the guard run first in every frame and again just
+before the code; its answer polled for, scrubbed of password values in
+the reader's world (frames.py `scrub`), cut. An acting request: it is
+the agent's session, and its answer says what the page did after.
+
+**Full-page screenshots** (`_full`). Viewport-high tiles, top down, at
+most protocol.SHOT_TILES_MAX: each scrolled to (reader.js `tile`, at once,
+not smoothly), a fresh frame waited for, the view grabbed; the fixed and
+sticky hidden from the second tile on; scroll and sheets put back after,
+however the request ends.
+
+Every request is logged at info: its type, the tab and the host, never
+what the page holds, never what the agent types or runs, never a file's
+name.
+
+Qt: nothing here is newer than 6.8 (the Pi's Debian). Frames are reached
+with QWebEngineFrame and QWebEnginePage.mainFrame (6.8, frames.py); with
+an older Qt, frames are not read nor acted in, a frame's selection is
+not read, and the reads say so.
 """
 
+import itertools
+import json
 import logging
 import os
 import re
@@ -86,7 +109,7 @@ from PySide6.QtWidgets import QApplication
 from indigoshell.applink.protocol import PLACE_WAIT_S
 from indigoshell.browser import protocol, uploads
 
-from . import act, reader
+from . import act, frames, reader, script
 from .tabs import Tab, to_url
 
 log = logging.getLogger(__name__)
@@ -210,18 +233,45 @@ class Job:
         return self._await(None, seconds, lambda: (None, None))
 
     def js(self, target, code: str, *, timeout: float = JS_TIMEOUT_S,
-           quiet: bool = False) -> _Await:
+           quiet: bool = False, world: int = reader.WORLD) -> _Await:
         """`code` run in the agent's world of `target` (a page or a frame);
         its answer (reader.answer). `quiet`: no answer in time is None,
-        not an error."""
+        not an error. `world`: another of the agent's worlds (script.py)."""
         def start(done) -> None:
-            target.runJavaScript(code, reader.WORLD, done)
+            target.runJavaScript(code, world, done)
 
         def expire():
             if quiet:
                 return None, None
             return None, RequestError(f"the page did not answer within {timeout:g} s")
         return self._await(start, timeout, expire)
+
+    def many(self, calls: list, timeout: float, *, world: int = reader.WORLD) -> _Await:
+        """Several scripts at once, each `(target, code)` in its target's
+        world: their raw answers in order, None for one that gave none
+        within `timeout` (frames.py asks every frame together)."""
+        answers: list = [None] * len(calls)
+        got = [False] * len(calls)
+
+        def start(done) -> None:
+            left = [len(calls)]
+
+            def answered(i: int, value) -> None:
+                if got[i]:
+                    return
+                got[i], answers[i] = True, value
+                left[0] -= 1
+                if not left[0]:
+                    done(list(answers))
+            if not calls:
+                QTimer.singleShot(0, lambda: done([]))
+                return
+            for i, (target, code) in enumerate(calls):
+                callback = partial(answered, i)
+                hold.append(callback)       # alive while the answers come
+                target.runJavaScript(code, world, callback)
+        hold: list = []
+        return self._await(start, timeout, lambda: (list(answers), None))
 
     async def read(self, target, code: str, **kw):
         """`js`, its answer unpacked (reader.answer); None for a quiet
@@ -401,6 +451,15 @@ def _number(msg: dict, key: str, default: float | None = None) -> float | None:
     return float(value)
 
 
+def _ref(msg: dict, key: str = "ref") -> tuple[int | None, int]:
+    """A REF (protocol.parse_ref): (frame number or None, its number)."""
+    parsed = protocol.parse_ref(msg.get(key))
+    if parsed is None:
+        raise RequestError(f"`{key}` must be a ref from read: a number, or \"f2:14\" for an "
+                           "element in frame f2")
+    return parsed
+
+
 def _voice(msg: dict) -> str | None:
     value = msg.get("voice")
     return value if isinstance(value, str) and value.strip() else None
@@ -438,6 +497,7 @@ class Requests:
     def __init__(self, browser) -> None:
         self.browser = browser
         self.watch = browser.watch
+        self.runs = itertools.count(1)  # the agent's scripts (js), in this browser
 
     # ── finding windows and tabs ────────────────────────────────────────
     def windows(self) -> list:
@@ -549,6 +609,8 @@ class Requests:
             parts.append(f"for download {msg['download']}")
         if kind == "read" and msg.get("what") in protocol.READS:
             parts.append(msg["what"])
+        if kind == "screenshot" and msg.get("full"):
+            parts.append("full")
         log.info("agent: %s%s", " ".join(parts), f" ({host})" if host else "")
 
     # ── the requests ────────────────────────────────────────────────────
@@ -678,18 +740,21 @@ class Requests:
         default, top = {"text": (protocol.TEXT_LENGTH, protocol.TEXT_MAX),
                         "links": (protocol.LINKS_LENGTH, protocol.LINKS_MAX),
                         "forms": (protocol.FORMS_LENGTH, protocol.FORMS_MAX),
-                        "outline": (protocol.OUTLINE_LENGTH, protocol.OUTLINE_MAX)}[what]
+                        "outline": (protocol.OUTLINE_LENGTH, protocol.OUTLINE_MAX),
+                        "article": (protocol.ARTICLE_LENGTH, protocol.ARTICLE_MAX)}[what]
         offset = _int(msg, "offset", 0)
         length = _int(msg, "length", default)
         if offset < 0 or length < 1:
             raise RequestError("`offset` must be 0 or more and `length` 1 or more")
-        value = await job.read(tab.page, reader.script(
-            what, {"offset": offset, "length": min(length, top),
-                   "hidden": bool(msg.get("hidden"))}))
+        value = await frames.read(job, tab, what, {"offset": offset, "length": min(length, top),
+                                                   "hidden": bool(msg.get("hidden"))}, self.kept)
         return {**self.tab(window, tab), "what": what, **value}
 
     async def screenshot(self, job: Job, msg: dict) -> dict:
         window, tab = self.showing(_int(msg, "tab"))
+        if msg.get("full"):
+            self.no_dialog(tab)         # the page must answer to be scrolled
+            return await self._full(job, tab)
         if self.watch.dialog_of(tab.id) is None:    # else the page paints nothing new
             await self._fresh_frame(job, tab)
         window, tab = self.showing(tab.id)
@@ -698,6 +763,42 @@ class Requests:
         return {**self.tab(window, tab), **reader.png(reader.grab(view)),
                 "viewport_width": round(view.width() / zoom),
                 "viewport_height": round(view.height() / zoom)}
+
+    async def _full(self, job: Job, tab: Tab) -> dict:
+        """The page from its top in viewport-high tiles (protocol.py
+        `screenshot`, full): scrolled to and grabbed in turn, the fixed and
+        sticky hidden from the second on, all put back after (also when
+        the request ends otherwise: `job.cleanups`)."""
+        size = await job.read(tab.page, reader.script("pageSize"))
+        home = {"x": size["x"], "y": size["y"]}
+        ended = [False]
+        job.cleanups.append(partial(self._end_tiles, tab, home, ended))
+        vh = size["vh"]
+        tiles, want, height = [], 0, size["height"]
+        while len(tiles) < protocol.SHOT_TILES_MAX:
+            at = await job.read(tab.page, reader.script(
+                "tile", {"x": home["x"], "y": want, "hide": bool(tiles)}))
+            height = at["height"]
+            if tiles and at["y"] <= tiles[-1]["y"]:
+                break                   # the page scrolls no further
+            self.showing(tab.id)
+            await self._fresh_frame(job, tab)
+            window, tab = self.showing(tab.id)
+            tiles.append({**reader.png(reader.grab(tab.view)), "x": at["x"], "y": at["y"]})
+            if at["y"] + vh >= height - 1:
+                break                   # the bottom is in this one
+            want = at["y"] + vh
+        ended[0] = True
+        await job.read(tab.page, reader.script("endTiles", home))
+        window, tab = self.showing(tab.id)
+        last = tiles[-1]["y"] if tiles else 0
+        return {**self.tab(window, tab), "tiles": tiles, "page_width": size["width"],
+                "page_height": height, "viewport_width": size["vw"], "viewport_height": vh,
+                "more": last + vh < height - 1}
+
+    def _end_tiles(self, tab: Tab, home: dict, ended: list) -> None:
+        if not ended[0] and shiboken6.isValid(tab) and shiboken6.isValid(tab.page):
+            tab.page.runJavaScript(reader.script("endTiles", home), reader.WORLD)
 
     async def _fresh_frame(self, job: Job, tab: Tab) -> None:
         """Until the page has painted a frame begun after this request
@@ -849,31 +950,91 @@ class Requests:
     def alive(self, tab: Tab) -> bool:
         return shiboken6.isValid(tab) and any(tab in w.tabs for w in self.windows())
 
+    async def in_frame(self, job: Job, tab: Tab, frame_no: int | None) -> tuple:
+        """Frame f<frame_no> of the tab (frames.py): (what runs its scripts,
+        its name, the frames down to it); the page itself for None."""
+        if frame_no is None:
+            return tab.page, "", []
+        try:
+            nodes = await frames.path(job, tab, frame_no, self.kept)
+        except frames.FrameError as e:
+            raise RequestError(str(e)) from None
+        return nodes[-1].target, nodes[-1].name, nodes
+
+    async def ask(self, job: Job, tab: Tab, ref: tuple, fn: str, *args) -> tuple:
+        """reader.js `fn(ref's number, *args)` in the document the ref is
+        in: (its answer, the frames down to it)."""
+        target, name, path = await self.in_frame(job, tab, ref[0])
+        return await job.read(target, reader.script(fn, ref[1], *args, frame=name)), path
+
+    async def into_sight(self, job: Job, tab: Tab, path: list, done: dict) -> None:
+        """An element in a frame, acted on there: the frame brought into
+        sight in the frames above it, as far as it goes."""
+        if path and "x" in done:
+            try:
+                await frames.to_page(job, tab, path, done["x"], done["y"], False)
+            except reader.ScriptError:
+                pass
+
     async def spot(self, job: Job, tab: Tab, msg: dict, *, refuse: bool, cover: bool,
                    need: bool = True) -> dict | None:
         """Where the request points: its `ref`, or `x` and `y` (reader.js
-        `point`). None when it names neither and `need` is false."""
+        `point`), in the page's viewport. A ref in a frame is found there
+        and its point carried up through the frames above (frames.py
+        `to_page`); a point over a frame is asked of the frame. None when
+        it names neither and `need` is false."""
         ref, x, y = msg.get("ref"), msg.get("x"), msg.get("y")
         if ref is not None and (x is not None or y is not None):
             raise RequestError("give `ref`, or `x` and `y`, not both")
+        path: list = []
         if ref is not None:
-            where = {"ref": _int(msg, "ref")}
+            frame_no, n = _ref(msg)
+            named = f"[{protocol.ref_name(frame_no, n)}]"
+            target, name, path = await self.in_frame(job, tab, frame_no)
+            spot = await job.read(target, reader.script(
+                "point", {"ref": n, "refuse": refuse, "cover": cover}, frame=name))
         elif x is not None or y is not None:
             where = {"x": _number(msg, "x"), "y": _number(msg, "y")}
             if where["x"] is None or where["y"] is None:
                 raise RequestError("give both `x` and `y` (CSS px of the visible page)")
+            named = "the point"
+            spot = await job.read(tab.page, reader.script("point", {**where, "refuse": refuse,
+                                                                    "cover": cover}))
+            spot = await self._into_frames(job, tab, spot, refuse, cover)
         elif need:
             raise RequestError("give `ref` (from read) or `x` and `y`")
         else:
             return None
-        spot = await job.read(tab.page, reader.script("point", {**where, "refuse": refuse,
-                                                                "cover": cover}))
         if spot.get("refused"):
             raise RequestError(REFUSALS[spot["refused"]](spot.get("what") or "it"))
         if spot.get("covered"):
-            named = f"[{where['ref']}]" if "ref" in where else "the point"
             raise RequestError(f"{named} is covered at ({spot['x']}, {spot['y']}) by another "
                                f"element; nothing done. What covers it: {spot['covered']}")
+        if path:
+            mapped = await frames.to_page(job, tab, path, spot["x"], spot["y"], cover)
+            if mapped.get("covered"):
+                raise RequestError(f"{named} is in frame {mapped['frame']}, whose element is "
+                                   f"covered at ({mapped['x']}, {mapped['y']}) by another "
+                                   f"element; nothing done. What covers it: {mapped['covered']}")
+            spot = {**spot, "x": mapped["x"], "y": mapped["y"]}
+        return spot
+
+    async def _into_frames(self, job: Job, tab: Tab, spot: dict, refuse: bool,
+                           cover: bool) -> dict:
+        """A point over a frame's page: what is there, asked of the frame
+        (and of a frame in that), the point staying the page's."""
+        parent = None
+        while spot.get("frame"):
+            inner = spot["frame"]
+            try:
+                node = await frames.child_at(job, tab, parent, inner["index"], self.kept)
+            except frames.FrameError as e:
+                raise RequestError(str(e)) from None
+            got = await job.read(node.target, reader.script(
+                "point", {"x": inner["x"], "y": inner["y"], "refuse": refuse, "cover": cover},
+                frame=node.name))
+            spot = {**got, "x": spot["x"], "y": spot["y"]}
+            parent = node
         return spot
 
     def before(self, tab: Tab) -> dict:
@@ -977,10 +1138,11 @@ class Requests:
         key, mods, text = act.parse_key("Backspace")
         self.watch.inject.key(self.proxy(tab), key, mods, text)
 
-    async def _focus(self, job: Job, tab: Tab, ref: int) -> dict:
-        done = await job.read(tab.page, reader.script("focusField", ref))
+    async def _focus(self, job: Job, tab: Tab, ref: tuple) -> dict:
+        done, path = await self.ask(job, tab, ref, "focusField")
         if done.get("refused"):
             raise RequestError(REFUSALS[done["refused"]](done.get("what") or "it"))
+        await self.into_sight(job, tab, path, done)
         return done
 
     async def type(self, job: Job, msg: dict) -> dict:
@@ -991,7 +1153,7 @@ class Requests:
         before = self.before(tab)
         what = None
         if msg.get("ref") is not None and (msg.get("x") is None and msg.get("y") is None):
-            what = (await self._focus(job, tab, _int(msg, "ref"))).get("what")
+            what = (await self._focus(job, tab, _ref(msg))).get("what")
         else:
             spot = await self.spot(job, tab, msg, refuse=True, cover=True, need=False)
             if spot is not None:
@@ -1032,7 +1194,7 @@ class Requests:
         return await self.settled(job, tab, before)
 
     async def select(self, job: Job, msg: dict) -> dict:
-        ref = _int(msg, "ref")
+        ref = _ref(msg)
         value, label = msg.get("value"), msg.get("label")
         if (value is None) == (label is None):
             raise RequestError("give `value` or `label`")
@@ -1040,8 +1202,7 @@ class Requests:
         values = _strings(wanted, by)
         window, tab = self.acting(job, msg)
         before = self.before(tab)
-        chosen = await job.read(tab.page, reader.script("choose", ref,
-                                                        {"by": by, "values": values}))
+        chosen, _path = await self.ask(job, tab, ref, "choose", {"by": by, "values": values})
         return await self.settled(job, tab, before, value=chosen["value"], label=chosen["label"])
 
     async def scroll(self, job: Job, msg: dict) -> dict:
@@ -1051,8 +1212,9 @@ class Requests:
         if msg.get("to") is not None:
             if any(msg.get(k) is not None for k in ("dx", "dy", "ref", "x", "y")):
                 raise RequestError("give `to` alone, or `dy`/`dx` with where to turn the wheel")
-            extra["what"] = (await job.read(tab.page, reader.script(
-                "scrollTo", _int(msg, "to")))).get("what") or ""
+            done, path = await self.ask(job, tab, _ref(msg, "to"), "scrollTo")
+            await self.into_sight(job, tab, path, done)
+            extra["what"] = done.get("what") or ""
         else:
             dx, dy = _number(msg, "dx", 0.0), _number(msg, "dy", 0.0)
             if not dx and not dy:
@@ -1079,7 +1241,7 @@ class Requests:
     async def fill(self, job: Job, msg: dict) -> dict:
         fields = msg.get("fields")
         if not isinstance(fields, list) or not fields or len(fields) > FILL_MAX or not all(
-                isinstance(f, dict) and protocol.is_id(f.get("ref")) and "value" in f
+                isinstance(f, dict) and protocol.is_ref(f.get("ref")) and "value" in f
                 for f in fields):
             raise RequestError(f"`fields` must be a list of 1 to {FILL_MAX} {{ref, value}}")
         window, tab = self.acting(job, msg)
@@ -1101,9 +1263,11 @@ class Requests:
                 break
         return await self.settled(job, tab, before, fields=done)
 
-    async def _fill_one(self, job: Job, tab: Tab, ref: int, value) -> None:
+    async def _fill_one(self, job: Job, tab: Tab, raw_ref, value) -> None:
         self.going_on(tab)
-        field = await job.read(tab.page, reader.script("fieldKind", ref))
+        parsed = protocol.parse_ref(raw_ref)
+        ref = protocol.ref_name(*parsed)
+        field, _path = await self.ask(job, tab, parsed, "fieldKind")
         kind = field["kind"]
         if field["disabled"]:
             raise RequestError(f"[{ref}] is disabled")
@@ -1112,7 +1276,7 @@ class Requests:
         if kind == "text":
             if not isinstance(value, str):
                 raise RequestError(f"[{ref}] is a text field: give a string")
-            await self._focus(job, tab, ref)
+            await self._focus(job, tab, parsed)
             self._clear(tab)
             await self._type(job, tab, value)
         elif kind in ("checkbox", "radio"):
@@ -1122,24 +1286,22 @@ class Requests:
                 raise RequestError(f"[{ref}] is a radio button: choose another one of its "
                                    "group instead of unchecking it")
             if field["checked"] != value:
-                spot = await self.spot(job, tab, {"ref": ref}, refuse=False, cover=True)
+                spot = await self.spot(job, tab, {"ref": raw_ref}, refuse=False, cover=True)
                 self.watch.inject.click(self.proxy(tab), self.at(tab, spot))
                 await job.sleep(0.05)
-                now = await job.read(tab.page, reader.script("fieldKind", ref))
+                now, _path = await self.ask(job, tab, parsed, "fieldKind")
                 if now["checked"] != value:
                     raise RequestError(f"[{ref}] did not change when clicked")
         elif kind == "select":
             values = _strings(value, "value")
             try:
-                await job.read(tab.page, reader.script("choose", ref,
-                                                       {"by": "value", "values": values}))
+                await self.ask(job, tab, parsed, "choose", {"by": "value", "values": values})
             except reader.ScriptError:
-                await job.read(tab.page, reader.script("choose", ref,
-                                                       {"by": "label", "values": values}))
+                await self.ask(job, tab, parsed, "choose", {"by": "label", "values": values})
         elif kind == "value":
             if not isinstance(value, (str, int, float)) or isinstance(value, bool):
                 raise RequestError(f"[{ref}] takes a value as text (2024-05-01, 13:30, #ff0000)")
-            await job.read(tab.page, reader.script("setValue", ref, str(value)))
+            await self.ask(job, tab, parsed, "setValue", str(value))
         else:
             raise RequestError(f"[{ref}] is no field to fill ({field['what']})")
 
@@ -1252,9 +1414,9 @@ class Requests:
             raise RequestError(str(e)) from None
         if len(paths) > protocol.UPLOAD_PATHS_MAX:
             raise RequestError(f"at most {protocol.UPLOAD_PATHS_MAX} files at once")
-        ref = _int(msg, "ref")
+        ref = _ref(msg)
         window, tab = self.acting(job, msg)
-        aim = await job.read(tab.page, reader.script("uploadTarget", ref))
+        aim, _path = await self.ask(job, tab, ref, "uploadTarget")
         if aim.get("folder"):
             raise RequestError(f"{aim['field']} takes a folder; upload gives a page files")
         if aim.get("multiple") is False and len(paths) > 1:
@@ -1270,10 +1432,10 @@ class Requests:
             self.watch.inject.key(self.proxy(tab), int(Qt.Key.Key_F24))
             await job.sleep(0.05)
             self.going_on(tab)
-            await job.read(tab.page, reader.script("fileClick", ref))
+            await self.ask(job, tab, ref, "fileClick")
         else:
             spot = await self.spot(job, tab, {"ref": aim["label"] if aim["aim"] == "label"
-                                              else ref}, refuse=False, cover=True)
+                                              else msg["ref"]}, refuse=False, cover=True)
             self.going_on(tab)
             self.watch.inject.click(self.proxy(tab), self.at(tab, spot))
         deadline = time.monotonic() + protocol.UPLOAD_WAIT_S
@@ -1288,3 +1450,90 @@ class Requests:
         files = [{"name": os.path.basename(p), "size": os.path.getsize(p)} for p in took["paths"]]
         return await self.settled(job, tab, before, files=files, field=aim.get("field"),
                                   what=aim["what"])
+
+    # ── the agent's own scripts (protocol.py "Scripts", script.py) ──────
+    async def js(self, job: Job, msg: dict) -> dict:
+        code = msg.get("code")
+        if not isinstance(code, str) or not code.strip():
+            raise RequestError("`code` must be JavaScript: one expression, or the statements of "
+                               "an async function's body (`return` its answer)")
+        if len(code) > protocol.JS_CODE_MAX:
+            raise RequestError(f"`code` is longer than {protocol.JS_CODE_MAX} characters")
+        timeout = _seconds(msg, "timeout", protocol.JS_TIMEOUT_S, protocol.JS_TIMEOUT_MAX_S)
+        window, tab = self.acting(job, msg)
+        before = self.before(tab)
+        tab.note_input()                # what it makes the page do is the agent's doing
+        await frames.guard_all(job, tab, script.GUARD, script.WORLD)
+        run = next(self.runs)
+        began = time.monotonic()
+        # One line is tried as an expression first; more, as statements
+        # only (a line starting with "(" or "[" would join the one above).
+        ways = (True, False) if "\n" not in code.strip() else (False,)
+        started = None
+        for expression in ways:
+            guarded = await job.js(tab.page, script.GUARD, world=script.WORLD, timeout=2.0,
+                                   quiet=True)
+            if guarded is None:
+                raise RequestError("the page did not answer (it may be busy)")
+            started = await job.js(tab.page, script.source(run, code, expression=expression),
+                                   world=script.WORLD, timeout=max(1.0, timeout), quiet=True)
+            if started is None:
+                raise RequestError(f"the script did not return within {timeout:g} s: it may loop "
+                                   "without end, and the page stays stuck while it does")
+            if started:
+                break
+        if not started:
+            raise RequestError("the script did not run: it does not compile (code is one "
+                               "expression, or the statements of an async function's body, "
+                               "`return` giving the answer)")
+        job.cleanups.append(partial(self._drop_run, tab, run))
+        answer, pending = None, False
+        while True:
+            self.going_on(tab)
+            if self.watch.dialog_of(tab.id) is not None:
+                pending = True          # the code waits for the dialog as the page does
+                break
+            raw = await job.js(tab.page, script.poll(run), world=script.WORLD, timeout=2.0,
+                               quiet=True)
+            state = None
+            if raw:
+                try:
+                    state = json.loads(raw)
+                except ValueError:
+                    state = None
+            if isinstance(state, dict) and state.get("gone"):
+                pending = True          # the page went on to another document first
+                break
+            if isinstance(state, dict) and state.get("done"):
+                answer = state
+                break
+            if time.monotonic() - began >= timeout:
+                pending = True
+                break
+            await job.sleep(script.POLL_S)
+        out: dict = {"result": None, "result_type": None, "length": 0, "cut": False}
+        if pending:
+            out["pending"] = True
+        elif answer.get("ok"):
+            text = await frames.scrub(job, tab, str(answer.get("json") or "null"), self.kept)
+            if text is None:
+                out["withheld"] = True  # not checked for passwords: not given
+            else:
+                length = int(answer.get("length") or len(text))
+                out.update(result=text[:protocol.JS_RESULT_MAX], result_type=answer.get("type"),
+                           length=length, cut=length > protocol.JS_RESULT_MAX
+                           or len(text) > protocol.JS_RESULT_MAX)
+        else:
+            said = await frames.scrub(job, tab, str(answer.get("error") or "an error"), self.kept)
+            if said is None:
+                out["withheld"] = True
+            out["threw"] = said[:2000] if said is not None else "(its words withheld)"
+        log.info("agent: script %d on tab %d %s", run, tab.id,
+                 "still running" if pending else "threw" if "threw" in out else
+                 "answered, withheld (not checked for passwords)" if out.get("withheld") else
+                 f"answered ({out['length']} characters)")
+        return await self.settled(job, tab, before, **out)
+
+    def _drop_run(self, tab: Tab, run: int) -> None:
+        if shiboken6.isValid(tab) and shiboken6.isValid(tab.page):
+            tab.page.runJavaScript(script.drop(run), script.WORLD)

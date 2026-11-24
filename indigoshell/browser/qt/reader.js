@@ -11,6 +11,15 @@
 // per document (the world starts empty with each new document, so the
 // refs last as long as the page load does).
 //
+// Frames (frames.py). Each frame's document has its own world and its own
+// `__jack`: Jack reads and acts in it the same way. The first call gives
+// the document its name (`__jack.frameName`, "f2"; "" in the main page),
+// which it keeps while it lasts, and the refs it hands out carry it
+// ("f2:14"). The reads say where each
+// frame element sits in what they read and which of the document's windows
+// it holds (`frameIndex`), and a frame says which of its parent's windows
+// it is (`whoami`): that pair is how Jack matches an element to its frame.
+//
 // Kept to what Chromium 122 has (Qt 6.8's QtWebEngine).
 (() => {
 "use strict";
@@ -23,6 +32,7 @@ const WALK_MAX = 20000;          // outline lines gathered, at most
 const OPTIONS_MAX = 100;
 const SELECTION_MAX = 200000;
 const PASSWORD = "(password)";
+const HOLE = "\u0001";          // marks where a frame's content goes (frames.py)
 
 // ── refs ────────────────────────────────────────────────────────────────
 const refs = new Map();          // ref -> WeakRef(element)
@@ -37,6 +47,18 @@ function ref(el) {
     refs.set(n, new WeakRef(el));
   }
   return n;
+}
+
+// A ref as the agent names it: the number, or "f2:14" in frame f2.
+function refOf(el) {
+  const n = ref(el);
+  const f = window.__jack && window.__jack.frameName;
+  return f ? `${f}:${n}` : n;
+}
+
+function refName(n) {
+  const f = window.__jack && window.__jack.frameName;
+  return f ? `${f}:${n}` : String(n);
 }
 
 function element(n) {           // the element a ref names, while it is in the page
@@ -151,7 +173,8 @@ function name(el) {
     return clean(el.getAttribute("placeholder") || el.getAttribute("title") || "", NAME_MAX);
   }
   if (tag === "IMG" || tag === "AREA") return clean(el.getAttribute("alt") || el.getAttribute("title"), NAME_MAX);
-  if (tag === "IFRAME" || tag === "FRAME") return clean(el.getAttribute("title") || el.getAttribute("name"), NAME_MAX);
+  if (tag === "IFRAME" || tag === "FRAME" || tag === "OBJECT" || tag === "EMBED")
+    return clean(el.getAttribute("title") || el.getAttribute("name"), NAME_MAX);
   let t = clean(el.innerText !== undefined ? el.innerText : el.textContent, NAME_MAX);
   if (!t) {
     const img = el.querySelector("img[alt]");
@@ -212,6 +235,7 @@ function role(el) {
     case "DIALOG": return "dialog";
     case "IMG": return el.getAttribute("alt") ? "img" : null;
     case "IFRAME": case "FRAME": return "iframe";
+    case "OBJECT": return frameIndex(el) !== null ? "iframe" : null;
   }
   const editable = el.getAttribute("contenteditable");
   if (editable !== null && editable !== "false" &&
@@ -261,9 +285,14 @@ function line(el, r) {
     return t ? `${r} ${quote(t)}` : null;
   }
   const n = name(el);
-  let s = `[${ref(el)}] ${r} ${quote(n)}`;
+  let s = `[${refOf(el)}] ${r} ${quote(n)}`;
   if (r === "link" && el.hasAttribute("href")) s += " -> " + where(el.getAttribute("href"));
-  if (r === "iframe") s += (el.src ? " -> " + where(el.src) : "") + " (not read)";
+  if (r === "iframe") {
+    // Jack says what it read of the frame here (frames.py), by its window.
+    const src = el.src || el.data || "";
+    const index = frameIndex(el);
+    s += (src ? " -> " + where(src) : "") + HOLE + (index === null ? "x" : index) + HOLE;
+  }
   s += states(el, r);
   if (["textbox", "searchbox", "combobox", "spinbutton", "slider"].includes(r) ||
       (r === "listbox" && el.tagName === "SELECT")) {
@@ -288,23 +317,25 @@ function text(o) {
   const offset = Math.max(0, o.offset | 0);
   const t = all.slice(offset, offset + o.length);
   const more = offset + t.length < all.length;
-  return {text: t, offset, total: all.length, more, next: more ? offset + t.length : null};
+  return {text: t, offset, total: all.length, more, next: more ? offset + t.length : null,
+          ...frameMarks(o.hidden, all.length)};
 }
 
 function links(o) {
   const items = [];
   for (const a of deep(document, "a[href], area[href]")) {
     if (!o.hidden && !visible(a)) continue;
-    items.push({ref: ref(a), text: name(a), url: a.href});
+    items.push({ref: refOf(a), text: name(a), url: a.href});
   }
   const p = page(items, o.offset, o.length);
-  return {links: p.slice, offset: p.offset, total: p.total, more: p.more, next: p.next};
+  return {links: p.slice, offset: p.offset, total: p.total, more: p.more, next: p.next,
+          ...frameMarks(o.hidden, items.length)};
 }
 
 function field(el) {
   const type = el.tagName === "INPUT" || el.tagName === "BUTTON" ? el.type
                                                                  : el.tagName.toLowerCase();
-  const f = {ref: ref(el), label: name(el), type, name: el.name || "",
+  const f = {ref: refOf(el), label: name(el), type, name: el.name || "",
              value: fieldValue(el), required: !!el.required, disabled: !!el.disabled};
   if (type === "checkbox" || type === "radio") f.checked = el.checked;
   if (el.tagName === "SELECT") {
@@ -330,7 +361,7 @@ function forms(o) {
   for (const form of deep(document, "form")) {
     const fs = fields(Array.from(form.elements), o.hidden);
     if (!fs.length && !o.hidden) continue;
-    items.push({ref: ref(form),
+    items.push({ref: refOf(form),
                 name: clean(form.getAttribute("aria-label") || form.name || form.id, NAME_MAX),
                 action: form.action, method: (form.method || "get").toLowerCase(), fields: fs});
   }
@@ -340,11 +371,13 @@ function forms(o) {
     items.push({ref: null, name: "(fields outside any form)", action: "", method: "",
                 fields: loose});
   const p = page(items, o.offset, o.length);
-  return {forms: p.slice, offset: p.offset, total: p.total, more: p.more, next: p.next};
+  return {forms: p.slice, offset: p.offset, total: p.total, more: p.more, next: p.next,
+          ...frameMarks(o.hidden, items.length)};
 }
 
 function outline(o) {
   const lines = [];
+  const marks = [];               // where each frame's lines go: after its element's
   let cut = false;
   const walk = (parent, depth) => {
     for (let el = parent.firstElementChild; el; el = el.nextElementSibling) {
@@ -360,6 +393,10 @@ function outline(o) {
         if (s) {
           lines.push("  ".repeat(depth) + s);
           if (LANDMARKS.has(r)) inner = depth + 1;
+          if (r === "iframe") {
+            const index = frameIndex(el);
+            if (index !== null) marks.push({at: lines.length, index, depth: depth + 1});
+          }
         }
         if (WHOLE.has(r)) continue;
       }
@@ -371,7 +408,7 @@ function outline(o) {
   if (root) walk(root, 0);
   const p = page(lines, o.offset, o.length);
   return {outline: p.slice, offset: p.offset, total: p.total, more: p.more, next: p.next,
-          cut};
+          cut, frames: marks, known: knownFrames(), length: window.length};
 }
 
 function has(o) {
@@ -519,7 +556,7 @@ const TYPABLE = new Set(["text", "search", "email", "tel", "url", "password", "n
 
 function target(n) {
   const el = element(n);
-  if (!el) throw new Error(`no element [${n}] on this page (a ref is gone with the page ` +
+  if (!el) throw new Error(`no element [${refName(n)}] on this page (a ref is gone with the page ` +
                            "that gave it: read the page again)");
   return el;
 }
@@ -530,7 +567,7 @@ function describe(el) {
   if (!el) return "nothing";
   const r = role(el);
   const n = name(el);
-  return `[${ref(el)}] ${r || el.tagName.toLowerCase()}` + (n ? " " + quote(n) : "");
+  return `[${refOf(el)}] ${r || el.tagName.toLowerCase()}` + (n ? " " + quote(n) : "");
 }
 
 // The field a click on `el` works: itself, the <select> it is in, or the
@@ -599,9 +636,9 @@ function point(o) {
     const el = target(o.ref);
     const why = o.refuse ? refused(el) : null;
     if (why) return {refused: why, what: describe(el)};
-    if (o.refuse && el.disabled) throw new Error(`[${o.ref}] is disabled`);
+    if (o.refuse && el.disabled) throw new Error(`[${refName(o.ref)}] is disabled`);
     const aims = [el, ...(el.labels ? Array.from(el.labels) : [])].filter(visible);
-    if (!aims.length) throw new Error(`[${o.ref}] is not visible on the page`);
+    if (!aims.length) throw new Error(`[${refName(o.ref)}] is not visible on the page`);
     let first = null;
     for (const aim of aims) {
       intoView(aim);
@@ -614,13 +651,24 @@ function point(o) {
       first = first || {covered: describe(hit), x, y, what: describe(el)};
     }
     if (first) return first;
-    throw new Error(`[${o.ref}] is outside the visible page, even scrolled to`);
+    throw new Error(`[${refName(o.ref)}] is outside the visible page, even scrolled to`);
   }
   const x = Number(o.x), y = Number(o.y);
   if (!(x >= 0 && y >= 0 && x < innerWidth && y < innerHeight))
     throw new Error(`(${o.x}, ${o.y}) is outside the visible page (${innerWidth}x${innerHeight} ` +
                     "CSS px)");
   const hit = hitAt(x, y);
+  if (hit && FRAME_TAGS.has(hit.tagName)) {
+    // Over a frame's page: Jack asks the frame what is there (frames.py).
+    const index = frameIndex(hit);
+    if (index !== null) {
+      const b = frameBox(hit);
+      const fx = (x - b.left) / b.sx, fy = (y - b.top) / b.sy;
+      if (fx >= 0 && fy >= 0 && fx < b.width && fy < b.height)
+        return {frame: {index, x: fx, y: fy}, x, y, what: describe(hit),
+                width: innerWidth, height: innerHeight};
+    }
+  }
   const why = o.refuse && hit ? refused(hit) : null;
   if (why) return {refused: why, what: describe(hit), x, y};
   return {x, y, what: describe(hit), width: innerWidth, height: innerHeight};
@@ -662,15 +710,26 @@ function focusField(n) {
   const why = refused(el);
   if (why) return {refused: why, what: describe(el)};
   if (!typable(el))
-    throw new Error(`[${n}] is not a text field (${describe(el)}): click it, then type with ` +
+    throw new Error(`[${refName(n)}] is not a text field (${describe(el)}): click it, then type with ` +
                     "no ref");
-  if (el.disabled || el.readOnly) throw new Error(`[${n}] is ${el.disabled ? "disabled" : "read-only"}`);
+  if (el.disabled || el.readOnly)
+    throw new Error(`[${refName(n)}] is ${el.disabled ? "disabled" : "read-only"}`);
   intoView(el);
   el.focus({preventScroll: true});
   const active = deepActive();
-  if (active !== el && !el.contains(active)) throw new Error(`[${n}] did not take the focus`);
+  if (active !== el && !el.contains(active)) throw new Error(`[${refName(n)}] did not take the focus`);
   caretToEnd(el);
-  return {what: describe(el)};
+  return {what: describe(el), ...middle(el)};
+}
+
+// The middle of an element's visible part (or of its box), for Jack to
+// bring the frame it is in into view in the frames above.
+function middle(el) {
+  const r = visibleRect(el);
+  if (r) return {x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2)};
+  const b = el.getBoundingClientRect();
+  return {x: Math.round(Math.min(Math.max(b.left + b.width / 2, 0), innerWidth - 1)),
+          y: Math.round(Math.min(Math.max(b.top + b.height / 2, 0), innerHeight - 1))};
 }
 
 function focused() {
@@ -701,18 +760,18 @@ function changed(el) {
 // A <select>'s options by value or by label (o.by), never its popup.
 function choose(n, o) {
   const el = target(n);
-  if (el.tagName !== "SELECT") throw new Error(`[${n}] is not a <select> (${describe(el)})`);
-  if (el.disabled) throw new Error(`[${n}] is disabled`);
+  if (el.tagName !== "SELECT") throw new Error(`[${refName(n)}] is not a <select> (${describe(el)})`);
+  if (el.disabled) throw new Error(`[${refName(n)}] is disabled`);
   const options = Array.from(el.options);
   const fold = s => clean(s).toLowerCase();
   const found = o.values.map(w => {
     const opt = o.by === "value" ? options.find(p => p.value === w)
       : options.find(p => clean(p.text) === clean(w)) || options.find(p => fold(p.text) === fold(w));
-    if (!opt) throw new Error(`[${n}] has no option with the ${o.by} ${quote(w)}`);
-    if (opt.disabled) throw new Error(`[${n}]'s option ${quote(clean(opt.text))} is disabled`);
+    if (!opt) throw new Error(`[${refName(n)}] has no option with the ${o.by} ${quote(w)}`);
+    if (opt.disabled) throw new Error(`[${refName(n)}]'s option ${quote(clean(opt.text))} is disabled`);
     return opt;
   });
-  if (found.length !== 1 && !el.multiple) throw new Error(`[${n}] takes one option`);
+  if (found.length !== 1 && !el.multiple) throw new Error(`[${refName(n)}] takes one option`);
   el.focus({preventScroll: true});
   if (el.multiple) for (const p of options) p.selected = found.includes(p);
   else found[0].selected = true;
@@ -725,11 +784,12 @@ function choose(n, o) {
 // A date, time, colour or range field's value, as typing cannot set it.
 function setValue(n, value) {
   const el = target(n);
-  if (el.disabled || el.readOnly) throw new Error(`[${n}] is ${el.disabled ? "disabled" : "read-only"}`);
+  if (el.disabled || el.readOnly)
+    throw new Error(`[${refName(n)}] is ${el.disabled ? "disabled" : "read-only"}`);
   el.focus({preventScroll: true});
   el.value = String(value);
   if (String(value) !== "" && el.value === "")
-    throw new Error(`[${n}] does not take ${quote(String(value))} (a ${el.type} field)`);
+    throw new Error(`[${refName(n)}] does not take ${quote(String(value))} (a ${el.type} field)`);
   changed(el);
   return {value: el.value};
 }
@@ -737,7 +797,7 @@ function setValue(n, value) {
 function scrollTo(n) {
   const el = target(n);
   el.scrollIntoView({block: "center", inline: "nearest", behavior: "instant"});
-  return {what: describe(el)};
+  return {what: describe(el), ...middle(el)};
 }
 
 function scrolled() {
@@ -759,7 +819,7 @@ function fileField(el) {
 function uploadTarget(n) {
   const el = target(n);
   const input = fileField(el);
-  if (input && input.disabled) throw new Error(`[${n}] is disabled`);
+  if (input && input.disabled) throw new Error(`[${refName(n)}] is disabled`);
   const out = {what: describe(el), field: input ? describe(input) : null,
                multiple: input ? !!input.multiple : null,
                folder: input ? !!input.webkitdirectory : false, aim: "element"};
@@ -768,7 +828,7 @@ function uploadTarget(n) {
   const label = Array.from(input.labels || []).find(l => visible(l) && visibleRect(l));
   if (label) {
     out.aim = "label";
-    out.label = ref(label);
+    out.label = refOf(label);
   } else {
     out.aim = "script";
   }
@@ -777,7 +837,7 @@ function uploadTarget(n) {
 
 function fileClick(n) {
   const input = fileField(target(n));
-  if (!input) throw new Error(`[${n}] is not a file field`);
+  if (!input) throw new Error(`[${refName(n)}] is not a file field`);
   input.click();
   return navigator.userActivation ? navigator.userActivation.isActive : null;
 }
@@ -788,7 +848,600 @@ function fileNames(n) {
   return input ? Array.from(input.files || []).map(f => ({name: f.name, size: f.size})) : null;
 }
 
-window.__jack = {text, links, forms, outline, has, info, selection, imageAt, frame,
+// ── frames (frames.py) ──────────────────────────────────────────────────
+// Which of this document's windows (window[i]) an element's frame is:
+// comparing windows is allowed across origins, so it holds for any frame.
+// The order of window[i] is the frames' making, not the page's order.
+const FRAME_TAGS = new Set(["IFRAME", "FRAME", "OBJECT"]);
+
+function frameIndex(el) {
+  let win = null;
+  try { win = el.contentWindow; } catch (e) { return null; }
+  if (!win) return null;
+  for (let i = 0; i < window.length; i++) if (window[i] === win) return i;
+  return null;
+}
+
+function frameElements() {
+  return Array.from(deep(document, "iframe, frame, object"));
+}
+
+// The windows every frame element of the document holds, shown or not.
+function knownFrames() {
+  return frameElements().map(frameIndex).filter(i => i !== null);
+}
+
+// The frames a read that lists (text, links, forms) puts after its own,
+// in the page's order: the shown ones, all of them with `hidden`.
+function frameMarks(hidden, at) {
+  const frames = [];
+  for (const el of frameElements()) {
+    const index = frameIndex(el);
+    if (index === null || (!hidden && !visible(el))) continue;
+    frames.push({at, index, name: `${el.tagName.toLowerCase()} ${quote(name(el))}`});
+  }
+  return {frames, known: knownFrames(), length: window.length};
+}
+
+// This frame's place among its parent's windows, from its own side.
+function whoami() {
+  let index = null, count = null;
+  try {
+    if (window.parent !== window) {
+      count = parent.length;
+      for (let i = 0; i < count; i++) if (parent[i] === window) { index = i; break; }
+    }
+  } catch (e) { /* no parent to ask */ }
+  return {index, count, url: location.href, name: window.__jack.frameName || ""};
+}
+
+function survey(what, o) {
+  return {me: whoami(), read: window.__jack[what](o)};
+}
+
+// The frame's page in its element: where its (0, 0) is in this
+// document's viewport, its scale (a CSS transform), its size.
+function frameBox(el) {
+  const r = el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  const sx = el.offsetWidth ? r.width / el.offsetWidth : 1;
+  const sy = el.offsetHeight ? r.height / el.offsetHeight : 1;
+  const pl = parseFloat(cs.paddingLeft) || 0, pt = parseFloat(cs.paddingTop) || 0;
+  const pr = parseFloat(cs.paddingRight) || 0, pb = parseFloat(cs.paddingBottom) || 0;
+  return {left: r.left + (el.clientLeft + pl) * sx, top: r.top + (el.clientTop + pt) * sy, sx, sy,
+          width: el.clientWidth - pl - pr, height: el.clientHeight - pt - pb};
+}
+
+// The point (o.x, o.y) of window o.index's page, in this document's
+// viewport: its element scrolled into view first when the point is not
+// in sight; with o.cover, what covers it there when its element is not
+// what is at the point.
+function framePoint(o) {
+  const el = frameElements().find(e => frameIndex(e) === o.index);
+  if (!el) throw new Error("the frame's element is gone from the page");
+  const at = () => {
+    const b = frameBox(el);
+    return {x: b.left + o.x * b.sx, y: b.top + o.y * b.sy};
+  };
+  const inside = p => p.x >= 0 && p.y >= 0 && p.x < innerWidth && p.y < innerHeight;
+  let p = at();
+  if (!inside(p)) {
+    el.scrollIntoView({block: "center", inline: "center", behavior: "instant"});
+    p = at();
+  }
+  if (!inside(p)) {
+    // A frame taller than the view: the page scrolled on to the point.
+    window.scrollBy({left: p.x - innerWidth / 2, top: p.y - innerHeight / 2, behavior: "instant"});
+    p = at();
+  }
+  const x = Math.round(p.x), y = Math.round(p.y);
+  if (!inside({x, y})) throw new Error("the frame is outside the visible page, even scrolled to");
+  if (o.cover) {
+    const hit = hitAt(x, y);
+    if (hit !== el) return {covered: describe(hit), x, y};
+  }
+  return {x, y};
+}
+
+// ── article: the page's main content, as Markdown ───────────────────────
+// Where the content is: the page's own word for it first (one outermost
+// <article> holding a good part of the text, else one <main> or
+// role=main), else the block with the most paragraph text in it,
+// Readability's way in short (a paragraph scores its parent, and less its
+// grandparent, by its length and commas; a class or id that says content
+// adds, one that says sidebar or comment takes away; links weigh it down),
+// with the siblings that score nearly as well. Then Markdown, leaving out
+// what is no content: navigation, sidebars, footers, forms and buttons,
+// dialogs, fixed boxes (a cookie banner, a chat bubble), text for screen
+// readers only, and boxes whose class or id says ads, sharing, comments,
+// newsletters and the like. A frame inside the content leaves a HOLE
+// where it sits, for Jack to fill (frames.py).
+const ARTICLE_MIN = 200;          // characters an <article> or <main> needs to count
+const words = list => new RegExp(list.join("|"), "i");
+const UNLIKELY = words(["-ad-", "ai2html", "banner", "breadcrumb", "combx", "comment", "community",
+                        "cookie", "consent", "cover-wrap", "disqus", "extra", "footer", "gdpr",
+                        "legends", "menu", "newsletter", "related", "remark", "replies", "rss",
+                        "share", "shoutbox", "sidebar", "skyscraper", "social", "sponsor",
+                        "subscribe", "supplemental", "ad-break", "agegate", "pagination", "pager",
+                        "popup", "promo", "yom-remote"]);
+const MAYBE = words(["and", "article", "body", "column", "content", "main", "shadow"]);
+const POSITIVE = words(["article", "body", "content", "entry", "hentry", "h-entry", "main", "page",
+                        "post", "text", "blog", "story", "prose", "markdown"]);
+const NEGATIVE = words(["-ad-", "hidden", "^hid$", " hid$", " hid ", "^hid ", "banner", "combx",
+                        "comment", "com-", "contact", "foot", "footer", "footnote", "gdpr",
+                        "masthead", "media", "meta", "outbrain", "promo", "related", "scroll",
+                        "share", "shoutbox", "sidebar", "skyscraper", "sponsor", "shopping", "tags",
+                        "tool", "widget"]);
+const READERS_ONLY = new RegExp("(^|\\s)(sr-only|visually-hidden|visuallyhidden|screen-reader-text|" +
+                                "screenreader-only|a11y-hidden|skip-link|skip-to-content)(\\s|$)", "i");
+const NOT_CONTENT = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "META", "LINK", "SVG",
+                             "CANVAS", "AUDIO", "VIDEO", "NAV", "ASIDE", "FOOTER", "FORM", "INPUT",
+                             "SELECT", "TEXTAREA", "BUTTON", "DIALOG", "MENU", "DATALIST", "OPTION",
+                             "OUTPUT", "PROGRESS", "METER", "MAP", "EMBED"]);
+const NOT_CONTENT_ROLES = new Set(["navigation", "complementary", "contentinfo", "banner", "search",
+                                   "dialog", "alertdialog", "menu", "menubar", "toolbar", "tablist",
+                                   "form"]);
+const IND = "\u0002", QUO = "\u0003";     // an indent space and a "> ", put in at the end
+
+function sizeOf(el) {
+  return clean(el.innerText !== undefined ? el.innerText : el.textContent).length;
+}
+
+function outermost(list) {
+  return list.filter(el => !list.some(other => other !== el && other.contains(el)));
+}
+
+function selectorOf(el) {
+  const classes = typeof el.className === "string" ? el.className.trim().split(/\s+/).filter(Boolean) : [];
+  return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") +
+         classes.slice(0, 2).map(c => "." + c).join("");
+}
+
+function weight(el) {
+  let w = 0;
+  for (const said of [typeof el.className === "string" ? el.className : "", el.id]) {
+    if (!said) continue;
+    if (NEGATIVE.test(said)) w -= 25;
+    if (POSITIVE.test(said)) w += 25;
+  }
+  return w;
+}
+
+function linkDensity(el) {
+  const all = (el.textContent || "").length;
+  if (!all) return 0;
+  let links = 0;
+  for (const a of el.querySelectorAll("a")) links += (a.textContent || "").length;
+  return Math.min(1, links / all);
+}
+
+const TAG_SCORES = {DIV: 5, PRE: 3, TD: 3, BLOCKQUOTE: 3, ADDRESS: -3, OL: -3, UL: -3, DL: -3, DD: -3,
+                    DT: -3, LI: -3, FORM: -3, H1: -5, H2: -5, H3: -5, H4: -5, H5: -5, H6: -5, TH: -5};
+const BLOCK_INSIDE = "p, div, section, article, table, ul, ol, pre, blockquote, h1, h2, h3, h4, h5, h6";
+
+// The densest block: [roots], or null when nothing scores.
+function densest(body, hidden) {
+  const scores = new Map();
+  const add = (el, s) => {
+    if (!el || el.nodeType !== 1 || el === document.documentElement) return;
+    scores.set(el, (scores.has(el) ? scores.get(el) : (TAG_SCORES[el.tagName] || 0) + weight(el)) + s);
+  };
+  for (const p of body.querySelectorAll("p, pre, td, blockquote, div, section")) {
+    if ((p.tagName === "DIV" || p.tagName === "SECTION") && p.querySelector(BLOCK_INSIDE)) continue;
+    if (!hidden && prunable(p)) continue;
+    const t = clean(p.textContent);
+    if (t.length < 25) continue;
+    const s = 1 + (t.match(/[,،、，]/g) || []).length + Math.min(Math.floor(t.length / 100), 3);
+    let up = p.parentElement;
+    for (let level = 0; up && level < 3; level++, up = up.parentElement)
+      add(up, level === 0 ? s : level === 1 ? s / 2 : s / 6);
+  }
+  const ranked = Array.from(scores).sort((a, b) => b[1] - a[1]).slice(0, 12)
+    .map(([el, s]) => [el, s * (1 - linkDensity(el))]).sort((a, b) => b[1] - a[1]);
+  if (!ranked.length || ranked[0][1] < 20) return null;   // nothing that reads as prose
+  const [best, top] = ranked[0];
+  const roots = [];
+  const parent = best.parentElement;
+  for (const sib of parent ? parent.children : [best]) {
+    if (sib === best) { roots.push(sib); continue; }
+    const s = scores.get(sib);
+    if (s !== undefined && s * (1 - linkDensity(sib)) >= Math.max(10, top * 0.2)) roots.push(sib);
+    else if (sib.tagName === "P" && clean(sib.textContent).length > 80 && linkDensity(sib) < 0.25)
+      roots.push(sib);
+  }
+  return {roots, best};
+}
+
+function contentRoots(o) {
+  const body = document.body || document.documentElement;
+  const shown = el => o.hidden || visible(el);
+  const total = Math.max(1, sizeOf(body));
+  const enough = el => {
+    const n = sizeOf(el);
+    return n >= Math.min(ARTICLE_MIN, total / 2) && n >= 0.2 * total;
+  };
+  const articles = outermost(Array.from(deep(document, "article, [role=article]")).filter(shown));
+  if (articles.length === 1 && enough(articles[0]))
+    return {roots: articles, found: "the page's <article>"};
+  const mains = outermost(Array.from(deep(document, "main, [role=main]")).filter(shown));
+  if (mains.length === 1 && enough(mains[0])) return {roots: mains, found: "the page's <main>"};
+  const dense = densest(body, o.hidden);
+  if (dense) return {roots: dense.roots, found: `the densest block (<${selectorOf(dense.best)}>)`};
+  return {roots: [body], found: "the whole page"};
+}
+
+function junk(el, st, ctx) {
+  const tag = el.tagName.toUpperCase();
+  if (NOT_CONTENT.has(tag)) return true;
+  if (tag === "HEADER" && !sectioned(el)) return true;
+  if (NOT_CONTENT_ROLES.has((el.getAttribute("role") || "").trim().split(/\s+/)[0])) return true;
+  if (!ctx.hidden && (el.getAttribute("aria-hidden") === "true" || st.display === "none" ||
+                      (el.checkVisibility && !el.checkVisibility() && st.display !== "contents")))
+    return true;
+  if (st.position === "fixed") return true;
+  const cls = typeof el.className === "string" ? el.className : (el.getAttribute("class") || "");
+  if (READERS_ONLY.test(cls)) return true;
+  const said = (cls + " " + el.id).trim();
+  return !!said && UNLIKELY.test(said) && !MAYBE.test(said) && !el.closest("table, pre, code");
+}
+
+function absolute(url) {
+  try { return new URL(url, document.baseURI).href; } catch (e) { return url; }
+}
+
+function dest(url) {
+  return /[\s<>()]/.test(url) ? "<" + url.replace(/[<>]/g, encodeURIComponent) + ">" : url;
+}
+
+function oneLine(s) {
+  return s.replace(/[\u0002\u0003]/g, "").replace(/\s*\n\s*/g, " ");
+}
+
+function block(s, ctx) {
+  if (ctx.link || ctx.cell) return " " + s + " ";
+  s = s.trim();
+  return s ? "\n\n" + s + "\n\n" : "";
+}
+
+// Bold or emphasis around inline text, its outer spaces left outside.
+function wrap(s, d) {
+  if (s.includes("\n\n")) return s;
+  const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(s);
+  return m[2] ? m[1] + d + m[2] + d + m[3] : s;
+}
+
+function kids(el, ctx) {
+  let nodes = (el.shadowRoot || el).childNodes;
+  if (el.tagName === "SLOT") {
+    const given = el.assignedNodes({flatten: true});
+    if (given.length) nodes = given;
+  }
+  let s = "";
+  for (const n of nodes) s += md(n, ctx);
+  return s;
+}
+
+function image(img, ctx) {
+  if (!ctx.hidden) {
+    if (!visible(img)) return "";
+    const r = img.getBoundingClientRect();
+    if (r.width <= 2 || r.height <= 2) return "";       // a tracking pixel
+  }
+  const own = img.currentSrc || img.src || "";
+  const src = own && !own.startsWith("data:") ? own
+    : img.getAttribute("data-src") || img.getAttribute("data-lazy-src") || own;
+  const alt = clean(img.getAttribute("alt") || img.getAttribute("title"), 300).replace(/[\[\]]/g, "\\$&");
+  if (!src) return alt;
+  return `![${alt}](${src.startsWith("data:") ? "" : dest(absolute(src))})`;
+}
+
+function link(el, ctx) {
+  if (ctx.link) return kids(el, ctx);
+  const inner = oneLine(kids(el, {...ctx, link: true})).trim();
+  const href = el.hasAttribute("href") ? el.href : "";
+  if (!href || /^javascript:/i.test(href)) return inner;
+  return inner ? `[${inner}](${dest(href)})` : "";
+}
+
+function code(el) {
+  const t = (el.textContent || "").replace(/\n/g, " ");
+  if (!t.trim()) return "";
+  const longest = Math.max(0, ...(t.match(/`+/g) || []).map(r => r.length));
+  const tick = "`".repeat(longest + 1);
+  const pad = t.startsWith("`") || t.endsWith("`") ? " " : "";
+  return tick + pad + t + pad + tick;
+}
+
+function pre(el, ctx) {
+  const t = (el.innerText !== undefined ? el.innerText : el.textContent).replace(/\n+$/, "");
+  if (ctx.link || ctx.cell) return " " + code({textContent: t}) + " ";
+  if (!t.trim()) return "";
+  const inner = el.querySelector("code");
+  const m = /(?:^|\s)lang(?:uage)?-([\w#+.-]+)/.exec(`${el.className} ${inner ? inner.className : ""}`);
+  const longest = Math.max(2, ...(t.match(/`+/g) || []).map(r => r.length));
+  const fence = "`".repeat(longest + 1);
+  return "\n\n" + fence + (m ? m[1] : "") + "\n" + t + "\n" + fence + "\n\n";
+}
+
+function list(el, ctx) {
+  if (ctx.link || ctx.cell) return " " + kids(el, ctx) + " ";
+  const ordered = el.tagName === "OL";
+  let n = ordered ? (el.start || 1) : 0;
+  const items = [];
+  for (const li of el.children) {
+    if (li.tagName !== "LI") {
+      const s = md(li, ctx).trim();
+      if (s) items.push(s);
+      continue;
+    }
+    const st = getComputedStyle(li);
+    if (junk(li, st, ctx)) continue;
+    const marker = ordered ? `${n++}. ` : "- ";
+    const body = kids(li, ctx).trim().replace(/\n\n(?=[\u0002\u0003]*(?:[-*+]|\d+\.) )/g, "\n");
+    if (!body) continue;
+    const lines = body.split("\n");
+    items.push(marker + lines[0] +
+               lines.slice(1).map(l => "\n" + (l ? IND.repeat(marker.length) + l : "")).join(""));
+  }
+  return items.length ? "\n\n" + items.join("\n") + "\n\n" : "";
+}
+
+function quoted(el, ctx) {
+  if (ctx.link || ctx.cell) return kids(el, ctx);
+  const body = kids(el, ctx).trim();
+  return body ? "\n\n" + body.split("\n").map(l => QUO + l).join("\n") + "\n\n" : "";
+}
+
+function table(el, ctx) {
+  const rows = Array.from(el.rows).filter(r => ctx.hidden || !prunable(r));
+  let width = 0;
+  for (const r of rows) {
+    let w = 0;
+    for (const c of r.cells) w += c.colSpan || 1;
+    width = Math.max(width, w);
+  }
+  const data = width >= 2 && !el.querySelector("table") && (rows.length >= 2 || !!el.querySelector("th"));
+  if (!data || ctx.link || ctx.cell) return block(kids(el, ctx), ctx);
+  const grid = rows.map(r => {
+    const cells = [];
+    for (const c of r.cells) {
+      cells.push(oneLine(kids(c, {...ctx, cell: true})).trim().replace(/\|/g, "\\|"));
+      for (let k = 1; k < (c.colSpan || 1); k++) cells.push("");
+    }
+    return cells;
+  });
+  const row = cells => "| " + Array.from({length: width}, (_, i) => cells[i] || "").join(" | ") + " |";
+  const caption = el.caption ? oneLine(kids(el.caption, {...ctx, cell: true})).trim() : "";
+  return "\n\n" + (caption ? `*${caption}*\n\n` : "") +
+         [row(grid[0]), "|" + " --- |".repeat(width), ...grid.slice(1).map(row)].join("\n") + "\n\n";
+}
+
+const ESCAPE_START = /^(#{1,6}\s|[-+*]\s|\d+[.)]\s|>)/;
+
+function md(node, ctx) {
+  if (node.nodeType === 3) {
+    if (ctx.pre) return node.data;
+    const t = node.data.replace(/\s+/g, " ");
+    return ctx.link ? t.replace(/[\[\]]/g, "\\$&") : t;
+  }
+  if (node.nodeType !== 1) return "";
+  const el = node;
+  const st = getComputedStyle(el);
+  if (!ctx.roots.has(el) && junk(el, st, ctx)) return "";
+  const tag = el.tagName.toUpperCase();
+  if (FRAME_TAGS.has(tag)) {
+    const index = frameIndex(el);
+    if (index === null || ctx.link || ctx.cell || (!ctx.hidden && !visible(el))) return "";
+    return "\n\n" + HOLE + index + HOLE + "\n\n";
+  }
+  switch (tag) {
+    case "BR": return ctx.link || ctx.cell ? " " : "\n";
+    case "HR": return block("---", ctx);
+    case "IMG": return image(el, ctx);
+    case "PICTURE": { const img = el.querySelector("img"); return img ? image(img, ctx) : ""; }
+    case "PRE": return pre(el, ctx);
+    case "CODE": case "KBD": case "SAMP": case "TT": return code(el);
+    case "A": { const s = link(el, ctx); return st.display.startsWith("inline") ? s : block(s, ctx); }
+    case "EM": case "I": case "CITE": case "DFN": return wrap(kids(el, ctx), "*");
+    case "STRONG": case "B": return wrap(kids(el, ctx), "**");
+    case "DEL": case "S": case "STRIKE": return wrap(kids(el, ctx), "~~");
+    case "Q": return "“" + kids(el, ctx) + "”";
+    case "H1": case "H2": case "H3": case "H4": case "H5": case "H6": {
+      const t = oneLine(kids(el, ctx)).trim();
+      if (!t) return "";
+      return ctx.link || ctx.cell ? " " + t + " " : block("#".repeat(+tag[1]) + " " + t, ctx);
+    }
+    case "UL": case "OL": return list(el, ctx);
+    case "BLOCKQUOTE": return quoted(el, ctx);
+    case "TABLE": return table(el, ctx);
+    case "DT": case "SUMMARY": return block(wrap(oneLine(kids(el, ctx)), "**"), ctx);
+    case "FIGCAPTION": return block(wrap(oneLine(kids(el, ctx)), "*"), ctx);
+  }
+  const inner = kids(el, ctx);
+  const d = st.display;
+  if (d.startsWith("inline") || d === "contents" || d === "ruby") return inner;
+  if (tag === "P" && !ctx.link && !ctx.cell) {
+    const t = inner.trim();
+    return block(ESCAPE_START.test(t) ? "\\" + t : t, ctx);
+  }
+  return block(inner, ctx);
+}
+
+// Lines trimmed and blank runs made one, outside code; the indents and
+// quote marks put in.
+function tidy(text) {
+  const out = [];
+  let fence = null, blank = true;
+  for (const line of text.split("\n")) {
+    const lead = /^[\u0002\u0003]*/.exec(line)[0];
+    const rest = line.slice(lead.length);
+    const prefix = lead.replace(/\u0002/g, " ").replace(/\u0003/g, "> ");
+    if (fence) {
+      out.push(prefix + rest);
+      if (rest.trim() === fence) fence = null;
+      blank = false;
+      continue;
+    }
+    const body = rest.trim();
+    if (!body) {
+      if (!blank) out.push(prefix.trimEnd());
+      blank = true;
+      continue;
+    }
+    out.push(prefix + body);
+    blank = false;
+    const open = /^(`{3,})/.exec(body);
+    if (open) fence = open[1];
+  }
+  return out.join("\n").trim();
+}
+
+// The frames' HOLEs taken out: where each was.
+function holes(text) {
+  const marks = [];
+  let out = "", last = 0;
+  const re = /\u0001(\d+)\u0001(\n\n)?/g;
+  for (let m; (m = re.exec(text)); ) {
+    out += text.slice(last, m.index);
+    marks.push({at: out.length, index: +m[1]});
+    last = m.index + m[0].length;
+  }
+  return {text: out + text.slice(last), marks};
+}
+
+// The page's title over its content, when the content has no <h1> of its
+// own: the first shown <h1>, else the document's title. None for a frame's
+// document, whose title is seldom meant to be read.
+function articleTitle(roots) {
+  if (window.parent !== window) return "";
+  if (roots.some(r => r.tagName === "H1" || r.querySelector("h1"))) return "";
+  for (const h of deep(document, "h1")) {
+    if (!visible(h)) continue;
+    const t = clean(h.innerText, 300);
+    if (t) return t;
+  }
+  return clean(document.title, 300);
+}
+
+function article(o) {
+  const {roots, found} = contentRoots(o);
+  const ctx = {hidden: !!o.hidden, roots: new Set(roots), link: false, cell: false, pre: false};
+  let text = roots.map(r => md(r, ctx)).join("\n\n");
+  const title = articleTitle(roots);
+  if (title) text = "# " + title + "\n\n" + text;
+  const done = holes(tidy(text));
+  const offset = Math.max(0, o.offset | 0);
+  const t = done.text.slice(offset, offset + o.length);
+  const more = offset + t.length < done.text.length;
+  return {article: t, offset, total: done.text.length, more, next: more ? offset + t.length : null,
+          found, frames: done.marks, known: knownFrames(), length: window.length};
+}
+
+// ── full-page screenshots (control.py `screenshot`, full) ───────────────
+// The page scrolled tile by tile. From the second tile on, what is fixed
+// or sticky (a header that stays, a cookie banner) is hidden by a sheet
+// adopted into the document (and the shadow roots holding such
+// elements), its rules naming them by their place in the tree: no
+// element, attribute or class of the page changes, and the sheet goes
+// again after.
+const FIXED_MAX = 300;
+let hiding = [];                  // [{root, sheet, selectors}]
+
+function pageSize() {
+  const s = document.scrollingElement || document.documentElement;
+  return {width: Math.max(s ? s.scrollWidth : 0, innerWidth),
+          height: Math.max(s ? s.scrollHeight : 0, innerHeight),
+          x: scrollX, y: scrollY, vw: innerWidth, vh: innerHeight};
+}
+
+function tile(o) {
+  window.scrollTo({left: o.x, top: o.y, behavior: "instant"});
+  if (o.hide) hideFixed();
+  return {x: scrollX, y: scrollY, height: pageSize().height, hidden: hiding.reduce(
+    (n, h) => n + h.selectors.size, 0)};
+}
+
+function placeOf(el) {
+  const parts = [];
+  for (let n = el; n && n !== document.documentElement; ) {
+    const parent = n.parentNode;
+    if (!parent) return null;
+    const nth = Array.prototype.indexOf.call(parent.children, n) + 1;
+    parts.unshift(`${CSS.escape(n.localName)}:nth-child(${nth})`);
+    if (parent instanceof ShadowRoot) return ":host > " + parts.join(" > ");
+    n = parent;
+  }
+  return ":root > " + parts.join(" > ");
+}
+
+function hideFixed() {
+  const todo = [document.documentElement];
+  let n = 0;
+  while (todo.length && n < FIXED_MAX) {
+    const root = todo.pop();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {acceptNode(el) {
+      const st = getComputedStyle(el);
+      if (st.display === "none") return NodeFilter.FILTER_REJECT;
+      if (el.shadowRoot) todo.push(el.shadowRoot);
+      if ((st.position === "fixed" || st.position === "sticky") && n < FIXED_MAX) {
+        const place = placeOf(el);
+        if (place) {
+          const into = el.getRootNode();
+          let entry = hiding.find(h => h.root === into);
+          if (!entry) {
+            entry = {root: into, sheet: new CSSStyleSheet(), selectors: new Set()};
+            into.adoptedStyleSheets = [...into.adoptedStyleSheets, entry.sheet];
+            hiding.push(entry);
+          }
+          if (!entry.selectors.has(place)) { entry.selectors.add(place); n++; }
+        }
+        return NodeFilter.FILTER_REJECT;    // what is inside goes with it
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }});
+    while (walker.nextNode()) { /* acceptNode gathers */ }
+  }
+  for (const entry of hiding)
+    entry.sheet.replaceSync(Array.from(entry.selectors).map(s => `${s} { opacity: 0 !important; ` +
+      "visibility: hidden !important; transition: none !important; animation: none !important; }")
+      .join("\n"));
+}
+
+function endTiles(o) {
+  for (const {root, sheet} of hiding)
+    root.adoptedStyleSheets = root.adoptedStyleSheets.filter(s => s !== sheet);
+  hiding = [];
+  window.scrollTo({left: o.x, top: o.y, behavior: "instant"});
+  return {x: scrollX, y: scrollY};
+}
+
+// ── the agent's scripts' answers (script.py) ────────────────────────────
+// The password fields' values in this document (as long as `min` or
+// longer), each as typed and as JSON writes it, once and twice: never
+// sent anywhere, only taken out of an answer here.
+function secrets(min) {
+  const values = new Set();
+  for (const el of deep(document, "input"))
+    if (isPassword(el) && el.value && el.value.length >= min) values.add(el.value);
+  const forms = new Set();
+  for (const v of values) {
+    const once = JSON.stringify(v).slice(1, -1);
+    forms.add(v).add(once).add(JSON.stringify(once).slice(1, -1));
+  }
+  return Array.from(forms).sort((a, b) => b.length - a.length);
+}
+
+function hasSecrets(min) {
+  return secrets(min).length > 0;
+}
+
+function scrub(text, min) {
+  for (const v of secrets(min)) text = text.split(v).join(PASSWORD);
+  return text;
+}
+
+window.__jack = {text, links, forms, outline, article, has, info, selection, imageAt, frame,
                  element, painted: 0, point, focusField, focused, fieldKind, choose, setValue,
-                 scrollTo, scrolled, uploadTarget, fileClick, fileNames};
+                 scrollTo, scrolled, uploadTarget, fileClick, fileNames, whoami, survey,
+                 framePoint, pageSize, tile, endTiles, hasSecrets, scrub, frameName: ""};
 })();

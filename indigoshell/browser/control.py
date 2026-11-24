@@ -24,10 +24,13 @@ window until a request opens one. A Jack that is starting meanwhile, the
 user's or another start's, is the one it then connects to.
 
 The acting requests (`click`, `type_text`, `key`, `select`, `scroll`,
-`fill`, `hover`, `dialog`, `upload`, `release`) carry the agent's
+`fill`, `hover`, `dialog`, `upload`, `js`, `release`) carry the agent's
 `voice`, which Jack draws its hold on the tab in (protocol.VOICES). On a
 tab the user took over they raise ControlError with protocol.TOOK_OVER's
-words.
+words. A ref is an int, or "f2:14" for an element in frame f2
+(protocol.py, "Frames"). `js` runs the agent's own JavaScript behind
+Jack's guard (protocol.py, "Scripts"); `screenshot(..., full=True)` gives
+the page as tiles.
 
 The agent's own window (protocol.py, "Alone"): `open(..., window="agent",
 voice=...)`, `borrow`, `return_tab`; `show` puts a local file in the
@@ -238,9 +241,14 @@ class Control:
                                            "length": length, "hidden": hidden or None},
                                   within=within)
 
-    async def screenshot(self, tab: int, *, within: float = REQUEST_S) -> dict:
-        """TAB + {"png" (base64), "width", "height", "source_width", "source_height"}."""
-        return await self.request("screenshot", {"tab": tab}, within=within)
+    async def screenshot(self, tab: int, *, full: bool = False,
+                         within: float = REQUEST_S) -> dict:
+        """TAB + {"png" (base64), "width", "height", "source_width", "source_height",
+        "viewport_width", "viewport_height"}; with `full`, TAB + {"tiles": [{"png",
+        "width", "height", "source_width", "source_height", "x", "y"}], "page_width",
+        "page_height", "viewport_width", "viewport_height", "more"}."""
+        return await self.request("screenshot", {"tab": tab, "full": full or None},
+                                  within=within)
 
     async def look(self, *, window: int | None = None, xid: int | None = None,
                    screenshot: bool = False, image: bool = False,
@@ -251,14 +259,14 @@ class Control:
 
     # ── acting (protocol.py, "Acting"): TAB + {"navigated", "opened",
     # "dialog", ...} each; `voice` is the agent's ──────────────────────────
-    async def click(self, tab: int, ref: int | None = None, *, x: float | None = None,
+    async def click(self, tab: int, ref: int | str | None = None, *, x: float | None = None,
                     y: float | None = None, button: str | None = None, double: bool = False,
                     voice: str | None = None, within: float = REQUEST_S) -> dict:
         return await self.request("click", {"tab": tab, "ref": ref, "x": x, "y": y,
                                             "button": button, "double": double or None,
                                             "voice": voice}, within=within)
 
-    async def type_text(self, tab: int, text: str, *, ref: int | None = None,
+    async def type_text(self, tab: int, text: str, *, ref: int | str | None = None,
                         x: float | None = None, y: float | None = None, clear: bool = False,
                         submit: bool = False, voice: str | None = None,
                         within: float = REQUEST_S) -> dict:
@@ -271,14 +279,15 @@ class Control:
         return await self.request("key", {"tab": tab, "key": key, "count": count,
                                           "voice": voice}, within=within)
 
-    async def select(self, tab: int, ref: int, *, value=None, label=None,
+    async def select(self, tab: int, ref: int | str, *, value=None, label=None,
                      voice: str | None = None, within: float = REQUEST_S) -> dict:
         return await self.request("select", {"tab": tab, "ref": ref, "value": value,
                                              "label": label, "voice": voice}, within=within)
 
     async def scroll(self, tab: int, *, dy: float | None = None, dx: float | None = None,
-                     ref: int | None = None, x: float | None = None, y: float | None = None,
-                     to: int | None = None, voice: str | None = None,
+                     ref: int | str | None = None, x: float | None = None,
+                     y: float | None = None, to: int | str | None = None,
+                     voice: str | None = None,
                      within: float = REQUEST_S) -> dict:
         return await self.request("scroll", {"tab": tab, "dy": dy, "dx": dx, "ref": ref, "x": x,
                                              "y": y, "to": to, "voice": voice}, within=within)
@@ -288,7 +297,7 @@ class Control:
         return await self.request("fill", {"tab": tab, "fields": fields, "voice": voice},
                                   within=within)
 
-    async def hover(self, tab: int, ref: int | None = None, *, x: float | None = None,
+    async def hover(self, tab: int, ref: int | str | None = None, *, x: float | None = None,
                     y: float | None = None, voice: str | None = None,
                     within: float = REQUEST_S) -> dict:
         return await self.request("hover", {"tab": tab, "ref": ref, "x": x, "y": y,
@@ -303,11 +312,21 @@ class Control:
         """The tabs let go of."""
         return (await self.request("release", {"tab": tab}, within=within))["released"]
 
-    async def upload(self, tab: int, ref: int, paths: list[str], *, voice: str | None = None,
-                     within: float = REQUEST_S) -> dict:
+    async def upload(self, tab: int, ref: int | str, paths: list[str], *,
+                     voice: str | None = None, within: float = REQUEST_S) -> dict:
         """TAB + {"navigated", "opened", "dialog", "files", "field", "what"}."""
         return await self.request("upload", {"tab": tab, "ref": ref, "paths": list(paths),
                                              "voice": voice}, within=within)
+
+    async def js(self, tab: int, code: str, *, timeout: float | None = None,
+                 voice: str | None = None, within: float | None = None) -> dict:
+        """TAB + {"navigated", "opened", "dialog", "result" (JSON text or None),
+        "result_type", "length", "cut", "threw"?, "pending"?}. `timeout`: Jack's wait
+        for a promise; this side waits a few seconds longer."""
+        wait = protocol.JS_TIMEOUT_S if timeout is None else float(timeout)
+        return await self.request("js", {"tab": tab, "code": code, "timeout": timeout,
+                                         "voice": voice},
+                                  within=within if within is not None else wait + 10.0)
 
     # ── alone, show, downloads (protocol.py) ────────────────────────────
     async def borrow(self, tab: int, *, voice: str | None = None,

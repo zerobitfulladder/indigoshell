@@ -402,10 +402,10 @@ def test_pure() -> None:
             "browser_click", "browser_type", "browser_key", "browser_select", "browser_scroll",
             "browser_fill", "browser_hover", "browser_dialog", "browser_release",
             "browser_upload", "browser_borrow", "browser_return", "browser_show",
-            "browser_downloads"]
+            "browser_downloads", "browser_js"]
     check("hands: the nine for looking, then the nine for acting (tests/browser_act.py), then "
-          "the agent's own window, show, downloads, uploads (tests/browser_alone.py), in "
-          "order, each a Hand", names == want
+          "the agent's own window, show, downloads, uploads (tests/browser_alone.py), then "
+          "the guarded script (tests/browser_read.py), in order, each a Hand", names == want
           and all(isinstance(h, Hand) for h in hands), f"{names}")
     problems = []
     try:
@@ -727,7 +727,7 @@ def test_in_process(on_screen: bool = False) -> None:
               'textbox "Password" = (password)', 'combobox "Country" = "Germany"',
               'checkbox "Remember me" (checked)', 'textbox "A note" = "typed note"',
               'textbox "Loose field" = "loose value"', 'button "Role button"',
-              'img "A red box"', 'iframe "Embedded" -> /page/Inner (not read)',
+              'img "A red box"', 'iframe "Embedded" -> /page/Inner (frame f',
               'button "Shadow button"', "main", "banner", "contentinfo"]
     missing = [e for e in expect if e not in text_all]
     check("read outline: landmarks, headings, links, fields with values, a styled checkbox, "
@@ -842,7 +842,7 @@ def test_in_process(on_screen: bool = False) -> None:
     _, err = J(jack.read(t1.tab, "everything"))
     _, err2 = J(jack.read(t1.tab, "text", offset=-1))
     check("read: an unknown kind and a negative offset refused",
-          err == "`what` must be one of text, links, forms, outline"
+          err == "`what` must be one of text, links, forms, outline, article"
           and err2 == "`offset` must be 0 or more and `length` 1 or more", f"{err} / {err2}")
 
     # ── screenshot ──────────────────────────────────────────────────────
@@ -1059,9 +1059,10 @@ def test_in_process(on_screen: bool = False) -> None:
 
     # ── the log ─────────────────────────────────────────────────────────
     lines = [r.getMessage() for r in logs.records if r.name.endswith("qt.control")]
-    # Acting: browser_act.py; alone, show, downloads, upload: browser_alone.py.
-    looking = (set(protocol.REQUESTS) - set(protocol.ACTS) - {"release", protocol.UPLOAD}
-               - set(protocol.ALONE))
+    # Acting: browser_act.py; alone, show, downloads, upload: browser_alone.py;
+    # the agent's scripts: browser_read.py.
+    looking = (set(protocol.REQUESTS) - set(protocol.ACTS)
+               - {"release", protocol.UPLOAD, protocol.JS} - set(protocol.ALONE))
     kinds = {k for k in looking if any(m.startswith(f"agent: {k}") for m in lines)}
     leaks = [m for m in lines if any(s in m for s in (SECRET, "SELECTED-WORDS", "FRAME-WORDS",
                                                       "Your account", "MARKER", "#never"))]

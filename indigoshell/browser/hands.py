@@ -12,8 +12,9 @@ content blocks.
     browser_close       close a tab
     browser_go          an address, back, forward or reload, waited for
     browser_wait        a load, a CSS selector or a text, up to a time
-    browser_read        the page: outline (with refs), text, links, forms
-    browser_screenshot  the visible part of a tab
+    browser_read        the page and its frames: outline (with refs), article
+                        (the main content as Markdown), text, links, forms
+    browser_screenshot  the visible part of a tab, or the whole page in tiles
     browser_look        what the user is looking at in Jack
     browser_click       click an element (by ref) or a point
     browser_type        type into a field, or what has focus
@@ -29,6 +30,7 @@ content blocks.
     browser_return      a tab of the agent's window to the user's
     browser_show        a local file (a report) in the user's window
     browser_downloads   Jack's downloads, or wait for one
+    browser_js          the agent's own JavaScript in the page, behind Jack's guard
 
 What the agent gets from a page is marked as the site's: a block of its
 own whose first line says whose words follow (control.SITE_WORDS);
@@ -51,6 +53,14 @@ alone; it borrows a user's tab there (with all its state) and returns it
 when done. The descriptions say when to work alone and when where the
 user looks, that the agent never switches the user's workspace, and
 where uploads never come from (browser/uploads.py).
+
+Frames (protocol.py "Frames"): reads take in the page's iframes, and
+an element in one has a ref like "f2:14", which every acting hand takes
+as it takes a plain number. The descriptions say when the article
+reading serves better than the outline (reading, not acting: it has no
+refs), that full-page tiles scroll the page and how their offsets map,
+and what the JavaScript hand's guard keeps out and what it does not (it
+is no sandbox: the code acts as the page, signed in as the user).
 
 Daemon side: no PySide6, nothing from browser/qt.
 """
@@ -77,8 +87,9 @@ WATCHED = ("The user watches you act: Jack locks their input to the tab and mark
            "yours until you release it (or 10 s after your last request on it). If an "
            "answer says \"the user took over tab N\", they took it back: stop, say so in the "
            "chat, and do not try again until they ask.")
-REFS = ("`ref` is an element's number from browser_read of the page as it is now; refs "
-        "die with the page (after a navigation, read again).")
+REFS = ("`ref` is an element's number from browser_read of the page as it is now (\"f2:14\" "
+        "for one inside frame f2, an iframe); refs die with the page (after a navigation, read "
+        "again).")
 POINT = ("Instead of `ref`, a point: `x`, `y` in CSS pixels of the visible page, (0, 0) "
          "its top left (from browser_screenshot: the image's pixel times the viewport "
          "size over the image size, which it says).")
@@ -104,7 +115,9 @@ def _schema(properties: dict, required: tuple = ()) -> dict:
 
 
 TAB = {"type": "integer", "description": "a tab id, from browser_tabs"}
-REF = {"type": "integer", "description": "an element's ref, from browser_read"}
+REF = {"anyOf": [{"type": "integer"}, {"type": "string", "pattern": "^f[0-9]+:[0-9]+$"}],
+       "description": "an element's ref, from browser_read: a number, or like \"f2:14\" for "
+                      "one in frame f2"}
 XY = {"type": "number", "minimum": 0}
 WAIT_S = {"type": "number", "minimum": 0, "maximum": SLOW_S,
           "description": "if the action starts a navigation, how long to wait for the page "
@@ -354,15 +367,17 @@ async def _read(call: Call) -> list[dict]:
     except ControlError as e:
         raise HandError(str(e)) from None
     unit = {"text": "characters", "links": "links", "forms": "forms",
-            "outline": "lines"}[what]
+            "outline": "lines", "article": "characters"}[what]
     end = page["offset"] + len(page.get(what) or ())
     about = (f"{what} of {_says(page)}: {unit} {page['offset']} to {end} of {page['total']}"
              + (f"; read again with offset {page['next']} for more" if page.get("more")
                 else "") + "."
+             + (f" The content was found in {page['found']}." if page.get("found") else "")
              + (" The page has more elements than are gathered at once; the outline stops "
-                "short." if page.get("cut") else ""))
-    if what == "text":
-        body = page["text"]
+                "short." if page.get("cut") else "")
+             + _frames_note(page))
+    if what in ("text", "article"):
+        body = page[what]
     elif what == "links":
         body = "\n".join(f"[{link['ref']}] {link['text']!r} -> {link['url']}"
                          for link in page["links"])
@@ -375,12 +390,36 @@ async def _read(call: Call) -> list[dict]:
                        + (body if body.strip() else "(nothing)"))]
 
 
+def _frames_note(page: dict) -> str:
+    """What a read says of the page's frames."""
+    met = page.get("frames") or []
+    more = page.get("frames_more") or 0
+    if not met and not more:
+        return ""
+    read = [f["frame"] for f in met if f.get("read")]
+    unread = [f"{f['frame']} at {f['url']} ({f.get('why') or 'not read'})"
+              for f in met if not f.get("read")]
+    parts = []
+    if read:
+        parts.append(f" Read with it, the page's frame(s) {', '.join(read)}: their elements' refs "
+                     "look like \"f2:14\".")
+    if unread:
+        parts.append(" Not read: " + "; ".join(unread) + ".")
+    if more:
+        parts.append(f" {more} more frame(s) were not looked at (Jack reads at most "
+                     f"{protocol.FRAMES_MAX}, {protocol.FRAMES_DEPTH} deep).")
+    return "".join(parts)
+
+
 async def _screenshot(call: Call) -> list[dict]:
     jack = await _jack()
+    full = bool(call.args.get("full"))
     try:
-        shot = await jack.screenshot(_tab(call), within=_within(call))
+        shot = await jack.screenshot(_tab(call), full=full, within=_within(call))
     except ControlError as e:
         raise HandError(str(e)) from None
+    if full:
+        return _tiles(shot)
     scaled = shot["width"] != shot["source_width"]
     vw, vh = shot.get("viewport_width"), shot.get("viewport_height")
     same = (vw, vh) == (shot["width"], shot["height"])
@@ -394,6 +433,28 @@ async def _screenshot(call: Call) -> list[dict]:
                        f"{shot['source_height']}"
                        + (f", shown at {shot['width']}x{shot['height']}" if scaled else "")
                        + "." + points)]
+
+
+def _tiles(shot: dict) -> list[dict]:
+    tiles = shot.get("tiles") or []
+    vw, vh = shot["viewport_width"], shot["viewport_height"]
+    blocks = [text_block(
+        f"The page of {_says(shot)} from its top: {len(tiles)} tile(s), each the {vw}x{vh} CSS px "
+        f"viewport scrolled down; the page is {shot['page_width']}x{shot['page_height']} CSS px"
+        + ("; it goes on below the last tile" if shot.get("more") else "") + ". Fixed and sticky "
+        "elements (a header that stays, a cookie banner) show in the first tile only. A tile's "
+        "pixel (px, py) is the page's point (x + px * width_css / image_width, y + py * "
+        "height_css / image_height), x and y the tile's offset below. Points for acting are the "
+        "visible viewport's: scroll a thing into view (browser_scroll, or by its ref) before "
+        "pointing at it. Jack put the page's scroll back as it was.")]
+    for i, t in enumerate(tiles, 1):
+        scaled = t["width"] != t["source_width"]
+        blocks.append(text_block(f"Tile {i} of {len(tiles)}: offset ({t['x']}, {t['y']}) CSS px, "
+                                 f"{t['source_width']}x{t['source_height']} px"
+                                 + (f", shown at {t['width']}x{t['height']}" if scaled else "")
+                                 + "."))
+        blocks.append(control.image_block(t["png"]))
+    return blocks
 
 
 async def _look(call: Call) -> list[dict]:
@@ -421,8 +482,9 @@ def _where(call: Call, *, need: bool) -> dict:
     """`ref`, or `x` and `y`, from the call."""
     ref, x, y = call.args.get("ref"), call.args.get("x"), call.args.get("y")
     if ref is not None:
-        if not protocol.is_id(ref) or x is not None or y is not None:
-            raise HandError("give `ref` (an integer from browser_read), or `x` and `y`")
+        if not protocol.is_ref(ref) or x is not None or y is not None:
+            raise HandError("give `ref` (from browser_read: a number, or like \"f2:14\"), or `x` "
+                            "and `y`")
         return {"ref": ref}
     if x is not None or y is not None:
         if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (x, y)):
@@ -550,7 +612,7 @@ async def _key(call: Call) -> list[dict]:
 
 async def _select(call: Call) -> list[dict]:
     ref = call.args.get("ref")
-    if not protocol.is_id(ref):
+    if not protocol.is_ref(ref):
         raise HandError("give `ref`, the <select>'s ref from browser_read")
     value, label = call.args.get("value"), call.args.get("label")
     if (value is None) == (label is None):
@@ -568,7 +630,7 @@ async def _scroll(call: Call) -> list[dict]:
     for k, v in (("dx", dx), ("dy", dy)):
         if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
             raise HandError(f"`{k}` must be a number of pixels")
-    if to is not None and not protocol.is_id(to):
+    if to is not None and not protocol.is_ref(to):
         raise HandError("`to` must be a ref from browser_read")
     where = _where(call, need=False)
     tab = _tab(call)
@@ -585,7 +647,7 @@ async def _scroll(call: Call) -> list[dict]:
 async def _fill(call: Call) -> list[dict]:
     fields = call.args.get("fields")
     if not isinstance(fields, list) or not fields or not all(
-            isinstance(f, dict) and protocol.is_id(f.get("ref")) and "value" in f for f in fields):
+            isinstance(f, dict) and protocol.is_ref(f.get("ref")) and "value" in f for f in fields):
         raise HandError("give `fields`: a list of {ref, value}")
     tab = _tab(call)
     done = await _act(call, lambda jack: jack.fill(tab, fields, voice=_voice(call),
@@ -642,7 +704,7 @@ async def _release(call: Call) -> list[dict]:
 
 async def _upload(call: Call) -> list[dict]:
     ref = call.args.get("ref")
-    if not protocol.is_id(ref):
+    if not protocol.is_ref(ref):
         raise HandError("give `ref`: the file field's (or its button's) ref from browser_read")
     paths = call.args.get("paths")
     if isinstance(paths, str):
@@ -742,6 +804,38 @@ async def _downloads(call: Call) -> list[dict]:
                        + "\n".join(_download_line(d) for d in found))]
 
 
+async def _js(call: Call) -> list[dict]:
+    code = call.args.get("code")
+    if not isinstance(code, str) or not code.strip():
+        raise HandError("give `code`: JavaScript, one expression or the body of an async "
+                        "function (`return` the answer)")
+    timeout = _seconds(call, "timeout", protocol.JS_TIMEOUT_S, protocol.JS_TIMEOUT_MAX_S)
+    room = _within(call) - 6.0
+    if room < 1.0:
+        raise HandError("no time left to run a script in")
+    timeout = min(timeout, room)
+    tab = _tab(call)
+    done = await _act(call, lambda jack: jack.js(tab, code, timeout=timeout, voice=_voice(call),
+                                                 within=_within(call)))
+    if done.get("withheld"):
+        did = (f"Ran your script in tab {tab}: it answered, but the page went on to another "
+               "document before Jack could check the answer for passwords, so it is withheld. "
+               "Get what you need before the script navigates.")
+        words = ""
+    elif done.get("threw"):
+        did, words = f"Ran your script in tab {tab}: it threw.", f"It threw: {done['threw']}"
+    elif done.get("pending"):
+        did = (f"Ran your script in tab {tab}: no answer within {timeout:g} s (or the page opened "
+               "a dialog, or went on to another document first); it may still be running.")
+        words = ""
+    else:
+        did = (f"Ran your script in tab {tab}: it answered a value of type "
+               f"{done.get('result_type')}, {done.get('length')} characters of JSON"
+               + (f", cut to the first {protocol.JS_RESULT_MAX}" if done.get("cut") else "") + ".")
+        words = "Its answer, as JSON:\n" + str(done.get("result"))
+    return _acted(done, did, words)
+
+
 def browser_hands() -> list[Hand]:
     """Jack's hands, in the order they are lent."""
     return [
@@ -803,13 +897,23 @@ def browser_hands() -> list[Hand]:
               f"{JACK} Reads the page in a tab. {SHOWING} `what`: 'outline' (default: the "
               "page's meaningful elements, one per line with a numbered ref, e.g. "
               "[12] button \"Sign in\", [13] textbox \"Email\" = \"…\", [14] link "
-              "\"Orders\" -> /orders, under headings and landmarks), 'text' (the visible "
-              "text), 'links' (text, address, ref) or 'forms' (each form and field: ref, "
+              "\"Orders\" -> /orders, under headings and landmarks: read this to act), "
+              "'article' (the page's main content as Markdown: headings, paragraphs, lists, "
+              "links as [text](address), emphasis, code, quotes, tables, images as "
+              "![alt](address), without menus, sidebars, footers, forms and cookie banners; "
+              "the best way to read an article, a post, documentation, a recipe or a product "
+              "description, far shorter than text and with its structure, but it has no refs: "
+              "use the outline to find what to click or fill), 'text' (all visible text, as "
+              "shown), 'links' (text, address, ref) or 'forms' (each form and field: ref, "
               "label, type, name, value, required, a select's options). Long pages come "
               "in parts: the first block says which part, and the `offset` to read the "
               "next with; `length` sets the part's size. Refs stay the same until the page "
               "loads a new document. `hidden`: true includes elements that are not "
-              "visible. Only the page itself, not frames inside it. A password field's "
+              "visible. Frames (iframes) are read with the page: in the outline under their "
+              "element's line, which says \"(frame f2)\"; in text, links and forms after the "
+              "page's; in the article where they sit. An element inside frame f2 has a ref like "
+              "\"f2:14\", which every acting tool takes. A frame from a site the user keeps to "
+              "themselves is not read. A password field's "
               f"value never shows: it reads {protocol.PASSWORD_VALUE}. {SITE}",
               _read, _schema({"tab": TAB,
                               "what": {"type": "string", "enum": list(protocol.READS)},
@@ -819,9 +923,16 @@ def browser_hands() -> list[Hand]:
               timeout=SLOW_S),
         _hand("browser_screenshot",
               f"{JACK} A PNG of the visible part of a tab's page as it is now, scaled "
-              f"down to at most {protocol.SHOT_MAX_SIDE} px on its long side. {SHOWING} "
+              f"down to at most {protocol.SHOT_MAX_SIDE} px on its long side. `full`: true "
+              f"gives the whole page from its top instead, as up to {protocol.SHOT_TILES_MAX} "
+              "viewport-high tiles, each with its offset in the page (Jack scrolls the page "
+              "through them, which the user sees if they look at that tab, then puts the scroll "
+              "back); fixed and sticky elements (headers that stay, cookie banners) show in the "
+              "first tile only. Points for acting are always the visible viewport's: scroll "
+              f"to a thing before pointing at it. {SHOWING} "
               "What it shows is the site's, not the user's.",
-              _screenshot, _schema({"tab": TAB}, ("tab",)), timeout=SLOW_S),
+              _screenshot, _schema({"tab": TAB, "full": {"type": "boolean"}}, ("tab",)),
+              timeout=SLOW_S),
         _hand("browser_look",
               f"{JACK} What the user is looking at in Jack now: the window with their "
               "focus (or the one that had it last), its current tab's address and title, "
@@ -963,4 +1074,27 @@ def browser_hands() -> list[Hand]:
                                    "timeout": {"type": "number", "minimum": 0,
                                                "maximum": protocol.WAIT_MAX_S}}),
               timeout=protocol.WAIT_MAX_S + 10),
+        _hand("browser_js",
+              f"{JACK} Runs your JavaScript in a tab's page (its main frame), in a script world of "
+              "its own that the page's scripts cannot see. `code` is one line taken as an "
+              "expression (document.title), or the body of an async function: `return` the "
+              "answer; `await` works, and a promise is awaited up to `timeout` seconds "
+              f"(default {protocol.JS_TIMEOUT_S:g}, at most {protocol.JS_TIMEOUT_MAX_S:g}). The "
+              f"answer comes back as JSON (at most {protocol.JS_RESULT_MAX} characters; elements "
+              "as \"<tag#id.class>\"). Use it for what browser_read and the acting tools cannot "
+              "do: data out of the page's structure, a computed value, a property no read "
+              "shows. Jack's guard: document.cookie, localStorage, sessionStorage, indexedDB, "
+              "caches, cookieStore, navigator.credentials, window.open and a frame's "
+              "contentWindow or contentDocument throw; a password field's value reads "
+              f"{protocol.PASSWORD_VALUE}, and the answer is scrubbed of any password a field "
+              "holds. It is a guard against mistakes, NOT a sandbox: the code runs as the page, "
+              "so its requests carry the user's sign-in, and it can change the page, click and "
+              "submit; do only what the user asked. Never try to get around the guard. A loop "
+              "that never ends hangs the page until the user closes the tab: keep loops "
+              f"bounded. Counts as acting. {SHOWING} {WATCHED} {SITE}",
+              _js, _schema({"tab": TAB, "code": {"type": "string"},
+                            "timeout": {"type": "number", "minimum": 0,
+                                        "maximum": protocol.JS_TIMEOUT_MAX_S},
+                            "wait_s": WAIT_S}, ("tab", "code")),
+              timeout=SLOW_S),
     ]

@@ -164,12 +164,30 @@ focus or changing the workspace; `open` and `tabs` work on any.
     read       {"tab": id, "what": one of READS, "offset"?: int,
                 "length"?: int, "hidden"?: bool}
                -> TAB + {"what", "offset", "total", "more": bool,
-                         "next": <offset of the rest, or null>, ...}
-               The page's main frame (iframes are not read), visible
-               elements only unless `hidden` (links, forms, outline).
+                         "next": <offset of the rest, or null>,
+                         "frames": [FRAME, ...], ...}
+               The page and the frames in it ("Frames", below), visible
+               elements only unless `hidden` (links, forms, outline,
+               article, and which frames are read).
                text      {"text": str}: the text as rendered, characters
                          [offset, offset + length) of `total`
-                         (length: TEXT_LENGTH, at most TEXT_MAX)
+                         (length: TEXT_LENGTH, at most TEXT_MAX); each
+                         frame's text after the page's, between the lines
+                         "[frame f2: <its element> -> <address>]" and
+                         "[end of frame f2]"
+               article   {"article": str, "found": str}: the page's main
+                         content as Markdown (headings, paragraphs, lists,
+                         links as [text](absolute URL), emphasis, code,
+                         block quotes, simple tables, images as
+                         ![alt](URL)), without navigation, sidebars,
+                         footers, forms, fixed banners (cookie notices);
+                         characters [offset, offset + length) as text.
+                         `found`: where the content was found: "the page's
+                         <article>", "the page's <main>", "the densest
+                         block (<tag#id.class>)" or "the whole page". A
+                         frame inside the content is in it where it sits,
+                         between "[frame f2 -> <address>]" and "[end of
+                         frame f2]" lines.
                links     {"links": [{"ref", "text", "url" (absolute)}]},
                          links [offset, offset + length) of `total`
                          (LINKS_LENGTH, at most LINKS_MAX)
@@ -191,15 +209,37 @@ focus or changing the workspace; `open` and `tabs` work on any.
                          (OUTLINE_LENGTH, at most OUTLINE_MAX)
                A password field's value is never read: it reads
                PASSWORD_VALUE when it holds one. `[N]` and "ref" are
-               numbers for elements, the same for an element in every
-               read until the page loads another document; they are kept
-               where the page cannot see them (an isolated script world).
-    screenshot {"tab": id}
+               REFs for elements, the same for an element in every read
+               until its document is replaced; they are kept where the
+               page cannot see them (an isolated script world).
+    screenshot {"tab": id, "full"?: bool}
                -> TAB + {"png": <base64>, "width", "height" (as sent),
-                         "source_width", "source_height" (as rendered)}
+                         "source_width", "source_height" (as rendered),
+                         "viewport_width", "viewport_height" (CSS px)}
                The visible part of the page, after a frame painted since
                the request came; its long side scaled down to at most
                SHOT_MAX_SIDE.
+               With `full`: the page from its top, as viewport-high
+               TILES, at most SHOT_TILES_MAX, scrolled to and grabbed in
+               turn, the page's scroll put back after:
+               -> TAB + {"tiles": [{"png", "width", "height",
+                                    "source_width", "source_height",
+                                    "x", "y"}, ...],
+                         "page_width", "page_height", "viewport_width",
+                         "viewport_height" (CSS px), "more": bool}
+               A tile's `x`, `y`: the page's scroll when it was grabbed
+               (CSS px), so its pixel (px, py) is the page's point
+               (x + px * viewport_width / width, y + py * viewport_height
+               / height); the last tile may overlap the one before (the
+               page scrolls no further). `more`: the page goes on below
+               the last tile. Elements fixed or sticky on the page (a
+               header that stays, a cookie banner) are hidden from the
+               second tile on, by a style sheet adopted from Jack's
+               isolated world, taken away after: no element, attribute or
+               class of the page changes and no mutation is seen; only a
+               page listing document.adoptedStyleSheets meanwhile would
+               see it (Qt has no user style sheet to put it in). An inner
+               box that scrolls by itself is shown as it stands.
     look       {"window"?: id, "xid"?: int, "screenshot"?: bool,
                 "image"?: bool}
                What the user is looking at in the browser, changing
@@ -224,10 +264,42 @@ focus or changing the workspace; `open` and `tabs` work on any.
                may not), else the part of the screen it covers ("screen";
                a selected image is drawn tinted there).
 
+**Frames.** `read` reads the page's frames too (iframes, frames, an
+<object>'s page; same-origin and cross-origin, nested), through Qt's
+QWebEngineFrame (6.8 on; with an older Qt, frames are not read): each
+in its own isolated world, as the page is. A frame's document is named
+"f<N>", a number Jack gives it in its tab and never gives another; a
+frame that loads another document is named anew (an old "f2:14" then
+says there is no frame f2: read again, as after the page's own load).
+An element in a frame has the REF "f<N>:<M>" (the main page's stay plain
+numbers), in every read and in every acting request, which finds it in
+its frame and sends real input to it there: the frame's point plus its
+element's place in each frame above it (scrolled into view there when it
+is not, refused when something covers it). A point (`x`, `y`) over a
+frame is acted on in the frame (what is there, refused fields). In the
+outline the frame's lines sit under its element's line, which ends
+"(frame f2)", or "(not read: why)"; text, links and forms put each
+frame's after the page's; article puts a frame inside the content where
+it sits. Every read says each frame it met (and `frames_more`, a count,
+when there were more than it looks at):
+    FRAME      {"frame": "f2" | null (it did not answer), "in": "f1" |
+                null (the main page), "url": str (cut to the site for a
+                kept one), "read": bool, "why"?: str}
+A frame is matched to its element by identity, not by guessing: the
+frame's own script world finds which of its parent's windows is its own
+(`parent[i] === window`, allowed across origins), the parent's which
+element holds that window (`window[i] === el.contentWindow`). A frame
+whose element is not found is read after its parent's content, said so.
+Not read: a frame at a host the user keeps from the agent ("Sites kept
+from the agent": only its place is asked, nothing of its content), one
+that does not answer within a moment, more than FRAMES_MAX in all or
+deeper than FRAMES_DEPTH. `wait` and `js` work in the main page only.
+
 **Acting.** On a tab that is showing, by element REF (from `read`: the
 outline's [N], a link's or a field's "ref"; refs of the document shown
-now, gone with it) or by viewport POINT: `x`, `y` in CSS pixels of the
-visible viewport, (0, 0) its top left. A screenshot's pixel (px, py) is
+now, gone with it; "f2:14" in frame f2, "Frames") or by viewport POINT:
+`x`, `y` in CSS pixels of the visible viewport, (0, 0) its top left. A
+screenshot's pixel (px, py) is
 the point (px * viewport_width / width, py * viewport_height / height)
 (`screenshot` gives both sizes; they differ when it was scaled down, or
 the page is zoomed). The input is real: Qt mouse, key and wheel events
@@ -417,6 +489,49 @@ An acting request's answer lists the downloads it started, when it did
                      chooser took them>}
                ok:false (NO_CHOOSER) when the page opened no chooser.
 
+**Scripts.**
+    js         {"tab", "code": str, "timeout"?: s, "voice"?: str}
+               An acting request: the agent's JavaScript, run in the
+               page's main frame in an isolated world of its own (not the
+               page's, not the reader's), as the body of an async
+               function (`return` its answer; `await` works) or as one
+               expression (code of one line is tried as one first). A
+               promise it returns is awaited, by polling,
+               up to `timeout` (JS_TIMEOUT_S, at most JS_TIMEOUT_MAX_S).
+               -> + {"result": <its answer as JSON text, or null>,
+                     "result_type": <typeof the answer, "array" and
+                     "null" told apart>, "length": <characters of
+                     JSON>, "cut": bool (at JS_RESULT_MAX),
+                     "threw"?: str, "pending"?: true, "withheld"?: true}
+               `threw`: what it threw ("TypeError: ..."); `pending`: no
+               answer by `timeout` (or a dialog opened first, or the page
+               went on to another document first), the code may still be
+               running; `withheld`: it answered, but the page stopped
+               answering (it left for another document) before the answer
+               could be checked for passwords, so it is not given. Nodes
+               come back as "<tag#id.class>", functions as "[function
+               name]".
+               THE GUARD, in that world only, before the code: reading or
+               setting document.cookie, localStorage, sessionStorage,
+               indexedDB, caches, cookieStore, navigator.credentials (and
+               navigator.storage, navigator.serviceWorker), window.open,
+               opener, Worker, SharedWorker, and a frame element's
+               contentWindow, contentDocument and getSVGDocument throw; a
+               password field's value reads PASSWORD_VALUE (as `read`
+               says it), FormData gives PASSWORD_VALUE for one, and a
+               password field's type cannot be changed from there. Every
+               frame's world of the same number is guarded first. The
+               answer then passes through the reader's world of each
+               frame holding a password field, where every such field's
+               value (JS_SCRUB_MIN characters or more, as typed and as
+               JSON writes it) is replaced by PASSWORD_VALUE. A guard
+               against mistakes and casual misuse, NOT a sandbox: the code
+               reads the page's DOM, runs with the page's origin (fetch
+               sends the page's cookies; what comes back is the code's),
+               can click and submit, and a frame made after the guard ran
+               is reachable as window[N] unguarded. A loop that never ends
+               hangs the page. The page's own scripts keep all of it.
+
 **Sites kept from the agent.** sites.json (browser/qt/identity.py) may
 name hosts the agent stays out of: {"agent": {"<host or *.domain>":
 "never"}}. Every request on a tab at such a host, and `open`, `go` and
@@ -427,6 +542,7 @@ fails the same. No host is "never" unless the user writes it.
 """
 
 import os
+import re
 
 from indigoshell.applink import protocol as _link
 from indigoshell.applink.protocol import (  # noqa: F401  (part of this module's API)
@@ -634,10 +750,11 @@ CANCELLED = "cancelled"
 ACTS = ("click", "type", "key", "select", "scroll", "fill", "hover", "dialog")
 UPLOAD = "upload"               # acting too, with files
 ALONE = ("borrow", "return", "show", "downloads")
+JS = "js"                       # acting too: the agent's own script
 REQUESTS = ("tabs", "open", "switch", "close", "go", "wait", "read", "screenshot", "look",
-            *ACTS, "release", UPLOAD, *ALONE)
+            *ACTS, "release", UPLOAD, *ALONE, JS)
 GO_ACTIONS = ("back", "forward", "reload")
-READS = ("text", "links", "forms", "outline")
+READS = ("text", "links", "forms", "outline", "article")
 
 NOT_SHOWING = "tab {tab} is not showing in its window; switch to it first"
 PASSWORD_VALUE = "(password)"
@@ -648,7 +765,49 @@ TEXT_LENGTH, TEXT_MAX = 20000, 100000          # characters
 LINKS_LENGTH, LINKS_MAX = 200, 1000
 FORMS_LENGTH, FORMS_MAX = 20, 100
 OUTLINE_LENGTH, OUTLINE_MAX = 400, 2000        # lines
+ARTICLE_LENGTH, ARTICLE_MAX = 20000, 100000    # characters
 SHOT_MAX_SIDE = 1568                           # px, the long side
+SHOT_TILES_MAX = 6                             # a full-page screenshot's tiles
+
+# ── frames, scripts ─────────────────────────────────────────────────────
+FRAMES_MAX = 50                 # frames read in one request, at most
+FRAMES_DEPTH = 8                # frames inside frames, this deep at most
+JS_TIMEOUT_S = 10.0             # what `js` waits for a promise, by default
+JS_TIMEOUT_MAX_S = 60.0
+JS_CODE_MAX = 100000            # characters of code
+JS_RESULT_MAX = 100000          # characters of the answer's JSON
+JS_SCRUB_MIN = 4                # a password this long or longer is taken out of answers
+
+_FRAME_REF = re.compile(r"f([1-9][0-9]*):([0-9]+)")
+
+
+def parse_ref(value) -> tuple[int | None, int] | None:
+    """A REF as (frame number, the element's number in it): 14 is
+    (None, 14), "f2:14" is (2, 14); a number as a string goes too. None
+    for what is no ref."""
+    if is_id(value):
+        return None, value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            return None, int(text)
+        m = _FRAME_REF.fullmatch(text)
+        if m:
+            return int(m[1]), int(m[2])
+    return None
+
+
+def is_ref(value) -> bool:
+    return parse_ref(value) is not None
+
+
+def ref_name(frame: int | None, n: int) -> str:
+    """"14", or "f2:14" in frame f2."""
+    return f"f{frame}:{n}" if frame else str(n)
+
+
+def frame_name(frame: int) -> str:
+    return f"f{frame}"
 
 # ── alone, downloads, uploads, kept sites ───────────────────────────────
 AGENT_WINDOW = "agent"          # `open`'s window: the agent's own

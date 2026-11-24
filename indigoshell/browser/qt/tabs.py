@@ -233,6 +233,9 @@ class Tab(QObject):
         # navigations asked for, and those plus same-document moves.
         self.loads = 0
         self.navigations = 0
+        # The next name a frame's document gets (frames.py): "f<n>",
+        # never given twice in the tab.
+        self.next_frame = 1
 
         page = self.page
         page.titleChanged.connect(self.changed)

@@ -17,6 +17,9 @@ Modules, in the order a start runs through them:
                agent's requests (tabs, open, read, screenshot, look, ...)
     reader     reading a page for the agent: reader.js in a script world
                of its own, and pictures of the view
+    frames     the page's frames, read and acted in like the page
+               (QWebEngineFrame, Qt 6.8)
+    script     the agent's own JavaScript: its world, its guard (guard.js)
     profile    the one persistent profile and its settings
     identity   the per-site User-Agent (sites.json)
     window     a top-level window: the tabs, the keys, the fallback line

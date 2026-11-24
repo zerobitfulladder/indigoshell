@@ -3,11 +3,18 @@
 The agent's reads run reader.js in an isolated script world of their
 own (`WORLD`): the page shares the DOM with it but none of its
 variables, so the page's scripts can neither see the refs it hands out
-nor tamper with the reading. Jack's own scripts (find's selection
-clearing) use the ApplicationWorld, the page the MainWorld. The acting
-requests (control.py) use the same world and file: reader.js's last
-part finds where a ref is on screen, focuses a field and sets what no
-key can, with the refs the reads handed out.
+nor tamper with the reading. The acting requests (control.py) use the
+same world and file: reader.js's acting part finds where a ref is on
+screen, focuses a field and sets what no key can, with the refs the
+reads handed out. A frame's document is read the same way, in the same
+world of that frame (frames.py), its refs named after the frame.
+
+The script worlds of a page, by number:
+    0  the MainWorld: the page's own; identity.py's navigator script
+    1  the ApplicationWorld: Jack's own (find's selection clearing)
+    2  the scrollbars' sheet (profile.py)
+    3  the agent's reading and acting (WORLD, here)
+    4  the agent's own scripts, behind their guard (script.py)
 
 Two things QtWebEngine (PySide6 6.12, and as documented for 6.8) does
 that shape the calls:
@@ -45,11 +52,14 @@ WORLD = 3
 SOURCE = Path(__file__).with_name("reader.js").read_text(encoding="utf-8")
 
 
-def script(fn: str, *args) -> str:
+def script(fn: str, *args, frame: str = "") -> str:
     """JS that defines the reader if this document has none yet, runs
-    its `fn(*args)` and answers JSON text."""
+    its `fn(*args)` and answers JSON text. `frame`: the name ("f2") a
+    frame's document takes if it has none yet (frames.py); its refs carry
+    the name it has."""
     call = f"window.__jack.{fn}({', '.join(json.dumps(a) for a in args)})"
-    return (SOURCE + "\n(() => { try { return JSON.stringify({ok: true, value: " + call
+    return (SOURCE + "\n(() => { try { window.__jack.frameName = window.__jack.frameName || "
+            + json.dumps(frame) + "; return JSON.stringify({ok: true, value: " + call
             + "}); } catch (e) { return JSON.stringify({ok: false, error: "
             "String(e && e.message || e)}); } })()")
 
