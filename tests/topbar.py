@@ -1499,8 +1499,8 @@ def test_spec(scratch: Path) -> None:
           f"context {ctx.rect.width():.0f} px, label at {label.rect.left():.0f}")
     check("the bar's background everywhere else (no rule)",
           share_of(img[:3], hex_rgb(theme.BAR_BG)) > 0.98)
-    check("the agent chip last in the row, empty with no agent: no width and no gap "
-          "(agent/ui/status.py; tests/agent_chip.py tests it)",
+    check("the agent chip last in the row, empty with no agent configured: no width and no "
+          "gap (with one it is always there; agent/ui/status.py, tests/agent_chip.py)",
           type(chip).__name__ == "AgentChip" and chip.collapsed and chip.rect.width() == 0)
 
     path = os.path.join(config_dir(), "config.py")

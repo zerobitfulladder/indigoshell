@@ -5,31 +5,33 @@
     .venv/bin/python tests/agent_chip.py --off-screen 1-3 only: no window
 
 1. The state, from a stand-in agent through a real `CallRouter` on a
-   stub daemon (no X): hidden while idle; working (name, the voice's
-   colour, the light's blink) only while a turn runs with the call
-   closed; hidden again when the call opens, and when the turn ends
-   without a ring; the whole chip blinking on a ring or a question, with
-   no `call-status` opened for either; the ring ended by the hub's
-   `seen`, by answering (the call opened) or by a right-click; a turn in
-   the other voice changing the name and colour without restarting the
-   blink; `show_working=True` keeping its corner plate while working
-   (and the chip off under it) but closing it for a ring; a calling
-   router before a working one; the router stopped; a left click
-   opening the call.
+   stub daemon (no X): idle (dimmed, the voice of the turn on show, no
+   frames) before any turn; working (name, the voice's colour, the
+   light's blink) while a turn runs, the call open or not; idle again
+   when the turn ends without a ring, keeping the voice that worked; the
+   whole chip blinking on a ring or a question, with no `call-status`
+   opened for either; the ring ended by the hub's `seen`, by answering
+   (the call opened) or by a right-click; a turn in the other voice
+   changing the name and colour without restarting the blink;
+   `show_working=True` keeping its corner plate while working (the chip
+   working under it) but closing it for a ring; a calling router before
+   a working one, a working one before an idle one; the router stopped;
+   a left click opening the call; no router at all: nothing.
 2. The blinks as numbers: the light at 1 Hz on a 2 fps grid, the ring
    pattern on a 20 fps grid, read the same by a frame a little early or
    late.
-3. Layout: hidden, the chip takes no width and no gap in the bar's row
-   (`collapsed`); shown, it is at the row's right end with the bar's gap
-   before it; whole pixels; painted off screen (raster): the colour, the
-   light's blink, the ring's flash and dark, the call chip's stripes;
+3. Layout: with no router the chip takes no width and no gap in the
+   bar's row (`collapsed`); with one, idle or not, it is at the row's
+   right end with the bar's gap before it; whole pixels; painted off
+   screen (raster): the colour, the light's blink, the ring's flash and
+   dark, idle dimmed with its light out, the call chip's stripes;
    the user's config.py (by its path, scratch XDG, no bytecode) has the
    chip at its top bar's right end and finds its router in its SERVICES.
 4. The real `Window` and frame clock, on an X window off the screen
    (override-redirect, no grab, never mapped where it shows), opened
-   twice: no frame at all over an idle second while hidden; the light's
+   twice: no frame at all over an idle second while idle; the light's
    2 frames a second while working, and nothing else of the chip; the
-   ring's 20 while calling; none again once hidden; and nothing left on
+   ring's 20 while calling; none again once idle; and nothing left on
    screen by any of it (`_live.stale`).
 
 Prints ok/FAIL lines and exits 1 if anything failed. Never touches the
@@ -51,6 +53,7 @@ import _live                                    # sets XDG_STATE_HOME first
 import skia
 
 from indigoshell import theme
+from indigoshell.agent.ui import status
 from indigoshell.agent.ui.status import (CALL_BLINK, CHIP_H, WORK_BLINK,
                                          AgentChip, CallRouter, _blink_fps,
                                          _blink_lit)
@@ -156,14 +159,15 @@ def test_state() -> None:
     section("1. what the chip shows, from the router")
     d, agent, router, chip, win = rig()
     check("found its router among the daemon's SERVICES", chip.routers == [router])
-    check("idle: hidden, collapsed, nothing to measure, no frames",
-          chip.shown is None and chip.collapsed and chip.measure(Size(500, 42)) == Size(0, 0)
-          and chip.animation_fps == 0 and chip.light.animation_fps == 0)
+    check("before any turn: idle, dimmed, the voice the agent speaks with, no frames",
+          look(chip) == ("idle", "INDIGO", INDIGO) and not chip.collapsed
+          and chip.level() == status.IDLE_DIM and chip.measure(Size(500, 42)).width > 0
+          and chip.animation_fps == 0 and chip.light.animation_fps == 0, f"{look(chip)}")
 
     agent.set(busy=True)
-    check("a turn runs with the call closed: working, the voice's name and colour",
-          look(chip) == ("working", "INDIGO", INDIGO) and not chip.collapsed
-          and win.damaged and win.damaged[-1] == (chip, True), f"{look(chip)}")
+    check("a turn runs: working, the voice's name and colour, full strength",
+          look(chip) == ("working", "INDIGO", INDIGO) and chip.level() == 1.0
+          and win.damaged and win.damaged[-1] == (chip, False), f"{look(chip)}")
     check("... the light asks 2 frames a second, the chip none",
           chip.light.animation_fps == 2 and chip.animation_fps == 0,
           f"{chip.light.animation_fps}/{chip.animation_fps}")
@@ -177,18 +181,18 @@ def test_state() -> None:
           look(chip) == ("working", "LILAC", LILAC) and chip.since == since)
 
     agent.set(call_open=True)
-    check("the call opens: hidden (the call shows its own state)",
-          chip.shown is None and chip.light.animation_fps == 0)
-    agent.set(call_open=False)
-    check("closed again mid-turn: working again", chip.state == "working")
+    check("the call opens mid-turn: still working (always on the bar)",
+          chip.state == "working" and chip.light.animation_fps == 2)
     d.instances["call"] = object()
-    agent.set()
-    check("the call window open (before its agent says so): hidden", chip.shown is None)
+    agent.set(call_open=False)
+    check("the call window open: still working", chip.state == "working")
     d.instances.pop("call")
     agent.set()
 
     agent.set(busy=False)
-    check("the turn ends without a ring: hidden", chip.shown is None)
+    check("the turn ends without a ring: idle, dimmed, the voice that worked, no frames",
+          look(chip) == ("idle", "LILAC", LILAC) and chip.animation_fps == 0
+          and chip.light.animation_fps == 0)
 
     agent.set(ringing="done", name="INDIGO", accent=INDIGO)
     check("a ring: calling, the whole chip blinking at 20 fps, the light steady",
@@ -197,59 +201,62 @@ def test_state() -> None:
     check("... and no status window opened for it", d.opened == [] and "call-status"
           not in d.instances, f"{d.opened}")
     agent.set(ringing=None)
-    check("the hub's `seen` (the ring stops): hidden", chip.shown is None)
+    check("the hub's `seen` (the ring stops): idle", chip.state == "idle")
 
     agent.set(ringing="done")
     agent.set(call_open=True, ringing=None)
-    check("answered with MOD+A (the call opens): hidden", chip.shown is None)
+    check("answered with MOD+A (the call opens): idle", chip.state == "idle")
     agent.set(call_open=False)
 
     agent.set(busy=True)
     agent.set(approval=object(), ringing="ask")
-    check("a question mid-turn: calling, over working", chip.state == "calling")
+    check("a question mid-turn, the call closed: calling, over working",
+          chip.state == "calling")
     agent.set(approval=None, ringing=None)
     check("... answered elsewhere, the turn still running: working again",
           chip.state == "working")
-    agent.set(busy=False)
+    agent.set(call_open=True, approval=object())
+    check("a question with the call open: working (the call asks it)",
+          chip.state == "working")
+    agent.set(call_open=False, approval=None, busy=False)
 
     agent.set(ringing="error")
     check("a ring for a turn that failed: calling too", chip.state == "calling")
     clicked = chip.click(3)
-    check("a right-click silences it, as the corner plate's did: hidden",
-          clicked and agent.ringing is None and chip.shown is None)
+    check("a right-click silences it, as the corner plate's did: idle",
+          clicked and agent.ringing is None and chip.state == "idle")
 
-    agent.set(busy=True)
-    check("a left click answers: the call opened",
+    check("a left click, idle, opens the call",
           chip.click(1) and d.opened == ["call"], f"{d.opened}")
     d.instances.pop("call")
-    agent.set(busy=False)
+    agent.set()
     check("no status window opened by anything in all that (show_working=False)",
           "call-status" not in d.opened, f"{d.opened}")
 
     agent.set(busy=True)
     router.stop()
-    check("the router stopped: hidden", chip.shown is None)
+    check("the router stopped: idle", chip.state == "idle")
     chip.detach()
     check("detached: following nothing", router._followers == [] and chip.routers == [])
 
     # show_working=True: the desktop's own agent, its corner plate.
     d, agent, router, chip, win = rig(show_working=True)
     agent.set(busy=True)
-    check("show_working=True, working: the corner plate opens, the chip stays off "
-          "under it", d.opened == ["call-status"] and chip.shown is None, f"{d.opened}")
+    check("show_working=True, working: the corner plate opens, the chip shows the work "
+          "under it", d.opened == ["call-status"] and chip.state == "working", f"{d.opened}")
     agent.set(approval=object(), ringing="ask")
     check("... a question: the plate closes and the chip blinks",
           d.closed == ["call-status"] and chip.state == "calling", f"{d.closed}")
     agent.set(approval=None, ringing=None)
-    check("... answered: the plate back, the chip off",
-          d.opened == ["call-status"] * 2 and chip.shown is None)
+    check("... answered: the plate back, the chip working",
+          d.opened == ["call-status"] * 2 and chip.state == "working")
     agent.set(busy=False, ringing="done")
     check("... the turn ends ringing: the plate closes, the chip blinks",
           "call-status" not in d.instances and chip.state == "calling")
     chip.detach()
     router.stop()
 
-    # Several routers: a calling one first.
+    # Several routers: calling, then working, then the first.
     d = StubDaemon()
     daemon_mod._DAEMON = d
     a1, a2 = StandIn(), StandIn("LILAC", LILAC)
@@ -266,13 +273,20 @@ def test_state() -> None:
           look(chip) == ("calling", "LILAC", LILAC))
     a2.set(ringing=None)
     check("... then the working one", look(chip) == ("working", "INDIGO", INDIGO))
+    a1.set(busy=False)
+    a2.set(busy=True)
+    check("... whichever works", look(chip) == ("working", "LILAC", LILAC))
+    a2.set(busy=False)
+    check("... both idle: the first", look(chip) == ("idle", "INDIGO", INDIGO))
     chip.detach()
 
     daemon_mod._DAEMON = None
     lone = AgentChip()
     lone.attach(FakeWindow())
-    check("no daemon (or no router in it): empty, following nothing",
-          lone.routers == [] and lone.shown is None)
+    check("no daemon (or no router in it): nothing, collapsed, following nothing",
+          lone.routers == [] and lone.shown is None and lone.collapsed
+          and lone.measure(Size(500, 42)) == Size(0, 0))
+    lone.detach()
 
 
 # ── 2. blinks ───────────────────────────────────────────────────────────
@@ -328,16 +342,28 @@ chip.detach()
 
 def test_layout(scratch: str) -> None:
     section("3. layout, paint, the user's config")
-    d, agent, router, chip, _w = rig()
-    other = Label("MINE", color=theme.CYAN_BRIGHT)
-    row = Row([other, chip], spacing=theme.BAR_SPACING, align=Align.CENTER)
-    alone = Row([Label("MINE")], spacing=theme.BAR_SPACING)
     W, H = 600, theme.TOP_BAR_HEIGHT
-    check("hidden: the row measures as if the chip were not there (no gap)",
+    daemon_mod._DAEMON = None
+    none = AgentChip()
+    none.attach(FakeWindow())
+    other = Label("MINE", color=theme.CYAN_BRIGHT)
+    row = Row([other, none], spacing=theme.BAR_SPACING, align=Align.CENTER)
+    alone = Row([Label("MINE")], spacing=theme.BAR_SPACING)
+    check("no agent configured: the row measures as if the chip were not there (no gap)",
           row.measure(Size(W, H)).width == alone.measure(Size(W, H)).width)
     row.arrange(skia.Rect.MakeWH(W, H))
     check("... and arranges so: the chip has no width",
-          chip.rect.width() == 0 and chip.rect.left() == other.rect.right())
+          none.rect.width() == 0 and none.rect.left() == other.rect.right())
+    none.detach()
+
+    d, agent, router, chip, _w = rig()
+    other = Label("MINE", color=theme.CYAN_BRIGHT)
+    row = Row([other, chip], spacing=theme.BAR_SPACING, align=Align.CENTER)
+    m = row.measure(Size(W, H))
+    row.arrange(skia.Rect.MakeXYWH(0, 0, m.width, H))
+    check("an agent, idle: the chip there all the same, at the row's end",
+          chip.state == "idle" and chip.rect.width() > 0
+          and abs(chip.rect.left() - other.rect.right() - theme.BAR_SPACING) < 1e-6)
     agent.set(busy=True)
     m = row.measure(Size(W, H))
     row.arrange(skia.Rect.MakeXYWH(0, 0, m.width, H))
@@ -395,6 +421,16 @@ def test_layout(scratch: str) -> None:
           and all(rows[i] == rows[i + 3] for i in range(len(rows) - 3)), f"{list(rows)}")
     agent.set(ringing=None)
     agent.set(busy=False)
+    idle = painted()
+
+    def ink(img):
+        """How far the chip's box is from the bar's black, summed."""
+        bg = [int(theme.BAR_BG[i:i + 2], 16) for i in (1, 3, 5)]
+        box = img[:, int(r.left()):int(r.right()), :3].astype(int)
+        return int(min(abs(box - bg).sum(), abs(box[..., ::-1] - bg).sum()))
+    check("idle: the same chip there, dimmed (well under half the ink of working)",
+          chip.state == "idle" and 0 < ink(idle) < 0.5 * ink(dim),
+          f"ink {ink(idle)} idle, {ink(dim)} working")
     chip.detach()
 
     from indigoshell.core.paths import config_dir
@@ -458,7 +494,7 @@ async def test_clock() -> None:
     for label in ("first open", "opened again"):
         await asyncio.sleep(0.4)
         idle = await measure(1.0)
-        check(f"{label}, hidden: no frame at all over an idle second", idle == (0, 0, 0),
+        check(f"{label}, idle: no frame at all over an idle second", idle == (0, 0, 0),
               f"window/chip/light {idle}")
         agent.set(busy=True)
         await asyncio.sleep(0.1)
@@ -483,7 +519,7 @@ async def test_clock() -> None:
         check(f"{label}: the ring answered, nothing left on screen", n == 0,
               f"{n}px at {box}" if n else "")
         after = await measure(1.0)
-        check(f"{label}, hidden again: no frames", after == (0, 0, 0),
+        check(f"{label}, idle again: no frames", after == (0, 0, 0),
               f"window/chip/light {after}")
         check(f"{label}: no status window opened", d.opened == [], f"{d.opened}")
         if label == "first open":

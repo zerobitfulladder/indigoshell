@@ -1,16 +1,19 @@
-"""While a hung-up call works or rings.
+"""The agent on the top bar, and while a hung-up call works or rings.
 
-`AgentChip`, the top bar's right end (config_default's `top_bar`): while
-the agent works with its call hung up, a small beveled chip with the
-name of the voice on the task and, right of it, a light in that voice's
-colour, blinking; when the agent calls back (a turn ended, or a question
-for you), the whole chip blinks, until the call is answered or the ring
-is seen elsewhere. Nothing at all the rest of the time, and no room
-taken. A click answers (opens the call); a right-click silences a ring.
+`AgentChip`, the top bar's right end (config_default's `top_bar`),
+always there once an agent is configured: a small beveled chip with the
+name of a voice and, right of it, a light in that voice's colour. While
+the agent works (the call open or not) the name is the voice on the
+task and the light blinks; when it calls back (a turn ended, or a
+question for you, with the call closed) the whole chip blinks, until the
+call is answered or the ring is seen elsewhere; the rest of the time the
+chip is dimmed, with the voice that worked last, and its light out. With
+no agent configured it is not there and takes no room. A click answers
+(opens the call); a right-click silences a ring.
 
-`CallRouter`, the service that watches the agent while its call is
-closed and decides what shows: the chip, always; `call-status` only
-while an agent of this desktop works, when `show_working` asks for it.
+`CallRouter`, the service that watches the agent and decides what shows:
+the chip's state, always; `call-status` only while an agent of this
+desktop works with its call closed, when `show_working` asks for it.
 
 `CallStatus` (`call-status`): that corner plate, with its own small
 chip. A long command's progress takes the plate's second line while it
@@ -244,23 +247,24 @@ class CallStatus(Widget):
 
 # ── the router ──────────────────────────────────────────────────────────
 class CallRouter:
-    """Watches a call's agent while the call is closed, and says what
-    shows for it: the top bar's chip (`AgentChip`), and `call-status`.
+    """Watches a call's agent, and says what shows for it: the top
+    bar's chip (`AgentChip`), and `call-status` while the call is closed.
 
     A SERVICES entry: neither window is alive to decide this while it is
     closed, so something outside them has to watch the agent.
 
-    `background` is what the chip shows: "calling" while the agent rings
-    or asks with its call closed, "working" while a turn runs (or a
-    command it left running) with the call closed, None otherwise. A chip
-    `follow`s it. The call open, nothing: the call shows its own state.
+    `state` is what the chip shows: "calling" while the agent rings or
+    asks with its call closed, "working" while a turn runs (or a command
+    it left running), the call open or not, None when idle. A chip
+    `follow`s it.
 
-    `show_working=True` puts `call-status` in the corner instead while
-    the agent works with its call closed (the turn's steps and clock, the
+    `show_working=True` also puts `call-status` in the corner while the
+    agent works with its call closed (the turn's steps and clock, the
     bars of its long commands), for the desktop's own agent; the chip
-    stays off meanwhile, as the plate would cover it. A ring or a
-    question never opens it: the chip blinks for those. `False` keeps the
-    corner empty, for an agent on its own machine (a `RemoteAgent`).
+    shows the work under it all the same, as it does under an open call.
+    A ring or a question never opens it: the chip blinks for those.
+    `False` keeps the corner empty, for an agent on its own machine (a
+    `RemoteAgent`).
     """
 
     def __init__(self, agent: Agent, *, call: str = CALL_WINDOW,
@@ -270,7 +274,7 @@ class CallRouter:
         self.call = call
         self.status = status
         self.show_working = show_working
-        self.background: str | None = None
+        self.state: str | None = None
         self._followers: list[Callable[[], None]] = []
         self._unsub = None
 
@@ -281,12 +285,12 @@ class CallRouter:
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
-        self.background = None
+        self.state = None
         self._tell()
 
     def follow(self, fn: Callable[[], None]) -> Callable[[], None]:
         """Have `fn()` called after each look at the agent (it reads
-        `background` and the agent itself); returns the undo."""
+        `state` and the agent itself); returns the undo."""
         self._followers.append(fn)
         return lambda: self._followers.remove(fn) \
             if fn in self._followers else None
@@ -305,16 +309,15 @@ class CallRouter:
         closed = not a.call_open and self.call not in d.instances
         calling = closed and (a.ringing is not None
                               or a.approval is not None)
-        working = closed and (a.busy
-                              or bool(a.jobs.shown()))   # a command left running
-        want = working and self.show_working and not calling
+        working = a.busy or bool(a.jobs.shown())    # a command left running
+        want = closed and working and self.show_working and not calling
         have = self.status in d.instances
         if want and not have:
             d.open(self.status)
         elif have and not want:
             d.close(self.status)
-        self.background = ("calling" if calling
-                           else "working" if working and not want else None)
+        self.state = ("calling" if calling
+                      else "working" if working else None)
         self._tell()
 
 
@@ -329,7 +332,8 @@ class CallRouter:
 # the height. The name is set like the INDIGO tag at the bar's other end,
 # in bold capitals, a step smaller to sit in the chip. The light is the
 # network widget's blinking dot made round: the full colour and its
-# small glow while lit, a quarter of it between.
+# small glow while lit, a quarter of it between. Idle, the whole chip is
+# drawn at IDLE_DIM, its light a quarter of that: there, but quiet.
 CHIP_H = 28                 # in the 42px bar: 7px clear above and below
 CHIP_PAD_X = 11             # the name and the light clear of the hairline
 CHIP_BEVEL = round(BEVEL * CHIP_H / CHIP_SM)    # the call chip's cut: 8
@@ -352,6 +356,7 @@ WORK_BLINK = ((500, True), (500, False))    # the light while it works: 1 Hz
 CALL_BLINK = theme.WORKSPACE_URGENT_RING    # the whole chip calling back:
 #                                             the bar's ring, 150/100/150/700
 CALL_DIM = 0.2              # the whole chip between the ring's flashes
+IDLE_DIM = 0.4              # the whole chip while the agent is idle
 
 
 def _blink_fps(pattern) -> int:
@@ -391,20 +396,22 @@ def _configured_routers() -> list[CallRouter]:
 
 
 class AgentChip(Widget):
-    """The top bar's agent chip: the voice's name and a light, on a
-    beveled plate, while the agent works in the background; the whole
-    chip blinking while it calls back; nothing otherwise.
+    """The top bar's agent chip: a voice's name and a light on a
+    beveled plate. Working: the voice on the task, its light blinking.
+    Calling back: the whole chip blinking. Idle: the chip dimmed, with
+    the voice of the turn on show (the one that worked last; before any
+    turn, the voice the agent speaks with now), its light all but out.
 
     It follows `routers` (`CallRouter`s), which decide what it shows.
     None, the default, finds them among the running daemon's SERVICES
-    when the bar opens, so a config wires nothing for it; with no agent
-    configured it stays empty and costs nothing. With several, a calling
-    one goes first, else the first working.
+    when the bar opens, so a config wires nothing for it. With several,
+    a calling one goes first, then the first working, then the first.
+    With none (no agent configured) it is not there: `collapsed`, so it
+    takes no width and no gap in the bar's row, and costs nothing.
 
-    While hidden it is `collapsed`: no width, and no gap in the bar's
-    row. Its light is a widget of its own, so the working blink repaints
-    the dot and not the chip; the chip itself asks for frames only while
-    it calls back.
+    Its light is a widget of its own, so the working blink repaints the
+    dot and not the chip; the chip itself asks for frames only while it
+    calls back. Idle, nothing asks for any.
     """
 
     def __init__(self, routers=None) -> None:
@@ -413,7 +420,8 @@ class AgentChip(Widget):
         self.routers: list[CallRouter] = []
         self._unfollow: list[Callable[[], None]] = []
         self.light = _Light(self)
-        # On show: (router, "working" | "calling", name, colour), or None.
+        # On show: (router, "idle" | "working" | "calling", name,
+        # colour); None with no router.
         self.shown: tuple | None = None
         self.since = 0.0        # when the state on show began: its blink's start
         self.on = True          # lit, or between two of the ring's flashes
@@ -446,14 +454,18 @@ class AgentChip(Widget):
         super().detach()
 
     def _on_router(self) -> None:
-        pick = next((r for r in self.routers if r.background == "calling"),
-                    None) or next((r for r in self.routers
-                                   if r.background == "working"), None)
         shown = None
-        if pick is not None:
+        if self.routers:
+            pick = (next((r for r in self.routers if r.state == "calling"),
+                         None)
+                    or next((r for r in self.routers if r.state == "working"),
+                            None)
+                    or self.routers[0])
             a = pick.agent
-            name = str(getattr(a, "name", "") or "agent").upper()
-            shown = (pick, pick.background, name, own_accent(a))
+            # The voice of the turn on show (a RemoteAgent's `name`): the
+            # one on the task, or the one that worked last.
+            name = str(getattr(a, "name", "") or "lilac").upper()
+            shown = (pick, pick.state or "idle", name, own_accent(a))
         old = self.shown
         if shown == old:
             return              # the agent's stream, nothing on show changed
@@ -476,7 +488,10 @@ class AgentChip(Widget):
                    or _blink_lit(CALL_BLINK, time.monotonic() - self.since))
 
     def level(self) -> float:
-        """The whole chip's opacity: dim between the ring's flashes."""
+        """The whole chip's opacity: dimmed while idle, and between the
+        ring's flashes."""
+        if self.state == "idle":
+            return IDLE_DIM
         return CALL_DIM if self.state == "calling" and not self.on else 1.0
 
     # ── layout / paint ──────────────────────────────────────────────────
@@ -606,7 +621,9 @@ class _Light(Widget):
         if chip.shown is None:
             return
         colour = chip.shown[3]
-        lit = self.lit or chip.state != "working"
+        # Steady while calling (the chip blinks), out while idle.
+        lit = (chip.state == "calling"
+               or (chip.state == "working" and self.lit))
         k = chip.level()
         r = self.rect
         cx, cy, radius = r.centerX(), r.centerY(), LIGHT_D / 2

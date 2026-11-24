@@ -242,11 +242,11 @@ clock_cluster = Row(
 # docks). Its left is the focused indigoshell app's: Jack's tabs, host
 # and load line while a Jack window has focus, nothing while any other
 # window does. `widgets` go after it, at the right; the right end itself
-# is the agent's: `AgentChip` (agent/ui/status.py) shows the name of the
-# voice on the task and a blinking light while the agent works with its
-# call hung up, and blinks whole when it calls back, in place of the old
-# corner plate's ring. It finds the agent through the `CallRouter` in
-# SERVICES; while there is nothing to show it takes no room at all.
+# is the agent's: `AgentChip` (agent/ui/status.py), always there, shows
+# the name of the voice on the task and a blinking light while the agent
+# works, blinks whole when it calls back (in place of the old corner
+# plate's ring), and rests dimmed in between. It finds the agent through
+# the `CallRouter` in SERVICES; with none it takes no room at all.
 #
 # A config.py adds its own without copying the spec, by building the
 # bar again with them in place of the shipped one:
