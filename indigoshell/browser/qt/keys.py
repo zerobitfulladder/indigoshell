@@ -11,6 +11,8 @@
     Ctrl+F                      find in the page (window.py has its keys)
     Alt+Left, Alt+Right         back, forward
     Ctrl+R, F5                  reload
+    Ctrl+Shift+R, Ctrl+F5,      reload past the cache, as Firefox does
+      Shift+F5
     F12                         inspector
     Ctrl++, Ctrl+-, Ctrl+0      zoom in, out, back to 100%
     Esc                         leave fullscreen (only while fullscreen)
@@ -53,6 +55,9 @@ _PLAIN = {
     (M.AltModifier, K.Key_Right): "forward",
     (M.ControlModifier, K.Key_R): "reload",
     (M.NoModifier, K.Key_F5): "reload",
+    (M.ControlModifier | M.ShiftModifier, K.Key_R): "hard_reload",
+    (M.ControlModifier, K.Key_F5): "hard_reload",
+    (M.ShiftModifier, K.Key_F5): "hard_reload",
     (M.NoModifier, K.Key_F12): "inspector",
 }
 

@@ -151,7 +151,8 @@ class Site(BaseHTTPRequestHandler):
         route = parts.path
         Site.seen.append({"host": self.headers.get("Host", "").rsplit(":", 1)[0],
                           "path": self.path, "ua": self.headers.get("User-Agent"),
-                          "ch": self.headers.get("sec-ch-ua")})
+                          "ch": self.headers.get("sec-ch-ua"),
+                          "cache": self.headers.get("Cache-Control")})
         Site.hits[route] = Site.hits.get(route, 0) + 1
         if route.startswith("/page/"):
             name = route[len("/page/"):]
@@ -353,7 +354,9 @@ def test_pure() -> None:
         ("a", int(K.Key_A), M.NoModifier, 38, None),
         ("Shift alone", int(K.Key_Shift), shift, 50, None),
         ("Ctrl+Alt+1", int(K.Key_1), ctrl | alt, 10, None),
-        ("Ctrl+F5", int(K.Key_F5), ctrl, 0, None),
+        ("Ctrl+F5", int(K.Key_F5), ctrl, 0, "hard_reload"),
+        ("Ctrl+Shift+R", int(K.Key_R), ctrl | shift, 0, "hard_reload"),
+        ("Shift+F5", int(K.Key_F5), shift, 0, "hard_reload"),
     ]
     wrong = [(name, got) for name, key, mods, code, want in expect
              if (got := action_for(key, mods, code)) != want]
@@ -656,6 +659,16 @@ def test_in_process() -> None:
         and wait(lambda: Site.hits.get("/page/Epsilon", 0) == hits + 2)
     check("Ctrl+R and F5 reload", r1 and r2,
           f"server hits {hits} -> {Site.hits.get('/page/Epsilon')}")
+
+    def last_cache():
+        return next((s["cache"] for s in reversed(Site.seen)
+                     if s["path"] == "/page/Epsilon"), None)
+    plain = last_cache()
+    r3 = navigate(tab3, lambda: press(w, K.Key_R, M.ControlModifier | M.ShiftModifier)) \
+        and wait(lambda: Site.hits.get("/page/Epsilon", 0) == hits + 3)
+    hard = last_cache()
+    check("Ctrl+Shift+R reloads past the cache (as Firefox): the request says no-cache",
+          r3 and hard == "no-cache" and plain != "no-cache", f"Ctrl+R sent {plain!r}, Ctrl+Shift+R {hard!r}")
     zooms = []
     for key, mods in ((K.Key_Plus, M.ControlModifier | M.ShiftModifier), (K.Key_Equal, M.ControlModifier),
                       (K.Key_Minus, M.ControlModifier), (K.Key_0, M.ControlModifier)):

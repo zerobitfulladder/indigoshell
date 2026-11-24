@@ -403,6 +403,7 @@ def test_launcher_widget() -> None:
     import numpy as np
 
     from indigoshell import theme
+    from indigoshell.browser import places
     from indigoshell.services.addresses import AddressMode
     from indigoshell.services.apps import Catalog
     from indigoshell.services.modes import Choice, Choices
@@ -475,7 +476,7 @@ def test_launcher_widget() -> None:
           and len(closed) == 1, f"{picked}")
     L.key(key(RETURN, shift=True))
     check("Shift+Return takes the typed text whatever is selected",
-          picked[-1].endswith("search?q=yo"), picked[-1])
+          picked[-1] == places.SEARCH + "yo", picked[-1])
     cyan = np.array([int(theme.CYAN_BRIGHT[i:i + 2], 16) for i in (1, 3, 5)])
     sel = np.abs(lit[..., :3].astype(int) - cyan).max(-1) < 90
     check("painted: the selection band behind the URL; the rows drawn (PNGs in the scratch dir)",

@@ -8,7 +8,7 @@ and never writes either.
 
 What a typed line means (`classify`): an address when it has a scheme
 the browser knows, starts with `localhost`, is an IP address, is a path
-on disk, or has a dot and no spaces; otherwise a Google search. A bare
+on disk, or has a dot and no spaces; otherwise a DuckDuckGo search. A bare
 host gets http://, as Qt's fromUserInput gives it (a site that wants
 https redirects there).
 
@@ -52,7 +52,7 @@ from indigoshell.fuzzy import fold
 
 log = logging.getLogger(__name__)
 
-SEARCH = "https://www.google.com/search?q="
+SEARCH = "https://duckduckgo.com/?q="
 SCHEMES = ("http", "https", "file", "about", "chrome", "data", "blob", "view-source",
            "devtools", "ftp", "ws", "wss", "qrc")
 # Pages that are not places: the browser's own, and ones made of their

@@ -547,6 +547,9 @@ class Window(QWidget):
             page.triggerAction(WA.Back if action == "back" else WA.Forward)
         elif action == "reload":
             page.triggerAction(WA.Reload)
+        elif action == "hard_reload":
+            # Every resource fetched again, none from the cache.
+            page.triggerAction(WA.ReloadAndBypassCache)
         elif action == "inspector":
             self.open_inspector(tab)
         elif action in ("zoom_in", "zoom_out", "zoom_reset"):
