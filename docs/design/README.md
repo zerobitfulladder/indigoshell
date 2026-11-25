@@ -28,9 +28,8 @@ sample at 1x — the 3x crops exist to count pixels, not to judge density.
 
 ![overview](samples/overview.png)
 *`overview.png` — a composite at 1x: the top bar (an app's tabs, the agent
-chip), the call open top-right (where the shipped spec puts it: over the top
-bar's right end, see §11), a toast, the bottom bar. These rarely all show at
-once.*
+chip), the call open top-right (where the shipped spec puts it: 16 px under
+the top bar), a toast, the bottom bar. These rarely all show at once.*
 
 ---
 
@@ -73,23 +72,23 @@ off every use in the code (tokens.json `color.palette[*].role`).
 
 | Colour | Hex | Means |
 |---|---|---|
-| **Magenta** `MAGENTA_BRIGHT` (`FG_STRONG`) | `#ff2a6d` | **the user, focus, emphasis**: YOU on the call (frame, chip, name), the current tab's outline and title, toast summaries, chord-row labels, the "picked" choice (32% tint), the reject flash (75%), the lyric reveal's cursor; also *hot* data (CPU graph, speedtest down) |
+| **Magenta** `MAGENTA_BRIGHT` (`FG_STRONG`) | `#ff2a6d` | **the user, focus, emphasis**: YOU on the call (frame, chip, name), the current tab's outline and title, toast summaries, chord-row labels, the "picked" choice (32% tint), the reject flash (75%), the lyric reveal's cursor; also the hardware panel's CPU card and graph |
 | `MAGENTA_MID` (`FG`) | `#d1004f` | plain neon foreground text: network name, Flux's host, a hovered tab's title, the idle ♫ |
 | `MAGENTA_DIM` (`FG_MUTED`) | `#3a0a2a` | unlit magenta-family cells: empty workspaces, empty tray/battery cells, cava bars at rest, the INDIGO tag's brackets |
 | `MAGENTA_BLOOM` | `#ff80b0` | magenta lifted ~35% toward white: a tab **loading**, the send comet round your plate |
-| **Cyan** `CYAN_BRIGHT` (`HIGHLIGHT`, `POPUP_BORDER`) | `#05d9e8` | **interactive and info**: panel borders, the normal toast frame, every `//` separator, the selected row (22% slab, 85% border), armed rows, links, the agent's steps, the clock, the CPU meter, the *sent* light, the current tab's number, the `info` role, the hologram raster, text selection (28%) |
+| **Cyan** `CYAN_BRIGHT` (`HIGHLIGHT`, `POPUP_BORDER`) | `#05d9e8` | **interactive and info**: panel borders, the normal toast frame, every `//` separator, the selected row (22% slab, 85% border), armed rows, links, the agent's steps, the clock, the CPU meter, **sent / up** (the bar's upper light, the network panel's up rate, the speedtest's UP), the tray indicator's lit cells, the current tab's number, the `info` role, the hologram raster, text selection (28%) |
 | `CYAN_MID` (`MUSIC_FG`) | `#05a9c4` | data at rest: song title, lyric line, panel KEY labels, the IP's host octet, row tags (OPEN/SEARCH/RUN), the scroll thumb, brackets round the current tab's number |
 | `CYAN_DIM` | `#0d4a5e` | quiet cyan structure: the meter cluster's corner brackets, unlit meter cells and labels, dividers, a disabled menu item |
 | `CYAN_BLOOM` | `#5ce6f0` | cyan lifted to white: the lyric's beat flash, matched letters on a selected row, the decode's hot cells |
-| **Yellow** `YELLOW_BRIGHT` (`FG_ACCENT`) | `#fcee0c` | **values, caps, attention**: panel readouts and section titles, the volume **cap line**, peak markers, an armed row's label/digit, the selected row's title, **a question** (the call's ASK), inline code, the turn clock's head |
+| **Yellow** `YELLOW_BRIGHT` (`FG_ACCENT`) | `#fcee0c` | **values, caps, attention**: panel readouts and section titles, the volume **cap line**, peak markers, an armed row's label/digit, the selected row's title, **a question** (the call's ASK), inline code, the turn clock's head; *warm*, the heat ramp's middle step |
 | `YELLOW_MID` | `#e0c020` | the `//` key marker in menu/tray rows and the launcher prompt; the `warn` role |
 | `YELLOW_DIM` | `#a89020` | occupied workspaces, the turn clock text, code blocks, "queued" |
 | `YELLOW_FAINT` | `#3a3010` | faint yellow ground: inline code background (55%), tray menu separators |
-| **Lime** `LIME_BRIGHT` | `#ccff00` | **OK / received / go**: the *received* light, the `ok` role, GREENLIGHT, toggle ON, a device online, a full battery |
+| **Lime** `LIME_BRIGHT` | `#ccff00` | **OK / received / go**: **received / down** (the bar's lower light, the network panel's down rate, the speedtest's DN), the `ok` role, GREENLIGHT, toggle ON, a device online, a running firewall, a full battery |
 | `LIME_DIM` | `#3a4a0a` | a full battery's empty cells |
 | **Violet** `VIOLET_BRIGHT` (`AGENT_ACCENT`, voice Indigo) | `#b967ff` | **the agent**: its frame, chip, plate tint, selection on the call (38%), progress cells; also the RAM meter, the volume level, normal toast body text |
 | `VIOLET` / `VIOLET_DIM` | `#7700a6` / `#2a0a3a` | RAM label, a finished job's cells / unlit violet cells |
-| **Red** `ERROR` | `#ff003c` | **errors and calling back**: critical toast, failed step `×`, SCRUB, a dropped line, the agent **ringing back**, an urgent workspace, no network address, volume muted, TEMP ≥ 80% scale, insecure padlock, "no matches" |
+| **Red** `ERROR` | `#ff003c` | **errors, alarms, hot — and nothing else**: critical toast, failed step `×`, SCRUB, a dropped line, the agent **ringing back**, an urgent workspace, no network address, volume muted, **hot** (the bar's TEMP and the hardware panel's disk and GPU temperature at ≥ 80% of their scale), a **failed or inactive firewall**, insecure padlock, "no matches" |
 | `HUD_FG` | `#a0a8c8` | body text on plates (blue-grey: long runs of neon are unreadable) |
 | `HUD_FG_BRIGHT` | `#c8d0e8` | bright body text: the agent's reply, typed text, row titles |
 | `BASE_MUTED` | `#5a4a78` | **the muted tone**: every secondary text (dates, IPs, units, app names, tabs behind, key hints, state words). The most used colour after the neons |
@@ -97,6 +96,24 @@ off every use in the code (tokens.json `color.palette[*].role`).
 | `BASE_GUTTER` | `#15102a` | unlit meter cells, the low-urgency toast frame, action-button fill |
 | `BASE_SHADOW`, `BASE_SURFACE` | `#0d0820`, `#1e1838` | a lifted black (rare); the INDIGO tag's hover fill |
 | `HUD_PLATE` | `#241840` | the active tab's plate in a panel's tab strip |
+
+### Meanings that hold everywhere
+
+- **Network directions**: **sent / up = cyan** `CYAN_BRIGHT`, **received /
+  down = lime** `LIME_BRIGHT` — the bar's two lights, the network panel's
+  rates, the speedtest's arrows, meters and readouts, any legend. Never
+  magenta or yellow for a direction.
+- **Red `ERROR` means hot, failed or error (and the alarms: a ring, an
+  urgent workspace) — never a count, a state that is fine, or decoration.**
+  Something merely present or counted is info (cyan), as the tray
+  indicator is.
+- **Heat is one ramp** (`theme.HEAT_RAMP`): cyan, **yellow from 50%**,
+  **red from 80%** of the scale, for the bar's TEMP and the hardware
+  panel's disk and GPU temperature alike; both temperatures read 30 °C
+  empty to 90 °C full (`TEMP_MIN_C`/`TEMP_MAX_C`), so yellow from 60 °C,
+  red from 78 °C.
+- **Every dot is a square light** (§4): its colour says what, filled
+  says on or current, its outline says off.
 
 ### The ladder: dim → mid → bright → bloom
 
@@ -196,8 +213,16 @@ frame and the mark there are the driving voice's colour.
   arm 4, `CYAN_MID`), and inside every call plate (inset 6, arm 12, 1.5 px,
   85% of the frame colour; on a 45° corner: arm–cut–arm). **On the bottom
   bar, corner brackets around a whole cluster are the most framing allowed.**
-- **Square dots and lights, never circles.** The network lights are 5 px
-  squares; status is told by colour and position, not by shape.
+- **Square dots and lights, never circles — everywhere.** A dot is the
+  network's light: a **5 px square** on whole pixels (`shapes.LIGHT`),
+  **filled = on or current, its 1 px outline = off**. Beside text it sits
+  centred in the text cell, half the cap height above the baseline
+  (`shapes.text_light`), where a ●/○/• glyph would go: the firewall state,
+  tray menus' radio items, the call's device list (online lime filled,
+  offline muted outline), its past-conversation list (the current one lit),
+  its Markdown bullets; on a line graph, flush with the right edge on the
+  newest sample. A glyph that must stay text is `■` (a tab's unsaved
+  badge). Status is told by colour and position, not by shape.
 - **Level bars are rows of square cells** in whole pixels (fixed cell width,
   count derived from the span — never fractional cells), lit left to right
   or bottom up, the unlit cells in the dim of the same hue: gauge 2/2 px × 3,
@@ -305,7 +330,8 @@ linearly in wall-clock time and shape themselves with `smoothstep`.
 | **disabled** | everything `BASE_MUTED` (or `CYAN_DIM` in tray menus); picking it flashes the selection magenta 75% |
 | **loading** | a lit run going round the item's own outline in `MAGENTA_BLOOM` (never a separate spinner or bar on the bars) |
 | **warning / attention** | yellow: a question (ASK), values; `YELLOW_MID` for the `warn` role |
-| **error** | `ERROR` red: frame, text, cells; red steady for "down", red blinking for "wants you" |
+| **error** | `ERROR` red: frame, text, cells; red steady for "down" (and hot, failed), red blinking for "wants you" |
+| **on / off** (a dot) | the 5 px square light filled = on, current, picked, online; its 1 px outline = off, offline |
 | **agent working** | the voice's colour; the chip's arcs turn; steps in cyan; the frame's turn trace |
 | **agent driving a tab** | the tab's number, brackets and outline in the voice's colour; in Flux, a 2 px frame + mark in the voice's colour and the page in Indigo's tint |
 | **taken over / paused** | the voice's colour 35% of the way to the bar's black |
@@ -350,9 +376,10 @@ No rule line, no plates, no boxes around any widget.
 - **Meters** (`CPU RAM TEMP`) — each: value 18.67 px bold + label 12 px on a
   shared baseline, over a 70 px underline of 2 px ticks / 2 px gaps, 3 px
   tall, 1 px below. CPU cyan (bright/dim), RAM violet, TEMP stepping cyan →
-  yellow (50%) → red (80%) across 30–90 °C. Grouped by **one** corner-bracket
-  frame (arm 6, `CYAN_DIM`, padding 8×4), 20 px between meters. Sampled
-  twice a second (data, not decoration). Click: hardware panel.
+  yellow (50%) → red (80%) across 30–90 °C (the heat ramp, §2). Grouped
+  by **one** corner-bracket frame (arm 6, `CYAN_DIM`, padding 8×4), 20 px
+  between meters. Sampled twice a second (data, not decoration). Click:
+  hardware panel.
 - **Network** — two 5 px **squares** stacked 3 px apart, 6 px before the
   name: sent `CYAN_BRIGHT` over received `LIME_BRIGHT`, blinking with
   traffic, a 2 px glow on the lit half; both red with no address. Name 16 px
@@ -372,8 +399,8 @@ No rule line, no plates, no boxes around any widget.
   (cyan above half or plugged, yellow under half, lime full) over
   `MAGENTA_DIM`.
 - **Tray indicator** — 5 stacked bars (2 px gaps, 7 px wide, full height),
-  lit bottom-up per registered app (in `ERROR`; see §11), 4 px from the clock.
-  Click: the tray panel.
+  lit bottom-up per registered app in `CYAN_BRIGHT` (info, like the clock
+  beside it) over `MAGENTA_DIM`, 4 px from the clock. Click: the tray panel.
 
 ### 8.2 The top bar
 
@@ -390,7 +417,8 @@ the **agent chip**.
 Each a **box 32 px tall, 2 px outline, cut 8 px at the top-right only**:
 
 - inside: a 20 px number spot 12 px in, the number 13 px bold; 6 px; the
-  title 16 px, ellipsized; an optional badge glyph at the right end;
+  title 16 px, ellipsized; an optional badge glyph at the right end (the
+  unsaved dot is `■`, never a circle);
 - behind: outline `FG_STRONG` at 28%, title and number `BASE_MUTED`;
   hovered: outline 60%, title `FG`;
 - current: outline `FG_STRONG` full with a 3 px glow (45%) and a faint light
@@ -478,9 +506,14 @@ bevel 14, padding 10/14/10/16, the 2 px accent stripe wrapping the
 bottom-left cut (DISK cyan, CPU magenta, RAM violet, GPU cyan, state yellow).
 Card rows: KEY 13 px `CYAN_MID` tracking 1 (in a fixed cell when stacked),
 meta 13 px muted, value 13 px bold `YELLOW_BRIGHT` at the right; segmented
-bars 4/2 × 8; 1-minute line graphs (1.4 px line, 14% fill, a 35% ceiling
-rule). Section header: 11 px bold `YELLOW_BRIGHT` + subtitle `BASE_MUTED`
-(NETLINK · LIVE INTERFACE TELEMETRY). A panel tab strip: active tab on a
+bars 4/2 × 8, the disk and GPU-temperature bars in the heat ramp (§2);
+1-minute line graphs (1.4 px line, 14% fill, a 35% ceiling rule, a 5 px
+square light on the newest sample). The network panel: its FIREWALL row's
+square light lime and filled while a firewall runs, red and hollow when it
+is inactive or failed; each interface's rate `↓` down lime, `↑` up cyan,
+and the speedtest's DN / UP the same. Section header: 11 px bold
+`YELLOW_BRIGHT` + subtitle `BASE_MUTED` (NETLINK · LIVE INTERFACE
+TELEMETRY). A panel tab strip: active tab on a
 `HUD_PLATE` plate with a 2 px magenta underline, 15 px bold tracking 1
 `HUD_FG_BRIGHT`; others `BASE_MUTED`; one 70% muted rule under the strip.
 The one panel button: `// RUN TEST` (yellow `//`, cyan label 13 px bold
@@ -509,7 +542,8 @@ are caps verbs/nouns: SUSPEND, POWEROFF, REBOOT, LOGOUT, OUTPUT, PLAYER.
 
 Rows like the chord menu's (label right-aligned against a yellow `//`); an
 app's own menu drawn by the shell: a 1.5 px cyan box at 92%, 10 px
-`CYAN_MID` items (hover cyan on 18% cyan, disabled `CYAN_DIM`), yellow-faint
+`CYAN_MID` items (hover cyan on 18% cyan, disabled `CYAN_DIM`), radio items
+as square lights in the item's colour (filled = picked), yellow-faint
 separators, submenus expanding inline.
 
 ### 8.9 The call (MOD+A)
@@ -522,15 +556,17 @@ separators, submenus expanding inline.
 ![chips](samples/call_chips.png)
 ![chips 3x](samples/call_chips_3x.png)
 
-Top-right (16 px from the monitor's top, 16 from its right edge): **two plates in one column, read
-like a chat** — yours on top with your chip on its right, the agent's below
-with its chip on its left. Plates **680 px**, chips **64 px**, 8 px plate ↔
-chip, 10 px between the rows. Each plate: the speaker's tinted fill at 88%
-(frosted by the compositor), its raster, a **2 px frame cut 12 px**,
-corner brackets inside; padding 16 × 12. **Each speaker owns one colour
-throughout** — frame, chip, name, tint: magenta for you, the voice's colour
-for the agent. The agent's frame and chip turn **yellow while it asks** and
-**red when the line is down**; its plate keeps its tint through those.
+Top-right, **16 px under the top bar** (58 px from the monitor's top; never
+over the bar and its agent chip) and 16 from its right edge: **two plates in
+one column, read like a chat** — yours on top with your chip on its right,
+the agent's below with its chip on its left. Plates **680 px**, chips
+**64 px**, 8 px plate ↔ chip, 10 px between the rows. Each plate: the
+speaker's tinted fill at 88% (frosted by the compositor), its raster, a
+**2 px frame cut 12 px**, corner brackets inside; padding 16 × 12. **Each
+speaker owns one colour throughout** — frame, chip, name, tint: magenta for
+you, the voice's colour for the agent. The agent's frame and chip turn
+**yellow while it asks** and **red when the line is down**; its plate keeps
+its tint through those.
 
 - **Your plate**: `// YOU` heading, key hints right-aligned 12 px muted
   (`⏎ send  ^L look  ^C stop  esc hang up`, led by `^S Lilac` — who answers
@@ -542,10 +578,10 @@ for the agent. The agent's frame and chip turn **yellow while it asks** and
   right; **steps above a short rule** in 13 px — `›` tool (cyan; muted cyan
   once done), `⌄` expanded, `×` failed (red), `!` info (yellow), `·` note,
   `∴` thinking (in the voice's colour); **what it says below**, rendered
-  Markdown 15 px `HUD_FG_BRIGHT`: headings bold and bullets in the voice's
-  colour, code blocks yellow with a left bar, inline code yellow on faint
-  yellow, links cyan underlined, quotes `HUD_FG` with a muted bar, selection
-  violet 38%.
+  Markdown 15 px `HUD_FG_BRIGHT`: headings bold and bullets (square lights)
+  in the voice's colour, code blocks yellow with a left bar, inline code
+  yellow on faint yellow, links cyan underlined, quotes `HUD_FG` with a
+  muted bar, selection violet 38%.
 - **A question**: the request in yellow, then two answer buttons —
   **GREENLIGHT** (lime) and **SCRUB** (red), 30 px tall, padding 20, bevel 7,
   1.5 px outline at 80% with an 8% fill (hover 22%, press 38%), 13 px bold
@@ -554,6 +590,9 @@ for the agent. The agent's frame and chip turn **yellow while it asks** and
   the chip: 11 px on the 64 px chip, tracked 0.6: `YOU`, `CALL`, `ASK`,
   `DROP`) in the state colour; arcs turning
   while it works, blinking when it wants you, still when it waits.
+- **Lists** in the agent's plate: `^D` devices — a square light each, lime
+  filled online, muted outline offline; `^H` past conversations — the
+  current one lit in the voice's colour.
 - **Progress** (§8.10).
 
 ### 8.10 Progress bars
@@ -632,7 +671,8 @@ From the code:
    overstates how much detail the eye wants.
 4. **Depth without drop shadows.** Snapshot "refraction", frosted rims and
    halos were all rejected: real live effects or nothing.
-5. **Square dots, never circles.**
+5. **Square dots, never circles** — every dot, everywhere: the 5 px square
+   light, filled on, outlined off.
 6. **Motion is welcome; perpetual motion on a resting surface is not.** Idle
    is still; motion marks events and alarms (calling back is deliberate
    attention). The INDIGO pulse and the battery's resting sweep were removed
@@ -644,16 +684,6 @@ From the code:
 
 ## 11. Inconsistencies in the code today (don't copy them)
 
-- **Circles** despite rule 5: the line graphs' newest-sample dot
-  (`LineGraph`, hardware panel), `●` for the firewall state (network panel),
-  `●`/`○` for a device online/offline and `●` for the current session in the
-  call's lists, `●`/`○` radio items in tray menus.
-- **Red for a non-error**: the tray indicator lights its cells in `ERROR`.
-- **Direction colours disagree**: the bar's network lights are sent cyan /
-  received lime; the network panel and speedtest use down magenta / up yellow.
-- **"Hot" disagrees**: the bar's TEMP turns `ERROR` red at 80% of its scale;
-  the hardware panel's heat ramp tops out in `MAGENTA_BRIGHT` (≥ 90%, yellow
-  ≥ 75%). A failed/inactive firewall is magenta, not red.
 - **Unused tokens**: `CYAN_FAINT`, `LIME_MID`, `HUD_SECTION`, `ICON`,
   `STATUS_FG`, `FONT_SIZE_ICON`; `BAR_RULE` exists but the shipped bars draw
   no rule (the older prototype sheets' `common.bar_strip` still paints one).
@@ -666,10 +696,6 @@ From the code:
 - **Docstrings drift**: `hud.section_header` says "cyan title" but paints
   yellow; `plugin.Item.hint` says "right edge" but the menu paints it at the
   left.
-- **The call opens over the top bar**: the shipped `call()` spec anchors it
-  top-right with a 16 px top margin from the monitor's edge ("clear of the
-  bar" was written when only the bottom bar existed), so the open call covers
-  the top bar's right end — the agent chip included.
 - **Open overlays scan forever**: the hologram scan runs every 7 s for as
   long as a panel, menu, toast or the call is open — fine for transient
   surfaces, but a critical toast (no timeout) scans until clicked.
@@ -708,7 +734,8 @@ This is how the look carries over — not a design for the app.
   shape (`Modifier.border` draws inside). Remove Material's round corners,
   ripples (replace with the flat tint states of §7), tonal and shadow
   elevation (0 everywhere). Square dots: `Box(Modifier.size(5.dp)
-  .background(color, RectangleShape))`. Corner brackets and level bars:
+  .background(color, RectangleShape))`, an off one `.border(1.dp, color,
+  RectangleShape)` instead. Corner brackets and level bars:
   `Modifier.drawBehind { drawRect(...) }` with whole-pixel rects.
 - **Timings translate directly** (tokens.json `motion`): `tween(110)`,
   `tween(80)`; ease-out cubic ≈ `CubicBezierEasing(0.33f, 1f, 0.68f, 1f)`;

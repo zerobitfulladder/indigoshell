@@ -332,19 +332,19 @@ PALETTE = [
     ("cyan", "CYAN_MID", "MUSIC_FG",
      "data at rest: song title, lyric, KEY labels, host octet, row tags"),
     ("cyan", "CYAN_BRIGHT", "HIGHLIGHT, POPUP_BORDER",
-     "interactive and info: borders, every //, selection, links, steps, clock"),
+     "interactive and info: borders, //, selection, links, clock; sent / up"),
     ("cyan", "CYAN_BLOOM", "",
      "cyan lifted to white: the lyric's beat flash, matched letters when selected"),
     ("lime", "LIME_DIM", "", "battery at full charge"),
     ("lime", "LIME_MID", "", "defined, unused"),
     ("lime", "LIME_BRIGHT", "",
-     "OK / received / go: received light, ok role, GREENLIGHT, ON, online"),
+     "OK / received / go: received / down, ok role, GREENLIGHT, ON, online"),
     ("violet", "VIOLET_DIM", "", "unlit violet cells (RAM, volume)"),
     ("violet", "VIOLET", "", "RAM label, a finished job's cells"),
     ("violet", "VIOLET_BRIGHT", "ICON, AGENT_ACCENT, voice Indigo",
      "the agent: its frame, chip, plate tint; RAM; volume; toast body"),
     ("error", "ERROR", "RING_ACCENT, FAIL_ACCENT",
-     "errors and calling back: critical, failed, SCRUB, urgent, muted, ring"),
+     "errors and alarms only: failed, hot, critical, SCRUB, urgent, muted, ring"),
     ("hud", "HUD_FG", "", "body text on plates: steps, details (blue-grey, not neon)"),
     ("hud", "HUD_FG_BRIGHT", "",
      "bright body text: the reply, typed text, row titles; the raster leans to it"),
@@ -1314,6 +1314,7 @@ def wave(n, base, amp, k=0.37, seed=1):
 
 
 def hardware_panel():
+    from indigoshell.widgets import hardware_panel as hp
     from indigoshell.widgets.hardware_panel import HardwarePanel
     p = HardwarePanel(width=560)
     p._disk_bar.set_value(66)
@@ -1328,7 +1329,7 @@ def hardware_panel():
     p._gpu_util.set_value("23%")
     p._gpu_mem_bar.set_value(31)
     p._gpu_mem.set_value("2511 / 8188 MiB")
-    p._gpu_temp_bar.set_value((58 - 30) * (100 / 70))
+    p._gpu_temp_bar.set_value(hp.temp_pct(58))
     p._gpu_temp.set_value("58°C")
     p._apply_state("hybrid", "balanced")
     return p
@@ -1992,10 +1993,10 @@ def render_overview() -> None:
     host = CallHost(b)
     Widget.attach(host, rc.FakeWindow())
     m = host.measure(Size(10_000.0, 10_000.0))
-    # config_default's call(): anchored top-right, margin top 16 from the
-    # monitor's top, so it opens over the top bar's right end.
-    cx = W - (theme.BAR_MARGIN + 12) - m.width
-    cy = 16
+    # where config_default's call() puts it: top-right, 16 px under the top bar
+    spec, _ = _config().call(b)
+    cx = W - spec.margin.right - m.width
+    cy = spec.margin.top
     host.measure(Size(m.width, m.height))
     host.arrange(skia.Rect.MakeXYWH(cx, cy, m.width, m.height))
     host._on_agent("update")
@@ -2192,6 +2193,26 @@ def build_tokens() -> dict:
         "tray_menu_hover": lit([th.CYAN_BRIGHT, 0.18], "indigoshell/widgets/systray.py:"
                                "_MenuItemRow.paint"),
     }
+    from indigoshell.widgets import network_panel as net_panel
+    directions = {
+        "sent_up": color_tok(net_panel.UP_FG, f"{_rel(net_panel)}:UP_FG",
+                             "sent / up everywhere: the bar's upper light, the panel's "
+                             "up rate, the speedtest's UP", ["CYAN_BRIGHT"]),
+        "received_down": color_tok(net_panel.DOWN_FG, f"{_rel(net_panel)}:DOWN_FG",
+                                   "received / down everywhere: the bar's lower light, the "
+                                   "panel's down rate, the speedtest's DN", ["LIME_BRIGHT"]),
+    }
+    heat = {
+        "ramp": {"value": [[share, next(n for _, n, _, _ in PALETTE
+                                         if getattr(th, n) == col)]
+                           for share, col in th.HEAT_RAMP],
+                 "source": f"{thf}:HEAT_RAMP",
+                 "note": "steps by share of the scale: the bar's TEMP, the hardware panel's "
+                         "disk and GPU temperature; red = hot"},
+        "temp_scale": {"value": [th.TEMP_MIN_C, th.TEMP_MAX_C], "unit": "degC",
+                       "source": f"{thf}:TEMP_MIN_C, TEMP_MAX_C",
+                       "note": "empty to full; so yellow from 60 degC, red from 78 degC"},
+    }
     top_bar = {k: tok(look, k) for k in ("TAB_FG", "TAB_CURRENT_FG", "TAB_HOVER_FG", "NUMBER_FG",
                                           "NUMBER_CURRENT_FG", "BRACKET_FG", "OUTLINE", "LOAD_FG",
                                           "TEAR_FG", "OUTLINE_DIM_A", "OUTLINE_HOVER_A",
@@ -2366,13 +2387,22 @@ def build_tokens() -> dict:
                                        "px"),
                            "bar_width": lit("0.75 x cell", "indigoshell/widgets/workspaces.py:"
                                             "_paint_bars")},
-            "systray": {"bars": lit(5, "indigoshell/widgets/systray.py:Systray", None),
+            "systray": {"lit": lit("CYAN_BRIGHT", "indigoshell/widgets/systray.py:Systray.paint",
+                                   note="one cell per registered app, over MAGENTA_DIM; info, "
+                                        "not an error"),
+                        "bars": lit(5, "indigoshell/widgets/systray.py:Systray", None),
                         "gap": lit(2, "indigoshell/widgets/systray.py:Systray", "px"),
                         "width": lit(7, "indigoshell/config_default.py:clock_cluster", "px")},
             "rule": "cells are whole pixels: fixed tick width, the count derived from the "
                     "span (meters._ticks)",
         },
         "dots": {
+            "light": tok(shapes, "LIGHT", "px",
+                         "every dot is this square: the network's lights, the firewall state, "
+                         "radio items, the call's device/session marks and list bullets, a "
+                         "line graph's newest sample (shapes.light / text_light); filled = "
+                         "on or current, a 1 px outline = off; beside text it sits centred "
+                         "in the cell, half the cap height above the baseline"),
             "size": lit(5, "indigoshell/widgets/network.py:Network(dot_size)", "px"),
             "gap_to_text": lit(6, "indigoshell/widgets/network.py:Network(dot_gap)", "px"),
             "stack_gap": lit(3, "indigoshell/widgets/network.py:Network(dot_stack_gap)", "px"),
@@ -2415,8 +2445,10 @@ def build_tokens() -> dict:
                                                                "TAB_GAP", "UNDER_THICK")},
         },
         "placement": {
-            "call": lit({"anchor": "top-right", "top": 16, "right": th.BAR_MARGIN + 12},
-                        "indigoshell/config_default.py:call", "px"),
+            "call": lit({"anchor": "top-right", "top": th.TOP_BAR_HEIGHT + 16,
+                         "right": th.BAR_MARGIN + 12},
+                        "indigoshell/config_default.py:call", "px",
+                        "16 px under the top bar (TOP_BAR_HEIGHT + 16), never over it"),
             "panels": lit({"anchor": "bottom-left (system) / bottom-right", "side": th.BAR_MARGIN,
                            "bottom": th.BAR_HEIGHT + th.POPUP_GAP},
                           "indigoshell/config_default.py:WINDOWS", "px"),
@@ -2594,7 +2626,8 @@ def build_tokens() -> dict:
                       "function, not a named constant",
         },
         "color": {"palette": palette, "semantic": semantic, "voices": voice_tokens,
-                  "call": call_colors, "rows": rows, "top_bar": top_bar},
+                  "call": call_colors, "rows": rows, "top_bar": top_bar,
+                  "directions": directions, "heat": heat},
         "typography": typography,
         "spacing": spacing,
         "geometry": geometry,
