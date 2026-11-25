@@ -32,6 +32,15 @@ from .rows import Row, code_rows, highlight, markdown_rows, paint_line, text_row
 
 
 # ── the agent's plate ───────────────────────────────────────────────────
+
+def think_line(agent, now: float) -> str:
+    """The thinking row's words: that the agent thinks, never what (the
+    user's rule: the content of its thoughts stays off the screen, as on
+    the top bar's chip). A dot more every 1/DOTS_PER_S seconds, up to
+    three."""
+    dots = int((now - agent.turn_started) * DOTS_PER_S) % 4
+    return "thinking" + "." * dots
+
 class AgentPlate(Widget):
     """What the agent is doing and what it says, selectable.
 
@@ -713,10 +722,7 @@ class AgentPlate(Widget):
                 self.bars.paint_info(canvas, box, row.job, left + row.x,
                                      own_accent(a))
             elif kind == "think":
-                dots = int((time.monotonic() - a.turn_started)
-                           * DOTS_PER_S) % 4
-                tail = a.thought.strip().splitlines()[-1] if a.thought.strip() \
-                    else "thinking" + "." * dots
+                tail = think_line(a, time.monotonic())
                 self._glyph(canvas, box, "∴", own_accent(a))
                 x = left + text.advance(ACT_SIZE) * 2
                 text.draw(canvas, text.ellipsize(tail, ACT_SIZE, right - x),
