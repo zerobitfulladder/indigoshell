@@ -61,7 +61,7 @@ from the places `uploads.py` lists.
 
 Import rule (tests/flux_imports.py checks it): of the shell, Flux
 imports only its pure modules: `indigoshell.core`'s (naming, paths,
-log, hands, voices), `indigoshell.applink.protocol` and
+log, hands, persona), `indigoshell.applink.protocol` and
 `indigoshell.applink.bar`, `indigoshell.fuzzy` and
 `indigoshell.services.proc` (to start Flux detached). So it runs where
 none of the shell's own dependencies (xcffib, skia, dbus-fast, psutil)

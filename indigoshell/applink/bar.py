@@ -63,10 +63,9 @@ KINDS = (TABS, TEXT, BUTTON)
 CAN = ("close", "move", "detach")
 AGENT_STATES = ("driving", "paused")
 
-# Colours are roles; the shell maps them to its theme. `voice:<id>` is
-# that voice's colour.
-ROLES = ("fg", "strong", "muted", "info", "accent", "warn", "error", "ok")
-VOICE_ROLE = "voice:"
+# Colours are roles; the shell maps them to its theme. `agent` is the
+# agent's own colour (core/persona.py).
+ROLES = ("fg", "strong", "muted", "info", "accent", "warn", "error", "ok", "agent")
 
 # Icons by name, the shell's table (an unknown one draws nothing).
 ICONS = ("bookmark", "unlocked", "search", "replace", "play", "history", "unsaved",
@@ -126,8 +125,7 @@ def parse_chord(chord, *, grab: bool = False) -> tuple[frozenset, str] | None:
 
 
 def role_ok(role) -> bool:
-    return role is None or (isinstance(role, str) and (
-        role in ROLES or (role.startswith(VOICE_ROLE) and 0 < len(role) - len(VOICE_ROLE) <= 32)))
+    return role is None or (isinstance(role, str) and role in ROLES)
 
 
 # ── builders ────────────────────────────────────────────────────────────
@@ -155,8 +153,8 @@ def badge(icon: str, color: str | None = None) -> dict:
     return _some(icon=icon, color=color)
 
 
-def agent(voice: str, state: str) -> dict:
-    return {"voice": voice, "state": state}
+def agent(state: str) -> dict:
+    return {"state": state}
 
 
 def span(text: str | None = None, *, icon: str | None = None, color: str | None = None) -> dict:
@@ -309,8 +307,7 @@ def _check_tabs(p: _Problems, where: str, item: dict) -> None:
                                   and role_ok(b.get("color"))):
             p.add(w, f"badge {b!r}")
         a = t.get("agent")
-        if a is not None and not (isinstance(a, dict) and isinstance(a.get("voice"), str)
-                                  and a.get("state") in AGENT_STATES):
+        if a is not None and not (isinstance(a, dict) and a.get("state") in AGENT_STATES):
             p.add(w, f"agent {a!r}")
     if len(set(map(repr, ids))) != len(ids):
         p.add(where, "tab ids repeat")

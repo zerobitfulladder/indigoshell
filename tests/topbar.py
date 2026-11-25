@@ -46,16 +46,17 @@
    keyboard refused; the keyboard given back on every way out; hover;
    the bar's other widgets as before.
 5. The app service on a socket of its own, a stand-in app on it sending
-   bars: the announce and the answer both ways (the voices' names; an
-   app other than Flux, the same class; announces that are no X window
-   or name no app or id; lines that are no message, types it does not
-   know); a bar shown and replaced, a bad one keeping the last good (one
-   warning), an answer for nothing open dropped, chords grabbed again
-   when they change; focus followed between two windows, a dialog of one
-   and a window that is no app's (the context area empty), a window in
-   the background changing without repainting the bar, a connection
-   lost and back, the service stopped and started; the key grabs going
-   with the connection and the service, checked with X itself.
+   bars: the announce and the answer both ways (the agent's name and
+   colour; an app other than Flux, the same class; announces that are
+   no X window or name no app or id; lines that are no message, types
+   it does not know); a bar shown and replaced, a bad one keeping the
+   last good (one warning), an answer for nothing open dropped, chords
+   grabbed again when they change; focus followed between two windows,
+   a dialog of one and a window that is no app's (the context area
+   empty), a window in the background changing without repainting the
+   bar, a connection lost and back, the service stopped and started;
+   the key grabs going with the connection and the service, checked
+   with X itself.
 5b. The keys the shell takes, on real unmapped windows of the test's
    own, the service's X connection wrapped in a recorder (keyboard and
    pointer grabs recorded and never sent): GrabKey for a bar's chords
@@ -1554,10 +1555,12 @@ async def test_service(scratch: Path) -> None:
         a = await app(announce(A), flux_bar(["Alpha", "Beta"]))
         got = await a.answer()
         wa = await until(lambda: (w_ := service.window_for(A)) and len(titles_of(w_)) == 2 and w_)
-        check("an app window (Flux's): answered {type: attached} with the voices' names; kept "
+        check("an app window (Flux's): answered {type: attached} with the agent's name and "
+              "colour; kept "
               "with its own id and its bar; its inputs' and menu's chords grabbed on it (Ctrl+L, "
               "Ctrl+T, Ctrl+F, Ctrl+M: X refuses another client the same grab of Ctrl+L)",
-              got.get("type") == "attached" and got.get("voices", {}).get("lilac") == "Lilac"
+              got.get("type") == "attached"
+              and got.get("agent") == {"name": "Lilac", "color": "#c8a2c8"}
               and isinstance(wa, AppWindow) and wa.kind == "flux" and wa.app_id == A
               and A in service.grabs
               and sorted(set(service.grabs[A].chords.values())) == ["ctrl+f", "ctrl+l", "ctrl+m",

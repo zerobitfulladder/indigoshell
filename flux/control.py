@@ -36,16 +36,16 @@ the name of the browser to talk to (its own socket), None for the
 default one; `ensure_running` starts that profile's.
 
 The acting requests (`click`, `type_text`, `key`, `select`, `scroll`,
-`fill`, `hover`, `dialog`, `upload`, `js`, `release`) carry the agent's
-`voice`, which Flux draws its hold on the tab in (protocol.VOICES). On a
+`fill`, `hover`, `dialog`, `upload`, `js`, `release`) put the agent's
+hold on the tab, which Flux draws in her colour (core/persona.py). On a
 tab the user took over they raise ControlError with protocol.TOOK_OVER's
 words. A ref is an int, or "f2:14" for an element in frame f2
 (protocol.py, "Frames"). `js` runs the agent's own JavaScript behind
 Flux's guard (protocol.py, "Scripts"); `screenshot(..., full=True)` gives
 the page as tiles.
 
-The agent's own window (protocol.py, "Alone"): `open(..., window="agent",
-voice=...)`, `borrow`, `return_tab`; `show` puts a local file in the
+The agent's own window (protocol.py, "Alone"): `open(..., window="agent")`,
+`borrow`, `return_tab`; `show` puts a local file in the
 user's window; `downloads` and `wait_download`.
 
 `look()` is for the call: what the user is looking at in Flux, as
@@ -102,7 +102,6 @@ class TabInfo:
     loading: bool
     current: bool
     agent: str | None = None            # None, "driving", "paused" (the user took over)
-    voice: str | None = None
     dialog: dict | None = field(default=None, compare=False)   # held for the agent
     borrowed: dict | None = field(default=None, compare=False)  # where it came from
     kept: bool = False                  # at a host the user keeps from the agent
@@ -111,7 +110,7 @@ class TabInfo:
     def of(cls, d: dict) -> "TabInfo":
         return cls(int(d["tab"]), int(d["window"]), int(d["index"]), str(d.get("title") or ""),
                    str(d.get("url") or ""), bool(d.get("loading")), bool(d.get("current")),
-                   d.get("agent"), d.get("voice"), d.get("dialog"), d.get("borrowed"),
+                   d.get("agent"), d.get("dialog"), d.get("borrowed"),
                    bool(d.get("kept")))
 
 
@@ -122,13 +121,13 @@ class WindowInfo:
     single: bool
     focused: bool
     tabs: tuple[TabInfo, ...]
-    agent: str | None = None            # the voice whose own window it is
+    agent: bool = False                 # the agent's own window
 
     @classmethod
     def of(cls, d: dict) -> "WindowInfo":
         return cls(int(d["window"]), d.get("xid"), bool(d.get("single")),
                    bool(d.get("focused")), tuple(TabInfo.of(t) for t in d.get("tabs") or ()),
-                   d.get("agent"))
+                   bool(d.get("agent")))
 
     def current(self) -> TabInfo | None:
         return next((t for t in self.tabs if t.current), None)
@@ -229,12 +228,12 @@ class Control:
         return [WindowInfo.of(w) for w in result.get("windows") or ()]
 
     async def open(self, url: str, *, window: int | str | None = None, background: bool = False,
-                   voice: str | None = None, within: float = REQUEST_S) -> TabInfo:
+                   within: float = REQUEST_S) -> TabInfo:
         """`window`: an id, or protocol.AGENT_WINDOW for the agent's own
-        (made and placed first when there is none: `voice`'s)."""
+        (made and placed first when there is none)."""
         return TabInfo.of(await self.request(
-            "open", {"url": url, "window": window, "background": background or None,
-                     "voice": voice}, within=within))
+            "open", {"url": url, "window": window, "background": background or None},
+            within=within))
 
     async def switch(self, tab: int, *, within: float = REQUEST_S) -> TabInfo:
         return TabInfo.of(await self.request("switch", {"tab": tab}, within=within))
@@ -279,81 +278,73 @@ class Control:
                                            "image": image or None}, within=within)
 
     # ── acting (protocol.py, "Acting"): TAB + {"navigated", "opened",
-    # "dialog", ...} each; `voice` is the agent's ──────────────────────────
+    # "dialog", ...} each ──────────────────────────────────────────────────
     async def click(self, tab: int, ref: int | str | None = None, *, x: float | None = None,
                     y: float | None = None, button: str | None = None, double: bool = False,
-                    voice: str | None = None, within: float = REQUEST_S) -> dict:
+                    within: float = REQUEST_S) -> dict:
         return await self.request("click", {"tab": tab, "ref": ref, "x": x, "y": y,
-                                            "button": button, "double": double or None,
-                                            "voice": voice}, within=within)
+                                            "button": button, "double": double or None},
+                                  within=within)
 
     async def type_text(self, tab: int, text: str, *, ref: int | str | None = None,
                         x: float | None = None, y: float | None = None, clear: bool = False,
-                        submit: bool = False, voice: str | None = None,
-                        within: float = REQUEST_S) -> dict:
+                        submit: bool = False, within: float = REQUEST_S) -> dict:
         return await self.request("type", {"tab": tab, "text": text, "ref": ref, "x": x, "y": y,
-                                           "clear": clear or None, "submit": submit or None,
-                                           "voice": voice}, within=within)
+                                           "clear": clear or None, "submit": submit or None},
+                                  within=within)
 
     async def key(self, tab: int, key: str, *, count: int | None = None,
-                  voice: str | None = None, within: float = REQUEST_S) -> dict:
-        return await self.request("key", {"tab": tab, "key": key, "count": count,
-                                          "voice": voice}, within=within)
+                  within: float = REQUEST_S) -> dict:
+        return await self.request("key", {"tab": tab, "key": key, "count": count}, within=within)
 
     async def select(self, tab: int, ref: int | str, *, value=None, label=None,
-                     voice: str | None = None, within: float = REQUEST_S) -> dict:
+                     within: float = REQUEST_S) -> dict:
         return await self.request("select", {"tab": tab, "ref": ref, "value": value,
-                                             "label": label, "voice": voice}, within=within)
+                                             "label": label}, within=within)
 
     async def scroll(self, tab: int, *, dy: float | None = None, dx: float | None = None,
                      ref: int | str | None = None, x: float | None = None,
                      y: float | None = None, to: int | str | None = None,
-                     voice: str | None = None,
                      within: float = REQUEST_S) -> dict:
         return await self.request("scroll", {"tab": tab, "dy": dy, "dx": dx, "ref": ref, "x": x,
-                                             "y": y, "to": to, "voice": voice}, within=within)
+                                             "y": y, "to": to}, within=within)
 
-    async def fill(self, tab: int, fields: list[dict], *, voice: str | None = None,
-                   within: float = REQUEST_S) -> dict:
-        return await self.request("fill", {"tab": tab, "fields": fields, "voice": voice},
-                                  within=within)
+    async def fill(self, tab: int, fields: list[dict], *, within: float = REQUEST_S) -> dict:
+        return await self.request("fill", {"tab": tab, "fields": fields}, within=within)
 
     async def hover(self, tab: int, ref: int | str | None = None, *, x: float | None = None,
-                    y: float | None = None, voice: str | None = None,
-                    within: float = REQUEST_S) -> dict:
-        return await self.request("hover", {"tab": tab, "ref": ref, "x": x, "y": y,
-                                            "voice": voice}, within=within)
+                    y: float | None = None, within: float = REQUEST_S) -> dict:
+        return await self.request("hover", {"tab": tab, "ref": ref, "x": x, "y": y},
+                                  within=within)
 
     async def dialog(self, tab: int, accept: bool, *, text: str | None = None,
-                     voice: str | None = None, within: float = REQUEST_S) -> dict:
-        return await self.request("dialog", {"tab": tab, "accept": bool(accept), "text": text,
-                                             "voice": voice}, within=within)
+                     within: float = REQUEST_S) -> dict:
+        return await self.request("dialog", {"tab": tab, "accept": bool(accept), "text": text},
+                                  within=within)
 
     async def release(self, tab: int | None = None, *, within: float = REQUEST_S) -> list[int]:
         """The tabs let go of."""
         return (await self.request("release", {"tab": tab}, within=within))["released"]
 
     async def upload(self, tab: int, ref: int | str, paths: list[str], *,
-                     voice: str | None = None, within: float = REQUEST_S) -> dict:
+                     within: float = REQUEST_S) -> dict:
         """TAB + {"navigated", "opened", "dialog", "files", "field", "what"}."""
-        return await self.request("upload", {"tab": tab, "ref": ref, "paths": list(paths),
-                                             "voice": voice}, within=within)
+        return await self.request("upload", {"tab": tab, "ref": ref, "paths": list(paths)},
+                                  within=within)
 
     async def js(self, tab: int, code: str, *, timeout: float | None = None,
-                 voice: str | None = None, within: float | None = None) -> dict:
+                 within: float | None = None) -> dict:
         """TAB + {"navigated", "opened", "dialog", "result" (JSON text or None),
         "result_type", "length", "cut", "threw"?, "pending"?}. `timeout`: Flux's wait
         for a promise; this side waits a few seconds longer."""
         wait = protocol.JS_TIMEOUT_S if timeout is None else float(timeout)
-        return await self.request("js", {"tab": tab, "code": code, "timeout": timeout,
-                                         "voice": voice},
+        return await self.request("js", {"tab": tab, "code": code, "timeout": timeout},
                                   within=within if within is not None else wait + 10.0)
 
     # ── alone, show, downloads (protocol.py) ────────────────────────────
-    async def borrow(self, tab: int, *, voice: str | None = None,
-                     within: float = REQUEST_S) -> dict:
+    async def borrow(self, tab: int, *, within: float = REQUEST_S) -> dict:
         """TAB (in the agent's window) + {"from": {"window", "index"}}."""
-        return await self.request("borrow", {"tab": tab, "voice": voice}, within=within)
+        return await self.request("borrow", {"tab": tab}, within=within)
 
     async def return_tab(self, tab: int, *, show: bool = False,
                          within: float = REQUEST_S) -> dict:

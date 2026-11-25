@@ -8,10 +8,11 @@ changes: how the shell knows the focused window on Wayland), then sends
 its section of the top bar whole whenever it differs from the last
 (`push`, a `bar`), and whatever else it has to say (`send`: an
 `answer`, an `open`, forwarded `keys`). The shell answers that it has
-the window (`attached`, with the voices' names, and on Wayland
-`chords: "app"`: the window catches its bar's chords itself, `app_chords`)
-and sends the bar's events (a tab clicked, an input's query, a submit,
-a pick, `closed`, `fallback`), handed on as the `event` signal.
+the window (`attached`, with the agent's name and colour, which Flux
+adopts: indigoshell/core/persona.py; and on Wayland `chords: "app"`:
+the window catches its bar's chords itself, `app_chords`) and sends the
+bar's events (a tab clicked, an input's query, a submit, a pick,
+`closed`, `fallback`), handed on as the `event` signal.
 
 Who shows the window's state. The shell does, in its top bar, while the
 window has focus and the shell has said `attached`; with no shell the
@@ -50,6 +51,7 @@ from PySide6.QtNetwork import QLocalSocket
 
 from indigoshell.applink import bar as B
 from indigoshell.applink import protocol as link_protocol
+from indigoshell.core import persona
 from flux import protocol
 
 log = logging.getLogger(__name__)
@@ -83,7 +85,6 @@ class ShellLink(QObject):
         self._sent: dict | None = None      # what this connection last carried
         self.active = False                 # the window has the keyboard focus
         self._active_sent: bool | None = None   # ... as this connection last said it
-        self.voices: dict[str, str] = {}    # the voices' names, as the shell said them
         self.app_chords = False             # the shell takes no keys: we catch our chords
         self.attached = False
         self.fallback = False               # the window shows its own state
@@ -228,10 +229,11 @@ class ShellLink(QObject):
                 continue
             kind = msg[protocol.TYPE]
             if kind == protocol.ATTACHED:
-                voices = msg.get("voices")
-                if isinstance(voices, dict):
-                    self.voices = {k: v for k, v in voices.items()
-                                   if isinstance(k, str) and isinstance(v, str)}
+                # Her name and colour, as the shell knows them from the
+                # hub: the marks and labels every window draws.
+                if persona.adopt(msg.get("agent")):
+                    log.info("the agent is %s in %s, as the shell says", persona.name(),
+                             persona.color())
                 self.app_chords = msg.get(B.CHORDS) == B.CHORDS_APP
                 self._set_attached(True)
             elif kind == protocol.RESTARTING:

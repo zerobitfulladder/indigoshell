@@ -74,7 +74,7 @@ progress, motion); one whose kind changes is made anew.
 | `button` | `label` and/or `icon`, `color`, `on`, `enabled`, `opens` | a plain label or icon; lit while `on` or while what it opens shows; muted when not enabled | `press`, or it opens what it names |
 
 - TAB: `{"id", "title", "busy"?: bool, "progress"?: 0..100, "badge"?:
-  {"icon", "color"}, "agent"?: {"voice", "state"}}`. On the current tab
+  {"icon", "color"}, "agent"?: {"state"}}`. On the current tab
   `progress` lights its outline round, as now; a tab behind that is busy
   runs the comet. `badge` sits at the box's right end (the editor's
   unsaved dot). `agent`: section 5.
@@ -120,7 +120,7 @@ this row allows, `match` (in answers) the title's matched characters.
 | `warn` | `YELLOW_MID` | warnings |
 | `error` | `ERROR` | insecure padlock, "no matches", errors |
 | `ok` | `LIME_BRIGHT` | a passing check |
-| `voice:<id>` | that voice's colour | the agent's name (section 5) |
+| `agent` | the agent's colour (`core/persona.py`) | the agent's name (section 5) |
 
 **Icons are names** the shell maps to glyphs, a table grown as apps need:
 `bookmark`, `unlocked`, `search`, `replace`, `play`, `history`, `unsaved`,
@@ -153,7 +153,7 @@ keyval).
 
 | type | fields | means |
 |---|---|---|
-| `attached` | `voices`: {id: name}, `chords`?: `"app"` | the shell has the window; the voices' names (section 5). `chords: "app"` (Wayland): the shell takes no keys from the window, so the app catches its bar's chords and sends `open` with the `chord`; absent, the shell takes them itself (X11's grabs) |
+| `attached` | `agent`: {`name`, `color`}, `chords`?: `"app"` | the shell has the window; the agent's name and colour (section 5). `chords: "app"` (Wayland): the shell takes no keys from the window, so the app catches its bar's chords and sends `open` with the `chord`; absent, the shell takes them itself (X11's grabs) |
 | `restarting`, `placed` | | unchanged |
 | `select`, `close` | `item`, `tab` | a left or right press on a tab; a middle click |
 | `move` | `item`, `tab`, `before`: tab id or null | dropped before that tab (null: the end) |
@@ -356,17 +356,20 @@ own (step 5).
 
 ## 5. The agent
 
-The agent is the shell's: its voices, names and colours. `VOICES` moves
-from `flux/protocol.py` to a pure `indigoshell/core/voices.py` (Flux
-imports it for its in-page frame). An app names the agent by voice id:
+The agent is the shell's: one agent, Lilac, her name and colour in a
+pure `indigoshell/core/persona.py` (Flux imports it for its in-page
+frame). The hub names her in its welcome; the shell adopts that and
+tells each app in `attached` (`{"agent": {"name": "Lilac", "color":
+"#c8a2c8"}}`), which the app adopts in turn. An app marks her by role,
+never by colour:
 
-- a tab it drives: `"agent": {"voice": "lilac", "state": "driving"}`:
-  number, brackets and outline in the voice's colour; `paused` (the user
-  took it over) dimmed a third of the way to the bar's background, as now.
-- its name: a span in `"voice:lilac"` (the agent's own Flux window starts
-  its bar so). In a row ("Let Lilac drive again") the app writes the
-  label from `attached`'s `voices`, so any language can. Colours never
-  travel; an unknown voice gets the default voice's.
+- a tab she drives: `"agent": {"state": "driving"}`: number, brackets
+  and outline in her colour; `paused` (the user took it over) dimmed a
+  third of the way to the bar's background, as now.
+- her name: a span in the `agent` role (the agent's own Flux window
+  starts its bar so). In a row ("Let Lilac drive again") the app writes
+  the label with the name `attached` gave, so any language can. Colours
+  never travel in a bar.
 
 ## 6. Strict separation
 
@@ -398,7 +401,7 @@ the agent; the page a bookmark reached over http:
  "start": [{"kind": "tabs", "id": "tabs", "current": 41, "can": ["close", "move", "detach"],
             "tabs": [{"id": 40, "title": "Inbox"},
                      {"id": 41, "title": "std - Rust", "busy": true, "progress": 62},
-                     {"id": 44, "title": "Weather", "agent": {"voice": "lilac", "state": "driving"}}]}],
+                     {"id": 44, "title": "Weather", "agent": {"state": "driving"}}]}],
  "end": [{"kind": "text", "id": "host", "spans": [{"icon": "bookmark"},
           {"icon": "unlocked", "color": "error"}, {"text": "doc.rust-lang.org"}]}],
  "inputs": {
@@ -501,7 +504,7 @@ Shift+Enter all, both `submit`. Ctrl+S never reaches the shell.
 | `FluxWindow.on_key`, `_open`, `placement` | the generic `AppWindow` and the input's opening in service.py |
 | `services/addresses.py` (`AddressMode`) | `flux/addresses.py`, pure: Flux's answers to `query`; the shell no longer imports `flux.places` |
 | Flux's own find keys in the page | the `find` input |
-| `VOICES`, `voice_*` (flux/protocol.py) | `indigoshell/core/voices.py` |
+| the agent's names and colours (flux/protocol.py) | `indigoshell/core/persona.py` (since 2026-11-25 one agent: her name and colour) |
 | Flux's `state`, `launcher`, `download`; the shell's commands to Flux | `bar`, `open`, `answer`; the events (`download`, only logged today, goes) |
 | the announce's `wid`, `place`'s X `with`, `detach`'s `x`, `y` | `window` (Flux's window ids, as its control socket gives them) and `handle`; `with` by window id; no coordinates |
 | `AppService(kinds={"flux": FluxWindow})` | `AppService()` |
@@ -530,7 +533,7 @@ Steps, each one working:
    last good, chords regrabbed when they change, all dropped with the
    connection); `tests/browser_launcher.py` 2 and 5 test
    `flux/addresses.py` and `flux/bar.py`, pure; `tests/browser.py`
-   follows; `tests/flux_imports.py` allows `indigoshell.core.voices`.
+   follows; `tests/flux_imports.py` allows `indigoshell.core.persona`.
 5. **MOD+D** onto the same component, the app catalog as its source:
    the launcher keeps its window, place, size, look and keys (a centred
    panel, its `//` query line over twelve rows), built from the bar's

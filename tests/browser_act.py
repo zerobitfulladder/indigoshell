@@ -4,10 +4,11 @@
     .venv/bin/python tests/browser_act.py --on-screen  one floating test window, a few seconds
 
 Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
-  1. pure parts: the voices table (names, colours, an unknown voice), the
-     took-over words, the state's `agent` (checked when there, a state
-     without it still good), the key names; the hands: their schemas
-     (JSON Schema), what their descriptions tell the agent.
+  1. pure parts: the agent's name and colour (core/persona.py: what it
+     takes from the shell, what it refuses), the took-over words, the
+     state's `agent` (checked when there, a state without it still
+     good), the key names; the hands: their schemas (JSON Schema), what
+     their descriptions tell the agent.
   2. one browser in this process, its control socket and a stand-in
      shell on sockets of the test's, the client on an asyncio loop in a
      thread, Flux's window not the active one (the user is elsewhere):
@@ -42,14 +43,14 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      its `pick` sent back to Flux); a pause ending by itself; a session ending when
      quiet (and not while a request runs), on release, on a switch, on
      the tab closing; the overlay: in the window's own pixels (frame and
-     mark in the voice's colour), in no screenshot, gone with the
-     session; the bar the shell gets; the log (a line per request,
-     never what was typed); every acting hand run against it, in the
-     call's voice.
+     mark in her colour, and in the name and colour the shell gave), in
+     no screenshot, gone with the session; the bar the shell gets; the
+     log (a line per request, never what was typed); every acting hand
+     run against it.
   3. the shell's side (a child process, so skia and Qt stay apart): the
      top bar's tabs painted off screen from the bar Flux sends, the tab
-     the agent drives with its number in the voice's colour, a paused
-     one dimmed, the titles untouched; a malformed hold refusing the
+     the agent drives with its number in her colour, a paused one
+     dimmed, the titles untouched; a malformed hold refusing the
      bar; the window's actions with "Let Lilac drive again" only while
      a tab is paused, picking it sending a `pick` naming the tab.
 
@@ -58,7 +59,7 @@ window the floating, focus-refusing test kind (`--unattended`) in the
 bottom-right corner. The agent clicks in it (Qt events in this process,
 nothing injected into the display) and the overlay is read back from
 that window's own pixels (its composite pixmap; never the root, never
-the screen): the frame and the mark in the voice's colour over the GPU-
+the screen): the frame and the mark in her colour over the GPU-
 composed page, gone once the agent lets go; a screenshot without them.
 
 Never touched: the user's profile, history, bookmarks, browser and
@@ -123,6 +124,7 @@ def shell_side(path: str) -> None:
                                                 agent_color)
     from indigoshell.applink.service import AppWindow
     from flux import bar as fb
+    from indigoshell.core import persona
     from indigoshell.widgets.base import Size
 
     given = json.loads(Path(path).read_text())
@@ -170,20 +172,20 @@ def shell_side(path: str) -> None:
         return fb.bar_of(fb.state(tabs, current, 100, True, url="https://x.org/",
                                   bookmarked=False, agent=agents))
 
-    lilac, indigo = protocol.voice_color("lilac"), protocol.voice_color("indigo")
-    paused_lilac = agent_color(protocol.agent("lilac", "paused"))
+    lilac = persona.color()
+    paused_lilac = agent_color(protocol.agent("paused"))
     cases = {
         "none": [None, None, None],
-        "driving": [None, protocol.agent("lilac", "driving"), None],
-        "indigo": [protocol.agent("indigo", "driving"), None, None],
-        "paused": [None, protocol.agent("lilac", "paused"), None],
+        "driving": [None, protocol.agent("driving"), None],
+        "current": [protocol.agent("driving"), None, None],
+        "paused": [None, protocol.agent("paused"), None],
     }
     for name, agents in cases.items():
         j.on_message(state(agents))
         img = paint(j.content, W, H)
         tabs = j.view.item("tabs").layout()
         row = []
-        colours = {"lilac": lilac, "indigo": indigo, "paused": paused_lilac,
+        colours = {"lilac": lilac, "paused": paused_lilac,
                    "strong": TAB_CURRENT_FG, "muted": TAB_FG, "cyan": NUMBER_CURRENT_FG}
         for t in tabs:
             # Inside the box, clear of its outline: the number's spot, the title's band.
@@ -197,7 +199,7 @@ def shell_side(path: str) -> None:
         out[name] = row
     # A tab's hold that is none: the bar refused, the last good one kept.
     bad = state(cases["driving"])
-    bad["start"][0]["tabs"][1]["agent"] = {"voice": 3, "state": "flying"}
+    bad["start"][0]["tabs"][1]["agent"] = {"state": "flying"}
     out["bad_problems"] = B.bar_problems(bad)
     j.on_message(bad)
     out["kept"] = j.view.item("tabs").agents
@@ -427,13 +429,25 @@ def test_pure() -> None:
     from flux.qt import act
 
     section("1. pure parts")
-    check("voices: one table, Lilac #c8a2c8 and Indigo #b967ff; an unknown voice drawn in "
-          "Lilac's colour under its own name; none is Lilac",
-          protocol.voice_color("lilac") == "#c8a2c8" and protocol.voice_color("Indigo") == "#b967ff"
-          and protocol.voice_color("rose") == "#c8a2c8" and protocol.voice_name("rose") == "Rose"
-          and protocol.voice_name(None) == "Lilac" and protocol.voice_color(None) == "#c8a2c8"
-          and protocol.voice_name("indigo") == "Indigo"
-          and protocol.voice_name("<script>") == "Lilac")
+    from indigoshell.core import persona
+    first = (persona.name(), persona.color(), protocol.agent_title())
+    refused = [persona.adopt(x) for x in (None, [], {}, {"name": "", "color": "red"},
+                                          {"name": "x" * 33}, {"name": "a\nb"},
+                                          {"color": "#12345"})]
+    unchanged = (persona.name(), persona.color())
+    took = persona.adopt({"name": "Rose", "color": "#AA3366"})
+    taken = (persona.name(), persona.color(), protocol.agent_title())
+    partly = persona.adopt({"name": "Iris", "color": "nope"})
+    kept_color = persona.color()
+    persona.adopt({"name": persona.NAME, "color": persona.COLOR})
+    check("the agent: Lilac in #c8a2c8 until told otherwise (her own window \"Lilac · Flux\"); "
+          "a name and colour the shell gives taken (the colour lower-cased), each field "
+          "checked on its own (a name of 1-32 printable characters, a #rrggbb colour)",
+          first == ("Lilac", "#c8a2c8", "Lilac · Flux") and refused == [False] * 7
+          and unchanged == ("Lilac", "#c8a2c8") and took
+          and taken == ("Rose", "#aa3366", "Rose · Flux") and partly and kept_color == "#aa3366"
+          and persona.look() == {"name": "Lilac", "color": "#c8a2c8"},
+          f"{first} {refused} {taken} {kept_color}")
     check("the take-over words, exactly; a file field's (uploads are browser_alone.py's)",
           protocol.took_over(7) == "the user took over tab 7"
           and protocol.FILE_FIELD.format(what="[3]") == "[3] is a file field: give it files "
@@ -442,11 +456,11 @@ def test_pure() -> None:
     from indigoshell.applink import bar as B
     tabs = [fb.tab("A", "a.org", False, id_=1), fb.tab("B", "b.org", False, id_=2)]
     good = fb.bar_of(fb.state(tabs, 0, 100, True, url="https://a.org/", bookmarked=False,
-                              agent=[protocol.agent("indigo", "paused"), None]))
+                              agent=[protocol.agent("paused"), None]))
     plain = fb.bar_of(fb.state(tabs, 0, 100, True, url="https://a.org/", bookmarked=False))
-    check("the bar's tabs carry the agent's hold, one per tab where there is one, by voice id; "
-          "both bars good", B.bar_problems(good) == [] == B.bar_problems(plain)
-          and good["start"][0]["tabs"][0]["agent"] == {"voice": "indigo", "state": "paused"}
+    check("the bar's tabs carry the agent's hold, one per tab where there is one; both bars "
+          "good", B.bar_problems(good) == [] == B.bar_problems(plain)
+          and good["start"][0]["tabs"][0]["agent"] == {"state": "paused"}
           and "agent" not in good["start"][0]["tabs"][1]
           and all("agent" not in t for t in plain["start"][0]["tabs"]), f"{good['start'][0]}")
     keys = {s: act.parse_key(s) for s in ("Enter", "ctrl+a", "shift+Tab", "PageDown", "ğ", "F5")}
@@ -535,6 +549,7 @@ def test_in_process() -> None:
     from PySide6.QtWebEngineCore import QWebEnginePage
     from PySide6.QtWidgets import QApplication, QWidget
 
+    from indigoshell.core import persona
     from indigoshell.core.hands import Call
     from flux import control, protocol
     from flux.hands import browser_hands
@@ -630,7 +645,7 @@ def test_in_process() -> None:
     # ── click ───────────────────────────────────────────────────────────
     clear_log()
     press = R['button "Press"']
-    done, err = J(flux.click(T, press, voice="lilac"))
+    done, err = J(flux.click(T, press))
     page_says = js("document.getElementById('press').textContent")
     clicks = events("click")
     check("click by ref: the page's own click, trusted (mousedown, mouseup, click all "
@@ -639,8 +654,8 @@ def test_in_process() -> None:
               e["trusted"] for e in events() if e["type"] in ("mousedown", "mouseup", "click"))
           and (done["x"], done["y"]) == (80, 40) and done["what"] == f'[{press}] button "Press"',
           f"{err} {done and {k: done[k] for k in ('x', 'y', 'what')}}")
-    check("the answer: TAB, the agent driving in its voice, nothing navigated or opened, no dialog",
-          done is not None and done["agent"] == "driving" and done["voice"] == "lilac"
+    check("the answer: TAB, the agent driving, nothing navigated or opened, no dialog",
+          done is not None and done["agent"] == "driving" and "voice" not in done
           and done["navigated"] is False and done["opened"] == [] and done["dialog"] is None
           and done["tab"] == T and done["current"])
     clear_log()
@@ -949,7 +964,7 @@ def test_in_process() -> None:
 
     # ── the lock ────────────────────────────────────────────────────────
     R = reload_act()
-    J(flux.click(T, R['button "Press"'], voice="lilac"))
+    J(flux.click(T, R['button "Press"']))
     proxy = w.current_tab().view.focusProxy()
     seen = []
 
@@ -985,7 +1000,7 @@ def test_in_process() -> None:
     proxy.removeEventFilter(spy)
 
     # The overlay: in the window, not in a screenshot.
-    lilac = hex_rgb(protocol.voice_color("lilac"))
+    lilac = hex_rgb(persona.color())
     image = w.grab().toImage()
     g = w.stack.geometry()
     mid_y = g.y() + g.height() // 2
@@ -1009,7 +1024,7 @@ def test_in_process() -> None:
     window_inside = rgb(image.pixelColor(*inside))
     (SCRATCH / "overlay-window.png").parent.mkdir(parents=True, exist_ok=True)
     image.save(str(SCRATCH / "overlay-window.png"))
-    check("the overlay: a frame in the voice's colour (Lilac) on all four edges of the page, the "
+    check("the overlay: a frame in her colour (Lilac's) on all four edges of the page, the "
           "mark at the bottom right, its text in that colour on the bar's dark background, "
           "saying who drives and how to take over",
           all(near(p, lilac) for p in frame_px) and mark is not None
@@ -1022,14 +1037,25 @@ def test_in_process() -> None:
     check("... and in no screenshot (the page's own white at those edges and that corner)",
           shot_px and all(near(p, (255, 255, 255), 3) for p in shot_px)
           and shot["viewport_width"] == shot["width"], f"{shot_px} {err}")
-    J(flux.click(T, R['button "Press"'], voice="indigo"))
-    indigo_px = rgb(w.grab().toImage().pixelColor(g.x(), mid_y))
-    check("another voice: the frame and mark in Indigo's colour, the mark naming her",
-          near(indigo_px, hex_rgb("#b967ff")) and overlay.mark.text().startswith("Indigo is "),
-          f"{indigo_px}")
+    # A request that still names a voice (an older hub's): taken, the field ignored.
+    _, e_voice = J(flux.request("click", {"tab": T, "ref": R['button "Press"'],
+                                          "voice": "indigo"}))
+    persona.adopt({"name": "Rose", "color": "#aa3366"})      # as the shell's `attached` gives
+    J(flux.click(T, R['button "Press"']))
+    rose_px = rgb(w.grab().toImage().pixelColor(g.x(), mid_y))
+    rose_mark = overlay.mark.text()
+    persona.adopt({"name": persona.NAME, "color": persona.COLOR})
+    J(flux.click(T, R['button "Press"']))
+    back_px = rgb(w.grab().toImage().pixelColor(g.x(), mid_y))
+    check("a request still naming a voice is taken, the field ignored; the frame and mark in "
+          "the name and colour the shell gave (adopted), and back in Lilac's",
+          e_voice is None and near(rose_px, hex_rgb("#aa3366"))
+          and rose_mark.startswith("Rose is driving") and near(back_px, lilac)
+          and overlay.mark.text().startswith("Lilac is driving"),
+          f"{e_voice} {rose_px} {rose_mark!r} {back_px}")
     states = [s for s in shell.states() if s.get("agent") and s["agent"][0]]
-    check("the bar the shell gets: the tab driven, in the voice",
-          states and states[-1]["agent"][0] == {"voice": "indigo", "state": "driving"},
+    check("the bar the shell gets: the tab driven",
+          states and states[-1]["agent"][0] == {"state": "driving"},
           f"{states[-1]['agent'] if states else None}")
 
     # The user's input method: its text, sent while the agent sends none.
@@ -1042,7 +1068,7 @@ def test_in_process() -> None:
     w.on_event({"type": "pick", "menu": "actions", "row": f"resume:{w.current_tab().id}"})
 
     # ── take-over by a key ──────────────────────────────────────────────
-    J(flux.click(T, R['button "Press"'], voice="lilac"))
+    J(flux.click(T, R['button "Press"']))
     w.activateWindow()                  # keys come to the window that has the focus
     wait(lambda: QApplication.activeWindow() is w, 3)
     clear_log()
@@ -1056,7 +1082,7 @@ def test_in_process() -> None:
     check("take-over by a key: the key and its release reach nothing; the session paused; the "
           "overlay gone; the shell told (the tab's hold in the bar)",
           after_key == [] and watch.paused(T) and not overlay.shown()
-          and paused_state["agent"][0] == {"voice": "lilac", "state": "paused"},
+          and paused_state["agent"][0] == {"state": "paused"},
           f"{after_key} {paused_state['agent']}")
     check("... the agent's next request fails with \"the user took over tab N\", exactly; reads "
           "too; tabs say paused", e_next == f"the user took over tab {T}"
@@ -1238,12 +1264,11 @@ def test_in_process() -> None:
     hands = {h.name: h for h in browser_hands()}
     R = reload_act()
 
-    def call(name, args, voice="indigo", timeout=120.0):
-        return J(hands[name].run(Call(f"c-{name}", name, args, timeout, voice=voice)), timeout)
+    def call(name, args, timeout=120.0):
+        return J(hands[name].run(Call(f"c-{name}", name, args, timeout)), timeout)
 
     out = {}
     out["click"] = call("browser_click", {"tab": T, "ref": R['button "Press"']})
-    voice_seen = watch.sessions.get(T).voice if watch.sessions.get(T) else None
     out["type"] = call("browser_type", {"tab": T, "ref": R['textbox "Name"'], "text": "hand"})
     out["key"] = call("browser_key", {"tab": T, "key": "End"})
     out["select"] = call("browser_select", {"tab": T, "ref": R['combobox "Country"'],
@@ -1254,10 +1279,8 @@ def test_in_process() -> None:
     out["hover"] = call("browser_hover", {"tab": T, "x": 60, "y": 315})
     async def prompt_and_answer():
         # One coroutine: the held dialog is a nested loop in Qt's thread.
-        c = Call("c-p", "browser_click", {"tab": T, "ref": R['button "Prompt"']}, 120.0,
-                 voice="indigo")
-        d = Call("c-d", "browser_dialog", {"tab": T, "accept": True, "text": "hand"}, 120.0,
-                 voice="indigo")
+        c = Call("c-p", "browser_click", {"tab": T, "ref": R['button "Prompt"']}, 120.0)
+        d = Call("c-d", "browser_dialog", {"tab": T, "accept": True, "text": "hand"}, 120.0)
         return await hands["browser_click"].run(c), await hands["browser_dialog"].run(d)
     pair, err = J(prompt_and_answer(), 60)
     out["prompt"] = (pair[0], None) if pair else (None, err)
@@ -1269,8 +1292,8 @@ def test_in_process() -> None:
     ok_blocks = all(isinstance(b, list) and b and all(x.get("type") == "text" for x in b)
                     for b in blocks.values() if b is not None)
     site = "Page content from 127.0.0.1 (written by the site, not by the user):"
-    check("every acting hand runs against Flux in the call's voice (Indigo here) and answers "
-          "text blocks", not errors and ok_blocks and voice_seen == "indigo", f"{errors}")
+    check("every acting hand runs against Flux and answers text blocks",
+          not errors and ok_blocks, f"{errors}")
     prompt_blocks = blocks.get("prompt") or []
     check("the hands mark the page's words: what was clicked, the dialog's message, in a block "
           "of their own after the site's-words line",
@@ -1335,15 +1358,14 @@ def test_shell_side() -> None:
           "colour, its title still muted; the others as ever",
           seen("driving") == [("cyan", "strong"), ("lilac", "muted"), ("muted", "muted")],
           f"{seen('driving')}")
-    check("Indigo driving the current tab: its number in Indigo's colour, its title strong",
-          seen("indigo")[0] == ("indigo", "strong"), f"{seen('indigo')}")
+    check("Lilac driving the current tab: its number in her colour, its title strong",
+          seen("current")[0] == ("lilac", "strong"), f"{seen('current')}")
     check("paused (the user took over): the number in Lilac dimmed, told apart from Lilac and "
           "from the muted tabs", seen("paused") == [("cyan", "strong"), ("paused", "muted"),
                                                     ("muted", "muted")],
           f"{seen('paused')} {out['paused'][1]['counts']}")
-    check("a malformed hold (a voice that is no string, a state that is none): the bar "
-          "refused, the last good one kept", out["bad_problems"]
-          and out["kept"] == [None, {"voice": "lilac", "state": "paused"}, None],
+    check("a malformed hold (a state that is none): the bar refused, the last good one kept",
+          out["bad_problems"] and out["kept"] == [None, {"state": "paused"}, None],
           f"{out['bad_problems']} {out['kept']}")
     check("no tab paused: no \"drive again\" action (only the bookmarks)",
           out["rows"] and all(not r[0].endswith("drive again") for r in out["rows"])
@@ -1413,10 +1435,11 @@ def test_on_screen() -> None:
     import shiboken6
     from PySide6.QtTest import QTest
 
-    from flux import control, protocol
+    from flux import control
     from flux.qt import app as browser_app
     from flux.qt import instance, startup
     from flux.qt.profile import make_profile
+    from indigoshell.core import persona
 
     section("on screen: one floating test window, never focused")
     Log()
@@ -1435,7 +1458,7 @@ def test_on_screen() -> None:
     wid = int(w.winId())
     reader.to_current_desktop(wid)
     QTest.qWait(800)
-    lilac = np.array(hex_rgb(protocol.voice_color("lilac")))
+    lilac = np.array(hex_rgb(persona.color()))
 
     def pixels():
         g = w.stack.geometry()
@@ -1446,7 +1469,7 @@ def test_on_screen() -> None:
         return frame, mark
 
     before, _ = pixels()
-    done = client.run(flux.click(tab.tab, x=80, y=40, voice="lilac"))
+    done = client.run(flux.click(tab.tab, x=80, y=40))
     QTest.qWait(500)
     frame, mark = pixels()
     lilac_px = int((np.abs(mark - lilac).max(-1) <= 40).sum()) if mark is not None else 0

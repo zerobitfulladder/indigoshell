@@ -4,7 +4,7 @@
 
   1. every module under flux/ (flux/qt too) imports of the shell only
      its pure modules: indigoshell.core's naming, paths, log, hands and
-     voices, applink.protocol and applink.bar, fuzzy and services.proc
+     persona, applink.protocol and applink.bar, fuzzy and services.proc
      (read from the source, so flux/qt is checked without loading
      PySide6);
   2. Flux's pure modules import with xcffib, skia, dbus_fast, psutil and
@@ -23,7 +23,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 ALLOWED = {
     "indigoshell", "indigoshell.core", "indigoshell.core.naming", "indigoshell.core.paths",
-    "indigoshell.core.log", "indigoshell.core.hands", "indigoshell.core.voices",
+    "indigoshell.core.log", "indigoshell.core.hands", "indigoshell.core.persona",
     "indigoshell.applink",
     "indigoshell.applink.protocol", "indigoshell.applink.bar", "indigoshell.fuzzy",
     "indigoshell.services",

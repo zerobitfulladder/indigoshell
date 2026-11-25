@@ -1,7 +1,8 @@
 """For niri: columns like qtile's `Columns` layout (two columns, fair
 off, split on), driven over niri's IPC.
 
-    python3 -m indigoshell.wm.tiling
+    python3 -m indigoshell.wm.tiling                the helper
+    python3 -m indigoshell.wm.tiling grow DIRECTION one resize (a key)
 
 niri opens every window as a new column on its scrolling strip, at the
 config's default width. This keeps each workspace to qtile's shape
@@ -15,6 +16,14 @@ instead, tiled windows only (floating ones are left alone):
 - widths are set only when a workspace's number of columns changes (or
   a new column takes a gone one's place between two looks), so a column
   resized by hand (Mod+Ctrl+H/L) stays so until then.
+
+`grow left|right|up|down` is qtile's grow_left/right/up/down for niri's
+Mod+Ctrl+H/L/K/J, one resize per run, in steps of qtile's: the columns
+keep filling the screen, so left and right move the split between the
+focused column and its neighbour (the last column moves the split on its
+left, the first the one on its right: right always moves a split right),
+and down and up make the focused window taller and shorter in its column,
+the others sharing the rest. A lone column or window stays as it is.
 
 Everything goes through actions that name a window by id
 (`ConsumeOrExpelWindowLeft`, `SetWindowWidth`), so focus and the pointer
@@ -66,6 +75,74 @@ def width_requests(cols: dict[int, list[dict]]) -> list[dict]:
     return [{"Action": {"SetWindowWidth": {
         "id": col[0]["id"], "change": {"SetProportion": share}}}}
         for col in cols.values()]
+
+
+STEP = 5.0                      # percent per resize: qtile's grow_amount of 10
+                                # on two columns' (or windows') 100 each
+LEAST = 10.0                    # nothing resized below this share
+
+
+def _shares(sizes: list[float]) -> list[float]:
+    total = sum(sizes) or 1.0
+    return [size / total * 100.0 for size in sizes]
+
+
+def _snap(share: float) -> float:
+    return round(share / STEP) * STEP
+
+
+def grow_requests(windows, window_id: int, direction: str) -> list[dict]:
+    """The requests for `grow DIRECTION` on window `window_id` (the
+    module docstring): none for a floating window, a lone column (left,
+    right) or a window alone in its column (up, down)."""
+    win = next((w for w in windows if w.get("id") == window_id), None)
+    pos = (win or {}).get("layout", {}).get("pos_in_scrolling_layout")
+    if win is None or win.get("is_floating") or not pos:
+        return []
+    cols = columns(windows, win["workspace_id"])
+    if direction in ("left", "right"):
+        keys = list(cols)
+        if len(keys) < 2:
+            return []
+        shares = _shares([cols[k][0]["layout"]["tile_size"][0] for k in keys])
+        i = keys.index(pos[0])
+        if direction == "right":
+            left, delta = (i if i < len(keys) - 1 else i - 1), STEP
+        else:
+            left, delta = (i - 1 if i > 0 else i), -STEP
+        pair = shares[left] + shares[left + 1]
+        new = min(max(_snap(shares[left] + delta), LEAST), pair - LEAST)
+        if abs(new - shares[left]) < 0.01:
+            return []
+        return [{"Action": {"SetWindowWidth": {"id": cols[keys[k]][0]["id"],
+                                               "change": {"SetProportion": share}}}}
+                for k, share in ((left, new), (left + 1, pair - new))]
+    if direction in ("up", "down"):
+        col = cols.get(pos[0], [])
+        if len(col) < 2:
+            return []
+        shares = _shares([w["layout"]["tile_size"][1] for w in col])
+        j = next(n for n, w in enumerate(col) if w["id"] == window_id)
+        most = 100.0 - LEAST * (len(col) - 1)
+        new = min(max(_snap(shares[j] + (STEP if direction == "down" else -STEP)),
+                      LEAST), most)
+        if abs(new - shares[j]) < 0.01:
+            return []
+        # The others back to sharing what is left, so the column stays full.
+        return [*({"Action": {"ResetWindowHeight": {"id": w["id"]}}}
+                  for w in col if w["id"] != window_id),
+                {"Action": {"SetWindowHeight": {"id": window_id,
+                                                "change": {"SetProportion": new}}}}]
+    raise ValueError(f"no such direction: {direction}")
+
+
+async def grow(ipc: Ipc, direction: str) -> None:
+    """One `grow DIRECTION` on the focused window."""
+    focused = await ipc.query("FocusedWindow")
+    if not focused:
+        return
+    for req in grow_requests(await ipc.query("Windows") or [], focused["id"], direction):
+        await ipc.request(req)
 
 
 class Layout:
@@ -173,6 +250,17 @@ def main() -> int:
     if not path:
         log.error("NIRI_SOCKET is not set: this runs inside niri")
         return 2
+    args = sys.argv[1:]
+    if args:
+        if len(args) != 2 or args[0] != "grow" or args[1] not in ("left", "right", "up", "down"):
+            log.error("usage: python3 -m indigoshell.wm.tiling [grow left|right|up|down]")
+            return 2
+        try:
+            asyncio.run(grow(Ipc(path), args[1]))
+        except WMError as e:
+            log.error("%s", e)
+            return 1
+        return 0
     try:
         asyncio.run(Tiler(Ipc(path)).run())
     except WMError as e:

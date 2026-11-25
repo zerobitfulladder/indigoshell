@@ -20,7 +20,7 @@ With no shell, or one that cannot show an input (`fallback`), those keys
 reach the window and it answers them itself: a dialog for an address,
 its own find over the page. The agent's own window ("Alone", below)
 asks the shell to `place` it before it is first shown, and its bar
-starts with the agent's name in its voice's colour.
+starts with the agent's name in her colour.
 
 Single instance: the running browser also listens at
 `instance_socket_path()`, guarded by an flock on `instance_lock_path()`,
@@ -78,8 +78,7 @@ focus or changing the workspace; `open` and `tabs` work on any.
                no tabs). `xid` is the window manager's id for the window
                on X11; null on Wayland, where a client has no such id.
                `headless`: Flux runs with no screen ("Headless", below).
-    open       {"url": str, "window"?: id | "agent", "background"?: bool,
-                "voice"?: str}
+    open       {"url": str, "window"?: id | "agent", "background"?: bool}
                A new tab at the end of that window (a main one), or of
                the most recently used main window of the user's (one is
                made when there is none), or with "agent" of the agent's
@@ -269,8 +268,7 @@ the point (px * viewport_width / width, py * viewport_height / height)
 (`screenshot` gives both sizes; they differ when it was scaled down, or
 the page is zoomed). The input is real: Qt mouse, key and wheel events
 sent to the page's view, which the page sees as trusted, the same as
-the user's. Every acting request takes `voice` (the agent's voice, for
-its colour: VOICES) and answers
+the user's. Every acting request answers
     TAB + {"navigated": bool, "opened": [TAB, ...], "dialog": DIALOG | null}
 once the page settled: a navigation it caused began (`navigated`; then
 `wait`), a dialog opened, or SETTLE_S passed quietly. `opened`: tabs the
@@ -334,7 +332,8 @@ goes on with it: the tab's input is the agent's while the user watches.
 The user's mouse and keys to that tab are swallowed (the agent's own
 events go on; the user's are the window system's, spontaneous, and they
 come through the window, where they are stopped); a frame and a mark
-in the voice's colour sit over the page (not in any screenshot). Other
+in the agent's colour (indigoshell/core/persona.py) sit over the page
+(not in any screenshot). Other
 requests on the tab (read, screenshot, wait, go) keep a session going
 but never start one. A session ends QUIET_S after the last request on
 its tab ended (not while a dialog is held), on `release`, when its tab
@@ -363,11 +362,11 @@ the one `upload` asked for ("Uploads"). Outside a session the page's
 dialogs are the user's, as ever.
 
 TAB, in every result since acting came, also says {"agent": null |
-"driving" | "paused", "voice": str | null, "dialog": DIALOG | null}.
+"driving" | "paused", "dialog": DIALOG | null}.
 
 **Alone.** The agent's own window, a main window like the user's, in
 their sight only when they go and look. `open` with "window": "agent"
-and `borrow` make it when there is none, one per voice. Before it is
+and `borrow` make it when there is none (one at most). Before it is
 first shown Flux asks the shell to put it on an empty workspace no
 screen shows (applink `place`), so it never appears where the user is
 looking and their view never moves (on niri, where nothing can be
@@ -375,13 +374,14 @@ placed before it maps, the shell moves it there as niri lists it, and
 docs/niri.kdl's window rule keeps it from taking the focus meanwhile);
 with no shell (or one too old to answer within applink's PLACE_WAIT_S)
 it shows where the window manager puts it. Flux never raises it or
-gives it focus. Its title is "<Voice> · Flux" and its page's, its WM_WINDOW_ROLE AGENT_ROLE, its class Flux's
-own; its bar starts with the voice's name in its colour. The showing rule, the
+gives it focus. Its title is "<her name> · Flux" and its page's, its
+WM_WINDOW_ROLE AGENT_ROLE, its class Flux's own; its bar starts with
+her name in her colour. The showing rule, the
 Watch's lock and take-over hold in it as in any window. A popup a page
 in it opens goes to the same workspace, and the tabs such a popup asks
 for to the agent's window.
 
-    borrow     {"tab": id, "voice"?: str}
+    borrow     {"tab": id}
                A tab of the user's moves into the agent's window (made if
                need be) as its current tab: its page and everything in it
                (a half-filled form, the scroll, the page's scripts and
@@ -409,7 +409,8 @@ top bar's): nothing stands in its place. When the agent's window closes
 sends them (to a new window of the user's when none is left); the tabs
 it opened itself close with it. TAB also says {"borrowed": null |
 {"window": id, "index": int}}: where a tab in the agent's window came
-from. Each window in `tabs` also says {"agent": null | <voice>}.
+from. Each window in `tabs` also says {"agent": bool}: whether it is
+the agent's own.
 
 **Show.**
     show       {"path": str}
@@ -449,7 +450,7 @@ An acting request's answer lists the downloads it started, when it did
                closes the user's browser.
 
 **Uploads.**
-    upload     {"tab", "ref", "paths": [str, ...], "voice"?: str}
+    upload     {"tab", "ref", "paths": [str, ...]}
                An acting request: the files reach the page as from its
                file chooser, with no dialog. `ref` is a file field, or
                what opens one (a button, a drop zone's "browse"): Flux
@@ -467,7 +468,7 @@ An acting request's answer lists the downloads it started, when it did
                ok:false (NO_CHOOSER) when the page opened no chooser.
 
 **Scripts.**
-    js         {"tab", "code": str, "timeout"?: s, "voice"?: str}
+    js         {"tab", "code": str, "timeout"?: s}
                An acting request: the agent's JavaScript, run in the
                page's main frame in an isolated world of its own (not the
                page's, not the reader's), as the body of an async
@@ -526,8 +527,7 @@ from indigoshell.applink.protocol import (  # noqa: F401  (part of this module's
 from flux import profiles
 from indigoshell.core.naming import APP, env
 from indigoshell.core.paths import runtime_dir
-from indigoshell.core.voices import (  # noqa: F401  (Flux's names for them)
-    DEFAULT_VOICE, VOICES, voice_color, voice_id, voice_name)
+from indigoshell.core import persona
 
 
 # ── where ───────────────────────────────────────────────────────────────
@@ -565,9 +565,9 @@ AGENT = "agent"
 AGENT_STATES = ("driving", "paused")
 
 
-def agent(voice: str | None, state_: str) -> dict:
+def agent(state_: str) -> dict:
     """A tab's agent hold, as the window's state and the bar carry it."""
-    return {"voice": voice_id(voice), "state": state_}
+    return {"state": state_}
 
 
 def open_urls(urls: list[str]) -> dict:
@@ -662,8 +662,8 @@ def kept(host: str) -> str:
     return KEPT.format(host=host or "this site")
 
 
-def agent_title(voice) -> str:
-    return AGENT_TITLE.format(name=voice_name(voice))
+def agent_title() -> str:
+    return AGENT_TITLE.format(name=persona.name())
 
 
 # ── acting, and the Watch ───────────────────────────────────────────────

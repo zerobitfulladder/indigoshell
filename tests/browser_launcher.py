@@ -886,14 +886,14 @@ def test_flux_bar() -> None:
             fb.tab("std - Rust", "doc.rust-lang.org", True, id_=41),
             fb.tab("Weather", "example.org", False, id_=44)]
     st = fb.state(tabs, 1, 62, False, url="http://doc.rust-lang.org/std/", bookmarked=True,
-                  agent=[None, None, {"voice": "lilac", "state": "driving"}])
+                  agent=[None, None, {"state": "driving"}])
     bar = fb.bar_of(st)
     t = bar["start"][0]
     check("the tabs: one per page by its id, the current one's load as its progress, the agent's "
           "hold; a main window's can be closed, moved and torn off",
           t["kind"] == "tabs" and [x["id"] for x in t["tabs"]] == [40, 41, 44]
           and t["current"] == 41 and t["tabs"][1]["progress"] == 62 and t["tabs"][1]["busy"]
-          and t["tabs"][2]["agent"] == {"voice": "lilac", "state": "driving"}
+          and t["tabs"][2]["agent"] == {"state": "driving"}
           and t["can"] == ["close", "move", "detach"], f"{t}")
     host = bar["end"][-1]
     check("the host: a bookmark, an open padlock in `error` (plain http), the host",
@@ -914,12 +914,20 @@ def test_flux_bar() -> None:
           [(r["id"], r.get("enabled", True)) for r in rows] == [("add", False), ("remove", True)]
           and rows[0]["detail"] == "doc.rust-lang.org" and B.bar_problems(bar) == [],
           f"{rows} {B.bar_problems(bar)}")
-    st2 = dict(st, agent=[None, {"voice": "indigo", "state": "paused"}, None])
-    rows = fb.bar_of(st2, names={"indigo": "Indigo"})["menus"]["actions"]["rows"]
-    check("a tab the user took over: \"Let Indigo drive again\" first (the name the shell gave), "
+    st2 = dict(st, agent=[None, {"state": "paused"}, None])
+    rows = fb.bar_of(st2)["menus"]["actions"]["rows"]
+    check("a tab the user took over: \"Let Lilac drive again\" first (her name, core/persona), "
           "its id naming the tab, which and where in its detail",
-          rows[0] == {"id": "resume:41", "title": "Let Indigo drive again",
+          rows[0] == {"id": "resume:41", "title": "Let Lilac drive again",
                       "detail": "tab 2 · doc.rust-lang.org", "icon": "play"}, f"{rows[0]}")
+    from indigoshell.core import persona
+    persona.adopt({"name": "Rose", "color": "#AA3366"})
+    try:
+        renamed = fb.bar_of(st2)["menus"]["actions"]["rows"][0]["title"]
+    finally:
+        persona.adopt({"name": persona.NAME, "color": persona.COLOR})
+    check("... in the name the shell gave (`attached`, adopted)",
+          renamed == "Let Rose drive again" and persona.name() == "Lilac", renamed)
     blank = fb.bar_of(fb.state([fb.tab("", "", False, id_=1)], 0, 100, True, url="about:blank",
                                bookmarked=False))
     check("a blank page: the address input empty, nothing selected; neither bookmark action "
@@ -930,10 +938,10 @@ def test_flux_bar() -> None:
     check("a single window (a popup, the inspector): its tabs can do nothing, no inputs, no menus "
           "(its keys stay its own)", single["start"][0]["can"] == [] and single["inputs"] == {}
           and single["menus"] == {} and B.chords(single) == {})
-    hers = fb.bar_of(st, agent="Lilac")
-    check("the agent's own window: its name first, in its voice's colour",
+    hers = fb.bar_of(st, agent=True)
+    check("the agent's own window: her name first, in her colour (the `agent` role)",
           hers["start"][0] == {"kind": "text", "id": "owner", "text": "Lilac",
-                               "color": "voice:lilac"} and hers["start"][1]["kind"] == "tabs")
+                               "color": "agent"} and hers["start"][1]["kind"] == "tabs")
     own = fb.bar_of(dict(st, find=fb.find("cats", 3, 12, True)))
     item = own["end"][0]
     check("Flux's own find open (no shell showed its input): its line before the host",

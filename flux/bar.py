@@ -12,8 +12,8 @@ after each of their zoom steps; none for a site's zoom given to a page
 as it loads). The window's line over the page (no shell) says the
 same.
 
-    start   the agent's name in its voice's colour, for the agent's own
-            window ("Lilac"); then the tabs, one look for every app: a
+    start   the agent's name in her colour (the `agent` role), for her
+            own window ("Lilac"); then the tabs, one look for every app: a
             tab per page, its id the page's, the current one's load as
             its `progress`, a tab behind that loads `busy`, the agent's
             hold on each (`agent`)
@@ -41,7 +41,7 @@ or menus: its keys stay its own.
 from flux import places
 from flux.addresses import REMOVE, TYPED  # noqa: F401  (the address inputs' names)
 from indigoshell.applink import bar as B
-from indigoshell.core.voices import voice_id, voice_name
+from indigoshell.core import persona
 
 ADDRESS, NEW_TAB, FIND, ACTIONS = "address", "new_tab", "find", "actions"
 ADD_ROW, REMOVE_ROW = "add", "remove"
@@ -114,7 +114,7 @@ def tabs_item(state: dict, *, single: bool) -> dict:
         progress = state.get("progress", 100)
         out.append(B.tab(t["tab"], _cut(t["title"]), busy=loading,
                          progress=progress if here and loading and progress < 100 else None,
-                         agent=B.agent(voice_id(agents[i]["voice"]), agents[i]["state"])
+                         agent=B.agent(agents[i]["state"])
                          if i < len(agents) and agents[i] else None))
     return B.tabs(TABS_ITEM, out, current=tabs[current]["tab"] if tabs else None,
                   can=() if single else ("close", "move", "detach"))
@@ -160,10 +160,10 @@ def inputs_of(state: dict) -> dict:
                            steps=True)}
 
 
-def actions_rows(state: dict, names: dict | None = None) -> list[dict]:
+def actions_rows(state: dict) -> list[dict]:
     """The window's actions for its current page; first, while the user
-    has taken a tab over from the agent, handing it back. `names`: the
-    voices' names as the shell gave them."""
+    has taken a tab over from the agent, handing it back (by her name, as
+    the shell gave it: core/persona.py)."""
     url = state.get("url") or ""
     marked = bool(state.get("bookmarked"))
     page = places.recordable(url)
@@ -172,10 +172,8 @@ def actions_rows(state: dict, names: dict | None = None) -> list[dict]:
     rows = []
     for i, a in enumerate(state.get("agent") or ()):
         if a and a.get("state") == "paused" and i < len(tabs):
-            vid = voice_id(a.get("voice"))
-            name = (names or {}).get(vid) or voice_name(vid)
             detail = " · ".join(filter(None, (f"tab {i + 1}", tabs[i].get("host") or "")))
-            rows.append(B.row(f"{RESUME}{tabs[i]['tab']}", f"Let {name} drive again",
+            rows.append(B.row(f"{RESUME}{tabs[i]['tab']}", f"Let {persona.name()} drive again",
                               icon="play", detail=detail))
     rows.append(B.row(ADD_ROW, "Add bookmark", icon="bookmark", detail=host or None,
                       enabled=page and not marked))
@@ -184,19 +182,15 @@ def actions_rows(state: dict, names: dict | None = None) -> list[dict]:
     return rows
 
 
-def bar_of(state: dict, *, single: bool = False, agent: str | None = None,
-           names: dict | None = None) -> dict:
-    """The bar for a window's state; `agent`: the voice whose own window
-    it is (none for the user's); `names`: the voices' names as the shell
-    gave them."""
+def bar_of(state: dict, *, single: bool = False, agent: bool = False) -> dict:
+    """The bar for a window's state; `agent`: whether it is the agent's
+    own window (not the user's)."""
     start = []
     if agent:
-        vid = voice_id(agent)
-        start.append(B.text(OWNER_ITEM, (names or {}).get(vid) or voice_name(vid),
-                            color=f"voice:{vid}"))
+        start.append(B.text(OWNER_ITEM, persona.name(), color="agent"))
     start.append(tabs_item(state, single=single))
     end = [item for item in (find_item(state), host_item(state)) if item is not None]
     if single:
         return B.bar(start, end)
     return B.bar(start, end, inputs_of(state),
-                 {ACTIONS: B.menu(actions_rows(state, names), chords=["ctrl+m"])})
+                 {ACTIONS: B.menu(actions_rows(state), chords=["ctrl+m"])})

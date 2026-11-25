@@ -147,7 +147,7 @@ the state says the agent's hold on each tab (`agent`), and the actions'
 dialog's call (a nested event loop, tabs.py) is deleted only once that
 call returned, out of the window meanwhile.
 
-The agent's own window (`agent`, its voice: protocol.py, "Alone") is a
+The agent's own window (`agent`: protocol.py, "Alone") is a
 main window made for the agent's requests. It is never raised or given
 focus by Flux (shown without activating), its title says whose it is
 (protocol.agent_title) and its WM_WINDOW_ROLE is protocol.AGENT_ROLE.
@@ -401,7 +401,7 @@ def chord_of(event) -> tuple[frozenset, str] | None:
 
 class Window(QWidget):
     def __init__(self, browser, *, single: bool = False, dialog: bool = False,
-                 agent: str | None = None, opener: "Window | None" = None) -> None:
+                 agent: bool = False, opener: "Window | None" = None) -> None:
         super().__init__(None, Qt.WindowType.Dialog if dialog else Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         # First, before anything can make the native window: GPU-composed
@@ -428,7 +428,7 @@ class Window(QWidget):
         self._wheel = 0                 # Ctrl+wheel turned, short of a notch
         self.zoom_note: str | None = None   # the zoom shown in the host's place, for a moment
         self._address_wanted = False    # a new window's address, until the shell says
-        self.agent = agent              # the voice whose own window this is (None: the user's)
+        self.agent = agent              # the agent's own window (False: the user's)
         self.opener = opener            # a popup's: the window whose page opened it
         self.borrowed: dict[int, dict] = {}     # tab id -> where it came from (app.py)
         self.ready = True               # shown, or free to be (False while being placed)
@@ -482,7 +482,7 @@ class Window(QWidget):
         self._zoom_note.setInterval(int(flux_bar.ZOOM_NOTE_S * 1000))
         self._zoom_note.timeout.connect(self._end_zoom_note)
 
-        self.setWindowTitle(protocol.agent_title(agent) if agent else NAME)
+        self.setWindowTitle(protocol.agent_title() if agent else NAME)
         self.resize(1280, 800)
 
     # ── being placed (the agent's window) ───────────────────────────────
@@ -1450,8 +1450,7 @@ class Window(QWidget):
 
     def bar(self, state: dict) -> dict:
         """Its section of the shell's top bar (bar.py)."""
-        return flux_bar.bar_of(state, single=self.single, agent=self.agent,
-                               names=self.link.voices)
+        return flux_bar.bar_of(state, single=self.single, agent=self.agent)
 
     def refresh(self, *_) -> None:
         """The shell, the line and the title, once per turn of the event
@@ -1466,7 +1465,7 @@ class Window(QWidget):
         tab = self.current_tab()
         title = tab.page.title()
         if self.agent:
-            title = protocol.agent_title(self.agent) + (f" · {title}" if title else "")
+            title = protocol.agent_title() + (f" · {title}" if title else "")
         self.setWindowTitle(title or NAME)
         self.link.push(self.bar(state))
         self.line.show_state(state if self.link.fallback else None, self.download)

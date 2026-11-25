@@ -36,7 +36,7 @@ Modules, in the order a start runs through them:
 
 Import rule: nothing in this package imports xcffib, skia, or a shell
 module that does (`indigoshell.theme` imports skia). Only the pure
-`indigoshell.core` modules (naming, paths, log, voices),
+`indigoshell.core` modules (naming, paths, log, persona),
 `indigoshell.fuzzy` (through places), `indigoshell.applink.protocol` and
 `indigoshell.applink.bar` (the app bar protocol's vocabulary),
 `flux.protocol`, `flux.profiles`, `flux.places`, `flux.bar` and

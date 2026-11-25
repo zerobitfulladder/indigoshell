@@ -466,11 +466,6 @@ def _ref(msg: dict, key: str = "ref") -> tuple[int | None, int]:
     return parsed
 
 
-def _voice(msg: dict) -> str | None:
-    value = msg.get("voice")
-    return value if isinstance(value, str) and value.strip() else None
-
-
 def _strings(value, key: str) -> list[str]:
     """A string, or a list of strings, as a list."""
     values = value if isinstance(value, list) else [value]
@@ -652,7 +647,7 @@ class Requests:
         self.allowed_url(target)
         where = msg.get("window")
         if where == protocol.AGENT_WINDOW:
-            window = self.browser.agent_window(_voice(msg))
+            window = self.browser.agent_window()
         elif where is not None:
             window = self.window(_int(msg, "window"))
             if window.single:
@@ -963,7 +958,7 @@ class Requests:
         window, tab = self.showing(_int(msg, "tab"))
         if not dialog_ok:
             self.no_dialog(tab)
-        self.watch.begin(job, window, tab, _voice(msg))
+        self.watch.begin(job, window, tab)
         for _ in range(HOLD_TRIES):
             hold = self.watch.hold_s(tab)
             if hold <= 0:
@@ -1379,14 +1374,13 @@ class Requests:
         if self.watch.paused(tab_id):
             raise RequestError(protocol.took_over(tab_id))
         if window.agent:
-            raise RequestError(f"tab {tab_id} is in {protocol.voice_name(window.agent)}'s own "
-                               "window already")
+            raise RequestError(f"tab {tab_id} is in your own window already")
         if window.single:
             raise RequestError(f"tab {tab_id} is a page's popup (window {window.id}); it moves to "
                                "no other window")
         if tab.page.in_dialog:
             raise RequestError(f"tab {tab_id} has a dialog open; it moves once that is answered")
-        origin = self.browser.borrow(tab, _voice(msg))
+        origin = self.browser.borrow(tab)
         window, tab = self.find(tab_id)
         await self.until_ready(job, window)
         window, tab = self.find(tab_id)

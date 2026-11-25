@@ -132,7 +132,7 @@ from dataclasses import dataclass
 
 import xcffib.xproto as xp
 
-from ..core.voices import voice_names
+from ..core import persona
 from ..widgets.base import KeyEvent
 from ..window import Placement, key_event
 from . import bar as B
@@ -388,7 +388,7 @@ class Link:
             self.window = AppWindow(self, None, msg)
             log.info("%s window %s connected (pid %s)", app, window_id, self.pid)
             self.service.added(self.window)
-            self.send(protocol.message(protocol.ATTACHED, voices=voice_names(),
+            self.send(protocol.message(protocol.ATTACHED, agent=persona.look(),
                                        **{B.CHORDS: B.CHORDS_APP}))
             return
         if not protocol.valid_wid(wid):
@@ -404,7 +404,7 @@ class Link:
         self.window = AppWindow(self, wid, msg)
         log.info("%s window %s (0x%x) connected", app, window_id, wid)
         self.service.added(self.window)
-        self.send(protocol.message(protocol.ATTACHED, voices=voice_names()))
+        self.send(protocol.message(protocol.ATTACHED, agent=persona.look()))
 
     @property
     def pid(self) -> int | None:

@@ -454,8 +454,7 @@ def test_headless() -> None:
 
         async def call(name: str, args: dict, timeout: float = 60.0) -> tuple:
             try:
-                blocks = await hands[name].run(ah.Call(f"c-{name}", name, args, timeout,
-                                                       voice="lilac"))
+                blocks = await hands[name].run(ah.Call(f"c-{name}", name, args, timeout))
             except ah.HandError as e:
                 return "", [], f"HandError: {e}"
             text = "\n".join(b["text"] for b in blocks if b["type"] == "text")
@@ -576,7 +575,7 @@ def test_headless() -> None:
           "Borrowed into your own window" in borrow[0] and out.get("borrow_s", 9) < 1.2,
           f"{out.get('borrow_s', 0):.2f} s {borrow[2] or ''}")
     t2 = out.get("tabs2", ("",))[0]
-    check("... tabs names it Lilac's own, no workspace", "Lilac's own window: yours" in t2
+    check("... tabs names it the agent's own, no workspace", "(your own window)" in t2
           and "workspace" not in t2, t2[:400])
     check("return: back to its window", "back to its window" in out.get("return", ("",))[0],
           out.get("return", ("", [], ""))[0][:200])

@@ -1,5 +1,5 @@
 """The agent's page effects in Flux (flux/qt/effects.py): the shell's
-glitch, Indigo's tint and the panels' scanlines over a page it drives.
+glitch, its violet tint and the panels' scanlines over a page she drives.
 
     .venv/bin/python tests/browser_fx.py              a small floating test window (and the
                                                       agent's, as small) in the bottom-right
@@ -31,8 +31,8 @@ pixels read from their own composite pixmaps, never the root):
      the agent's script runs (skipped instead); a tab driven in the
      user's window and borrowed: gone there, its glitch owed until the
      agent's window shows and played then, its end there.
-  4. pixels: the tint is Indigo's at PLATE_TINT, the raster the panels'
-     cyan on every third row; the band runs down the page at the
+  4. pixels: the tint is the shell's violet at PLATE_TINT, the raster
+     the panels' cyan on every third row; the band runs down the page at the
      shell's speed; the glitch tears the page; the Watch's mark and
      frame stay as they are, a band across the mark too; the agent's
      screenshot has none of it; input passes the overlay (not a child
@@ -310,9 +310,9 @@ def headless_part() -> int:
     tab = client.run(flux.open(url("/white")))
     client.run(flux.wait(tab.tab, timeout=15), 20)
     w = browser.windows[0]
-    done = client.run(flux.click(tab.tab, x=300, y=200, voice="lilac"))
+    done = client.run(flux.click(tab.tab, x=300, y=200))
     client.run(flux.release(tab.tab))
-    done = client.run(flux.click(tab.tab, x=300, y=200, voice="lilac"))     # a second lock
+    done = client.run(flux.click(tab.tab, x=300, y=200))     # a second lock
     QTest.qWait(300)
     overlay = browser.watch.overlays.get(w.id)
     check("headless: the agent's click locks the tab, the Watch's frame and mark show",
@@ -476,7 +476,7 @@ def test_on_screen() -> None:
     # ── 3. triggers ─────────────────────────────────────────────────────
     section("3. the triggers")
     t0 = time.monotonic()
-    future = client.start(flux.click(T, x=300, y=200, voice="lilac"))
+    future = client.start(flux.click(T, x=300, y=200))
     shots = []
     while not future.done() and time.monotonic() - t0 < 10:
         QTest.qWait(4)
@@ -519,7 +519,7 @@ def test_on_screen() -> None:
     n_inj = len(injected)
     t1 = time.monotonic()
     hold = watch.hold_s(w.current_tab())
-    done2, err = J(flux.click(T, x=320, y=220, voice="lilac"))
+    done2, err = J(flux.click(T, x=320, y=220))
     check("a click while the lock holds waits for nothing (no glitch running, no new lock)",
           err is None and hold == 0.0 and len(injected) == n_inj + 1
           and not any(e == "lock" for e, _ in events_since(fx, t1)),
@@ -542,8 +542,8 @@ def test_on_screen() -> None:
         d = int(np.abs(reg[i] - want).max())
         worst = max(worst, d)
         rows_ok &= d <= 2
-    check("the tint is Indigo's at PLATE_TINT over white, the panels' cyan raster on every "
-          "third row", reg is not None and rows_ok,
+    check("the tint is the shell's violet at PLATE_TINT over white, the panels' cyan raster on "
+          "every third row", reg is not None and rows_ok,
           f"tinted {tinted.tolist()}, lined {lined.tolist()}, read {reg[0, 0].tolist()} "
           f"{reg[1, 0].tolist()} {reg[2, 0].tolist()}, worst {worst}")
     shot, err = J(flux.screenshot(T))
@@ -659,7 +659,7 @@ def test_on_screen() -> None:
 
     protocol.QUIET_S = 1.0
     t3 = time.monotonic()
-    J(flux.click(T, x=300, y=200, voice="lilac"))
+    J(flux.click(T, x=300, y=200))
     wait(lambda: any(e == "out-end" for e, _ in events_since(fx, t3)), 4)
     evs = events_since(fx, t3)
     check("a session gone quiet ends the same way: the glitch out",
@@ -671,7 +671,7 @@ def test_on_screen() -> None:
 
     # take-over during the glitch in: it reverses from where it is
     t4 = time.monotonic()
-    future = client.start(flux.click(T, x=300, y=200, voice="lilac"))
+    future = client.start(flux.click(T, x=300, y=200))
     wait(lambda: fx.phase == "in" and float(fx.glitch.property("appear")) >= 0.35, 5)
     a0 = float(fx.glitch.property("appear"))
     QTest.keyClick(w.windowHandle(), Qt.Key.Key_A)
@@ -698,7 +698,7 @@ def test_on_screen() -> None:
 
     # a switch to another tab, and a closed tab: gone, no glitch
     other, _ = J(flux.open(url("/other"), background=True))
-    J(flux.click(T, x=300, y=200, voice="lilac"))
+    J(flux.click(T, x=300, y=200))
     wait(lambda: fx.phase == "holo", 3)
     t5 = time.monotonic()
     n5 = len(stamps[id(fx)])
@@ -710,7 +710,7 @@ def test_on_screen() -> None:
           "(no glitch out, no frame)",
           vanished and [e for e, _ in evs] == ["vanish"] and len(stamps[id(fx)]) - n5 <= 1,
           f"{[e for e, _ in evs]}, {len(stamps[id(fx)]) - n5} frames")
-    J(flux.click(other.tab, x=100, y=100, voice="lilac"))
+    J(flux.click(other.tab, x=100, y=100))
     wait(lambda: fx.phase == "holo", 3)
     t6 = time.monotonic()
     w.close_tab(w.current_tab())
@@ -722,7 +722,7 @@ def test_on_screen() -> None:
     # repeats at random intervals; skipped while a script of the agent's runs
     effects.REPEAT_S = (0.5, 0.8)
     t7 = time.monotonic()
-    J(flux.click(T, x=300, y=200, voice="lilac"))
+    J(flux.click(T, x=300, y=200))
     QTest.qWait(3600)
     evs = events_since(fx, t7)
     gaps, prev_end = [], None
@@ -737,7 +737,7 @@ def test_on_screen() -> None:
           reps >= 3 and gaps and all(0.48 <= g <= 0.9 for g in gaps),
           f"{reps} repeats, pauses {[round(g, 2) for g in gaps]}")
     future = client.start(flux.js(T, "await new Promise(r => setTimeout(r, 2500)); return 1",
-                                  timeout=8, voice="lilac"))
+                                  timeout=8))
     wait(lambda: watch.acting_on(T), 3)
     js_from = time.monotonic()
     wait(lambda: future.done(), 12)
@@ -752,10 +752,10 @@ def test_on_screen() -> None:
     wait(lambda: fx.phase == "off", 3)
 
     # a tab driven in the user's window, then borrowed into the agent's
-    J(flux.click(T, x=300, y=200, voice="lilac"))
+    J(flux.click(T, x=300, y=200))
     wait(lambda: fx.phase == "holo", 3)
     t8 = time.monotonic()
-    got, err = J(flux.borrow(T, voice="lilac"))
+    got, err = J(flux.borrow(T))
     her = next((x for x in browser.windows if x.agent), None)
     hfx = watch.effects.get(her.id) if her is not None else None
     wait(lambda: hfx is not None and any(e == "in-end" for e, _ in hfx.events), 4)
@@ -785,9 +785,9 @@ def test_on_screen() -> None:
     effects._off = None
     effects.QML = broken / "effects.qml"
     said0 = logs.said("page effects are off")
-    done, err = J(flux.click(T, x=300, y=200, voice="lilac"))
+    done, err = J(flux.click(T, x=300, y=200))
     QTest.qWait(300)
-    J(flux.click(T, x=310, y=210, voice="lilac"))
+    J(flux.click(T, x=310, y=210))
     check("a QML that fails to load: no effects, the lock and the Watch's mark as ever, why "
           "said once (two locks' worth of tries)",
           err is None and done.get("agent") == "driving" and w.id not in watch.effects
@@ -803,7 +803,7 @@ def test_on_screen() -> None:
         (bad / f"{name}.qsb").write_bytes(b"not a shader pack")
     effects.SHADERS = bad
     effects._off = None
-    done, err = J(flux.click(T, x=300, y=200, voice="lilac"))
+    done, err = J(flux.click(T, x=300, y=200))
     QTest.qWait(400)
     dead = watch.effects.get(w.id)
     now = reader.region(wid, inner.x(), inner.y(), inner.width(), inner.height())

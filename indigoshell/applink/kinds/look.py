@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import skia
 
 from ... import text, theme
-from ...core.voices import voice_color
+from ...core import persona
 
 # ── the bar's vocabulary ────────────────────────────────────────────────
 # Its text size, its strong neon for what is in front and the muted tone
@@ -34,7 +34,7 @@ TAB_HOVER_FG = theme.FG             # the title of a tab under the pointer
 NUMBER_FG = theme.BASE_MUTED
 NUMBER_CURRENT_FG = theme.CYAN_BRIGHT
 BRACKET_FG = theme.CYAN_MID         # round the current tab's number
-PAUSED_DIM = 0.35                   # a taken-over tab's number: the voice's colour this far
+PAUSED_DIM = 0.35                   # a taken-over tab's number: her colour this far
                                     # towards the bar's background (halfway is too near the
                                     # muted tabs' colour to tell apart)
 
@@ -96,11 +96,11 @@ _said: set[str] = set()
 
 
 def color_of(role, default: str = "fg") -> str:
-    """The theme colour for a role (PROTOCOL.md, section 2): `voice:<id>`
-    that voice's; an unknown role `default`'s."""
+    """The theme colour for a role (PROTOCOL.md, section 2): `agent` the
+    agent's own (core/persona.py); an unknown role `default`'s."""
     if isinstance(role, str):
-        if role.startswith("voice:"):
-            return voice_color(role[6:])
+        if role == "agent":
+            return persona.color()
         if role in ROLE_COLORS:
             return ROLE_COLORS[role]
     return ROLE_COLORS.get(default, theme.FG)
@@ -125,11 +125,11 @@ def blend(a: str, b: str, t: float) -> str:
 
 
 def agent_color(agent) -> str | None:
-    """The colour of a tab's number for the agent's hold on it: its
-    voice's while it drives, dimmed while the user has taken it over."""
+    """The colour of a tab's number for the agent's hold on it: hers
+    while she drives, dimmed while the user has taken it over."""
     if not isinstance(agent, dict):
         return None
-    color = voice_color(agent.get("voice"))
+    color = persona.color()
     return color if agent.get("state") == "driving" else blend(color, theme.BAR_BG, PAUSED_DIM)
 
 
@@ -191,7 +191,7 @@ def box_path(x: float, w: float, band: Band, lift: float = 0.0) -> skia.Path:
 def paint_box(canvas: skia.Canvas, x: float, w: float, band: Band, *, alpha: float,
               color: str = OUTLINE) -> None:
     """A tab behind: its outline, dim (`alpha`; brighter under the
-    pointer, in the voice's colour on a tab the agent holds)."""
+    pointer, in the agent's colour on a tab she holds)."""
     canvas.drawPath(box_path(x, w, band), paint_of(color, alpha, stroke=BOX_THICK))
 
 
@@ -285,7 +285,7 @@ def paint_cell(canvas: skia.Canvas, x: float, cy: float, number: str, title: str
                current: bool, hovered: bool, mark: str | None,
                badge: tuple[str, str] | None = None, w: float = 0.0) -> None:
     """One tab's number in its spot (bracketed on the current tab, and in
-    the voice's colour on a tab the agent holds), its title, and its
+    the agent's colour on a tab she holds), its title, and its
     badge (glyph, colour) at the box's right end."""
     spot = number_spot(x, cy)
     if current or mark:
