@@ -1,30 +1,30 @@
 # indigoshell
 
-A widget-engine desktop shell for X11. One Python process draws a bar,
-its panels, its chord menus, its app launcher, its notification toasts,
-its system tray and a call overlay to an agent on another machine — all
-on a single asyncio loop, with no toolkit, no second main loop and no
-worker threads. Beside it in this checkout is Flux, the shell's own web
-browser, a process of its own on PySide6 and QtWebEngine.
+A widget-engine desktop shell for Wayland, on [niri](https://github.com/YaLTeR/niri).
+One Python process draws a bar, its panels, its chord menus, its app
+launcher, its notification toasts, its system tray and a call overlay
+to an agent on another machine — all on one layer-shell overlay canvas
+([canvas.py](indigoshell/canvas.py)) and a single asyncio loop, with no
+toolkit, no second main loop and no worker threads. The keyboard is
+taken through layer-shell only while something on the canvas needs it.
+Beside it in this checkout is Flux, the shell's own web browser, a
+process of its own on PySide6 and QtWebEngine, on Qt's Wayland
+platform, with its tabs on the shell's top bar ([Running](#running)).
 
-On a Wayland compositor with layer-shell (niri) the same process draws
-on one overlay canvas instead of X windows ([canvas.py](indigoshell/canvas.py)):
-the two bars, the panels, the chord menu, the launcher, the top bar's
-drop-down, the toasts, the call and the systray's panel and menu, with
-the keyboard taken through layer-shell while one of them needs it. Flux
-runs there on Qt's Wayland platform, its tabs on the top bar by niri's
-focus ([Running on niri](#running-on-niri)).
+X11 is no longer supported. The shell began there, on qtile; the X
+backend still in the tree is what is left of that, and unmaintained.
 
 <p align="center">
   <img src="docs/media/hero.png" width="100%"
-       alt="indigoshell on qtile: the bar playing a song with its lyrics, the hardware panel open, a music player floating top-left">
+       alt="indigoshell: the bar playing a song with its lyrics, the hardware panel open, a music player floating top-left">
 </p>
 
 ```
-xcffib      windows, input, seat grabs, struts, ARGB visuals, RandR
-skia        all rendering; SkSL shaders for the post-process effects
+pywayland   the layer-shell canvas, pointer, keyboard (xkbcommon), outputs
+skia        all rendering, on EGL; SkSL shaders for the post-process effects
 dbus-fast   notification daemon, StatusNotifierItem tray, MPRIS, dbusmenu
-asyncio     X events, IPC, D-Bus, subprocesses and frame clocks, one loop
+asyncio     Wayland events, niri's IPC, the shell's own IPC, D-Bus,
+            subprocesses and frame clocks, one loop
 ```
 
 Styled out of the box with the INDIGO Cyberpunk palette: hot magenta,
@@ -34,7 +34,7 @@ electric cyan, neon yellow, violet accent, deep blue-violet base.
 
 `MOD+A` calls the agent. A call overlay drops into the top-right corner,
 takes the keyboard, and on the other end is an agent that lives on a
-**hub**, a machine of its own (the author's is a Raspberry Pi). It
+**hub**, a machine of its own (the author's is an old laptop). It
 answers in a few lines, and while it works it can reach into this
 machine: the shell lends it *hands*, tools it runs here — a shell,
 files, screenshots, windows, the clipboard and the browser.
@@ -184,10 +184,11 @@ order, so the home address goes first and a public one after it.
 line stays up while the shell runs, so a turn that ends with the call
 closed still rings, and it comes back by itself when either machine was
 away; until it is up, the call says it can't reach the hub, and why.
-Then bind the call:
+Then bind the call in niri's config ([`docs/niri.kdl`](docs/niri.kdl)
+has it with the other keys):
 
-```python
-Key([MOD], "a", lazy.spawn(INDIGOSHELL + ["toggle", "call"])),
+```kdl
+Mod+A { spawn-sh "exec ~/.local/bin/indigoshell toggle call"; }
 ```
 
 ## Showcase
@@ -198,19 +199,20 @@ Key([MOD], "a", lazy.spawn(INDIGOSHELL + ["toggle", "call"])),
          alt="Watch the indigoshell showcase on YouTube">
   </a>
   <br>
-  <a href="https://youtu.be/k2VP-eW4FqI">▶ indigoshell on qtile — the full tour (YouTube)</a>
+  <a href="https://youtu.be/k2VP-eW4FqI">▶ indigoshell — the full tour (YouTube)</a>
 </p>
 
 Nothing in the video is played by hand: it was performed by synthetic
 input, recorded at 1440p60 and cut by the scripts in
 [`prototypes/showcase/`](prototypes/showcase/), and its closing reel is
 the bar's own widget classes rendered on the GPU at several times their
-size, cut to the song's beats.
+size, cut to the song's beats. It was recorded on X11 with qtile, before
+the move to Wayland, and those scripts still drive X.
 
 ## What it does
 
-- **Bar** — a dock window that reserves its own strut, with a
-  declarative widget tree (`Row([...])`, `Box`, `Spacer`, `Brackets`).
+- **Bar** — a strip along the bottom that reserves its own space
+  (layer-shell's exclusive zone), with a declarative widget tree (`Row([...])`, `Box`, `Spacer`, `Brackets`).
 
   <img src="docs/media/bar.png" width="100%"
        alt="The bar, left half above right half: INDIGO tag, workspaces and a lyric line; meters, network, now playing, volume and clock">
@@ -260,7 +262,7 @@ size, cut to the song's beats.
 - **Panels** — `system` (fastfetch), `hardware` (CPU/RAM history, live
   GPU readouts), `network` (interfaces, wifi, firewall, a streamed
   `speedtest-cli` run). Anchored to a screen edge, dismissed by clicking
-  outside — and by Escape where the window takes a keyboard grab — and
+  outside — and by Escape where the panel takes the keyboard — and
   kept alive between opens, so a keybind shows one in the time a close
   would take.
 
@@ -371,8 +373,8 @@ indigoshell/
   app.py            ─ entry point: client mode vs daemon mode, config load
   api.py            ─ open/close/toggle handlers for config files
   window.py         ─ WindowSpec + the live window: layers, anchors,
-                      struts, grabs, frame clock, damage, effect chain
-  canvas.py         ─ Wayland: a WindowSpec as a region of the one overlay
+                      reservations, frame clock, damage, effect chain
+  canvas.py         ─ a WindowSpec as a region of the one overlay
                       canvas; damage, z-order, input region, reservations,
                       the pointer's and keyboard's routing, outside clicks
                       (pure)
@@ -420,26 +422,26 @@ indigoshell/
     drop.py         ─ the drop-down under the bar: the rows, unrolling
     catalog.py      ─ the app catalog as an input's rows
     launcher.py     ─ MOD+D's launcher: that input framed as a centred panel
-  wm/               ─ the window manager and display server outside the core:
-                      workspaces and windows, screenshots, clipboard, outputs,
-                      keyboard layouts, logging out; niri if $NIRI_SOCKET is set
-    x11.py          ─ X11 + qtile: qtile cmd-obj, EWMH, xclip, import, xrandr
+  wm/               ─ the window manager outside the core: workspaces and
+                      windows, screenshots, clipboard, outputs, keyboard
+                      layouts, logging out
     niri.py         ─ niri over its IPC socket (event stream for the bar)
     wayland.py      ─ wl-clipboard, and screenshots over wlr-screencopy
-    tiling.py       ─ for niri: qtile's two columns (python3 -m
+    tiling.py       ─ qtile's two columns on niri (python3 -m
                       indigoshell.wm.tiling, standard library only)
+    x11.py          ─ X11 + qtile (no longer supported)
   backend/
-    x11.py          ─ the process's single xcffib connection + event pump
-    gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback
-    wayland.py      ─ Wayland, when $WAYLAND_DISPLAY offers layer-shell: the
-                      canvas surface, the bars' reservations, the pointer,
-                      the keyboard (keyboard_interactivity), fullscreen
-                      windows; wl_shm when there is no EGL
+    wayland.py      ─ the canvas surface on layer-shell, the bars'
+                      reservations, the pointer, the keyboard
+                      (keyboard_interactivity), fullscreen windows; wl_shm
+                      when there is no EGL
     wlkeys.py       ─ wl_keyboard's keys as KeyEvents (xkbcommon), our
                       own key repeat
     egl_wayland.py  ─ EGL on the Wayland platform for the canvas
     wlproto.py      ─ pywayland bindings generated at run time from the
                       system's protocol XML, into the cache
+    x11.py, gl.py   ─ the xcffib connection and EGL on X (no longer
+                      supported)
   core/
     daemon.py       ─ the loop: windows, services, IPC, signals, reload
     ipc.py          ─ control socket (line-delimited JSON over AF_UNIX)
@@ -469,7 +471,7 @@ indigoshell/
     desktop_entry.py─ .desktop parsing, visibility, Exec -> argv
     icons.py        ─ icon theme lookup (indexed once) and loading
     proc.py         ─ run / fire / launch / subscribe, all coroutines
-    clipboard.py    ─ copy to CLIPBOARD / PRIMARY (xclip, or wl-copy on niri)
+    clipboard.py    ─ copy to CLIPBOARD / PRIMARY (wl-copy)
     text_effects.py ─ scramble and other arrival animations
   widgets/          ─ measure / arrange / paint / hit, and nothing else
     base.py           layout.py    label.py     panel.py    tabs.py
@@ -495,8 +497,8 @@ flux/               ─ Flux, the browser (see Flux, above): its own process
                       tabs, keys, the agent's requests, the line to the shell
 prototypes/
   visuals/          ─ offline design sheets and GIFs, from the real widgets
-  showcase/         ─ the scripted demo: XTEST input, staging, recording,
-                      the GPU-rendered widget reel, the ffmpeg cut
+  showcase/         ─ the scripted demo (on X11): XTEST input, staging,
+                      recording, the GPU-rendered widget reel, the ffmpeg cut
 ```
 
 ### Conventions
@@ -504,12 +506,12 @@ prototypes/
 - **The widget contract is four methods** — `measure`, `arrange`,
   `paint`, `hit` ([widgets/base.py](indigoshell/widgets/base.py)).
   Containers are widgets, so a bar, a panel and a toast hold the same
-  type. Nothing in the contract mentions X11 or the host window.
+  type. Nothing in the contract mentions Wayland or the canvas.
 - **A window is a `WindowSpec`, not a subclass.** A bar is a spec whose
   layer is `DOCK` and which reserves space; a toast is the same type at
-  `OVERLAY` with no reservation; a chord menu is the same type with
-  override-redirect and a seat grab. The vocabulary (anchor, layer,
-  exclusive zone) is borrowed from Wayland's layer-shell.
+  `OVERLAY` with no reservation; a chord menu is the same type that
+  takes the keyboard. On the canvas each is a region of the one surface.
+  The vocabulary (anchor, layer, exclusive zone) is layer-shell's.
 - **Names derive from the package.** `core/naming.py` reads `APP` from
   `__package__`, and the daemon name, socket, config dir, state file,
   log file and `INDIGOSHELL_*` env vars all follow it. Flux, a package
@@ -521,15 +523,19 @@ prototypes/
   goes through `launch`, never `fire`: a reload re-execs the daemon in
   place, and a child it started before that is never reaped.
 - **Keys arrive as a `KeyEvent`** — the keysym for shortcuts, the typed
-  `text` for fields, and the modifiers resolved from the live modifier
-  map (AltGr is not Alt). The keymap is re-read on every keyboard grab,
-  so a layout switch is picked up by the next menu or launcher.
+  `text` for fields, and the modifiers resolved through xkbcommon from
+  the keymap niri sends (AltGr is not Alt), so a layout switch is
+  picked up as niri makes it.
 - **Services are brokers, widgets render.** A service owns the D-Bus or
   subprocess side and publishes to subscribers; it never draws. Backends
   that cost something (cava, aubio) are reference-counted and only exist
   while a widget is subscribed.
 
 ## Running
+
+The shell runs in a niri session: it draws on niri's layer-shell and
+asks niri, over its IPC, for the workspaces, windows, outputs and
+keyboard layouts.
 
 ```bash
 uv sync
@@ -539,8 +545,8 @@ uv sync
 ```
 
 Running `main.py` by absolute path works from any directory — the
-file's own directory lands on `sys.path` — which is what lets a window
-manager spawn it without a PATH entry. For a terminal, `bin/indigoshell`
+file's own directory lands on `sys.path` — which is what lets niri
+spawn it without a PATH entry. For a terminal, `bin/indigoshell`
 does the same through the venv; link it onto PATH and it keeps
 following the checkout:
 
@@ -560,42 +566,31 @@ indigoshell menu <menu>         indigoshell kill
 `indigoshell browser [url ...]` is the one that isn't a client: it runs
 Flux in a process of its own, whether or not the daemon is up.
 
-### Window manager integration
+### niri's config
 
-The shell asks for nothing from the WM except that it leave its windows
-alone. With qtile:
+[`docs/niri.kdl`](docs/niri.kdl) holds what to add to
+`~/.config/niri/config.kdl`: the shell at startup through
+`~/.local/bin/indigoshell` (the link above), its log sent to the
+journal (niri throws away what the programs it starts print:
+`journalctl --user -t indigoshell`), the layer rule that lets the
+call's blur show the windows behind it, a window rule for the agent's
+own Flux window, and the keys that call the shell:
 
-```python
-INDIGOSHELL = ["/path/to/.venv/bin/python", "/path/to/main.py"]
-
-Key([MOD], "d",             lazy.spawn(INDIGOSHELL + ["toggle", "launcher"])),
-Key([MOD], "a",             lazy.spawn(INDIGOSHELL + ["toggle", "call"])),
-Key([MOD], "Escape",        lazy.spawn(INDIGOSHELL + ["menu", "power"])),
-Key([MOD, SHIFT], "s",      lazy.spawn(INDIGOSHELL + ["menu", "display"])),
+```kdl
+Mod+D { spawn-sh "exec ~/.local/bin/indigoshell toggle launcher"; }
+Mod+A { spawn-sh "exec ~/.local/bin/indigoshell toggle call"; }
+Mod+Escape { spawn-sh "exec ~/.local/bin/indigoshell menu power"; }
+Mod+M { spawn-sh "exec ~/.local/bin/indigoshell toggle bar"; }
 ```
 
-Every window sets `WM_CLASS` to `(instance=window name, class="indigoshell")`,
-so one float rule covers all of them:
+and the rest of the chord menus beside them. `toggle bar` hides the
+bottom bar and gives its strip to the windows. The column layout of
+qtile's `Columns` — one window full width, two side by side, a third
+stacked into the focused column — comes from `python3 -m
+indigoshell.wm.tiling`, started there too, with its `Mod+Ctrl` keys
+that move a split or a window's height.
 
-```python
-Match(wm_class="indigoshell")
-```
-
-### Running on niri
-
-On niri the shell is the same `main.py`, started by niri: it picks the
-Wayland canvas by itself (`$WAYLAND_DISPLAY` is set and niri offers
-layer-shell; `INDIGOSHELL_BACKEND=x11` would say otherwise).
-[`docs/niri.kdl`](docs/niri.kdl) holds what to add to niri's config:
-the shell at startup through `~/.local/bin/indigoshell` (the link
-above), the layer rule that lets the call's blur show the windows
-behind it, a window rule for the agent's own Flux window, and the keys
-above as niri binds (plus `Mod+M`, `toggle bar`, which hides the bottom
-bar and gives its strip to the windows). The column layout of qtile's
-`Columns` comes from `python3 -m indigoshell.wm.tiling`, started by
-niri's config beside it.
-
-What differs from X11, by design ([PROTOCOL.md](indigoshell/applink/PROTOCOL.md),
+How the shell and niri share the work ([PROTOCOL.md](indigoshell/applink/PROTOCOL.md),
 "On Wayland"): niri gives the shell the focused window and its process
 over its IPC, and an app says which of its windows has the focus, so
 the top bar follows niri's focus. A Wayland client cannot grab another's
@@ -625,7 +620,7 @@ WINDOWS = [
         layer=Layer.DOCK,
         anchor=Anchor.BOTTOM,
         size=(None, 34),
-        exclusive=True,        # reserve the strut
+        exclusive=True,        # reserve its strip (exclusive zone)
         focusable=False,
         autostart=True,
         content=Row([Clock()]),
@@ -662,7 +657,7 @@ An item's action may be an argv list (run it, close the menu), a
 callable (sync or async), or a callable returning another `Menu` — which
 the shell shows as the next stage in the same window. `items` may itself
 be a callable, resolved when the stage is about to appear, for lists
-that only exist once a tool has been asked (the outputs `xrandr` knows
+that only exist once something has been asked (the outputs niri knows
 about, the sinks `pactl` reports).
 
 `STARTUP` hooks are awaited before any window is created; `SCREEN` hooks
@@ -675,7 +670,6 @@ uses both to restore the output you chose last.
 |---|---|
 | `INDIGOSHELL_LOG_LEVEL` | default log level (`info`) |
 | `INDIGOSHELL_GPU=0` | force the CPU raster path |
-| `INDIGOSHELL_BACKEND` | `x11` or `wayland`: which display, instead of choosing by `$WAYLAND_DISPLAY` |
 | `INDIGOSHELL_DPI` | point-to-pixel scaling (default 96) |
 | `INDIGOSHELL_FORCE_COLOR` | keep ANSI colors when stderr isn't a tty |
 | `INDIGOSHELL_APPS_SOCKET` | where the shell listens for its apps (Flux) |
@@ -690,10 +684,21 @@ beside them the apps' line (`indigoshell-apps-$UID.sock`) and Flux's
 
 ## Dependencies
 
-Python (declared in `pyproject.toml`, needs 3.14+): `xcffib`,
-`skia-python`, `dbus-fast`, `psutil`, `watchdog`; and, for the call
-only, `websockets` (the `call` extra), the line to the hub. Flux needs
-none of these, only PySide6 with QtWebEngine (below).
+A niri session: the shell draws on its layer-shell, takes screenshots
+over its wlr-screencopy, and asks its IPC for the workspaces, windows,
+outputs and keyboard layouts.
+
+Python (declared in `pyproject.toml`, needs 3.14+): `skia-python`,
+`dbus-fast`, `psutil`, `watchdog`; and, for the call only, `websockets`
+(the `call` extra), the line to the hub. (`xcffib` is still declared,
+for the X backend.) Flux needs none of these, only PySide6 with
+QtWebEngine (below).
+
+From the distro, like aubio (below): Python `pywayland`, with
+`wayland-protocols` and `wlr-protocols` for the XML its bindings are
+generated from, and Python `xkbcommon` for the keyboard (Arch:
+`python-pywayland`, `wayland-protocols`, `wlr-protocols`,
+`python-xkbcommon`).
 
 On `PATH`, each optional — the widget or menu that needs one degrades
 rather than failing:
@@ -707,18 +712,12 @@ rather than failing:
 | `fastfetch` | system panel |
 | `nmcli`, `iw`, `speedtest-cli` | network widget and panel |
 | `pactl` | volume widget, audio menu |
-| `xrandr`, `setxkbmap` | display and layout menus |
 | `tuned-adm`, `optimus-manager` | profile and graphics menus |
 | `setsid` (util-linux) | launcher: detaches the apps it starts; the agent's background jobs |
 | `systemd-run` + a user manager | launcher: one scope per app; skipped without |
 | `kitty` | launcher: `Terminal=true` apps (the `terminal=` option) |
-| `xclip` | copying from the call; the agent's clipboard hands |
+| `wl-copy`, `wl-paste` (wl-clipboard) | copying from the call; the agent's clipboard hands |
 | `xdg-open`, `xdg-mime` | the agent's `open` hand, links clicked in a reply |
-| ImageMagick `import` | the agent's screenshots |
-| `qtile` (`qtile cmd-obj`) | the agent's window and workspace hands; bringing what it opens forward |
-| `wl-copy`, `wl-paste` (wl-clipboard) | on niri, in place of `xclip` |
-| Python `pywayland`, `wayland-protocols`, `wlr-protocols` (the XML) | on niri: the canvas (distro packages, like aubio) |
-| Python `xkbcommon` (python-xkbcommon) | on niri: the keyboard on the canvas; without it nothing there takes the keyboard |
 
 A Nerd Font is expected for the glyphs; `FiraCode Nerd Font Mono` is the
 theme default.

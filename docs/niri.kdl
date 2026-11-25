@@ -11,10 +11,14 @@
 // --nested reads the window rule below into its nested niri.
 
 // The shell, its log in the journal (`journalctl --user -t indigoshell`):
-// niri throws away what the programs it starts print. (Keep starting the
-// column layout, qtile's two columns, as before: `python3 -B -m
-// indigoshell.wm.tiling` in the checkout.)
+// niri throws away what the programs it starts print.
 spawn-sh-at-startup "exec systemd-cat -t indigoshell ~/.local/bin/indigoshell"
+
+// The column layout, qtile's `Columns`: one window full width, two side by
+// side, a third stacked into the focused column (indigoshell/wm/tiling.py,
+// the standard library only, so the system's python3). Put the checkout's
+// path in place of /path/to/indigoshell, here and in the Mod+Ctrl binds.
+spawn-sh-at-startup "cd /path/to/indigoshell && exec systemd-cat -t indigoshell-tiling python3 -B -m indigoshell.wm.tiling"
 
 // The call's blur shows the windows behind it, not only the wallpaper
 // (niri's default for a layer surface is "xray").
@@ -35,7 +39,7 @@ window-rule {
 }
 
 binds {
-    // qtile's keys that call the shell.
+    // The keys that call the shell.
     Mod+D { spawn-sh "exec ~/.local/bin/indigoshell toggle launcher"; }
     Mod+A { spawn-sh "exec ~/.local/bin/indigoshell toggle call"; }
     Mod+Escape { spawn-sh "exec ~/.local/bin/indigoshell menu power"; }
@@ -47,4 +51,12 @@ binds {
     Mod+Shift+G { spawn-sh "exec ~/.local/bin/indigoshell menu graphics"; }
     // Hide the bottom bar and give its strip to the windows; again, back.
     Mod+M { spawn-sh "exec ~/.local/bin/indigoshell toggle bar"; }
+
+    // Grow, as qtile's: the windows keep filling the screen. H/L move the
+    // split between two columns left/right; J/K make the focused window
+    // taller/shorter in its column (indigoshell/wm/tiling.py, `grow`).
+    Mod+Ctrl+H { spawn-sh "cd /path/to/indigoshell && exec python3 -B -m indigoshell.wm.tiling grow left"; }
+    Mod+Ctrl+L { spawn-sh "cd /path/to/indigoshell && exec python3 -B -m indigoshell.wm.tiling grow right"; }
+    Mod+Ctrl+J { spawn-sh "cd /path/to/indigoshell && exec python3 -B -m indigoshell.wm.tiling grow down"; }
+    Mod+Ctrl+K { spawn-sh "cd /path/to/indigoshell && exec python3 -B -m indigoshell.wm.tiling grow up"; }
 }
