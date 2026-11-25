@@ -17,9 +17,21 @@ Every page of every window lives in this profile. It has to outlive
 them: deleting it under a live page makes Qt complain ("Release of
 profile requested but WebEnginePage still not deleted"), so app.py
 deletes the windows first.
+
+Accept-Language: QtWebEngine sends none unless told, and then sends the
+value exactly as given, with no weights. Flux tells it what Chrome would
+send for the locale Flux runs in (`accept_language`): the locale's
+languages (QLocale().uiLanguages(), which follows $LANGUAGE and $LANG)
+as language or language-region tags, then English unless English is
+already there, weighted as Chrome weights them:
+en_US gives "en-US,en;q=0.9", tr_TR "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7".
+Pages see the same list unweighted in navigator.languages.
 """
 
+import re
+
 from PySide6 import QtWebEngineCore
+from PySide6.QtCore import QLocale
 from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript, QWebEngineSettings
 
 from flux import profiles
@@ -86,6 +98,26 @@ def install_scrollbars(profile: QWebEngineProfile) -> None:
     scripts.insert(script)
 
 
+# A language with an optional region (tr, tr-TR, es-419): what Chrome
+# sends. Qt's list also has script forms (tr-Latn-TR) and "C".
+_TAG = re.compile(r"[A-Za-z]{2,3}(-([A-Za-z]{2}|[0-9]{3}))?")
+ENGLISH = ("en-US", "en")
+
+
+def accept_language(languages: list[str]) -> str:
+    """The Accept-Language header Chrome sends for a locale whose
+    languages are `languages` (QLocale.uiLanguages()): the plain tags in
+    order, English last unless there, the first unweighted and each next
+    one 0.1 lower, down to 0.1."""
+    tags = []
+    for tag in languages:
+        if _TAG.fullmatch(tag) and tag not in tags:
+            tags.append(tag)
+    if not any(t.split("-")[0].lower() == "en" for t in tags):
+        tags += [t for t in ENGLISH if t not in tags]
+    return ",".join(t if i == 0 else f"{t};q=0.{max(10 - i, 1)}" for i, t in enumerate(tags))
+
+
 def storage_path(name: str | None = None) -> str:
     return profiles.storage_path(name)
 
@@ -111,6 +143,7 @@ def make_profile(name: str | None = None) -> QWebEngineProfile:
         profile.setCachePath(cache_path(name))
         profile.setPersistentCookiesPolicy(cookies)
         profile.setPersistentPermissionsPolicy(permissions)
+    profile.setHttpAcceptLanguage(accept_language(QLocale().uiLanguages()))
 
     settings = profile.settings()
     A = QWebEngineSettings.WebAttribute

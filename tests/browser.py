@@ -167,7 +167,8 @@ class Site(BaseHTTPRequestHandler):
         Site.seen.append({"host": self.headers.get("Host", "").rsplit(":", 1)[0],
                           "path": self.path, "ua": self.headers.get("User-Agent"),
                           "ch": self.headers.get("sec-ch-ua"),
-                          "cache": self.headers.get("Cache-Control")})
+                          "cache": self.headers.get("Cache-Control"),
+                          "lang": self.headers.get("Accept-Language")})
         Site.hits[route] = Site.hits.get(route, 0) + 1
         if route.startswith("/page/"):
             name = route[len("/page/"):]
@@ -508,6 +509,25 @@ def test_pure() -> None:
           flags == f"--foo --bar=1 {ours} --widevine-path={got}"
           and flags2 == f"--widevine-path=/x.so {ours}", flags)
 
+    # Accept-Language from the locale's languages, as Chrome sends it.
+    from flux.qt.profile import accept_language
+    langs = {
+        "en_US": (["en-Latn-US", "en-US", "en-Latn", "en"], "en-US,en;q=0.9"),
+        "tr_TR": (["tr-Latn-TR", "tr-TR", "tr-Latn", "tr"], "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"),
+        "C": (["C"], "en-US,en;q=0.9"),
+        "zh_TW": (["zh-Hant-TW", "zh-TW", "zh-Hant", "zh"], "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"),
+        "es_419": (["es-Latn-419", "es-419", "es"], "es-419,es;q=0.9,en-US;q=0.8,en;q=0.7"),
+        "en_GB": (["en-Latn-GB", "en-GB", "en-Latn", "en"], "en-GB,en;q=0.9"),
+        "LANGUAGE=tr:de": (["tr-TR", "tr", "de-DE", "de"],
+                           "tr-TR,tr;q=0.9,de-DE;q=0.8,de;q=0.7,en-US;q=0.6,en;q=0.5"),
+    }
+    got_langs = {k: accept_language(v) for k, (v, _) in langs.items()}
+    many = accept_language([f"x{c}" for c in "abcdefghijk"]).split(",")
+    check("Accept-Language: the locale's plain tags, English last unless there, Chrome's weights "
+          "down to 0.1", got_langs == {k: want for k, (_, want) in langs.items()}
+          and many[9:] == ["xj;q=0.1", "xk;q=0.1", "en-US;q=0.1", "en;q=0.1"],
+          f"{got_langs} {many[8:]}")
+
     # The zoom kept per site (flux/zoom.py), on a scratch file.
     from flux import places, zoom
     sites = [zoom.site_of(u) for u in (
@@ -825,7 +845,7 @@ def test_in_process() -> None:
     import logging
 
     import shiboken6
-    from PySide6.QtCore import QEvent, QPoint, Qt, QUrl
+    from PySide6.QtCore import QEvent, QLocale, QPoint, Qt, QUrl
     from PySide6.QtGui import QKeyEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -1034,6 +1054,13 @@ def test_in_process() -> None:
     check("pages' scrollbars wear the shell's colours: the bar's track, the launcher's cyan thumb",
           long_ok and edge == {profile_mod.TRACK} and profile_mod.THUMB in thumb,
           f"track {edge}, thumb column {sorted(thumb)[:3]}")
+    want_lang = profile_mod.accept_language(QLocale().uiLanguages())
+    sent_lang = {s["lang"] for s in Site.seen if s["path"] == "/long"}
+    page_langs = js(tab3.page, "JSON.stringify(navigator.languages)")
+    check("Accept-Language: Flux sends its locale's, as Chrome would; pages see it unweighted",
+          profile.httpAcceptLanguage() == want_lang and sent_lang == {want_lang}
+          and json.loads(page_langs or "null") == [t.split(";")[0] for t in want_lang.split(",")],
+          f"want {want_lang!r}, sent {sent_lang}, navigator.languages {page_langs}")
     blank_tab = w.add_tab()
     QTest.qWait(400)
     blank_shot = blank_tab.view.grab().toImage()
