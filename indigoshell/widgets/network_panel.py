@@ -41,6 +41,11 @@ log = logging.getLogger(__name__)
 BODY = theme.FONT_SIZE - 3
 IFACE_SIZE = theme.FONT_SIZE
 
+# The directions in the bar's colours (its network lights): sent / up
+# cyan, received / down lime — rates, meters, arrows and readouts alike.
+UP_FG = theme.CYAN_BRIGHT
+DOWN_FG = theme.LIME_BRIGHT
+
 # The panel is transient — it only exists while you are looking at it —
 # so the clock runs while it is open and stops with it, and the rate
 # sample is gated to 4Hz on top.
@@ -138,10 +143,9 @@ class _IfaceCard(HudCard):
         self._ssid = Label("", size=BODY, bold=True,
                            color=theme.YELLOW_BRIGHT, align="right")
         self._ip = Label("—", size=BODY, color=theme.FG)
-        self._down = Label("↓ —", size=BODY, bold=True,
-                           color=theme.MAGENTA_BRIGHT)
-        self._up = Label("— ↑", size=BODY, bold=True,
-                         color=theme.YELLOW_BRIGHT, align="right")
+        self._down = Label("↓ —", size=BODY, bold=True, color=DOWN_FG)
+        self._up = Label("— ↑", size=BODY, bold=True, color=UP_FG,
+                         align="right")
         super().__init__(Column([
             Row([self._name, Spacer(), self._ssid], spacing=10,
                 align=Align.BASELINE),
@@ -235,20 +239,18 @@ class NetworkPanel(Widget):
         self._server = Label("idle", size=BODY, color=theme.BASE_MUTED)
         ping_row, self._ping, self._ping_unit = _value_pair(
             3, theme.YELLOW_BRIGHT)
-        self._down_meter = BarMeter(color=theme.MAGENTA_BRIGHT,
+        self._down_meter = BarMeter(color=DOWN_FG,
                                     dim_color=theme.NOTIF_METER_DIM,
                                     tick=5, gap=theme.NOTIF_METER_GAP,
                                     thick=theme.NOTIF_METER_THICK,
                                     min_width=200, flex=1)
-        self._up_meter = BarMeter(color=theme.YELLOW_BRIGHT,
+        self._up_meter = BarMeter(color=UP_FG,
                                   dim_color=theme.NOTIF_METER_DIM,
                                   tick=5, gap=theme.NOTIF_METER_GAP,
                                   thick=theme.NOTIF_METER_THICK,
                                   min_width=200, flex=1)
-        down_row, self._down_value, self._down_unit = _value_pair(
-            8, theme.MAGENTA_BRIGHT)
-        up_row, self._up_value, self._up_unit = _value_pair(
-            8, theme.YELLOW_BRIGHT)
+        down_row, self._down_value, self._down_unit = _value_pair(8, DOWN_FG)
+        up_row, self._up_value, self._up_unit = _value_pair(8, UP_FG)
         self._button = _Button("RUN TEST", self._toggle_speedtest)
         speedtest = Column([
             section_header("THROUGHPUT", "SECURE SPEEDTEST ROUTINE"),
@@ -256,10 +258,8 @@ class NetworkPanel(Widget):
                 Row([key_label("SERVER"), self._server, Spacer(),
                      key_label("PING"), ping_row], spacing=8,
                     align=Align.BASELINE),
-                self._speed_row("DN", "↓", theme.MAGENTA_BRIGHT,
-                                self._down_meter, down_row),
-                self._speed_row("UP", "↑", theme.YELLOW_BRIGHT,
-                                self._up_meter, up_row),
+                self._speed_row("DN", "↓", DOWN_FG, self._down_meter, down_row),
+                self._speed_row("UP", "↑", UP_FG, self._up_meter, up_row),
                 Row([Spacer(), self._button], spacing=0, align=Align.CENTER),
             ], spacing=10, align=Align.STRETCH), accent=theme.MAGENTA_BRIGHT),
         ], spacing=12, align=Align.STRETCH)
