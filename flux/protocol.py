@@ -183,11 +183,17 @@ focus or changing the workspace; `open` and `tabs` work on any.
                page listing document.adoptedStyleSheets meanwhile would
                see it (Qt has no user style sheet to put it in). An inner
                box that scrolls by itself is shown as it stands.
-    look       {"window"?: id, "xid"?: int, "screenshot"?: bool,
+    look       {"window"?: id, "pid"?: int, "xid"?: int, "screenshot"?: bool,
                 "image"?: bool}
                What the user is looking at in the browser, changing
                nothing they see: the focused window, or with none the one
-               that had focus last (or the window named).
+               that had focus last (or the window named). `pid`: the
+               process the named `window` is in, as the shell knows it
+               (on Wayland the call names the window it saw focused by
+               its app bar id and its connection's process): a window of
+               another Flux's is not this one's to look at, and the look
+               goes on as if none was named. `xid` (X11): the X window
+               the call saw focused; on Wayland it fails (no X window).
                -> TAB + {"focused": bool, "unfocused_for": <s, or null
                          while focused>, "selection": str,
                          "selection_in": "page" | "field" | "frame" | null,

@@ -877,12 +877,16 @@ class Requests:
         return out
 
     def _look_window(self, msg: dict):
-        if msg.get("window") is not None:
+        pid = msg.get("pid")
+        theirs = pid is not None and _int(msg, "pid") != os.getpid()
+        if msg.get("window") is not None and not theirs:
             return self.window(_int(msg, "window"))
         if msg.get("xid") is not None:
             xid = _int(msg, "xid")
             if self.browser.headless:
                 raise RequestError("Flux is headless: its windows have no X window")
+            if QGuiApplication.platformName().startswith("wayland"):
+                raise RequestError("Flux is on Wayland: its windows have no X window")
             for w in self.windows():
                 if int(w.internalWinId()) == xid:
                     return w

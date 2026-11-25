@@ -272,9 +272,9 @@ class Control:
                                   within=within)
 
     async def look(self, *, window: int | None = None, xid: int | None = None,
-                   screenshot: bool = False, image: bool = False,
+                   pid: int | None = None, screenshot: bool = False, image: bool = False,
                    within: float = LOOK_S) -> dict:
-        return await self.request("look", {"window": window, "xid": xid,
+        return await self.request("look", {"window": window, "xid": xid, "pid": pid,
                                            "screenshot": screenshot or None,
                                            "image": image or None}, within=within)
 
@@ -527,6 +527,7 @@ def look_blocks(result: dict) -> list[dict]:
 
 
 async def look(*, screenshot: bool = False, image: bool = False, xid: int | None = None,
+               window: int | None = None, pid: int | None = None,
                timeout: float = LOOK_S) -> list[dict]:
     """What the user is looking at in Flux, as content blocks for the
     call to send with their words; [] when Flux is not running, no Flux
@@ -534,7 +535,10 @@ async def look(*, screenshot: bool = False, image: bool = False, xid: int | None
     Never starts Flux; changes nothing on screen.
 
     `xid`: the X window the call saw focused, to look at that Flux
-    window (the focused one, else the one focused last, without it).
+    window (the focused one, else the one focused last, without it). On
+    Wayland, where there is no such id, `window` and `pid`: the Flux
+    window the call saw focused, by its id on the app bar (Flux's own,
+    the control socket's too) and its connection's process.
     `screenshot`: the tab as shown; `image`: the image in the user's
     selection, else under the mouse pointer."""
     try:
@@ -542,8 +546,8 @@ async def look(*, screenshot: bool = False, image: bool = False, xid: int | None
     except NotRunning:
         return []
     try:
-        result = await control.look(xid=xid, screenshot=screenshot, image=image,
-                                    within=timeout)
+        result = await control.look(xid=xid, window=window, pid=pid, screenshot=screenshot,
+                                    image=image, within=timeout)
     except ControlError as e:
         log.debug("look: %s", e)
         return []
