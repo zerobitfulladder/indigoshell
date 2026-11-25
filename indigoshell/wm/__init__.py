@@ -31,8 +31,8 @@ from typing import Callable, NamedTuple, Sequence
 log = logging.getLogger(__name__)
 
 __all__ = ["WM", "Workspace", "Window", "Mode", "Output", "Shot",
-           "WorkspaceState", "Follower", "WMError", "NotFound",
-           "Unsupported", "get", "run"]
+           "WorkspaceState", "Follower", "WindowFollower", "WMError",
+           "NotFound", "Unsupported", "get", "run"]
 
 
 class WMError(RuntimeError):
@@ -64,6 +64,7 @@ class Window:
     workspace: str              # the Workspace.name it is on, or ""
     classes: tuple[str, ...] = ()   # every class name it answers to
     active: bool = False        # the focused one of its workspace
+    pid: int | None = None      # its client's process, where the WM says (niri)
 
 
 class Mode(NamedTuple):
@@ -109,6 +110,42 @@ class Follower:
         """Stop following."""
 
 
+class WindowFollower:
+    """Follows the windows and the keyboard focus, for the apps' line on
+    Wayland (`WM.follow_windows`; applink/service.py): which window has
+    the focus and whose process it is, which windows a process has, and
+    the workspaces a window can be put on without the user seeing it."""
+
+    def focused(self) -> Window | None:
+        """The window with the keyboard focus; None while none has it
+        (a layer surface took the keyboard, or nothing is open)."""
+        raise NotImplementedError
+
+    def ids_of(self, pid: int) -> set[int]:
+        """The ids of the windows process `pid` has open now."""
+        raise NotImplementedError
+
+    def spare_workspace(self, taken: set = frozenset()) -> tuple[object, int | None, str]:
+        """Where a window the user must not see appearing goes: (the
+        workspace's reference for `move`, its index among the bar's
+        workspaces, how it was chosen), or (None, None, why none).
+        `taken`: references of workspaces already given out so."""
+        raise NotImplementedError
+
+    def workspace_of(self, window_id: int) -> tuple[object, int | None] | None:
+        """The reference and the bar's index of the workspace a window is
+        on; None for no such window."""
+        raise NotImplementedError
+
+    def move(self, window_id: int, workspace) -> None:
+        """Move a window to a workspace (a reference from above) without
+        focusing it or showing the workspace; fire and forget."""
+        raise NotImplementedError
+
+    def close(self) -> None:
+        """Stop following."""
+
+
 class WM:
     """What the shell asks of the window manager and the display server
     outside its core. Every coroutine raises WMError (or NotFound,
@@ -142,6 +179,13 @@ class WM:
         have changed, for the bar in `window` (the shell's Window: X11
         reads its display, niri the monitor under it)."""
         raise NotImplementedError
+
+    def follow_windows(self, on_change: Callable[["WindowFollower"], None]
+                       ) -> "WindowFollower | None":
+        """Call `on_change(follower)` whenever the windows or the focus
+        may have changed; None where the window manager does not say
+        (X11: the apps' line follows EWMH itself)."""
+        return None
 
     # ── screenshots ─────────────────────────────────────────────────────
     async def screenshot(self, target: str = "screen", *,

@@ -40,8 +40,8 @@ import json
 import logging
 from typing import Any, Callable, Sequence
 
-from . import (WM, Follower, Mode, NotFound, Output, Shot, Window, WMError,
-               Workspace, WorkspaceState, fire)
+from . import (WM, Follower, Mode, NotFound, Output, Shot, Window, WindowFollower,
+               WMError, Workspace, WorkspaceState, fire)
 from . import wayland
 
 log = logging.getLogger(__name__)
@@ -242,7 +242,8 @@ def window_list(windows, workspaces, order: Sequence[str] = ()
             id=w["id"], app=app or "?", title=w.get("title") or "",
             workspace=names.get(w.get("workspace_id"), ""),
             classes=(app,) if app else (),
-            active=active.get(w.get("workspace_id")) == w["id"]))
+            active=active.get(w.get("workspace_id")) == w["id"],
+            pid=w.get("pid")))
     return out
 
 
@@ -269,6 +270,33 @@ def bar_state(workspaces, windows, output: str | None) -> WorkspaceState:
     return WorkspaceState(len(shown), current,
                           tuple(per[w["id"]] for w in shown),
                           tuple(bool(w.get("is_urgent")) for w in shown))
+
+
+def spare_workspace(workspaces, windows, output: str | None,
+                    taken=frozenset()) -> tuple[int | None, int | None, str]:
+    """Where a window the user must not see appearing goes, on `output`
+    (the focused monitor), as applink/service.py `pick_desktop` chooses
+    on X11: the highest-numbered empty workspace of the bar's that no
+    monitor shows, else the highest-numbered hidden one, else the spare
+    empty one niri keeps at the end. (niri's workspace id, its index
+    among the bar's workspaces or None for the spare, how); (None, None,
+    why) for none. `taken`: ids given out so already."""
+    shown = bar_workspaces(workspaces, windows, output)
+    used = {w.get("workspace_id") for w in windows} | set(taken)
+    hidden = [(i, w) for i, w in enumerate(shown) if not w.get("is_active")]
+    empty = [(i, w) for i, w in hidden if w["id"] not in used]
+    if empty:
+        i, w = empty[-1]
+        return w["id"], i, "the highest-numbered empty workspace no monitor shows"
+    spare = [w for w in workspaces if w.get("output") == output and w not in shown
+             and not w.get("is_active")]
+    if spare:
+        return spare[-1]["id"], None, "the spare empty workspace at the end"
+    if hidden:
+        i, w = hidden[-1]
+        return w["id"], i, ("no workspace is empty: the highest-numbered one no monitor "
+                            "shows")
+    return None, None, "every workspace is shown"
 
 
 def output_list(outputs: dict) -> list[Output]:
@@ -356,6 +384,9 @@ class Niri(WM):
 
     def follow_workspaces(self, window, on_change) -> Follower:
         return NiriFollower(self.ipc, window, on_change)
+
+    def follow_windows(self, on_change) -> "NiriWindows":
+        return NiriWindows(self.ipc, on_change)
 
     # ── screenshots ─────────────────────────────────────────────────────
     async def screenshot(self, target: str = "screen", *,
@@ -555,6 +586,92 @@ class NiriFollower(Follower):
         if 0 <= index < len(self._shown):
             fire(self.ipc.action("FocusWorkspace",
                                  reference={"Id": self._shown[index]["id"]}))
+
+    def close(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+
+
+class NiriWindows(WindowFollower):
+    """The windows and the focus from niri's event stream, for the apps'
+    line (WindowFollower): each window's id, app id, title and `pid`
+    (its client's process: what the line matches an app's connection
+    by), the focused one (none while a layer surface has the keyboard),
+    and the workspaces, for placing."""
+
+    RETRY_S = 2.0
+
+    def __init__(self, ipc: Ipc, on_change: Callable[["NiriWindows"], None]) -> None:
+        self.ipc = ipc
+        self.on_change = on_change
+        self.state = State()
+        self.ready = False                      # the first whole state is in
+        self._task = None
+        try:
+            self._task = asyncio.get_running_loop().create_task(self._run())
+        except RuntimeError:
+            log.warning("windows: no running loop to follow niri on")
+
+    async def _run(self) -> None:
+        while True:
+            try:
+                async for event in self.ipc.events():
+                    if self.state.apply(event):
+                        if "WindowsChanged" in event:
+                            self.ready = True
+                        self._changed()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("windows: niri's event stream: %s", e)
+            self.ready = False
+            await asyncio.sleep(self.RETRY_S)
+
+    def _changed(self) -> None:
+        try:
+            self.on_change(self)
+        except Exception:
+            log.exception("windows: a follower failed")
+
+    def _window(self, w: dict) -> Window:
+        names = labels(self.state.workspaces.values())
+        app = w.get("app_id") or ""
+        return Window(id=w["id"], app=app or "?", title=w.get("title") or "",
+                      workspace=names.get(w.get("workspace_id"), ""),
+                      classes=(app,) if app else (), active=bool(w.get("is_focused")),
+                      pid=w.get("pid"))
+
+    def focused(self) -> Window | None:
+        w = next((w for w in self.state.windows.values() if w.get("is_focused")), None)
+        return self._window(w) if w is not None else None
+
+    def ids_of(self, pid: int) -> set[int]:
+        return {w["id"] for w in self.state.windows.values() if w.get("pid") == pid}
+
+    def _output(self) -> str | None:
+        ws = self.state.workspaces.values()
+        focused = next((w for w in ws if w.get("is_focused")), None)
+        return (focused or {}).get("output") or next(
+            iter(sorted(w.get("output") for w in ws if w.get("output"))), None)
+
+    def spare_workspace(self, taken=frozenset()):
+        return spare_workspace(list(self.state.workspaces.values()),
+                               list(self.state.windows.values()), self._output(), taken)
+
+    def workspace_of(self, window_id: int):
+        w = self.state.windows.get(window_id)
+        if w is None or w.get("workspace_id") is None:
+            return None
+        ws = self.state.workspaces.get(w["workspace_id"]) or {}
+        shown = bar_workspaces(list(self.state.workspaces.values()),
+                               list(self.state.windows.values()), ws.get("output"))
+        index = next((i for i, x in enumerate(shown) if x["id"] == ws.get("id")), None)
+        return w["workspace_id"], index
+
+    def move(self, window_id: int, workspace) -> None:
+        fire(self.ipc.action("MoveWindowToWorkspace", window_id=int(window_id),
+                             reference={"Id": int(workspace)}, focus=False))
 
     def close(self) -> None:
         if self._task is not None:

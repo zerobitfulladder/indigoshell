@@ -23,7 +23,9 @@ App -> shell, any time after the announce
                 same app process) is on: a popup of a window placed so.
                 The app maps the window once `placed` answers, or after
                 PLACE_WAIT_S with no answer, or at once when no shell
-                listens: then wherever the window manager puts it.
+                listens: then wherever the window manager puts it. On
+                niri the shell answers at once and moves the window there
+                as soon as niri lists it (PROTOCOL.md, "On Wayland").
 
 Shell -> app
     attached    {"type": "attached", "voices": {id: name}}
@@ -39,7 +41,9 @@ Shell -> app
                 The answer to `place`: the window's `_NET_WM_DESKTOP` is
                 set (and read back, so the X server has it before the app
                 maps), or null with why not (no workspace to put it on,
-                the window already shown, no X display).
+                the window already shown, no X display). On niri: the
+                workspace it will be moved to once it maps, its index
+                among the bar's workspaces.
 """
 
 import json

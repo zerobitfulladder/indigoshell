@@ -21,6 +21,18 @@ context area, applink/context.py) calls `follow`. A window manager that
 reparents would name its frame here instead of the app's window; qtile
 does not, and none other is supported.
 
+On Wayland (PROTOCOL.md, "On Wayland") an app announces no handle, and
+the service follows the compositor's focused window instead
+(indigoshell.wm's `follow_windows`: niri's event stream), which names
+its client's process: the focused app window is the one of that
+process's connections (SO_PEERCRED) that said it is `active` last, or
+its only one when it never said. A focused window of no app's process
+is no app's. While the canvas has the keyboard (and for HOLD_GRACE_S
+after it lets go, while the compositor focuses the window again) niri
+names no focused window and the app says its window is not active:
+neither moves the focus. With no window manager to follow, the apps'
+own `active` decides.
+
 Keys. The chords of a window's inputs and menus (bar.py `chords`:
 Flux's Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M) are the keys the shell takes
 from it. Whenever they change the service grabs each on that window,
@@ -46,6 +58,14 @@ An app may ask for one with no key pressed (`open`): honoured once its
 window has focus (OPEN_WAIT_S). With no top bar over the window, or no
 keyboard to be had, the app is told `fallback` and the keyboard goes
 back.
+
+On Wayland nothing is grabbed: `attached` tells the app `chords: "app"`,
+and the app catches its bar's chords itself and sends `open` with the
+chord, which opens it as a press would (the canvas's keyboard taken at
+once, `exclusive`). Until the compositor has moved the keyboard the app
+forwards what its window gets (`keys`), typed into the open input in
+order; keys the canvas gets meanwhile wait for the app's `last` (at most
+bar.FORWARD_WAIT_S), so nothing is lost or reordered between the lines.
 
 The grabs go when the connection closes or the service stops; the X
 server drops them itself with the window. They are made again when the
@@ -79,6 +99,14 @@ cannot be told from a hidden one by EWMH; that case is not handled.
 app's own id for it) puts the new one on that window's workspace: a
 popup of a placed window goes where it is.
 
+On niri a window cannot be placed before it maps: `place` is answered
+at once with the workspace chosen (wm `spare_workspace`, the same rule
+on the bar's workspaces of the focused monitor), the app maps the
+window, and the first new window of the app's process the compositor
+lists after the `place` (within PLACE_FOLLOW_S) is moved there, not
+focused; its compositor id is kept, so a `with` naming it goes to its
+workspace.
+
 Lifecycle. A connection that closes (the app window closed, the app
 quit, or it replaced its X window and announced again on a new
 connection) drops its `AppWindow`. `stop()` (the daemon stopping or
@@ -94,15 +122,18 @@ seconds, taking over once it is free.
 """
 
 import asyncio
+import itertools
 import logging
 import os
 import socket
 import struct
+import time
 from dataclasses import dataclass
 
 import xcffib.xproto as xp
 
 from ..core.voices import voice_names
+from ..widgets.base import KeyEvent
 from ..window import Placement, key_event
 from . import bar as B
 from . import protocol
@@ -115,6 +146,8 @@ log = logging.getLogger(__name__)
 CLAIM_RETRY_S = 5.0                 # while another shell holds the socket
 PREPARE_S = 2.0                     # after the start: the drop-down made ahead
 LINE_LIMIT = 1 << 20                # bytes in one message: a state with many tabs
+HOLD_GRACE_S = 0.5                  # after the canvas lets the keyboard go (Wayland's focus)
+PLACE_FOLLOW_S = 5.0                # a placed window that maps later is not looked for
 _KEY_PRESS = 2
 _BUTTON_PRESS = 4
 
@@ -132,10 +165,12 @@ class AppWindow:
     whenever they change.
     """
 
-    def __init__(self, link: "Link", wid: int, announce: dict) -> None:
+    _actives = itertools.count(1)
+
+    def __init__(self, link: "Link", wid: int | None, announce: dict) -> None:
         self.link = link
         self.service = link.service
-        self.wid = wid
+        self.wid = wid                                  # its X window; None on Wayland
         self.kind = str(announce.get(B.APP) or "app")   # the app's name, for log lines
         self.app_id = announce.get(B.WINDOW)            # the app's own id for the window
         self._said: set[str] = set()                    # problems warned of, once each
@@ -146,6 +181,18 @@ class AppWindow:
         self.closed = False
         self.placed: int | None = None      # the workspace `place` put it on
         self._seq = 0
+        # Wayland: when it last said it is `active` (rising; 0 since it
+        # said it is not; None: it never said), and the compositor's id
+        # for it once known (placing).
+        self.active_seq: int | None = None
+        self.wm_id: int | None = None
+
+    @property
+    def label(self) -> str:
+        """The window in log lines: its X window, or its app id and process."""
+        if self.wid is not None:
+            return f"0x{self.wid:x}"
+        return f"{self.app_id!r} (pid {self.link.pid})"
 
     def on_message(self, msg: dict) -> None:
         """Every message after the announce (`place` is the service's)."""
@@ -159,29 +206,73 @@ class AppWindow:
         elif kind == B.ANSWER:
             problems = B.answer_problems(msg)
             if problems:
-                log.debug("%s window 0x%x: answer seq %s for %r dropped: %s", self.kind,
-                          self.wid, msg.get("seq"), msg.get("input"), "; ".join(problems))
+                log.debug("%s window %s: answer seq %s for %r dropped: %s", self.kind,
+                          self.label, msg.get("seq"), msg.get("input"), "; ".join(problems))
                 self._warn("an answer ignored", problems)
                 return
             p = self.service.prompt_of(self)
             if p is not None and p.what == "input" and p.name == msg["input"]:
                 p.answer(msg)
             else:
-                log.debug("%s window 0x%x: answer seq %s for %r dropped: that input is not "
-                          "open", self.kind, self.wid, msg.get("seq"), msg["input"])
+                log.debug("%s window %s: answer seq %s for %r dropped: that input is not "
+                          "open", self.kind, self.label, msg.get("seq"), msg["input"])
         elif kind == B.OPEN:
             what = "input" if "input" in msg else "menu"
-            self.service.open_asked(self, what, msg.get(what))
+            chord = msg.get(B.CHORD)
+            self.service.open_asked(self, what, msg.get(what),
+                                    chord=chord if isinstance(chord, str) else None)
+        elif kind == B.ACTIVE:
+            self.set_active(msg.get("active") is True)
+        elif kind == B.KEYS:
+            self.on_keys(msg)
         else:
-            log.debug("%s window 0x%x: message %r not understood", self.kind, self.wid, kind)
+            log.debug("%s window %s: message %r not understood", self.kind, self.label, kind)
+
+    def set_active(self, active: bool) -> None:
+        """The app says whether its window has the keyboard focus (Wayland's
+        word for it: PROTOCOL.md "On Wayland"; X11 has its own)."""
+        if active:
+            self.active_seq = next(AppWindow._actives)
+        elif self.service.holds_focus(self):
+            # The canvas took the keyboard from it: no change of focus.
+            log.debug("%s window %s: not active while the canvas has the keyboard; still "
+                      "focused", self.kind, self.label)
+            return
+        else:
+            self.active_seq = 0
+        self.service.activity()
+
+    def on_keys(self, msg: dict) -> None:
+        """Keys the app's window got after a chord it caught, before the
+        canvas had the keyboard: into the open input, in order."""
+        problems = B.keys_problems(msg)
+        if problems:
+            self._warn("keys ignored", problems)
+        else:
+            if msg["keys"]:
+                log.debug("%s window %s: %d key(s) forwarded (typed before the canvas had "
+                          "the keyboard)", self.kind, self.label, len(msg["keys"]))
+            for k in msg["keys"]:
+                mods = set(k.get("mods") or ())
+                key = KeyEvent(keysym=k["keysym"], text=str(k.get("text") or ""),
+                               shift="shift" in mods, ctrl="ctrl" in mods, alt="alt" in mods,
+                               super="super" in mods)
+                prompt = self.service.prompt_of(self)
+                if prompt is None:
+                    log.debug("%s window %s: a key forwarded with nothing open for it; "
+                              "dropped", self.kind, self.label)
+                    continue
+                prompt.key(key)
+        if msg.get(B.LAST) is True:
+            self.service.forwarded(self)
 
     def _warn(self, what: str, problems: list[str]) -> None:
         new = [p for p in problems if p not in self._said]
         if not new:
-            log.debug("%s window 0x%x: %s again", self.kind, self.wid, what)
+            log.debug("%s window %s: %s again", self.kind, self.label, what)
             return
         self._said.update(new)
-        log.warning("%s window 0x%x: %s: %s", self.kind, self.wid, what, "; ".join(new))
+        log.warning("%s window %s: %s: %s", self.kind, self.label, what, "; ".join(new))
 
     # ── its bar ─────────────────────────────────────────────────────────
     def show_bar(self, bar: dict) -> None:
@@ -230,8 +321,8 @@ class AppWindow:
         input or menu open."""
         prompt = self.service.prompt_of(self)
         if prompt is None:
-            log.debug("a key typed into %s window 0x%x with nothing open for it; dropped",
-                      self.kind or "app", self.wid)
+            log.debug("a key typed into %s window %s with nothing open for it; dropped",
+                      self.kind or "app", self.label)
             return
         prompt.key(key)
 
@@ -272,8 +363,8 @@ class Link:
         announce = msg[protocol.TYPE] == protocol.ANNOUNCE
         if self.window is not None:
             if announce:
-                log.debug("app window 0x%x announced again on the same connection; ignored",
-                          self.window.wid)
+                log.debug("app window %s announced again on the same connection; ignored",
+                          self.window.label)
             elif msg[protocol.TYPE] == protocol.PLACE:
                 self.service.place(self.window, msg)
             else:
@@ -286,6 +377,20 @@ class Link:
         wid = handle.get(B.X11) if isinstance(handle, dict) else None
         app, window_id = msg.get(B.APP), msg.get(B.WINDOW)
         d = self.service.display
+        if self.service.on_wayland:
+            # No handle to go by: the connection's process and the app's
+            # `active` are the window (PROTOCOL.md, "On Wayland"). An X
+            # window id an X11 app under Xwayland names is no use here.
+            if not isinstance(app, str) or not app or not B.is_id(window_id):
+                log.warning("an app announced a window as no app (%r) or with no id of its "
+                            "own (%r); ignored", app, window_id)
+                return
+            self.window = AppWindow(self, None, msg)
+            log.info("%s window %s connected (pid %s)", app, window_id, self.pid)
+            self.service.added(self.window)
+            self.send(protocol.message(protocol.ATTACHED, voices=voice_names(),
+                                       **{B.CHORDS: B.CHORDS_APP}))
+            return
         if not protocol.valid_wid(wid):
             log.warning("an app announced %r: not an X window; ignored", wid)
             return
@@ -324,8 +429,8 @@ class Link:
             try:
                 window.close()
             except Exception:
-                log.exception("closing app window 0x%x failed", window.wid)
-            log.info("%s window 0x%x gone: %s", window.kind or "app", window.wid, reason)
+                log.exception("closing app window %s failed", window.label)
+            log.info("%s window %s gone: %s", window.kind or "app", window.label, reason)
         if not self.writer.is_closing():
             self.writer.close()
         self.service.forget(self, window)
@@ -379,13 +484,28 @@ class AppService:
     takes from them.
 
     `path` and `display` are for tests, which run it on a socket and an
-    X connection of their own; the daemon's are used otherwise.
+    X connection of their own; the daemon's are used otherwise. So is
+    `windows` (Wayland: a stand-in for the window manager's
+    WindowFollower; False for none, the apps' `active` alone deciding).
     """
 
-    def __init__(self, *, path: str | None = None, display=None) -> None:
+    current: "AppService | None" = None     # the running one, for the call's Look
+
+    def __init__(self, *, path: str | None = None, display=None, windows=None) -> None:
         self._path = path
         self._own_display = display
         self.display = display
+        self._own_windows = windows
+        self.wm_windows = None          # Wayland: the window manager's WindowFollower
+        self.wm_focus = None            # ... and the window it says has the focus
+        self.on_wayland = False         # no X display: the connection is the window
+        # Wayland's chords: the window whose app forwards keys typed after
+        # its chord until its `last`; the canvas's own keys held meanwhile.
+        self._forwarding: AppWindow | None = None
+        self._held: list = []
+        self._held_timer: asyncio.TimerHandle | None = None
+        self._placing: dict = {}        # Wayland: window -> (workspace, index, ids before, until)
+        self._grace = None              # the focus looked at again once HOLD_GRACE_S is over
         self.links: list[Link] = []
         self.windows: list[AppWindow] = []          # announced, oldest first
         self.active = 0                 # _NET_ACTIVE_WINDOW as last read
@@ -420,16 +540,20 @@ class AppService:
 
     # ── lifecycle ───────────────────────────────────────────────────────
     def start(self) -> None:
-        if self._own_display is None:
+        if self._own_display is None and self._own_windows is None:
             from ..core.daemon import get_daemon
             self.display = get_daemon().display
+        self.on_wayland = self.display is None
         self.running = True
+        AppService.current = self
         self._warned = False
         if self.display is not None:
             self.display.add_keymap_listener(self._keymap_changed)
         self._watch_focus()
+        if self.on_wayland:
+            self._watch_windows()
         self._try_claim()
-        if self._own_display is None:
+        if self._own_display is None and self._own_windows is None:
             # The drop-down made and parked ahead of the first input opened.
             asyncio.get_running_loop().call_later(PREPARE_S, self._prepare)
 
@@ -444,8 +568,14 @@ class AppService:
 
     def stop(self) -> None:
         self.running = False
+        if AppService.current is self:
+            AppService.current = None
         if self.prompt is not None:
             self.prompt.close("shell")
+        if self.wm_windows is not None and self._own_windows is None:
+            self.wm_windows.close()
+        self.wm_windows = None
+        self._placing.clear()
         if self._restarting():
             # Back in a moment: the apps may wait for it a little longer.
             for link in self.links:
@@ -584,6 +714,9 @@ class AppService:
                     self._open_wait[3].cancel()
                 self._open_wait = None
             self.release_keys(window)
+            self._placing.pop(window, None)
+            if self._forwarding is window:
+                self.forwarded(window)
             if window in self.windows:
                 self.windows.remove(window)
                 self._refocus()
@@ -600,7 +733,10 @@ class AppService:
         `place`): its `_NET_WM_DESKTOP` set and read back, then `placed`."""
         d = self.display
         if d is None:
-            window.send(protocol.placed(None, "no X display"))
+            if self.on_wayland:
+                self._place_later(window, msg)
+            else:
+                window.send(protocol.placed(None, "no X display"))
             return
         near = self._sibling(window, msg.get(protocol.WITH))
         try:
@@ -624,15 +760,74 @@ class AppService:
             log.info("%s window 0x%x not placed: %s", window.kind or "app", window.wid, how)
         window.send(protocol.placed(desktop, None if desktop is not None else how))
 
-    def _sibling(self, window: AppWindow, app_id) -> int | None:
-        """The X window of another window of the same app (the same
-        process) that the app names by its own id; None for none."""
+    def _sibling(self, window: AppWindow, app_id, *, wm: bool = False) -> int | None:
+        """The X window (`wm`: the compositor's id) of another window of
+        the same app (the same process) that the app names by its own id;
+        None for none."""
         if app_id is None or not B.is_id(app_id):
             return None
         pid = window.link.pid
-        return next((w.wid for w in reversed(self.windows)
+        return next(((w.wm_id if wm else w.wid) for w in reversed(self.windows)
                      if w is not window and w.kind == window.kind and w.app_id == app_id
                      and w.link.pid == pid), None)
+
+    def _place_later(self, window: AppWindow, msg: dict) -> None:
+        """`place` on Wayland (the module docstring, "Placing"): answered
+        at once with the workspace chosen; the window moved there once
+        the compositor lists it."""
+        f, pid = self.wm_windows, window.link.pid
+        why = None
+        if not f:
+            why = "no window manager to place it with"
+        elif not getattr(f, "ready", True):
+            why = "the window manager's windows are not known yet"
+        elif pid is None:
+            why = "the app's process is unknown"
+        ws = index = None
+        if why is None:
+            near = self._sibling(window, msg.get(protocol.WITH), wm=True)
+            if msg.get(protocol.WITH) is not None and near is not None:
+                at = f.workspace_of(near)
+                if at is not None:
+                    (ws, index), how = at, f"where window {near} is"
+                else:
+                    why = f"window {near} is on no workspace"
+            else:
+                taken = {p[0] for p in self._placing.values()}
+                ws, index, how = f.spare_workspace(taken)
+                if ws is None:
+                    why = how
+        if why is not None:
+            log.info("%s window %s not placed: %s", window.kind or "app", window.label, why)
+            window.send(protocol.placed(None, why))
+            return
+        self._placing[window] = (ws, index, f.ids_of(pid), time.monotonic() + PLACE_FOLLOW_S)
+        log.info("%s window %s goes to workspace %s (%s) once it maps", window.kind or "app",
+                 window.label, index if index is not None else ws, how)
+        window.placed = index
+        window.send(protocol.placed(index if index is not None else ws))
+
+    def _follow_placing(self) -> None:
+        """Windows that `place` waits for: moved once the compositor lists
+        them (the first new window of the app's process)."""
+        f = self.wm_windows
+        now = time.monotonic()
+        for window, (ws, index, before, until) in list(self._placing.items()):
+            if now > until or window.closed:
+                del self._placing[window]
+                log.info("%s window %s not placed: it did not map within %.0f s",
+                         window.kind or "app", window.label, PLACE_FOLLOW_S)
+                continue
+            new = sorted(f.ids_of(window.link.pid) - before - {
+                w.wm_id for w in self.windows if w.wm_id is not None})
+            if not new:
+                continue
+            del self._placing[window]
+            window.wm_id = new[0]
+            f.move(new[0], ws)
+            log.info("%s window %s is window %d of the compositor's: moved to workspace %s",
+                     window.kind or "app", window.label, new[0],
+                     index if index is not None else ws)
 
     def _placement(self, window: AppWindow, near: int | None) -> tuple[int | None, str]:
         d = self.display
@@ -806,10 +1001,41 @@ class AppService:
     def key_press(self, key) -> None:
         """A key on the Wayland canvas while the keyboard is ours: for
         the open input or menu, as X's keys typed on the app's window
-        are (`AppWindow.on_typed`)."""
+        are (`AppWindow.on_typed`); held while the app still forwards
+        keys its window got before (`forwarded`)."""
         p = self.prompt
-        if p is not None and p.open:
+        if p is None or not p.open:
+            return
+        if self._forwarding is not None:
+            self._held.append(key)
+            if self._held_timer is None:
+                self._held_timer = self.later(B.FORWARD_WAIT_S, self._forward_late)
+            return
+        p.key(key)
+
+    def forwarded(self, window: AppWindow) -> None:
+        """The app's `last`: what its window got is all in; the canvas's
+        own keys held meanwhile go in after it."""
+        if self._forwarding is not window:
+            return
+        self._forwarding = None
+        if self._held_timer is not None:
+            self._held_timer.cancel()
+            self._held_timer = None
+        held, self._held = self._held, []
+        for key in held:
+            p = self.prompt
+            if p is None or not p.open:
+                break
             p.key(key)
+
+    def _forward_late(self) -> None:
+        self._held_timer = None
+        window = self._forwarding
+        if window is not None:
+            log.debug("%s window %s: no `last` within %.2f s; the canvas's keys go in",
+                      window.kind, window.label, B.FORWARD_WAIT_S)
+            self.forwarded(window)
 
     def key_release(self, key) -> None:
         pass
@@ -834,6 +1060,87 @@ class AppService:
     def unfollow(self, callback) -> None:
         if callback in self._followers:
             self._followers.remove(callback)
+
+    def _watch_windows(self) -> None:
+        """Wayland: the compositor's windows and focus, as the window
+        manager says them (indigoshell.wm `follow_windows`)."""
+        if self.wm_windows is not None:
+            return
+        if self._own_windows is not None:
+            self.wm_windows = self._own_windows or None
+            return
+        try:
+            from .. import wm
+            self.wm_windows = wm.get().follow_windows(self._on_windows)
+        except Exception:
+            log.exception("apps: the window manager's windows cannot be followed")
+            self.wm_windows = None
+        if self.wm_windows is None:
+            log.info("apps: no window manager says which window has the focus; the apps' "
+                     "own word decides")
+
+    def _on_windows(self, follower) -> None:
+        if not self.running:
+            return
+        if self._placing:
+            self._follow_placing()
+        self.set_focus(follower.focused())
+
+    def set_focus(self, focused) -> None:
+        """Wayland: the window manager says `focused` (a wm.Window, with
+        its client's `pid`; None: no window) has the keyboard focus."""
+        old = self.wm_focus
+        if (old is None) != (focused is None) or (
+                old is not None and (old.id, old.pid) != (focused.id, focused.pid)):
+            self.wm_focus = focused
+            self._refocus()
+
+    def activity(self) -> None:
+        """An app said which of its windows has the focus (`active`)."""
+        self._refocus()
+
+    def _keyboard_held(self) -> bool:
+        """Wayland: the canvas has the keyboard (or let it go a moment
+        ago, and the compositor is giving it back to the window: the
+        focus is looked at again when that moment is over)."""
+        scene = self._scene()
+        kb = getattr(scene, "keyboard", None)
+        if kb is None:
+            return False
+        if kb.wanted:
+            return True
+        left = getattr(kb, "released_at", -1e9) + HOLD_GRACE_S - time.monotonic()
+        if left <= 0:
+            return False
+        if self._grace is None:
+            def over():
+                self._grace = None
+                if self.running:
+                    self._refocus()
+            self._grace = self.later(left + 0.01, over)
+        return True
+
+    def holds_focus(self, window: AppWindow) -> bool:
+        """Whether `window` keeps the focus whatever it and the compositor
+        say now: it has it and the canvas took the keyboard from it."""
+        return window is self.focused and self._keyboard_held()
+
+    def _focused_app(self) -> AppWindow | None:
+        """Wayland's focused app window (the module docstring, "Focus")."""
+        held = self._keyboard_held()
+        focus = self.wm_focus
+        if self.wm_windows is None:
+            candidates = self.windows
+        elif focus is None:
+            return self.focused if held else None
+        else:
+            candidates = [w for w in self.windows if w.link.pid == focus.pid]
+        said = [w for w in candidates if w.active_seq]
+        if said:
+            return max(said, key=lambda w: w.active_seq)
+        if len(candidates) == 1 and candidates[0].active_seq is None and focus is not None:
+            return candidates[0]
+        return None
 
     def _watch_focus(self) -> None:
         d = self.display
@@ -861,7 +1168,10 @@ class AppService:
             self._refocus()
 
     def _refocus(self) -> None:
-        window = self._app_of(self.active) if self.active else None
+        if self.on_wayland:
+            window = self._focused_app()
+        else:
+            window = self._app_of(self.active) if self.active else None
         if window is self.focused:
             return
         self.focused = window
@@ -870,8 +1180,13 @@ class AppService:
             p.close("focus")
         if self._open_wait is not None and self._open_wait[0] is window:
             self._try_open()
-        log.debug("apps: focus on %s", f"{window.kind} 0x{window.wid:x}" if window else
-                  f"0x{self.active:x}, no app's")
+        if self.on_wayland:
+            f = self.wm_focus
+            log.debug("apps: focus on %s", f"{window.kind} {window.label}" if window else
+                      f"window {f.id} ({f.app}, pid {f.pid}), no app's" if f else "no window")
+        else:
+            log.debug("apps: focus on %s", f"{window.kind} 0x{window.wid:x}" if window else
+                      f"0x{self.active:x}, no app's")
         for callback in list(self._followers):
             try:
                 callback(window)
@@ -940,8 +1255,8 @@ class AppService:
             self.prompt.close("shell")
         spec = ((window.bar or {}).get(B.INPUTS if what == "input" else B.MENUS) or {}).get(name)
         if not isinstance(spec, dict):
-            log.info("%s window 0x%x: no %s %r in its bar; the app does without",
-                     window.kind or "app", window.wid, what, name)
+            log.info("%s window %s: no %s %r in its bar; the app does without",
+                     window.kind or "app", window.label, what, name)
             if pressed:
                 self.release_keyboard()
             window.send_event(B.event(B.FALLBACK, **{what: name}))
@@ -959,12 +1274,12 @@ class AppService:
             try:
                 prompt = Prompt(self, window, what, name, spec, chord=chord, anchor=anchor)
             except Exception:
-                log.exception("the %s %r failed to open for %s window 0x%x", what, name,
-                              window.kind or "app", window.wid)
+                log.exception("the %s %r failed to open for %s window %s", what, name,
+                              window.kind or "app", window.label)
                 why = "it failed to open"
         if prompt is None:
-            log.info("%s window 0x%x: its %s %r cannot show (%s); the app does without",
-                     window.kind or "app", window.wid, what, name, why)
+            log.info("%s window %s: its %s %r cannot show (%s); the app does without",
+                     window.kind or "app", window.label, what, name, why)
             if pressed or held:
                 self.release_keyboard()
             window.send_event(B.event(B.FALLBACK, **{what: name}))
@@ -980,27 +1295,46 @@ class AppService:
         self.changed(prompt)
         return True
 
-    def open_asked(self, window: AppWindow, what: str, name) -> None:
+    def open_asked(self, window: AppWindow, what: str, name, *, chord: str | None = None) -> None:
         """An app asks for one of its inputs or menus open with no key
         pressed (`open`): honoured once the window has focus and its bar
         has that input or menu, waiting for both up to OPEN_WAIT_S (a new
         window asks as soon as it is shown: the window manager may focus
         it a moment later, and its first bar may come after the ask);
-        else `fallback`."""
+        else `fallback`. With `chord` (Wayland: the app caught a chord of
+        its bar, PROTOCOL.md section 4) it opens as for a press: the
+        keyboard taken at once, and the app's forwarded keys awaited."""
         old = self._open_wait
         if old is not None:
             if old[3] is not None:
                 old[3].cancel()
             if old[0] is not window:
-                log.info("%s window 0x%x: its %s %r gave way to another window's; the app "
-                         "does without", old[0].kind, old[0].wid, old[1], old[2])
+                log.info("%s window %s: its %s %r gave way to another window's; the app "
+                         "does without", old[0].kind, old[0].label, old[1], old[2])
                 old[0].send_event(B.event(B.FALLBACK, **{old[1]: old[2]}))
-        self._open_wait = (window, what, name, None)
+        if chord is not None and not self.on_wayland:
+            chord = None                # X11 takes its chords itself
+        if chord is not None:
+            # The key reached the app's window: it has the focus, whatever
+            # the compositor and the app have said about it so far.
+            if self.focused is not window and window in self.windows:
+                if window.active_seq is not None:
+                    window.active_seq = next(AppWindow._actives)
+                self._refocus()
+        self._open_wait = (window, what, name, None, chord)
         if self._try_open():
             return
-        log.debug("%s window 0x%x asks for its %s %r: waiting for %s", window.kind, window.wid,
-                  what, name, self._open_missing(window, what, name))
-        self._open_wait = (window, what, name, self.later(B.OPEN_WAIT_S, self._open_late))
+        log.debug("%s window %s asks for its %s %r: waiting for %s", window.kind,
+                  window.label, what, name, self._open_missing(window, what, name))
+        self._open_wait = (window, what, name, self.later(self._open_wait_s, self._open_late),
+                           chord)
+
+    @property
+    def _open_wait_s(self) -> float:
+        """How long an `open` waits: a new window on Wayland has the focus
+        only once its first frame shows (a GPU-composed Flux window's
+        takes most of a second), on X11 from its map."""
+        return B.OPEN_WAIT_WAYLAND_S if self.on_wayland else B.OPEN_WAIT_S
 
     def _open_missing(self, window: AppWindow, what: str, name) -> str | None:
         """What an asked-for open still waits for; None when nothing."""
@@ -1017,23 +1351,34 @@ class AppService:
         wait = self._open_wait
         if wait is None:
             return False
-        window, what, name, timer = wait
+        window, what, name, timer, chord = wait
         if window.closed or self._open_missing(window, what, name) is not None:
             return False
         self._open_wait = None
         if timer is not None:
             timer.cancel()
-        self.open_prompt(window, what, name, pressed=False)
+        if chord is not None:
+            if self.open_prompt(window, what, name, pressed=True, chord=chord):
+                self._forward_from(window)
+        else:
+            self.open_prompt(window, what, name, pressed=False)
         return True
+
+    def _forward_from(self, window: AppWindow) -> None:
+        """The app's window will forward the keys it gets until its `last`."""
+        if self._forwarding is not None and self._forwarding is not window:
+            self.forwarded(self._forwarding)
+        self._forwarding = window
+        self._held = []
 
     def _open_late(self) -> None:
         wait, self._open_wait = self._open_wait, None
         if wait is None:
             return
-        window, what, name, _timer = wait
-        log.info("%s window 0x%x: its %s %r not opened: still waiting for %s after %.1f s; "
-                 "the app does without", window.kind, window.wid, what, name,
-                 self._open_missing(window, what, name) or "nothing", B.OPEN_WAIT_S)
+        window, what, name, _timer, _chord = wait
+        log.info("%s window %s: its %s %r not opened: still waiting for %s after %.1f s; "
+                 "the app does without", window.kind, window.label, what, name,
+                 self._open_missing(window, what, name) or "nothing", self._open_wait_s)
         window.send_event(B.event(B.FALLBACK, **{what: name}))
 
     def _cannot_show(self, window: AppWindow) -> str | None:
@@ -1075,6 +1420,12 @@ class AppService:
         if prompt is not self.prompt:
             return
         self.prompt = None
+        if self._forwarding is not None:
+            self._forwarding = None         # the app stops at `closed`; nothing to wait for
+            self._held = []
+            if self._held_timer is not None:
+                self._held_timer.cancel()
+                self._held_timer = None
         try:
             self._drop_hide()
         except Exception:

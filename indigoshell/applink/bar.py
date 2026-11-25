@@ -18,13 +18,17 @@ else; an app may write its JSON by hand as well, in any language.
     menu(rows, chords)                      a MENU, for `menus`
     row(id, title, ...)                     a ROW, in rows and answers
     answer(input, seq, rows, ...)           the answer to a `query`
+    open_input(id, chord) / open_menu(...)  `open`, with the chord the app caught
+    active(bool)                            the window's focus, as the app has it
+    key(keysym, text, mods) / keys(...)     a KEY, and `keys` (Wayland's type-ahead)
     event(type, **fields)                   a message from the shell
 
 `bar_problems(msg)` lists what keeps a `bar` from being shown (empty: it
 is good), as the shell checks it before it takes one: a missing or
 repeated id, `current` naming no tab, `opens` naming nothing, a chord
 that is none, the bounds. Kinds, keys and icon names it does not know
-are no problem: a side ignores those.
+are no problem: a side ignores those. `keys_problems(msg)` does the
+same for `keys`.
 """
 
 APP = "app"
@@ -36,6 +40,10 @@ X11 = "x11"
 BAR = "bar"
 ANSWER = "answer"
 OPEN = "open"
+ACTIVE = "active"
+KEYS = "keys"
+CHORD = "chord"             # `open`'s: the chord the app caught (Wayland)
+LAST = "last"               # `keys`'s: the window has lost the keyboard
 # Shell -> app.
 SELECT, CLOSE, MOVE, DETACH = "select", "close", "move", "detach"
 PRESS, QUERY, SUBMIT, ACT, PICK = "press", "query", "submit", "act", "pick"
@@ -43,6 +51,10 @@ CLOSED, FALLBACK = "closed", "fallback"
 EVENTS = (SELECT, CLOSE, MOVE, DETACH, PRESS, QUERY, SUBMIT, ACT, PICK, CLOSED, FALLBACK)
 # Why an input or menu closed (`closed`'s `by`).
 BY = ("enter", "escape", "click", "focus", "shell")
+# `attached`'s `chords`: the shell takes no keys from the window, the app
+# catches its bar's chords and sends `open` with the chord (Wayland).
+CHORDS = "chords"
+CHORDS_APP = "app"
 
 # ── the bar ─────────────────────────────────────────────────────────────
 START, END, INPUTS, MENUS = "start", "end", "inputs", "menus"
@@ -72,6 +84,9 @@ INPUTS_MAX = 50             # inputs, and menus, each
 BUTTONS_MAX = 8             # toggles in one input's box
 ENTER_WAIT_S = 0.25         # Enter waits this long for the latest text's answer
 OPEN_WAIT_S = 0.5           # `open` waits this long for its window's focus and its bar
+OPEN_WAIT_WAYLAND_S = 2.0   # ... on Wayland, where a window is focused once its first frame shows
+FORWARD_WAIT_S = 0.25       # the shell's own keys wait this long for the app's `last`
+KEYS_MAX = 200              # KEYs in one `keys`
 
 MODIFIERS = ("ctrl", "shift", "alt", "super")
 # Keys a chord may end in besides one letter or digit (a row action's,
@@ -205,12 +220,31 @@ def count(text_: str, color: str | None = None) -> dict:
     return _some(text=text_, color=color)
 
 
-def open_input(input_id) -> dict:
-    return message(OPEN, input=input_id)
+def open_input(input_id, chord: str | None = None) -> dict:
+    """`open`; `chord`: the chord of the bar the app caught itself
+    (`attached`'s `chords: "app"`), which is a key pressed."""
+    return message(OPEN, input=input_id, **_some(chord=chord))
 
 
-def open_menu(menu_id) -> dict:
-    return message(OPEN, menu=menu_id)
+def open_menu(menu_id, chord: str | None = None) -> dict:
+    return message(OPEN, menu=menu_id, **_some(chord=chord))
+
+
+def active(value: bool) -> dict:
+    """The window (or a dialog or popup of it) has the keyboard focus."""
+    return message(ACTIVE, active=bool(value))
+
+
+def key(keysym: int, text_: str = "", mods=()) -> dict:
+    """A KEY: one press as typed (keysym, text, the modifiers held)."""
+    mods = [m for m in MODIFIERS if m in set(mods)]
+    return {"keysym": int(keysym), **_some(text=text_ or None, mods=mods or None)}
+
+
+def keys(keys_: list, *, last: bool = False) -> dict:
+    """`keys`: what the window got after a caught chord, before the shell
+    had the keyboard; `last` once it has lost the keyboard."""
+    return message(KEYS, keys=list(keys_), **_some(last=last))
 
 
 def announce(app: str, window, x11: int | None = None) -> dict:
@@ -460,6 +494,35 @@ def answer_problems(msg) -> list[str]:
         p.add("count", f"{c!r} is not {{text, color?}}")
     if msg.get("selected") is not None and not is_id(msg["selected"]):
         p.add("selected", "not an id")
+    return list(p)
+
+
+def keys_problems(msg) -> list[str]:
+    """What is wrong with a `keys`; empty when every KEY can be typed."""
+    p = _Problems()
+    if not isinstance(msg, dict):
+        return ["not a message"]
+    keys_ = msg.get("keys")
+    if not isinstance(keys_, list):
+        return ["keys: not a list"]
+    if len(keys_) > KEYS_MAX:
+        p.add("keys", f"{len(keys_)} keys, more than {KEYS_MAX}")
+    for i, k in enumerate(keys_[:KEYS_MAX]):
+        where = f"keys[{i}]"
+        if not isinstance(k, dict):
+            p.add(where, "not a key")
+            continue
+        sym = k.get("keysym")
+        if isinstance(sym, bool) or not isinstance(sym, int) or not 0 < sym < 1 << 29:
+            p.add(where, f"keysym {sym!r} is none")
+        if k.get("text") is not None and not _string(k["text"], 32):
+            p.add(where, "text: not a short string")
+        mods = k.get("mods")
+        if mods is not None and not (isinstance(mods, list)
+                                     and all(m in MODIFIERS for m in mods)):
+            p.add(where, f"mods {mods!r}: not of {', '.join(MODIFIERS)}")
+    if not _bool(msg.get("last")):
+        p.add("last", "not a bool")
     return list(p)
 
 

@@ -370,6 +370,7 @@ class KeyboardRouter:
         self.focused = False            # the compositor's keyboard focus is on the canvas
 
     @property
+        self.released_at = -1e9         # when the last taker let go (monotonic)
     def wanted(self) -> bool:
         return self.available and bool(self.takers)
 
@@ -387,6 +388,8 @@ class KeyboardRouter:
         del self.takers[token]
         if self.wanted != had and self.on_change is not None:
             self.on_change()
+        if had and not self.wanted:
+            self.released_at = time.monotonic()
 
     def holds(self, token) -> bool:
         return token in self.takers
