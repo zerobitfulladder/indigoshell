@@ -54,6 +54,7 @@ import time
 
 import skia
 
+from .. import wm
 from ..core import paths
 from ..services import clipboard
 from . import desk
@@ -62,8 +63,7 @@ from ..core.hands import DECLINED, Call, Hand, HandError, text_block
 log = logging.getLogger(__name__)
 
 # The desktop's helpers, looked up here so tests can stand in for them.
-_run = desk.run
-_qtile = desk.qtile
+_wm = wm.get
 decode = desk.decode
 open_target = desk.open_target
 bring_forward = desk.bring_forward
@@ -121,47 +121,19 @@ def png_block(image: skia.Image, max_side: int = SHOT_MAX_SIDE
 
 async def _screenshot(call: Call) -> list[dict]:
     args = call.args
-    target = args.get("target") or "screen"
-    crop = None
-    what = "the whole screen"
     try:
-        if target == "monitor":
-            screens = await _qtile("-o", "root", "-f", "get_screens") or []
-            if args.get("monitor") is not None:
-                index = int(args["monitor"])
-            else:
-                index = int((await _qtile("-o", "screen", "-f", "info")
-                             or {}).get("index", 0))
-            screen = next((s for s in screens if s.get("index") == index),
-                          None)
-            if screen is None:
-                raise HandError(f"no monitor {index}; there are "
-                                f"{len(screens)} (0 to {len(screens) - 1})")
-            crop = (screen["x"], screen["y"], screen["width"],
-                    screen["height"])
-            what = f"monitor {index}"
-        elif target == "window":
-            wid = args.get("window_id")
-            info = await (_qtile("-o", "window", str(int(wid)), "-f", "info")
-                          if wid is not None
-                          else _qtile("-o", "window", "-f", "info"))
-            crop = (info["x"], info["y"], info["width"], info["height"])
-            cls = (info.get("wm_class") or ["?"])[-1]
-            what = f"window {info.get('id', wid)} ({cls}: {info.get('name', '')})"
-    except (KeyError, TypeError, ValueError, RuntimeError) as e:
-        raise HandError(f"can't find what to capture: {e}") from None
-    argv = ["import", "-silent", "-window", "root"]
-    if crop is not None:
-        x, y, w, h = crop
-        argv += ["-crop", f"{w}x{h}+{x}+{y}", "+repage"]
-    rc, data, err = await _run(argv + ["png:-"], timeout=20)
-    image = decode(data) if rc == 0 else None
+        shot = await _wm().screenshot(
+            args.get("target") or "screen", monitor=args.get("monitor"),
+            window=args.get("window_id"))
+    except wm.WMError as e:
+        raise HandError(str(e)) from None
+    image = decode(shot.png)
     if image is None:
-        raise HandError(f"the screenshot failed: {err or rc}")
+        raise HandError("the screenshot failed: it came back as no image")
     block, tw, th = png_block(image)
     scale = tw / image.width()
-    note = (f"{what}, {image.width()}x{image.height()}, shown at {tw}x{th}"
-            + (f" (scale {scale:.2f})" if scale < 1 else "")
+    note = (f"{shot.what}, {image.width()}x{image.height()}, shown at "
+            f"{tw}x{th}" + (f" (scale {scale:.2f})" if scale < 1 else "")
             + ". The call overlay is in the top-right corner when open.")
     return [block, text_block(note)]
 
@@ -204,28 +176,29 @@ OPEN = Hand(
 
 async def _windows(_call: Call) -> list[dict]:
     try:
-        groups = await _qtile("-o", "root", "-f", "get_groups")
-        wins = await _qtile("-o", "root", "-f", "windows")
-        current = await _qtile("-o", "group", "-f", "info")
+        spaces = await _wm().workspaces()
+        wins = await _wm().windows()
     except RuntimeError as e:
         raise HandError(str(e)) from None
-    by_group: dict[str, list] = {}
-    for w in wins or []:
-        by_group.setdefault(str(w.get("group")), []).append(w)
+    by_space: dict[str, list] = {}
+    for w in wins:
+        by_space.setdefault(w.workspace, []).append(w)
+    # Which monitor each is on, where workspaces belong to one (niri's).
+    several = len({s.output for s in spaces}) > 1
     lines = []
-    for name in groups or {}:
-        mark = " (shown)" if current and current.get("name") == name else ""
-        lines.append(f"workspace {name}{mark}")
-        for w in by_group.get(name, []):
-            cls = (w.get("wm_class") or ["?"])[-1]
-            lines.append(f"  [{w['id']}] {cls}: {w.get('name', '')}")
+    for space in spaces:
+        on = f" on {space.output}" if several and space.output else ""
+        lines.append(f"workspace {space.name}{on}"
+                     + (" (shown)" if space.shown else ""))
+        for w in by_space.get(space.name, []):
+            lines.append(f"  [{w.id}] {w.app}: {w.title}")
     return _texts("\n".join(lines) or "no workspaces")
 
 
 WINDOWS = Hand(
     "windows",
-    "The workspaces (qtile groups), which one is shown, and the windows on "
-    "each: [window id] app: title. The ids are what laptop_focus and "
+    "The workspaces, which one is shown, and the windows on each: "
+    "[window id] app: title. The ids are what laptop_focus and "
     "laptop_screenshot take.",
     _windows)
 
@@ -234,16 +207,14 @@ async def _focus(call: Call) -> list[dict]:
     args = call.args
     try:
         if args.get("window_id") is not None:
-            wid = str(int(args["window_id"]))
-            info = await _qtile("-o", "window", wid, "-f", "info")
-            await _qtile("-o", "group", str(info["group"]), "-f", "toscreen")
-            await _qtile("-o", "window", wid, "-f", "focus")
-            return _texts(f"Focused {info.get('name', wid)}, on workspace "
-                          f"{info['group']}.")
+            wid = int(args["window_id"])
+            win = await _wm().focus_window(wid)
+            return _texts(f"Focused {win.title or wid}, on workspace "
+                          f"{win.workspace}.")
         name = str(args.get("workspace") or "").strip()
         if not name:
             raise HandError("give a window_id or a workspace")
-        await _qtile("-o", "group", name, "-f", "toscreen")
+        await _wm().focus_workspace(name)
         return _texts(f"Workspace {name} is shown.")
     except (RuntimeError, KeyError, TypeError, ValueError) as e:
         raise HandError(f"can't focus it: {e}") from None
@@ -287,11 +258,10 @@ LAUNCH = Hand(
 async def _read_clipboard(call: Call) -> list[dict]:
     selection = "primary" if call.args.get("selection") == "primary" \
         else "clipboard"
-    rc, out, err = await _run(["xclip", "-selection", selection, "-o"],
-                              timeout=5)
-    if rc != 0:
-        raise HandError(err or f"the {selection} is empty or not text")
-    value = out.decode(errors="replace")
+    try:
+        value = await clipboard.paste(selection)
+    except wm.WMError as e:
+        raise HandError(str(e)) from None
     if len(value) > CLIPBOARD_MAX:
         value = (value[:CLIPBOARD_MAX]
                  + f"\n… (cut: {len(value)} characters in all)")
@@ -312,7 +282,7 @@ async def _write_clipboard(call: Call) -> list[dict]:
     if not value:
         raise HandError("give some text")
     if not clipboard.copy(value):
-        raise HandError("xclip is missing")
+        raise HandError(f"{_wm().clipboard_tool} is missing")
     return _texts("Copied.")
 
 

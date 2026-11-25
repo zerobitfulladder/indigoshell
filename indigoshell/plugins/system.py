@@ -4,6 +4,7 @@ The current layout, profile and mode are read when the menu opens, so
 the choice already in effect is lit.
 """
 
+from .. import wm
 from ..plugin import Item, Menu, field
 
 # tuned's own names read as jargon, so the chips carry friendly labels
@@ -21,6 +22,14 @@ _active_gpu = field(["optimus-manager", "--print-mode"], "Current mode")
 
 
 async def _layout_items():
+    # Under niri the layouts are its own (its config's xkb), switched
+    # over its IPC; on X the shell sets them with setxkbmap.
+    own = await wm.get().keyboard_layouts()
+    if own is not None:
+        return [Item(name.upper(),
+                     lambda i=i: wm.get().switch_keyboard_layout(i),
+                     active=active)
+                for i, (name, active) in enumerate(own)]
     current = await _active_layout()
     # caps:escape is re-applied on every switch because setxkbmap resets
     # options when the layout changes.
@@ -50,8 +59,9 @@ MENUS = [
         Item("SUSPEND", ["systemctl", "suspend"]),
         Item("POWEROFF", ["systemctl", "poweroff"]),
         Item("REBOOT", ["systemctl", "reboot"]),
-        # qtile's IPC shutdown — adjust if you swap WMs.
-        Item("LOGOUT", ["qtile", "cmd-obj", "-o", "cmd", "-f", "shutdown"]),
+        # The window manager's own way out (qtile's shutdown, niri's
+        # quit without its confirmation): indigoshell/wm.
+        Item("LOGOUT", lambda: wm.get().logout()),
     ]),
     Menu("layout", "LAYOUT", _layout_items),
     Menu("profile", "PROFILE", _profile_items),

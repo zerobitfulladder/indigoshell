@@ -1,51 +1,26 @@
 """The desktop, for what the shell does there on the agent's behalf and
-the user's: running a program, asking qtile, opening a link or a file in
-its usual app and bringing that window forward on its workspace.
+the user's: running a program, asking the window manager (indigoshell/wm:
+qtile on X, niri on Wayland), opening a link or a file in its usual app
+and bringing that window forward on its workspace.
 
 laptop.py's hands use these (the hub's agent acting on the laptop), and
 the call opens a link clicked in a reply with `open_target`.
 """
 
 import asyncio
-import json
 import os
 import re
-from typing import Any
 
 import skia
 
+from .. import wm
 from ..services import proc
+# A subprocess's (exit code, stdout, stderr), and `qtile cmd-obj` — kept
+# here under their old names for the callers that use them.
+from ..wm import run
+from ..wm.x11 import qtile
 
-
-async def run(argv: list[str], *, data: bytes | None = None,
-               timeout: float = 15.0) -> tuple[int, bytes, str]:
-    """A subprocess's exit code, stdout bytes and stderr text."""
-    try:
-        p = await asyncio.create_subprocess_exec(
-            *argv, stdin=asyncio.subprocess.PIPE if data is not None
-            else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    except OSError as e:
-        return 127, b"", str(e)
-    try:
-        out, err = await asyncio.wait_for(p.communicate(data), timeout)
-    except asyncio.TimeoutError:
-        p.kill()
-        await p.wait()
-        return 124, b"", f"{argv[0]} timed out"
-    return p.returncode or 0, out, err.decode(errors="replace").strip()
-
-
-async def qtile(*args: str) -> Any:
-    """`qtile cmd-obj ARGS`, its answer as JSON where it is."""
-    rc, out, err = await run(["qtile", "cmd-obj", *args])
-    if rc != 0:
-        raise RuntimeError(err or f"qtile cmd-obj {' '.join(args)} failed")
-    text = out.decode(errors="replace").strip()
-    try:
-        return json.loads(text) if text else None
-    except ValueError:
-        return text
+__all__ = ["run", "qtile", "decode", "bring_forward", "open_target"]
 
 
 def decode(data: bytes) -> skia.Image | None:
@@ -60,39 +35,36 @@ async def bring_forward(desktop_id: str) -> str:
     """Show the window of the app behind `desktop_id` (what xdg-open
     just handed something to) on its workspace, and focus it.
 
-    Matched by WM_CLASS against the desktop id's name ("firefox" from
-    firefox.desktop, "celluloid" from io.github…Celluloid.desktop). A
-    browser opens a link as a tab in its last window, which is the
-    focused window of its workspace; an app that was not running yet
-    maps its window on the current workspace, so finding none is fine.
+    Matched by class (X) or app id (Wayland) against the desktop id's
+    name ("firefox" from firefox.desktop, "celluloid" from
+    io.github…Celluloid.desktop). A browser opens a link as a tab in its
+    last window, which is the focused window of its workspace; an app
+    that was not running yet maps its window on the current workspace,
+    so finding none is fine.
     """
     if not desktop_id:
         return ""
     stem = desktop_id.removesuffix(".desktop").lower()
     names = {stem, stem.rsplit(".", 1)[-1]}
-    matches: list = []
+    matches: list[wm.Window] = []
     for _ in range(12):
         await asyncio.sleep(0.25)
         try:
-            wins = await qtile("-o", "root", "-f", "windows") or []
+            wins = await wm.get().windows()
         except RuntimeError:
             return ""
         matches = [w for w in wins
-                   if names & {c.lower() for c in w.get("wm_class") or []}]
+                   if names & {c.lower() for c in w.classes}]
         if matches:
             break
     if not matches:
         return ""
+    pick = next((w for w in matches if w.active), matches[0])
     try:
-        groups = await qtile("-o", "root", "-f", "get_groups") or {}
-        pick = next((w for w in matches
-                     if (groups.get(str(w.get("group"))) or {}).get("focus")
-                     == w.get("name")), matches[0])
-        await qtile("-o", "group", str(pick["group"]), "-f", "toscreen")
-        await qtile("-o", "window", str(pick["id"]), "-f", "focus")
-    except (RuntimeError, KeyError, TypeError):
+        await wm.get().focus_window(pick.id)
+    except RuntimeError:
         return ""
-    return f", on workspace {pick['group']}"
+    return f", on workspace {pick.workspace}"
 
 
 async def open_target(target: str, cwd: str) -> tuple[bool, str]:

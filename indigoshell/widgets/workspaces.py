@@ -1,25 +1,20 @@
-"""Workspace indicators driven by EWMH root-window properties.
+"""Workspace indicators, from the window manager (indigoshell/wm).
 
 Each workspace is a stack of four bars; the bottom N light up for N
 windows on that desktop (capped at four). The current desktop uses a
-different pair of colours, and a workspace holding a window with
-_NET_WM_STATE_DEMANDS_ATTENTION blinks in a ring pattern.
+different pair of colours, and a workspace holding a window that wants
+attention blinks in a ring pattern.
 
-Event-driven, no polling: PropertyNotify on the root covers
-_NET_CURRENT_DESKTOP / _NET_NUMBER_OF_DESKTOPS / _NET_CLIENT_LIST, and
-each client is watched for _NET_WM_DESKTOP and _NET_WM_STATE.
-
-This shares the daemon's one xcffib connection rather than opening its
-own, so there is no second event queue that could buffer events during a
-reply round-trip, and no polling tick to drain it.
+Event-driven, no polling: the window manager's follower (EWMH root
+properties on X, niri's event stream) calls `_apply` with the readout
+whenever it may have changed.
 """
 
 import logging
 
 import skia
-import xcffib.xproto as xp
 
-from .. import text as textmod, theme
+from .. import text as textmod, theme, wm
 from .base import Size, Widget
 
 log = logging.getLogger(__name__)
@@ -63,11 +58,7 @@ class Workspaces(Widget):
         self._per_desktop: list[int] = []
         self._urgent: list[bool] = []
         self._pending: int | None = None
-
-        self._clients_dirty = True
-        self._desktop_cache: dict[int, int] = {}
-        self._urgent_cache: dict[int, bool] = {}
-        self._watched: set[int] = set()
+        self._follower: wm.Follower | None = None
 
         self._ring_idx = 0
         self._ring_visible = True
@@ -77,78 +68,21 @@ class Workspaces(Widget):
     # ── lifecycle ───────────────────────────────────────────────────────
     def attach(self, window) -> None:
         super().attach(window)
-        display = window.display
-        display.add_root_listener(self._on_root_property)
-        self._refresh()
+        self._follower = wm.get().follow_workspaces(window, self._apply)
 
-    def _on_root_property(self, ev) -> None:
-        display = self.window.display
-        name = None
-        try:
-            name = display.conn.core.GetAtomName(ev.atom).reply().name.to_string()
-        except Exception:
-            return
-        if name in ("_NET_CURRENT_DESKTOP", "_NET_NUMBER_OF_DESKTOPS"):
-            self._refresh()
-        elif name == "_NET_CLIENT_LIST":
-            self._clients_dirty = True
-            self._refresh()
-
-    def _on_client_property(self, ev) -> None:
-        """A watched client changed desktop or urgency."""
-        if not isinstance(ev, xp.PropertyNotifyEvent):
-            # Someone else here may select more on this window (the
-            # display merges masks per window): not ours.
-            return
-        self._desktop_cache.pop(ev.window, None)
-        self._urgent_cache.pop(ev.window, None)
-        self._clients_dirty = True
-        self._refresh()
+    def detach(self) -> None:
+        if self._follower is not None:
+            self._follower.close()
+            self._follower = None
+        super().detach()
 
     # ── state ───────────────────────────────────────────────────────────
-    def _refresh(self) -> None:
-        if self.window is None:
-            return
-        d = self.window.display
-        root = d.root
-        count = d.get_int(root, "_NET_NUMBER_OF_DESKTOPS") or 0
-        current = d.get_int(root, "_NET_CURRENT_DESKTOP") or 0
-        clients = d.get_ints(root, "_NET_CLIENT_LIST", 512)
+    def _apply(self, state: wm.WorkspaceState) -> None:
+        count, current = state.count, state.current
+        per, urgent = list(state.windows), list(state.urgent)
 
         if current == self._pending:
             self._pending = None
-
-        if self._clients_dirty:
-            desktops: dict[int, int] = {}
-            urgents: dict[int, bool] = {}
-            demands = d.atom("_NET_WM_STATE_DEMANDS_ATTENTION")
-            for xid in clients:
-                if xid not in self._watched:
-                    d.watch_window_properties(xid)
-                    d.on(xid, self._on_client_property)
-                    self._watched.add(xid)
-                desk = self._desktop_cache.get(xid)
-                if desk is None:
-                    desk = d.get_int(xid, "_NET_WM_DESKTOP")
-                if desk is not None:
-                    desktops[xid] = desk
-                urgent = self._urgent_cache.get(xid)
-                if urgent is None:
-                    urgent = demands in d.get_ints(xid, "_NET_WM_STATE", 32)
-                urgents[xid] = urgent
-            self._desktop_cache, self._urgent_cache = desktops, urgents
-            for stale in self._watched - set(clients):
-                d.off(stale, self._on_client_property)
-            self._watched &= set(clients)
-            self._clients_dirty = False
-
-        per = [0] * count
-        urgent = [False] * count
-        for xid, desk in self._desktop_cache.items():
-            if 0 <= desk < count:
-                per[desk] += 1
-                if self._urgent_cache.get(xid):
-                    urgent[desk] = True
 
         changed = (count, current, per, urgent) != (
             self._count, self._current, self._per_desktop, self._urgent)
@@ -302,7 +236,5 @@ class Workspaces(Widget):
         self._switch(target)
 
     def _switch(self, index: int) -> None:
-        if self.window is None:
-            return
-        self.window.display.send_client_message(
-            self.window.display.root, "_NET_CURRENT_DESKTOP", [index])
+        if self._follower is not None:
+            self._follower.show(index)

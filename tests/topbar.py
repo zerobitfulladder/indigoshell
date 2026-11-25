@@ -328,14 +328,15 @@ def test_display() -> None:
 
     ws = Workspaces()
     delivered, refreshed = [], []
-    real_handler, real_refresh = ws._on_client_property, ws._refresh
+    ws.attach(FakeWindow())
+    follower = ws._follower                      # the X11 one (indigoshell/wm/x11.py)
+    real_handler, real_refresh = follower._on_client_property, follower._refresh
 
     def spy_refresh():
         refreshed.append(1)
         real_refresh()
 
-    ws._refresh = spy_refresh
-    ws.attach(FakeWindow())
+    follower._refresh = spy_refresh
     other_events = []
     d.select(w5, S, "other")
     d.on(w5, other_events.append)
@@ -360,7 +361,7 @@ def test_display() -> None:
           len(refreshed) == props == 1, f"refreshes {len(refreshed)}, property events {props}")
     d._handlers[w5] = handlers                   # spy off
     clients.clear()
-    ws._clients_dirty = True
+    follower._clients_dirty = True
     real_refresh()                               # w5 is stale now
     other_events.clear()
     resize(w5, 90)

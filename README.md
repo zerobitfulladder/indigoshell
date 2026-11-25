@@ -374,7 +374,8 @@ indigoshell/
     laptop.py       ─ the desktop as those tools: open, screenshot, windows,
                       apps, clipboard, shell, background jobs, files
     desk.py         ─ what those and the call share: running a program,
-                      qtile, opening a link or a file on its workspace
+                      the window manager, opening a link or a file on its
+                      workspace
     progress.py     ─ long commands' progress, over a datagram socket (the
                       call draws the bars; nothing on the hub reports yet)
     watch.py        ─ the reporting end; the yt-dlp/ffmpeg/curl/rsync wrapper
@@ -397,6 +398,14 @@ indigoshell/
     drop.py         ─ the drop-down under the bar: the rows, unrolling
     catalog.py      ─ the app catalog as an input's rows
     launcher.py     ─ MOD+D's launcher: that input framed as a centred panel
+  wm/               ─ the window manager and display server outside the core:
+                      workspaces and windows, screenshots, clipboard, outputs,
+                      keyboard layouts, logging out; niri if $NIRI_SOCKET is set
+    x11.py          ─ X11 + qtile: qtile cmd-obj, EWMH, xclip, import, xrandr
+    niri.py         ─ niri over its IPC socket (event stream for the bar)
+    wayland.py      ─ wl-clipboard, and screenshots over wlr-screencopy
+    tiling.py       ─ for niri: qtile's two columns (python3 -m
+                      indigoshell.wm.tiling, standard library only)
   backend/
     x11.py          ─ the process's single xcffib connection + event pump
     gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback
@@ -428,7 +437,7 @@ indigoshell/
     desktop_entry.py─ .desktop parsing, visibility, Exec -> argv
     icons.py        ─ icon theme lookup (indexed once) and loading
     proc.py         ─ run / fire / launch / subscribe, all coroutines
-    clipboard.py    ─ copy to CLIPBOARD / PRIMARY through xclip
+    clipboard.py    ─ copy to CLIPBOARD / PRIMARY (xclip, or wl-copy on niri)
     text_effects.py ─ scramble and other arrival animations
   widgets/          ─ measure / arrange / paint / hit, and nothing else
     base.py           layout.py    label.py     panel.py    tabs.py
@@ -646,6 +655,7 @@ rather than failing:
 | `xdg-open`, `xdg-mime` | the agent's `open` hand, links clicked in a reply |
 | ImageMagick `import` | the agent's screenshots |
 | `qtile` (`qtile cmd-obj`) | the agent's window and workspace hands; bringing what it opens forward |
+| `wl-copy`, `wl-paste` (wl-clipboard) | on niri, in place of `xclip` |
 
 A Nerd Font is expected for the glyphs; `FiraCode Nerd Font Mono` is the
 theme default.

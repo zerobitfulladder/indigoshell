@@ -1,10 +1,11 @@
 """Display menu: the connected outputs; pick one to use it alone.
 
-The chosen output becomes the only active one and the primary, at its
-largest resolution and the fastest refresh rate that resolution offers,
-both taken from xrandr's mode table. Every other output goes off in the
-same xrandr call — one call, not one per output, or there is a frame
-with no output enabled and X collapses the screen to 640x480. The output
+The chosen output becomes the only active one and the primary (on X; niri
+has no primary), at its largest resolution and the fastest refresh rate
+that resolution offers, both taken from the output's mode table. Every
+other output goes off with it — on X in the same xrandr call, one call
+and not one per output, or there is a frame with no output enabled and X
+collapses the screen to 640x480 (indigoshell/wm says how). The output
 already in sole use is lit.
 
 The pick is remembered (`display.output` in the state file) and
@@ -15,20 +16,22 @@ the monitor back in returns to it. With nothing remembered the screen
 is left alone — unless every active output has gone, which is the
 unplugged-and-dark case, and then the panel comes on. A restore that
 would change nothing is skipped, so neither a `reload` nor the burst of
-events its own xrandr call raises ever re-modesets the screen.
+events its own xrandr call raises ever re-modesets the screen. On niri
+the choice is a temporary output change, which niri drops when its
+config's outputs are reloaded; the next shell start enforces it again.
 
 While braindance (the VITURE glasses session) runs, it owns the outputs:
 it lights the glasses alone and switches their modes itself. It marks
 its whole session with a RandR monitor named `braindance`, and restore()
-leaves the screen alone while that monitor exists.
+leaves the screen alone while that monitor exists (X only: niri has no
+RandR monitors).
 """
 
 import logging
-import re
 
+from .. import wm
 from ..core import state
 from ..plugin import Item, Menu
-from ..services import proc
 
 log = logging.getLogger(__name__)
 
@@ -36,44 +39,12 @@ STATE_KEY = "display.output"
 _EMBEDDED_PREFIXES = ("eDP", "LVDS")
 _BRAINDANCE_MONITOR = "braindance"
 
-_HEADER = re.compile(r"^(\S+) (connected|disconnected)( primary)?")
-_GEOMETRY = re.compile(r"\d+x\d+\+\d+\+\d+")
-_MODE = re.compile(r"^\s+(\d+)x(\d+)i?\s+(.*)$")
-_RATE = re.compile(r"(\d+(?:\.\d+)?)([*+]*)")
-# ` 0: braindance 1920/309x1080/174+0+0  DP-0` (name may carry + and *)
-_MONITOR = re.compile(r"^\s*\d+: [+*]*(\S+) ", re.MULTILINE)
 
-
-async def _query():
-    """Outputs from `xrandr --query`, in order.
-
-    Each is a dict: name, connected, primary, active (has a current
-    geometry), modes as (width, height, rate) triples, and current —
-    the mode xrandr marks with `*`, or None.
-    """
-    out = await proc.run(["xrandr", "--query"])
-    outputs: list[dict] = []
-    for line in out.splitlines():
-        m = _HEADER.match(line)
-        if m:
-            outputs.append({
-                "name": m.group(1),
-                "connected": m.group(2) == "connected",
-                "primary": bool(m.group(3)),
-                "active": bool(_GEOMETRY.search(line)),
-                "modes": [],
-                "current": None,
-            })
-            continue
-        mm = _MODE.match(line)
-        if mm and outputs:
-            w, h = int(mm.group(1)), int(mm.group(2))
-            for rate, flags in _RATE.findall(mm.group(3)):
-                mode = (w, h, float(rate))
-                outputs[-1]["modes"].append(mode)
-                if "*" in flags:
-                    outputs[-1]["current"] = mode
-    return outputs
+async def _query() -> list[wm.Output]:
+    """The outputs, in order: name, connected, primary, active (lit,
+    with a place on the screen), modes as (width, height, rate), and
+    current — the mode in use, or None."""
+    return await wm.get().outputs()
 
 
 def _best_mode(modes):
@@ -84,58 +55,52 @@ def _best_mode(modes):
 
 
 def _is_sole(outputs, name: str) -> bool:
-    """True when `name` is the only active output, is primary, and runs
-    its best mode — nothing a switch to it would change."""
-    target = next((o for o in outputs if o["name"] == name), None)
-    if target is None or not target["connected"] or not target["primary"]:
+    """True when `name` is the only active output, is primary (where
+    there is one), and runs its best mode — nothing a switch to it would
+    change."""
+    target = next((o for o in outputs if o.name == name), None)
+    if target is None or not target.connected:
         return False
-    if {o["name"] for o in outputs if o["active"]} != {name}:
+    if wm.get().has_primary and not target.primary:
         return False
-    best = _best_mode(target["modes"])
-    return best is None or target["current"] == best
+    if {o.name for o in outputs if o.active} != {name}:
+        return False
+    best = _best_mode(target.modes)
+    return best is None or target.current == best
 
 
 async def _use_only(name: str, *, remember: bool = True,
                     outputs=None) -> None:
     outputs = outputs if outputs is not None else await _query()
-    target = next((o for o in outputs if o["name"] == name), None)
-    if target is None or not target["connected"]:
+    target = next((o for o in outputs if o.name == name), None)
+    if target is None or not target.connected:
         raise RuntimeError(f"{name} is not connected")
-    argv = ["xrandr", "--output", name, "--primary"]
-    best = _best_mode(target["modes"])
-    if best is not None:
-        w, h, rate = best
-        argv += ["--mode", f"{w}x{h}", "--rate", f"{rate:g}"]
-    else:
-        argv += ["--auto"]
-    for other in outputs:
-        # Off for every other connected output, and for a disconnected
-        # one still holding a geometry — unplugged but never released.
-        if other["name"] != name and (other["connected"] or other["active"]):
-            argv += ["--output", other["name"], "--off"]
-    await proc.run(argv, timeout=15.0)
+    # Off for every other connected output, and for a disconnected one
+    # still holding a geometry — unplugged but never released.
+    off = [o.name for o in outputs
+           if o.name != name and (o.connected or o.active)]
+    await wm.get().use_only(name, _best_mode(target.modes), off)
     if remember:
         state.set(STATE_KEY, name)
 
 
 async def _items() -> list[Item]:
     outputs = await _query()
-    connected = [o for o in outputs if o["connected"]]
+    connected = [o for o in outputs if o.connected]
     if not connected:
         return [Item("NO OUTPUTS")]
-    return [Item(o["name"], lambda name=o["name"]: _use_only(name),
-                 active=_is_sole(outputs, o["name"]))
+    return [Item(o.name, lambda name=o.name: _use_only(name),
+                 active=_is_sole(outputs, o.name))
             for o in connected]
 
 
 def _panel(outputs):
-    return next((o["name"] for o in outputs if o["connected"]
-                 and o["name"].startswith(_EMBEDDED_PREFIXES)), None)
+    return next((o.name for o in outputs if o.connected
+                 and o.name.startswith(_EMBEDDED_PREFIXES)), None)
 
 
 async def _braindance_running() -> bool:
-    out = await proc.run(["xrandr", "--listmonitors"])
-    return any(m.group(1) == _BRAINDANCE_MONITOR for m in _MONITOR.finditer(out))
+    return _BRAINDANCE_MONITOR in await wm.get().virtual_monitors()
 
 
 async def restore() -> None:
@@ -145,10 +110,10 @@ async def restore() -> None:
         return
     wanted = state.get(STATE_KEY)
     outputs = await _query()
-    connected = {o["name"] for o in outputs if o["connected"]}
+    connected = {o.name for o in outputs if o.connected}
     if wanted and wanted in connected:
         target, remember = wanted, True
-    elif wanted or not any(o["active"] and o["connected"] for o in outputs):
+    elif wanted or not any(o.active and o.connected for o in outputs):
         # The remembered output is unplugged — or nothing was ever
         # remembered but the output in use just went away, which would
         # leave the screen dark. Either way: the panel, for now.

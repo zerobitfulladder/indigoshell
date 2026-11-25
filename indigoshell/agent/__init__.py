@@ -23,8 +23,9 @@ The package, by job:
                      windows, apps, the clipboard, a shell (root asks
                      first, in the call), background jobs and files
     desk.py          the desktop helpers those and the call share:
-                     running a program, qtile, opening a link or a file
-                     brought forward on its workspace
+                     running a program, the window manager
+                     (indigoshell/wm), opening a link or a file brought
+                     forward on its workspace
     progress.py      `Jobs`: how far long commands have got, which the
                      call can draw as progress bars. A socket the
                      commands report to ($INDIGO_PROGRESS), each job
