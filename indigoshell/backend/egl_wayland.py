@@ -21,7 +21,10 @@ The traps carried over from X11:
   callback, inside the event loop, and a compositor that is not
   repainting (a nested niri on a hidden workspace, an output that is
   off) sends none, so the swap blocks for as long as that lasts. It is
-  set to 0 on the surface right after it is made current.
+  set to 0 on the surface right after it is made current, and the
+  canvas paces itself on the frame callbacks instead, with a limit to
+  the wait (backend/wayland.py): a swap made while the compositor
+  still holds every buffer blocks in the driver all the same.
 
 Partial redraw uses EGL_EXT_buffer_age (how stale the back buffer is)
 and EGL_KHR_swap_buffers_with_damage (what changed, so the compositor
@@ -32,6 +35,7 @@ Any failure raises; the canvas then draws on the CPU into wl_shm.
 
 import ctypes
 import logging
+import time
 
 import skia
 
@@ -183,6 +187,7 @@ class WaylandGL:
         self.skia_surface = None
         self.width = self.height = 0
         self.renderer = self.vendor = self.gl_version = "?"
+        self.flush_ms = self.swap_ms = 0.0
 
     def start(self, idle_surface_ptr: int) -> None:
         """Make the context current on a 1x1 window surface around
@@ -290,13 +295,18 @@ class WaylandGL:
 
     def swap(self, damage) -> None:
         """Flush Skia and present: attaches, damages and commits the
-        wl_surface. `damage` in surface coordinates, top-left origin."""
+        wl_surface. `damage` in surface coordinates, top-left origin.
+        `flush_ms` and `swap_ms` say where the time went."""
+        t0 = time.perf_counter()
         self.context.flushAndSubmit()
+        t1 = time.perf_counter()
         if damage and self._swap_damage is not None:
             self._swap_damage(self.dpy, self.surface,
                               _ints(flip_rects(damage, self.height)), len(damage))
         else:
             self.lib.egl.eglSwapBuffers(self.dpy, self.surface)
+        self.flush_ms = (t1 - t0) * 1000
+        self.swap_ms = (time.perf_counter() - t1) * 1000
 
     def offscreen(self, width: int, height: int) -> skia.Surface:
         """A GPU surface in the same context, for a region's pixels."""

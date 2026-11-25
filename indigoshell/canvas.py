@@ -427,6 +427,66 @@ class GpuScratch:
     def offscreen(self, width: int, height: int) -> skia.Surface:
         return self._gl.offscreen(width, height)
 
+    def finish(self) -> None:
+        """Everything drawn so far done on the GPU."""
+        self._gl.finish()
+
+
+WARM_PX = 64
+
+
+def warm_shaders(gpu: GpuScratch, specs) -> int:
+    """Have the GPU compile, at start, the programs the first open of a
+    panel would otherwise stop for (50-80 ms on its first frames): each
+    kind's spawn and despawn chain as Window.redraw runs it (the frozen
+    frame as a decal-tiled image shader under the passes, drawn with
+    kSrc), and the hologram's raster and scan (widgets/holo.py) as a
+    `holo` window paints them. Drawn small and thrown away. Returns how
+    many chains were drawn."""
+    from . import theme
+    from .widgets.holo import Projection, raster
+
+    src = gpu.offscreen(WARM_PX, WARM_PX)
+    c = src.getCanvas()
+    c.clear(TRANSPARENT)
+    c.drawRect(skia.Rect.MakeXYWH(8, 8, 48, 48), skia.Paint(Color=skia.ColorWHITE))
+    frame = src.makeImageSnapshot()
+    out = gpu.offscreen(WARM_PX, WARM_PX)
+    sampling = skia.SamplingOptions()
+    chains: set = set()
+    holo = False
+    for spec in specs:
+        holo = holo or spec.holo
+        for appear in (0.5, 1.0):
+            passes = tuple(e for e in spec.effects if e.active(appear))
+            key = tuple(id(e) for e in passes)
+            if not passes or key in chains:
+                continue
+            chains.add(key)
+            shader = frame.makeShader(skia.TileMode.kDecal, skia.TileMode.kDecal, sampling)
+            try:
+                for effect in passes:
+                    shader = effect.shader(shader, WARM_PX, WARM_PX, t=0.1, appear=appear,
+                                           seed=1.0)
+            except Exception:
+                log.debug("warming %s's effects failed", spec.name, exc_info=True)
+                continue
+            paint = skia.Paint(Shader=shader)
+            paint.setBlendMode(skia.BlendMode.kSrc)
+            out.getCanvas().drawPaint(paint)
+    if holo:
+        # Window._paint_holo: the raster over the content, then the scan.
+        oc = out.getCanvas()
+        lines = skia.Paint(Shader=raster(theme.POPUP_RASTER))
+        lines.setBlendMode(skia.BlendMode.kSrcATop)
+        oc.drawRect(skia.Rect.MakeWH(WARM_PX, WARM_PX), lines)
+        scan = Projection()
+        scan.rect = skia.Rect.MakeWH(WARM_PX, WARM_PX)
+        scan._y = WARM_PX / 2
+        scan.paint(oc)
+    gpu.finish()
+    return len(chains)
+
 
 class Scene:
     """The regions on the canvas and what the compositor needs of them.

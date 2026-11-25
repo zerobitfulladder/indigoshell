@@ -243,6 +243,17 @@ class Daemon:
         skipped = [n for n, s in self.kinds.items() if not on_canvas(s)]
         log.info("canvas draws %s; not on Wayland yet: %s",
                  ", ".join(drawn) or "nothing", ", ".join(skipped) or "none")
+        if canvas.scene.gpu is not None:
+            import time
+            from ..canvas import warm_shaders
+            t0 = time.perf_counter()
+            try:
+                n = warm_shaders(canvas.scene.gpu, list(self.kinds.values()))
+            except Exception:
+                log.exception("warming the GPU's shaders failed")
+            else:
+                log.info("canvas: %d effect chain(s) and the hologram warmed on the GPU "
+                         "in %.0f ms", n, (time.perf_counter() - t0) * 1000)
 
     def _pump(self, *, flush: bool = False) -> None:
         """Dispatch what the X connection queued (and send what we did,

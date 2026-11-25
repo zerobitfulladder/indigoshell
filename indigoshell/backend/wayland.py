@@ -20,7 +20,12 @@ egl_wayland.py) with partial redraws: the regions' damage, plus what the
 back buffer's age says it missed, is composed and swapped with that
 damage. Without EGL it is drawn on the CPU into wl_shm buffers, three at
 most, each with its own record of what it missed. Frames are made when
-something changed and never otherwise: no frame callbacks, no timers.
+something changed and never otherwise, and no faster than the compositor
+shows them: each present asks for wl_surface's frame callback, and what
+changes before it comes waits for it, gathered into one present. A swap
+made while the compositor still held the buffers blocked in EGL for 7-15
+ms. A callback that never comes (an output that is off, a nested
+compositor that is hidden) is waited for FRAME_WAIT_S at most.
 
 The keyboard: wl_keyboard's keymap and modifiers go to xkbcommon
 (wlkeys.py), its keys, as KeyEvents, to whoever took the canvas's
@@ -72,6 +77,7 @@ log = logging.getLogger(__name__)
 NAMESPACE = APP                       # the user's niri layer-rule matches it
 EDGES = ("top", "bottom", "left", "right")
 CONFIGURE_TIMEOUT_S = 5.0
+FRAME_WAIT_S = 0.1                    # the longest a present waits for the last one's frame
 # After the canvas lets the keyboard go, how long a fullscreen window it
 # took it from has to be activated again before it counts as no longer
 # fullscreen (Toplevels).
@@ -231,6 +237,7 @@ class ShmTarget:
         for r in rects(damage):
             s.damage_buffer(r.left(), r.top(), r.width(), r.height())
         self.canvas.apply_pending_state()
+        self.canvas.ask_frame()
         s.commit()
         buf.busy = True
         return painted
@@ -271,6 +278,7 @@ class GpuTarget:
         painted = self.canvas.scene.compose(gl.skia_surface.getCanvas(), paint)
         self.history.push(damage)
         self.canvas.apply_pending_state()
+        self.canvas.ask_frame()         # rides on the swap's commit
         gl.swap(rects(damage))          # attaches, damages and commits
         return painted
 
@@ -482,6 +490,12 @@ class Canvas:
         self.fullscreen = False
         self._present_queued = False
         self._drain_queued = False
+        # The last present's frame callback, until the compositor has shown
+        # it; whether a present waits for it; the wait's limit.
+        self._frame_cb = None
+        self._frame_waiting = False
+        self._frame_timer = None
+        self.frames_late = 0
         self._writing = False
         self._reopen = None
         self._reopen_tries = 0
@@ -701,6 +715,7 @@ class Canvas:
                 pass
         self.effect = self.layer = self.surface = None
         self._blur_sent = None
+        self._forget_frame()
         self.configured = self.has_buffer = False
         self._kb_sent = None
         self._keyboard_left()
@@ -760,8 +775,53 @@ class Canvas:
     def present_soon(self) -> None:
         if self._present_queued or self.loop is None or self._closed:
             return
+        if self._frame_cb is not None:
+            self._frame_waiting = True  # presented when the last frame is shown
+            return
         self._present_queued = True
         self.loop.call_soon(self._present)
+
+    def ask_frame(self) -> None:
+        """Before a present's commit: the compositor says when it has
+        shown it (wl_surface.frame), and until then presents wait."""
+        if self.surface is None or self.loop is None:
+            return
+        cb = self.surface.frame()
+        cb.dispatcher["done"] = self._frame_done
+        self._frame_cb = cb
+        if self._frame_timer is not None:
+            self._frame_timer.cancel()
+        self._frame_timer = self.loop.call_later(FRAME_WAIT_S, self._frame_late)
+
+    def _frame_done(self, cb, _ms) -> None:
+        if cb is not self._frame_cb and not _same(cb, self._frame_cb):
+            return                      # one given up on (`_frame_late`)
+        self._frame_over()
+
+    def _frame_late(self) -> None:
+        self._frame_timer = None
+        if self._frame_cb is not None:
+            self.frames_late += 1
+            log.debug("canvas: no frame callback in %.0f ms; presenting anyway",
+                      FRAME_WAIT_S * 1000)
+            self._frame_over()
+
+    def _frame_over(self) -> None:
+        self._frame_cb = None           # the proxy goes with it
+        if self._frame_timer is not None:
+            self._frame_timer.cancel()
+            self._frame_timer = None
+        if self._frame_waiting:
+            self._frame_waiting = False
+            self.present_soon()
+
+    def _forget_frame(self) -> None:
+        """The surface is gone: no frame to wait for."""
+        self._frame_cb = None
+        self._frame_waiting = False
+        if self._frame_timer is not None:
+            self._frame_timer.cancel()
+            self._frame_timer = None
 
     def _present(self) -> None:
         self._present_queued = False
@@ -782,6 +842,7 @@ class Canvas:
             return
         if painted is None:
             self.scene.damage.op(damage, skia.Region.kUnion_Op)    # buffers busy
+            self._forget_frame()        # asked for nothing: nothing was committed
             return
         ms = (time.perf_counter() - t0) * 1000
         self.has_buffer = True
@@ -790,9 +851,10 @@ class Canvas:
         if log.isEnabledFor(logging.DEBUG):
             b = damage.getBounds()
             log.debug("canvas frame: %.2f ms, damage %d px in %d rect(s) "
-                      "(bounds %dx%d+%d+%d), painted %d px", ms, area,
+                      "(bounds %dx%d+%d+%d), painted %d px%s", ms, area,
                       len(rects(damage)), b.width(), b.height(), b.left(), b.top(),
-                      painted)
+                      painted, "" if self.gl is None else
+                      f" (flush {self.gl.flush_ms:.2f}, swap {self.gl.swap_ms:.2f} ms)")
         self.flush()
         if self.loop is not None and not self._drain_queued:
             self._drain_queued = True
@@ -1047,6 +1109,7 @@ class Canvas:
         if self._reopen is not None:
             self._reopen.cancel()
             self._reopen = None
+        self._forget_frame()
         for strip in self.strips.values():
             strip.destroy()
         self.strips = {}
