@@ -12,10 +12,19 @@ that is removed at the end:
   its own runtime, config, state, data and cache directories, a D-Bus
   of its own (dbus-run-session), no sound server, and a config.py of
   the user's shape (config_default's, plus a probe widget on the top
-  bar and the window a stand-in app announces taken as focused).
-- input only through niri's own virtual pointer (zwlr_virtual_pointer),
-  so nothing reaches the X session; screenshots only by niri's own
-  action, into the scratch directory.
+  bar, a chord menu whose items only log, timing probes, and the window
+  a stand-in app announces taken as focused); a desktop entry of the
+  test's for its launcher to find (a kitty).
+- niri's Mod+D: the user's (fuzzel) replaced by a script running the
+  nested shell's own client with the nested shell's environment and
+  nothing else (env -i), so it reaches that daemon, never the live one.
+  niri's virtual keyboard goes to the focused client and not through
+  niri's bindings, so the test runs the binding's command as niri
+  does for the key (`niri msg action spawn`).
+- input only through niri's own virtual pointer and keyboard
+  (zwlr_virtual_pointer, zwp_virtual_keyboard: prototypes/wayland/
+  poke.py's way, in this process), so nothing reaches the X session;
+  screenshots only by niri's own action, into the scratch directory.
 """
 
 import contextlib
@@ -124,8 +133,9 @@ class Probe(Widget):
 
 
 class Dump:
-    """Where everything on the bars is, written for the test twice a
-    second (only when it changed)."""
+    """Where everything on the canvas is, and what an open input or
+    menu holds, written for the test five times a second (only when it
+    changed)."""
 
     last = None
 
@@ -145,7 +155,15 @@ class Dump:
                     item.update(pitch=w.pitch, first=w.first, ids=list(w.ids))
                 widgets.append(item)
             out[name] = {"x": win.x, "y": win.y, "w": win.width, "h": win.height,
-                         "widgets": widgets}
+                         "cx": win.content_root[0], "cy": win.content_root[1],
+                         "cw": win.content_root[2], "ch": win.content_root[3],
+                         "phase": win._phase, "widgets": widgets}
+            prompt = getattr(win.content, "prompt", None)
+            if prompt is not None and getattr(prompt, "open", False):
+                out[name]["prompt"] = _prompt(prompt)
+        p = APPS.prompt
+        if p is not None and p.open:
+            out["_apps_prompt"] = _prompt(p)
         key = json.dumps(out, sort_keys=True)
         if key != cls.last:
             cls.last = key
@@ -154,10 +172,19 @@ class Dump:
             os.replace(DUMP + ".tmp", DUMP)
 
 
+def _prompt(p):
+    """An open input's or menu's text and rows, for the test."""
+    box = getattr(p, "box", None)
+    text = box.field.text if box is not None else getattr(p.level, "filter", None)
+    selected = p.level.selected if p.what == "menu" and p.level is not None else p.selected
+    return {"what": p.what, "text": text, "selected": selected,
+            "rows": [str(r.get("title")) for r in p.list_rows()][:20]}
+
+
 async def _dumping():
     async def loop():
         while True:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
             try:
                 Dump.write()
             except Exception:
@@ -167,6 +194,54 @@ async def _dumping():
 
 WINDOWS = [top_bar(Probe()) if spec.name == TOP_BAR else spec for spec in WINDOWS]
 STARTUP = [*STARTUP, _dumping]
+
+
+# A chord menu of the test's own: its items only say they ran.
+from indigoshell.plugin import Item, Menu  # noqa: E402
+
+
+def _said(n):
+    def run():
+        log.info("probe: menu item %d ran", n)
+    return run
+
+
+MENUS = {**MENUS, "wltest": Menu("wltest", "WLTEST", items=[
+    Item("PROBE ONE", run=_said(1)), Item("PROBE TWO", run=_said(2))])}
+
+
+# Timings: when a window is asked for and each canvas present, on one clock.
+import time as _time  # noqa: E402
+
+from indigoshell.backend import wayland as _wayland  # noqa: E402
+from indigoshell.core.daemon import Daemon as _Daemon  # noqa: E402
+
+_open = _Daemon.open
+
+
+def _timed_open(self, name, *args, **kw):
+    t0 = _time.monotonic()
+    try:
+        return _open(self, name, *args, **kw)
+    finally:
+        log.debug("probe: t=%.4f open %s took %.2f ms", t0, name,
+                 (_time.monotonic() - t0) * 1000)
+
+
+_present = _wayland.Canvas._present
+
+
+def _timed_present(self):
+    t0 = _time.monotonic()
+    before = len(self.scene.stats.presents)
+    _present(self)
+    if len(self.scene.stats.presents) > before:
+        ms, painted, damaged = self.scene.stats.presents[-1]
+        log.debug("probe: t=%.4f present %.2f ms, %d px", t0, ms, damaged)
+
+
+_Daemon.open = _timed_open
+_wayland.Canvas._present = _timed_present
 
 _added = APPS.added
 
@@ -178,6 +253,15 @@ def _added_and_focused(window):
 
 APPS.added = _added_and_focused
 '''
+
+
+# What the launcher finds and starts: a kitty in the nested niri, its
+# title the test's scratch name (so it can be found and stopped).
+LAUNCHED_ENTRY = """[Desktop Entry]
+Type=Application
+Name=Zqxwv Nested Probe
+Exec=kitty --class wltest.launched -T {tag} -o linux_display_server=wayland -o confirm_os_window_close=0 sleep 900
+"""
 
 
 class Poker:
@@ -205,8 +289,9 @@ class Poker:
             if flags & 1:
                 self.size[:] = [w, h]
 
-        out.dispatcher["mode"] = mode
+        out.dispatcher["mode"] = mode       # again when the output is resized
         out.dispatcher["geometry"] = lambda *a: None
+        self.output = out
         mgr = reg.bind(found["zwlr_virtual_pointer_manager_v1"][0],
                        wl.wlr_virtual_pointer_unstable_v1.ZwlrVirtualPointerManagerV1, 1)
         self.display.roundtrip()
@@ -254,8 +339,71 @@ class Poker:
         self.display.roundtrip()
         time.sleep(0.15)
 
+    # ── the keyboard: niri's virtual keyboard (zwp_virtual_keyboard_v1) ──
+    def keyboard(self, layout: str = "us") -> None:
+        """A virtual keyboard with `layout`'s keymap (compiled here by
+        xkbcommon); niri hands that keymap to the focused client before
+        its keys."""
+        from indigoshell.backend.wlkeys import Keys
+        wl = self.wl
+        if getattr(self, "kb", None) is None:
+            reg = self.display.get_registry()
+            found: dict[str, tuple[int, int]] = {}
+            reg.dispatcher["global"] = lambda _r, n, i, v: found.__setitem__(i, (n, v))
+            self.display.roundtrip()
+            mgr = reg.bind(found["zwp_virtual_keyboard_manager_v1"][0],
+                           wl.virtual_keyboard_unstable_v1.ZwpVirtualKeyboardManagerV1, 1)
+            self.kb = mgr.create_virtual_keyboard(self.seat)
+        self.keys = Keys()
+        self.keys.load_names(layout)
+        text = self.keys.keymap.get_as_bytes()
+        text = (text if isinstance(text, bytes) else str(text).encode()) + b"\0"
+        fd = os.memfd_create("keymap", os.MFD_CLOEXEC)
+        try:
+            os.write(fd, text)
+            self.kb.keymap(1, fd, len(text))       # WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1
+        finally:
+            os.close(fd)
+        self.mods = 0
+        self.kb.modifiers(0, 0, 0, 0)
+        self.display.roundtrip()
+
+    def key(self, code: int, pressed: bool, settle: float = 0.02) -> None:
+        self.kb.key(self._ms(), code, 1 if pressed else 0)
+        self.display.roundtrip()
+        time.sleep(settle)
+
+    def tap(self, code: int, *mods: str, settle: float = 0.05) -> None:
+        """Press and release evdev `code` with `mods` ("shift", "ctrl",
+        "alt", "super") held: their keys down first, the modifier state
+        sent, as a real keyboard's would be."""
+        mod_codes = {"shift": 42, "ctrl": 29, "alt": 56, "super": 125}
+        for m in mods:
+            self.key(mod_codes[m], True, 0.0)
+        mask = self.keys.mask(*mods)
+        if mask:
+            self.kb.modifiers(mask, 0, 0, 0)
+        self.key(code, True, 0.03)
+        self.key(code, False, 0.0)
+        if mask:
+            self.kb.modifiers(0, 0, 0, 0)
+        for m in reversed(mods):
+            self.key(mod_codes[m], False, 0.0)
+        self.display.roundtrip()
+        time.sleep(settle)
+
+    def type(self, text: str, settle: float = 0.04) -> None:
+        for ch in text:
+            found = self.keys.code_for(ch)
+            if found is None:
+                raise ValueError(f"no key types {ch!r} in this layout")
+            code, shift = found
+            self.tap(code, *(("shift",) if shift else ()), settle=settle)
+
     def close(self) -> None:
         with contextlib.suppress(Exception):
+            if getattr(self, "kb", None) is not None:
+                self.kb.destroy()
             self.vp.destroy()
             self.display.roundtrip()
             self.display.disconnect()
@@ -271,6 +419,7 @@ class Nested:
         self.shots = os.path.join(self.tmp, "shots")
         os.makedirs(self.run, mode=0o700)
         os.makedirs(self.shots)
+        self.launcher_key = os.path.join(self.tmp, "launcher-key.sh")
         self.rule = None
         self.wrapper = None             # dbus-run-session
         self.niri_pid = None
@@ -312,6 +461,16 @@ class Nested:
         out = [line for line in lines
                if not re.match(r"\s*(spawn-at-startup|spawn-sh-at-startup|screenshot-path)\b",
                                line)]
+        # The launcher's key: the user's Mod+D (fuzzel) replaced by the
+        # nested shell's own `toggle launcher` (a script of the test's,
+        # written once the shell's environment is known).
+        out = [line for line in out if not re.match(r"\s*Mod\+D\s*(\{|\S+=)", line)]
+        binds = [f'    Mod+D {{ spawn "{self.launcher_key}"; }}']
+        at = next((i for i, line in enumerate(out) if re.match(r"\s*binds\s*\{", line)), None)
+        if at is None:
+            out += ["binds {", *binds, "}"]
+        else:
+            out[at + 1:at + 1] = binds
         out += [f'screenshot-path "{self.shots}/shot-%H%M%S.png"',
                 "xwayland-satellite {", "    off", "}",
                 "hotkey-overlay {", "    skip-at-startup", "}"]
@@ -373,6 +532,13 @@ class Nested:
         self.env.pop("DISPLAY", None)
         return True
 
+    def output_size(self) -> tuple[int, int]:
+        """The nested output's logical size now: it follows the niri
+        window, which qtile lays out anew when its group is shown."""
+        out = next(iter((self.msg("outputs") or {}).values()), {})
+        return (out.get("logical", {}).get("width", 0),
+                out.get("logical", {}).get("height", 0))
+
     def fullscreen_in_qtile(self) -> None:
         self.qtile("fullscreen", str(self.wid))
 
@@ -395,11 +561,20 @@ class Nested:
         self.procs.append(p)
         return p
 
-    def kitty(self, name) -> subprocess.Popen:
+    def kitty(self, name, command: str | None = None) -> subprocess.Popen:
+        command = command or f"printf 'nested kitty {name}\\n'; sleep 900"
         return self.spawn(["kitty", "--class", f"wltest.{name}", "-T", f"wl test {name}",
                            "-o", "linux_display_server=wayland", "-o", "confirm_os_window_close=0",
-                           "sh", "-c", f"printf 'nested kitty {name}\\n'; sleep 900"],
-                          f"kitty-{name}.log")
+                           "sh", "-c", command], f"kitty-{name}.log")
+
+    def recorder(self, name) -> str:
+        """A kitty whose terminal reports clicks (xterm's mode 1000) and
+        writes them and every key typed into it, raw, to a file: what
+        reached that window."""
+        path = os.path.join(self.tmp, f"typed-{name}")
+        open(path, "wb").close()
+        self.kitty(name, f"stty raw -echo; printf '\\033[?1000h'; exec cat > {path}")
+        return path
 
     def screenshot(self, name: str, keep: str | None):
         """niri's own screenshot of its output, as an RGBA array."""
@@ -416,6 +591,20 @@ class Nested:
             shutil.copy(path, os.path.join(keep, f"{name}.png"))
         return img.toarray(colorType=skia.kRGBA_8888_ColorType,
                            alphaType=skia.kUnpremul_AlphaType), path
+
+    def reap_launched(self) -> None:
+        """Stop what the launcher started (LAUNCHED_ENTRY: its title is
+        this run's scratch name), should it outlive the nested niri."""
+        tag = os.path.basename(self.tmp).encode()
+        for pid in filter(str.isdigit, os.listdir("/proc")):
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    argv = f.read().split(b"\0")
+            except OSError:
+                continue
+            if b"wltest.launched" in argv and tag in argv:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(int(pid), signal.SIGTERM)
 
     def kill_niri(self) -> None:
         if self.wrapper is not None and self.wrapper.poll() is None:
@@ -462,6 +651,10 @@ class Shell:
         os.makedirs(os.path.join(env["XDG_CONFIG_HOME"], "indigoshell"))
         with open(os.path.join(env["XDG_CONFIG_HOME"], "indigoshell", "config.py"), "w") as f:
             f.write(TEST_CONFIG)
+        apps = os.path.join(env["XDG_DATA_HOME"], "applications")
+        os.makedirs(apps)
+        with open(os.path.join(apps, "wltest-launched.desktop"), "w") as f:
+            f.write(LAUNCHED_ENTRY.format(tag=os.path.basename(nested.tmp)))
         env.update(PYTHONPATH=REPO, PULSE_SERVER=f"unix:{nested.tmp}/no-pulse",
                    INDIGOSHELL_TEST_DUMP=self.dump, PYTHONDONTWRITEBYTECODE="1")
         env.pop("DISPLAY", None)
@@ -545,6 +738,21 @@ class Shell:
                     os.killpg(self.proc.pid, signal.SIGKILL)
 
 
+def write_launcher_key(nested: "Nested", shell: "Shell",
+                       verb: tuple[str, ...] = ("toggle", "launcher")) -> None:
+    """The nested niri's Mod+D: the nested shell's own client, with the
+    nested shell's whole environment and nothing else (env -i), so it
+    reaches that daemon and never the live one."""
+    import shlex
+    env = " ".join(shlex.quote(f"{k}={v}") for k, v in shell.env.items())
+    main = shlex.quote(os.path.join(REPO, "main.py"))
+    out = shlex.quote(os.path.join(nested.tmp, "launcher-key.log"))
+    with open(nested.launcher_key, "w") as f:
+        f.write(f"#!/bin/sh\nexec env -i {env} {shlex.quote(sys.executable)} -B {main} "
+                f"{' '.join(verb)} >> {out} 2>&1\n")
+    os.chmod(nested.launcher_key, 0o700)
+
+
 def _comm(pid: int) -> str:
     try:
         with open(f"/proc/{pid}/comm") as f:
@@ -573,7 +781,9 @@ class App:
         self.send(B.announce("flux", wid, wid))
         tabs = [B.tab(101 + i, t) for i, t in enumerate(titles)]
         self.send(B.bar([B.tabs("tabs", tabs, current=101, can=("close", "move", "detach"))],
-                        [B.text("host", spans=[B.span("example.org")])]))
+                        [B.text("host", spans=[B.span("example.org")], opens="pick")],
+                        menus={"pick": B.menu([B.row(1, "Alpha row"), B.row(2, "Beta row"),
+                                               B.row(3, "Gamma row")])}))
 
     def read(self, wait: float = 0.5) -> list[dict]:
         end = time.monotonic() + wait
@@ -640,8 +850,7 @@ def run(args, check, section, user_env) -> None:
         if args.full:
             nested.fullscreen_in_qtile()
         time.sleep(1.0)
-        out = next(iter((nested.msg("outputs") or {}).values()), {})
-        W, H = out.get("logical", {}).get("width", 0), out.get("logical", {}).get("height", 0)
+        W, H = nested.output_size()
         print(f"  (the nested output: {W}x{H})", flush=True)
 
         shell = Shell(nested, args.raster)
@@ -680,10 +889,15 @@ def run(args, check, section, user_env) -> None:
                   and not re.search(r"llvmpipe|softpipe|swrast", renderer, re.I), renderer)
             print(f"  ({renderer})", flush=True)
         line = re.search(r"canvas draws (.*); not on Wayland yet: (.*)$", log, re.M)
-        check("one line names what the canvas draws (the bars) and what it skips",
-              line is not None and set(line[1].split(", ")) == {"bar", "topbar"}
-              and "launcher" in line[2] and "system" in line[2],
-              line[0] if line else "")
+        check("one line names what the canvas draws: the bars, the panels, the chord menu, "
+              "the launcher, the drop-down (this config has no call)",
+              line is not None and set(line[1].split(", ")) == {
+                  "bar", "topbar", "system", "hardware", "network", "menu", "launcher",
+                  "dropdown"} and line[2] == "none", line[0] if line else "")
+        keymap = re.search(r"keyboard: keymap with (.*)$", log, re.M)
+        check("the keymap niri sent read by xkbcommon (the user's layouts)",
+              keymap is not None, keymap[0] if keymap else "")
+        write_launcher_key(nested, shell)
         check("no errors or tracebacks in its log so far",
               "Traceback" not in log and " ERROR " not in log,
               "\n".join(ln for ln in log.splitlines() if "ERROR" in ln or "Trace" in ln)[:800])
@@ -809,7 +1023,8 @@ def run(args, check, section, user_env) -> None:
             check("the workspaces' place on the bottom bar", False, str(shell.layout())[:400])
 
         # A second kitty: the pointer between the bars belongs to the windows.
-        nested.kitty("b")
+        # It records every key and click that reaches it (section 2a).
+        recorder = nested.recorder("b")
         for _ in range(100):
             if kitty_window("wltest.b"):
                 break
@@ -857,6 +1072,15 @@ def run(args, check, section, user_env) -> None:
                   "the third (press, motion and release routed on the canvas)",
                   moves and moves[-1].get("tab") == 101 and moves[-1].get("before") == 103,
                   str(got[-4:]))
+
+        overlays({"nested": nested, "shell": shell, "poker": poker, "app": app,
+                  "check": check, "W": W, "H": H, "keep": keep, "shots": shots,
+                  "recorder": recorder})
+        if nested.output_size() != (W, H):
+            W, H = nested.output_size()
+            print(f"  (the nested output is {W}x{H} now: qtile laid its window out anew)",
+                  flush=True)
+            time.sleep(1.0)
 
         # A fullscreen window takes the canvas away; it comes back after.
         poker.click(W * 0.75, H / 2)
@@ -929,10 +1153,6 @@ def run(args, check, section, user_env) -> None:
         check("partial redraws: idle frames damage only parts of the bottom bar, never the "
               "whole canvas", idle_frames and all(f[1] <= bar_area for f in idle_frames)
               and not any(f[1] == W * H for f in idle_frames), str(idle_frames[:6]))
-        # `toggle` of a kind the canvas does not draw: a clear answer.
-        r = shell.client("toggle", "launcher")
-        check("asking for a kind the canvas does not draw yet: refused with why",
-              "not on the Wayland canvas yet" in (r.stdout + r.stderr), r.stdout + r.stderr)
         log = shell.log()
         check("no errors or tracebacks in its log", "Traceback" not in log
               and " ERROR " not in log,
@@ -970,8 +1190,381 @@ def run(args, check, section, user_env) -> None:
                 print(f"  ({summary[1]})", flush=True)
             if keep:
                 shutil.copy(shell.log_path, os.path.join(keep, "shell.log"))
+        nested.reap_launched()
         nested.stop(check)
         if keep:
             with contextlib.suppress(OSError):
                 shutil.copy(os.path.join(nested.tmp, "niri.log"), os.path.join(keep, "niri.log"))
         shutil.rmtree(nested.tmp, ignore_errors=True)
+
+
+# ── phase 2a: the panels, the menu, the launcher, the drop-down, toasts ──
+def _wait(pred, timeout: float = 5.0, step: float = 0.05):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        value = pred()
+        if value:
+            return value
+        time.sleep(step)
+    return pred()
+
+
+def _timings(log: str, name: str, after: int = 0) -> dict | None:
+    """The open of `name` after log offset `after`: how long open()
+    took, when the first present came after it, and the presents of
+    the spawn (its 0.22 s and a little more)."""
+    m = re.search(rf"probe: t=([\d.]+) open {re.escape(name)} took ([\d.]+) ms", log[after:])
+    if m is None:
+        return None
+    t0, took = float(m[1]), float(m[2])
+    presents = [(float(p[1]), float(p[2])) for p in re.finditer(
+        r"probe: t=([\d.]+) present ([\d.]+) ms", log[after:])]
+    spawn = [(t, ms) for t, ms in presents if t0 <= t <= t0 + 0.35]
+    if not spawn:
+        return {"took": took, "first": None, "frames": 0, "median": 0.0, "max": 0.0}
+    return {"took": took, "first": (spawn[0][0] - t0) * 1000, "frames": len(spawn),
+            "median": _median(ms for _t, ms in spawn), "max": max(ms for _t, ms in spawn)}
+
+
+def _say_timing(what: str, t: dict | None) -> str:
+    if not t:
+        return f"{what}: no timing"
+    return (f"{what}: open() {t['took']:.1f} ms, first frame on the canvas "
+            f"{t['first']:.1f} ms after the ask, {t['frames']} frames in the spawn's "
+            f"0.35 s, present median {t['median']:.2f} ms, max {t['max']:.2f} ms"
+            if t["first"] is not None else f"{what}: open() {t['took']:.1f} ms, no frame")
+
+
+def overlays(ctx) -> None:
+    """The kinds phase 2a puts on the canvas, in the nested niri: the
+    launcher from niri's Mod+D taking the keyboard (typing, the
+    keymap's layouts, repeat, Escape, an outside click swallowed, a
+    launch), the system panel (Escape) and the hardware panel (an
+    outside click), the chord menu, the top bar's drop-down for an
+    app's menu, a toast; what each costs to open."""
+    from indigoshell import theme
+    nested, shell, poker, app = ctx["nested"], ctx["shell"], ctx["poker"], ctx["app"]
+    check, W, H, keep, shots = ctx["check"], ctx["W"], ctx["H"], ctx["keep"], ctx["shots"]
+    rec = ctx["recorder"]                   # kitty b's: what reached it
+    bh, th = theme.BAR_HEIGHT, theme.TOP_BAR_HEIGHT
+    timings = {}
+
+    def lay():
+        return shell.layout()
+
+    def idle(name):
+        return _wait(lambda: (lay().get(name) or {}).get("phase") == "idle" and lay()[name])
+
+    def gone(name):
+        return _wait(lambda: name not in lay())
+
+    def kb():
+        return next((ly.get("keyboard_interactivity") for ly in nested.msg("layers") or []
+                     if ly.get("namespace") == "indigoshell"), None)
+
+    def kb_is(mode):
+        return _wait(lambda: kb() == mode, 3.0) and kb()
+
+    def got():
+        with open(rec, "rb") as f:
+            return f.read()
+
+    def prompt(name):
+        return (lay().get(name) or {}).get("prompt") or {}
+
+    def text_is(name, want):
+        return _wait(lambda: prompt(name).get("text") == want, 3.0)
+
+    def outside_of(box):
+        """A point on kitty b's half of the output, clear of `box`."""
+        x = max(box["cx"] + box["cw"] + 20, W * 0.8)
+        return min(x, W - 10), H / 2
+
+    if nested.output_size() != (W, H):
+        W, H = nested.output_size()         # qtile laid the niri window out anew
+        print(f"  (the nested output is {W}x{H} now)", flush=True)
+        time.sleep(1.0)
+    ctx["W"], ctx["H"] = W, H
+    poker.keyboard("us")
+    # Kitty b (the recorder) has the focus: everything it gets is kept.
+    poker.click(W * 0.75, H / 2)
+    time.sleep(0.3)
+    start = len(got())
+
+    # ── the launcher, from niri's Mod+D ────────────────────────────────
+    # niri's virtual keyboard goes to the focused client and never
+    # through niri's bindings, so the binding's command is run as niri
+    # runs it for the key: `spawn`.
+    def mod_d():
+        nested.action("spawn", "--", nested.launcher_key)
+
+    mark = len(shell.log())
+    mod_d()
+    win = idle("launcher")
+    focus = shell.wait_log(r"keyboard: focus on the canvas", 3, mark)
+    check("Mod+D (niri's binding, the nested shell's `toggle launcher`): the launcher opens "
+          "centred, the canvas asks for the keyboard (exclusive) and has the focus",
+          bool(win) and abs(win["cx"] + win["cw"] / 2 - W / 2) <= 1
+          and abs(win["cy"] + win["ch"] / 2 - H / 2) <= 1 and kb() == "Exclusive"
+          and focus is not None, f"{win and {k: win[k] for k in ('cx', 'cy', 'cw', 'ch')}} "
+          f"kb {kb()} focus {focus is not None}")
+    timings["launcher (first open)"] = _timings(shell.log(), "launcher", mark)
+    img, path = nested.screenshot("launcher", keep)
+    shots["launcher"] = path
+    if win:
+        bg = [int(theme.POPUP_BG[i:i + 2], 16) for i in (1, 3, 5)]
+        box = img[int(win["cy"]) + 30:int(win["cy"] + win["ch"]) - 30,
+                  int(win["cx"]) + 30:int(win["cx"] + win["cw"]) - 30, :3].astype(int)
+        share = float((abs(box - bg).max(axis=-1) <= 40).mean())
+        check("niri's screenshot: the launcher's plate drawn on the canvas", share > 0.5,
+              f"{share:.2f} ({path})")
+
+    mark = len(shell.log())
+    poker.type("zqxw")
+    typed = text_is("launcher", "zqxw")
+    rows = prompt("launcher").get("rows") or []
+    check("typing filters the list: the query is what was typed, the test's app first",
+          bool(typed) and rows[:1] == ["Zqxwv Nested Probe"], str(prompt("launcher")))
+    check("... and none of it reached the window that had the focus", got()[start:] == b"",
+          repr(got()[start:]))
+    paints = _paints(shell.log()[mark:], "launcher")
+    full = (win["w"] * win["h"]) if win else 0
+    check("each key repainted only part of the launcher (its query and list), never the "
+          "whole canvas", paints and all(px < full for _ms, px in paints)
+          and all(f[1] < W * H for f in _frames(shell.log()[mark:])),
+          f"{paints[:6]} of {full}")
+    poker.tap(30, "ctrl")                   # Ctrl+A: to the start
+    poker.type("x")
+    check("Ctrl+A is a command, not text: no \\x01, the caret at the start",
+          bool(text_is("launcher", "xzqxw")), str(prompt("launcher")))
+    def clear():
+        poker.tap(18, "ctrl")               # Ctrl+E: to the end
+        poker.tap(22, "ctrl")               # Ctrl+U: all of it before the caret
+
+    clear()
+    text_is("launcher", "")
+    poker.key(30, True)                     # `a` held for 1.2 s
+    time.sleep(1.2)
+    poker.key(30, False)
+    time.sleep(0.4)
+    held = prompt("launcher").get("text") or ""
+    check("a held key repeats by our own timer at niri's repeat_info (600 ms, then 25/s)",
+          set(held) == {"a"} and 10 <= len(held) <= 30, repr(held))
+    clear()
+    text_is("launcher", "")
+    poker.keyboard("tr")
+    poker.type("ıİ")
+    poker.keyboard("us,tr")
+    poker.kb.modifiers(0, 0, 0, 1)          # the second group: Turkish
+    poker.key(23, True)
+    poker.key(23, False)
+    poker.kb.modifiers(0, 0, 0, 0)
+    check("the keymap niri sends is the one read: Turkish ı and İ, and ı again in a "
+          "us,tr keymap's second group", bool(text_is("launcher", "ıİı")),
+          str(prompt("launcher")))
+    poker.keyboard("us")
+    mark = len(shell.log())
+    poker.tap(1)                            # Escape
+    closed = gone("launcher")
+    mode = kb_is("None")
+    left = shell.wait_log(r"keyboard: focus left the canvas", 3, mark)
+    poker.type("ok")
+    after = _wait(lambda: got()[start:].endswith(b"ok"), 3.0)
+    check("Escape closes it, the keyboard is given back (none) and the window has it again: "
+          "what is typed next reaches it", bool(closed) and mode == "None"
+          and left is not None and bool(after), f"kb {kb()} {got()[start:]!r}")
+
+    # An outside click: closes it, and goes no further.
+    mod_d()
+    win = idle("launcher")
+    rects = [ly for ly in nested.msg("layers") or [] if ly.get("namespace") == "indigoshell"]
+    before = len(got())
+    if win:
+        poker.click(*outside_of(win))
+    closed = gone("launcher")
+    time.sleep(0.4)
+    swallowed = got()[before:] == b""
+    poker.click(*outside_of(win or {"cx": 0, "cw": 0}))
+    reached = _wait(lambda: b"\x1b[M" in got()[before:], 3.0)
+    check("a click outside the open launcher closes it and is swallowed (the window under "
+          "it saw nothing); the next click reaches the window", bool(win) and bool(closed)
+          and swallowed and bool(reached), f"{rects} {got()[before:]!r}")
+
+    # A launch: Return starts the selected app, in the nested session.
+    mod_d()
+    idle("launcher")
+    poker.type("zqxw")
+    text_is("launcher", "zqxw")
+    mark = len(shell.log())
+    poker.tap(28)                           # Return
+    launched = _wait(lambda: next((w for w in nested.msg("windows") or []
+                                   if w.get("app_id") == "wltest.launched"), None), 10.0)
+    check("Return launches the selected app into the nested niri and the launcher closes",
+          launched is not None and bool(gone("launcher"))
+          and shell.wait_log(r"launching wltest-launched", 2, mark) is not None,
+          shell.log()[mark:][-600:])
+    if launched:
+        nested.action("close-window", "--id", str(launched["id"]))
+        _wait(lambda: not any(w.get("app_id") == "wltest.launched"
+                              for w in nested.msg("windows") or []), 5.0)
+    mark = len(shell.log())
+    mod_d()
+    idle("launcher")
+    timings["launcher (reopen)"] = _timings(shell.log(), "launcher", mark)
+    mod_d()
+    check("Mod+D's command again (`toggle`) closes it and lets the keyboard go",
+          bool(gone("launcher")) and kb_is("None") == "None", f"kb {kb()}")
+
+    # ── the system panel: Escape ───────────────────────────────────────
+    poker.move(W * 0.75, H / 2)
+    for n in (1, 2):
+        mark = len(shell.log())
+        shell.client("toggle", "system")
+        win = idle("system")
+        timings[f"system panel ({'first open' if n == 1 else 'reopen'})"] = _timings(
+            shell.log(), "system", mark)
+        if n == 1:
+            img, path = nested.screenshot("system-panel", keep)
+            shots["system-panel"] = path
+            check("the system panel opens bottom left over the bar, as on X (margin: the "
+                  "bar's height and the popup gap), and takes the keyboard",
+                  bool(win) and win["cx"] == theme.BAR_MARGIN
+                  and win["cy"] + win["ch"] == H - bh - theme.POPUP_GAP
+                  and kb_is("Exclusive") == "Exclusive",
+                  f"{win and (win['cx'], win['cy'], win['cw'], win['ch'])} kb {kb()}")
+        poker.tap(1)
+        check(f"Escape closes the system panel ({n})", bool(gone("system"))
+              and kb_is("None") == "None", f"kb {kb()}")
+
+    # ── the hardware panel: a click on the bar opens it, outside closes ─
+    brackets = shell.widget("bar", "Brackets")
+    if brackets:
+        poker.click(brackets["x"] + brackets["w"] / 2, brackets["y"] + brackets["h"] / 2)
+        win = idle("hardware")
+        layers = nested.msg("layers") or []
+        check("a click on the bar's meters opens the hardware panel bottom right; it takes no "
+              "keyboard (none on X either)", bool(win) and kb() == "None"
+              and win["cx"] + win["cw"] == W - theme.BAR_MARGIN,
+              f"{win and (win['cx'], win['cw'])} kb {kb()}")
+        before = len(got())
+        poker.click(W * 0.75, th + 40)      # on kitty b, above the panel
+        closed = gone("hardware")
+        time.sleep(0.3)
+        check("a click outside it closes it, swallowed", bool(closed) and got()[before:] == b"",
+              repr(got()[before:]))
+    else:
+        check("the bar's meters (Brackets) in the layout", False, str(lay().get("bar"))[:300])
+
+    # ── the chord menu ─────────────────────────────────────────────────
+    mark = len(shell.log())
+    shell.client("menu", "wltest")
+    win = idle("menu")
+    timings["chord menu (first open)"] = _timings(shell.log(), "menu", mark)
+    check("`menu wltest`: the chord menu bottom right above the bar, keyboard taken",
+          bool(win) and kb_is("Exclusive") == "Exclusive", f"{win} kb {kb()}")
+    poker.tap(3)                            # "2": armed on the press, run on the release
+    ran = shell.wait_log(r"probe: menu item 2 ran", 3, mark)
+    check("a digit picks its row (armed on the press, run on the release) and the menu "
+          "closes", ran is not None and bool(gone("menu")) and kb_is("None") == "None",
+          shell.log()[mark:][-500:])
+    shell.client("menu", "wltest")
+    idle("menu")
+    poker.tap(1)
+    check("Escape closes the menu", bool(gone("menu")) and kb_is("None") == "None")
+    shell.client("menu", "wltest")
+    win = idle("menu")
+    before = len(got())
+    poker.click(W * 0.75, th + 40)
+    check("an outside click closes the menu, swallowed", bool(gone("menu"))
+          and got()[before:] == b"", repr(got()[before:]))
+
+    # ── the top bar's drop-down: the stand-in app's menu ───────────────
+    host = next((w for w in lay().get("topbar", {}).get("widgets", [])
+                 if w["type"] == "TextItem"), None)
+    if host is None:
+        host = next((w for w in lay().get("topbar", {}).get("widgets", [])
+                     if "Text" in w["type"]), None)
+    if host:
+        hx, hy = host["x"] + host["w"] / 2, host["y"] + host["h"] / 2
+        mark = len(shell.log())
+        poker.click(hx, hy)
+        drop = idle("dropdown")
+        menu = _wait(lambda: lay().get("_apps_prompt"), 3.0) or {}
+        timings["drop-down (first open)"] = _timings(shell.log(), "dropdown", mark)
+        img, path = nested.screenshot("dropdown", keep)
+        shots["dropdown"] = path
+        check("a click on the app's host opens its menu: the list drops flush under the top "
+              "bar, the keyboard taken", bool(drop) and drop["cy"] == th
+              and menu.get("rows") == ["Alpha row", "Beta row", "Gamma row"]
+              and kb_is("Exclusive") == "Exclusive",
+              f"{drop and (drop['cx'], drop['cy'], drop['cw'], drop['ch'])} {menu} kb {kb()}")
+        poker.type("gam")
+        filtered = _wait(lambda: (lay().get("_apps_prompt") or {}).get("rows") == ["Gamma row"],
+                         3.0)
+        check("typing filters the drop-down's rows", bool(filtered),
+              str(lay().get("_apps_prompt")))
+        app.read(0.1)
+        n0 = len(app.got)
+        poker.tap(28)                       # Return: picked
+        picked = _wait(lambda: [m for m in app.read(0.2)[n0:] if m.get("type") != "attached"],
+                       3.0)
+        check("Return picks the row: the app is told, the drop-down goes, the keyboard is "
+              "given back", bool(picked) and bool(gone("dropdown"))
+              and kb_is("None") == "None", f"{app.got[n0:][-3:]} kb {kb()}")
+        poker.click(hx, hy)
+        idle("dropdown")
+        poker.tap(1)
+        check("Escape closes the drop-down", bool(gone("dropdown")) and kb_is("None") == "None")
+        poker.click(hx, hy)
+        idle("dropdown")
+        before = len(got())
+        poker.click(W * 0.75, H / 2)
+        check("an outside click closes it, swallowed", bool(gone("dropdown"))
+              and not lay().get("_apps_prompt") and got()[before:] == b"",
+              repr(got()[before:]))
+    else:
+        check("the stand-in app's host on the top bar", False,
+              str([w["type"] for w in lay().get("topbar", {}).get("widgets", [])]))
+
+    # ── a toast ────────────────────────────────────────────────────────
+    bus = None
+    with contextlib.suppress(OSError):
+        with open(f"/proc/{shell.pid}/environ", "rb") as f:
+            env = dict(v.split(b"=", 1) for v in f.read().split(b"\0") if b"=" in v)
+        bus = env.get(b"DBUS_SESSION_BUS_ADDRESS", b"").decode()
+    if bus and bus != nested.user_env.get("DBUS_SESSION_BUS_ADDRESS"):
+        mark = len(shell.log())
+        out = subprocess.run(
+            ["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications",
+             "--object-path", "/org/freedesktop/Notifications", "--method",
+             "org.freedesktop.Notifications.Notify", "wltest", "0", "", "Nested toast",
+             "from the Wayland test", "[]", "{}", "2500"],
+            env={"PATH": os.environ.get("PATH", "/usr/bin"), "DBUS_SESSION_BUS_ADDRESS": bus},
+            capture_output=True, text=True, timeout=10)
+        name = None
+        m = re.search(r"\(uint32 (\d+),\)", out.stdout)
+        if m:
+            name = f"notif-{m[1]}"
+        toast = idle(name) if name else None
+        timings["toast"] = _timings(shell.log(), name or "?", mark)
+        if toast:
+            img, path = nested.screenshot("toast", keep)
+            shots["toast"] = path
+        check("a notification on the shell's own bus: its toast bottom right (the "
+              "notification offsets), above the windows",
+              bool(toast) and toast["cx"] + toast["cw"] == W - theme.NOTIF_OFFSET_X
+              and toast["cy"] + toast["ch"] == H - theme.NOTIF_OFFSET_Y,
+              f"{out.stdout.strip()} {out.stderr.strip()[-200:]} "
+              f"{toast and (toast['cx'], toast['cy'], toast['cw'], toast['ch'])}")
+        check("... and it goes by itself when its time is up",
+              bool(name) and bool(_wait(lambda: name not in lay(), 6.0)))
+    else:
+        check("the shell's own D-Bus, for a toast", False, str(bus))
+
+    log = shell.log()
+    check("no errors or tracebacks after the panels, menus and toasts",
+          "Traceback" not in log and " ERROR " not in log,
+          "\n".join(ln for ln in log.splitlines() if "ERROR" in ln or "Trace" in ln)[:800])
+    for what, t in timings.items():
+        print(f"  ({_say_timing(what, t)})", flush=True)
+    ctx["timings"] = timings
