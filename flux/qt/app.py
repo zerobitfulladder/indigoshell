@@ -69,7 +69,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWebEngineCore import QWebEngineDownloadRequest
 from PySide6.QtWidgets import QApplication
 
-from flux import places, protocol
+from flux import places, protocol, zoom
 
 from . import effects, logs, startup
 from .bookmarks import Bookmarks
@@ -154,6 +154,7 @@ class Browser(QObject):
         self.history = places.History(places.history_path(name))
         self.bookmarks = Bookmarks(self, places.bookmarks_path(name))
         self.bookmarks.changed.connect(self._bookmarks_changed)
+        self.zooms = zoom.ZoomFile(zoom.zoom_path(name))   # the zoom kept per site
         self.watch = Watch(self)                # the agent driving tabs (watch.py)
         self.windows: list[Window] = []         # open ones, most recently used first
         # Tabs the user closed, newest last, for Ctrl+Shift+T (window.py).
@@ -202,6 +203,19 @@ class Browser(QObject):
             self.windows.remove(window)
         if window in self._made:
             self._made.remove(window)
+
+    def spread_zoom(self, tab, factor: float) -> None:
+        """The user zoomed `tab`'s page: every other page of its site open
+        in any window follows at once (flux/zoom.py)."""
+        site = zoom.site_of(tab.url().toString())
+        if site is None:
+            return
+        for window in self.windows:
+            if not shiboken6.isValid(window):
+                continue
+            for other in window.tabs:
+                if other is not tab and zoom.site_of(other.url().toString()) == site:
+                    other.set_zoom(factor)
 
     def user_windows(self) -> list[Window]:
         """The user's main windows, most recently used first: not a

@@ -15,7 +15,9 @@
     Ctrl+Shift+R, Ctrl+F5,      reload past the cache, as Firefox does
       Shift+F5
     F12                         inspector
-    Ctrl++, Ctrl+-, Ctrl+0      zoom in, out, back to 100%
+    Ctrl++, Ctrl+-, Ctrl+0      zoom in, out, back to 100%, kept for the page's
+                                site (flux/zoom.py); Ctrl+= is Ctrl++, the keypad's
+                                + - 0 the same; Ctrl+wheel a step a notch (window.py)
     Esc                         leave fullscreen (only while fullscreen)
 
 On a main window a shell takes Ctrl+L, Ctrl+T and Ctrl+M before they
@@ -84,6 +86,14 @@ SCROLL_KEYS = frozenset({K.Key_Left, K.Key_Right, K.Key_Up, K.Key_Down, K.Key_Pa
 
 def _mods(modifiers) -> M:
     return M(modifiers) & _RELEVANT
+
+
+WHEEL_NOTCH = 120               # angleDelta of one notch of a mouse wheel
+
+
+def wheel_zooms(modifiers) -> bool:
+    """Ctrl (Shift ignored, as for the keys) with the wheel: zoom."""
+    return _mods(modifiers) in (M.ControlModifier, M.ControlModifier | M.ShiftModifier)
 
 
 def command_held(modifiers) -> bool:

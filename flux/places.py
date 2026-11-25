@@ -520,20 +520,25 @@ class BookmarkFile:
             raise BookmarksBroken(f"{self.path} does not parse")
 
     def _write(self, data: list) -> None:
-        text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".bookmarks-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(text)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self.path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        write_whole(self.path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         self.text = None
         self.load()
+
+
+def write_whole(path: Path, text: str) -> None:
+    """`text` as the file at `path`, whole: a temporary file beside it,
+    renamed over it, so a reader sees the old file or the new one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
