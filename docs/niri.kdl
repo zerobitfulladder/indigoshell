@@ -10,9 +10,11 @@
 // `niri validate` checks the file once these are in it. tests/wayland.py
 // --nested reads the window rule below into its nested niri.
 
-// The shell. (Keep starting the column layout, qtile's two columns, as
-// before: `python3 -B -m indigoshell.wm.tiling` in the checkout.)
-spawn-sh-at-startup "exec ~/.local/bin/indigoshell"
+// The shell, its log in the journal (`journalctl --user -t indigoshell`):
+// niri throws away what the programs it starts print. (Keep starting the
+// column layout, qtile's two columns, as before: `python3 -B -m
+// indigoshell.wm.tiling` in the checkout.)
+spawn-sh-at-startup "exec systemd-cat -t indigoshell ~/.local/bin/indigoshell"
 
 // The call's blur shows the windows behind it, not only the wallpaper
 // (niri's default for a layer surface is "xray").
