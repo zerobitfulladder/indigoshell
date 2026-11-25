@@ -12,7 +12,7 @@ compaction, and scrolling back through it.
    unknown right after; compacting is no turn (not busy, Ctrl+C sends no
    stop) and a line said meanwhile waits, shown as asked, until the
    hub's turn joins it; a refused `fetch` is matched by its id; `say`
-   names no voice.
+   carries the line alone.
 2. The keys, on the plate's rows: Ctrl+K up through the chat to the
    edge and no further, Ctrl+J down to live again; with Super (niri's
    Mod+Ctrl+J/K resize) or Alt nothing scrolls; Escape goes back live
@@ -92,8 +92,7 @@ async def test_bookkeeping() -> None:
     agent.say("hello there")
     await asyncio.sleep(0)
     say = next(m for m in agent.sent if m["type"] == "say")
-    check("`say` carries the text alone: no voice", say == {"type": "say",
-                                                             "text": "hello there"})
+    check("`say` carries the line alone", say == {"type": "say", "text": "hello there"})
     agent.text("General Kenobi.")
     agent.end()
     check("done.exchange: the turn joins the scrollback, and is the turn on show",
