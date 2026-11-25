@@ -1216,6 +1216,26 @@ async def on_screen() -> None:
               f"{took:.0f} ms (from parked)", flush=True)
         check("... its first frame within 100 ms of the toggle, from parked",
               took is not None and took < 100, f"{took:.0f} ms")
+
+        # Made ahead (what the service asks of the daemon after its start):
+        # parked unshown, and no app search for it.
+        d._parked.pop(DROP_WINDOW).destroy()
+        n = len(grabs)
+        d.prepare(DROP_WINDOW)
+        prepared = DROP_WINDOW in d._parked and DROP_WINDOW not in d.instances
+        check("the drop-down made ahead (Daemon.prepare): parked unshown, no app search opened, "
+              "no keyboard asked for", prepared and service.prompt is None and grabs[n:] == []
+              and not d._parked[DROP_WINDOW].mapped)
+        presented.pop(DROP_WINDOW, None)
+        t0 = time.monotonic()
+        d.toggle(DROP_WINDOW)
+        ok = await until(lambda: presented.get(DROP_WINDOW), 5)
+        first = (presented[DROP_WINDOW][0] - t0) * 1000 if ok else None
+        opened = service.prompt is not None and service.prompt.owner is None
+        d.toggle(DROP_WINDOW)
+        await until(lambda: DROP_WINDOW in d._parked, 3)
+        check("... then MOD+D: the app search from the window made ahead, its first frame "
+              "within 100 ms", opened and first is not None and first < 100, f"{first} ms")
     finally:
         Window.show = original
         Prompt.answer = real_answer

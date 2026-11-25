@@ -130,7 +130,7 @@ An unknown name draws nothing (one debug line); an unknown role draws `fg`.
 | type | fields | when |
 |---|---|---|
 | `announce` | `app`, `window`: the app's id for it, `handle`: {`x11`: X window id} | first on each connection; `app` no longer picks a class |
-| `place` | `with`?: another of its windows, by the app's id | as now, but no X id in it |
+| `place` | `with`?: another of its windows (of the same process), by the app's id | as now, but no X id in it |
 | `bar` | `start`, `end`, `inputs`, `menus` | right after the announce, then whenever it differs; replaces the last whole |
 | `answer` | `input`, `seq`, `rows`?, `selected`?: row id, `total`?: int, `count`?: {`text`, `color`} | to a `query` |
 | `open` | `input` or `menu` | open one now, no key pressed (Flux's new window with no address) |
@@ -202,12 +202,15 @@ manager binds wins (X checks grabs from the root down), so an app cannot
 take qtile's keys.
 
 **Opening an input.** On the press the shell takes the keyboard (on X11
-`hold_keyboard`, then a grab of its own for as long as the input is
-open), and at the next frame the app's section becomes the text box: the
-icon, the input's `text` (selected when `select`, so the first key
-replaces it), the caret, the count, the toggles. Keys typed before the
-shell's own grab (on X11 they arrive on the app's window) go into the
-box in order (`on_typed`, today's type-ahead). The shell edits the text
+`hold_keyboard`: an active grab on the app's window, made while the
+chord's passive grab still holds it and kept for as long as the input is
+open, so no key falls between two grabs), and at the next frame the
+app's section becomes the text box: the icon, the input's `text`
+(selected when `select`, so the first key replaces it), the caret, the
+count, the toggles. Every key typed meanwhile arrives on the app's
+window, in the order typed, and goes into the box (`on_typed`); the
+pointer is held too (on the bar's window, owner events on, so the bar
+and the list keep their clicks) for a click elsewhere to close it. The shell edits the text
 itself (`TextInput`'s keys: words, selection, paste), so every key shows
 at once with no round trip. Escape, or a click outside the bar and its
 list, closes it, and the section shows the app's items again. It also
@@ -276,7 +279,9 @@ second window against its bottom edge (`window.Placement`, as the
 launcher drops from the bar now), on the bar's background with no edge
 between: the section's width for an input, its own for a menu. The
 launcher's rows, filter and steps move into it; its spawn effect becomes
-the list unrolling from the bar.
+the list unrolling from the bar. It is the window kind `launcher`, so
+MOD+D's `indigoshell toggle launcher` opens it: opened by name with
+nothing open, it is the app search (step 5).
 
 ## 5. The agent
 
@@ -352,9 +357,9 @@ Ctrl+L, then "yo" typed fast, then Return:
 
 1. X11 hands the press to the shell, which holds the keyboard; the section
    becomes the box, the address selected. `query` seq 1, the address.
-2. "y" (on Flux's window, before the shell's grab) replaces the
-   selection; "o" comes through the grab. Both show at once; seq 1 is
-   still out, so "yo" waits.
+2. "y" and "o" (on Flux's window, under the shell's grab) go into the
+   box, "y" replacing the selection. Both show at once; seq 1 is still
+   out, so "yo" waits.
 3. Flux answers seq 1 and the list drops. `query` seq 2 "yo"; Flux
    answers the typed row and YouTube, selected.
 4. Return: `{"type": "submit", "input": "address", "text": "yo", "row":

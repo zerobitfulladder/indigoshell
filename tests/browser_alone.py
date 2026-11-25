@@ -11,21 +11,23 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      scratch home holding fake secrets (.ssh, .gnupg, keyrings, pass, rbw,
      Firefox's profiles, the shell's data and connections, key-like
      names), reached directly and through links from /tmp; what may go;
-     sites.json's agent table; the new requests and the announce; the
+     sites.json's agent table; the new requests and the agent's own
+     window's bar (her name first); the
      hands' schemas (JSON Schema) and what their descriptions tell the
      agent.
   2. one browser in this process, its control socket and a stand-in
      shell on sockets of the test's (the shell answers `place` a moment
      late, with workspace 6), the client on an asyncio loop in a thread,
      the user's attention on another window: `open` in the agent's
-     window (made, announced as Lilac's, asked to be placed before it is
+     window (made, its bar starting with Lilac's name, asked to be
+     placed before it is
      shown and not shown until the answer, its title and role, shown
      without activating and never raised or activated by Flux (the
      offscreen platform focuses whatever it shows: the window manager's
      part is checked on screen); `open` with no window still the
      user's);
      borrow (a tab that is not showing: its typed form, scroll, script
-     state and cookie kept, gone from the user's window and the state
+     state and cookie kept, gone from the user's window and the bar
      the shell gets, the user's view unchanged; current in the agent's
      window, `borrowed` said; acting on it there: the Watch's overlay in
      that window; a window's last tab leaving a blank one, closed again

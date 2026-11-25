@@ -203,10 +203,14 @@ size, cut to the song's beats.
        alt="The bar, left half above right half: INDIGO tag, workspaces and a lyric line; meters, network, now playing, volume and clock">
 
 - **Top bar** — a thinner second dock along the top. Its left is the
-  focused indigoshell app's — [Flux](#flux--the-browser)'s tabs, host
-  and load line while a Flux window has focus, nothing while any other
-  window does — and its right end the agent's chip, when a call is
-  configured.
+  focused indigoshell app's section — [Flux](#flux--the-browser)'s tabs,
+  a box each, and the page's host while a Flux window has focus, nothing
+  while any other window does — and its right end the agent's chip, when
+  a call is configured. An app only says what its section holds (the
+  [app bar protocol](indigoshell/applink/PROTOCOL.md)); the look, the
+  motion and the keys are the shell's. Its inputs turn the section into
+  a text box, their suggestions dropping flush under it as if the bar
+  grew down; its menus drop the same way, filtered by typing.
 
 - **Widgets** — plain at rest, animated when something happens:
   - **workspaces**, each a stack of bars for its window count, an urgent
@@ -259,17 +263,14 @@ size, cut to the song's beats.
   <img src="docs/media/menu.gif" width="440"
        alt="The profile menu scanning in, its rows lighting up under the pointer">
 
-- **Launcher** — replaces rofi's `drun`: a centred panel over every
-  installed desktop entry, with their theme icons, fuzzy matching (fzy's
-  scorer, case- and accent-blind, matched letters lit) and launch
-  history that lifts the apps actually used. Type straight away — keys
-  pressed during the spawn animation are kept. Shift+Return runs the
-  query as a command line. Apps start in their own systemd scope,
-  detached from the shell, so a reload never takes them down. The same
-  window answers Flux's address and bookmark keys.
-
-  <img src="docs/media/launcher.gif" width="560"
-       alt="The launcher opening, nvim typed and Neovim picked">
+- **App search** — replaces rofi's `drun`, in the top bar: MOD+D turns
+  its app section into a search box, every installed desktop entry
+  dropping under it with its theme icon, fuzzy matching (fzy's scorer,
+  case- and accent-blind, matched letters lit) and launch history that
+  lifts the apps actually used. Type straight away: no key is lost.
+  Shift+Return runs the query as a command line. Apps start in their own
+  systemd scope, detached from the shell, so a reload never takes them
+  down. It is the same input as an app's (Flux's address box).
 
 - **Notifications** — a full `org.freedesktop.Notifications` daemon,
   replacing dunst. One window per toast, so the spawn and despawn
@@ -313,23 +314,27 @@ per profile: a second invocation hands its URLs to the running one.
 
 ```bash
 indigoshell browser [url ...]   # or from the checkout: python -m flux [url ...]
-indigoshell browser --install   # its entry in the launcher, "Flux"
+indigoshell browser --install   # its desktop entry, "Flux" (the app search finds it)
 ```
 
-The shell takes it in through `applink/`, its line to its own apps
-([`applink/flux.py`](indigoshell/applink/flux.py)): while a Flux window
-has focus, the top bar shows its tabs, the page's host and a load line,
-drawn with the shell's own text, and the shell answers its `Ctrl+L`,
-`Ctrl+T` and `Ctrl+M` with the launcher — addresses from Flux's history
-and bookmarks, or the window's bookmark actions. Either side can start,
+It is an indigoshell app, the first: each window sends the shell its
+section of the top bar over `applink/`, the shell's line to its own
+apps ([the app bar protocol](indigoshell/applink/PROTOCOL.md);
+[`flux/bar.py`](flux/bar.py) makes Flux's of a window's state), and
+nothing of Flux's is in the shell. While a Flux window has focus the
+top bar shows its tabs (click, middle-click to close, drag to move or
+off the bar to tear out), the page's host, and its inputs and menu:
+`Ctrl+L` the address and `Ctrl+T` a new tab's, answered from Flux's
+history and bookmarks as you type (`Shift+Delete` takes a bookmark
+out), `Ctrl+F` find (type, Enter, then `n` / `N` step: the page never
+sees those keys), `Ctrl+M` the bookmark actions. Either side can start,
 stop or restart at any time. With no shell Flux writes the same into a
-line at its window's top and asks for addresses with a dialog of its
-own, so it is usable alone.
+line at its window's top, asks for addresses with a dialog of its own
+and finds over the page itself, so it is usable alone.
 
 Its own keys: `Alt+1`…`Alt+9` go to a tab and `Alt+Shift+1`…`9` move
 the current one there, `Ctrl+W` closes a tab and `Ctrl+Shift+T` reopens
-the one closed last, `Ctrl+F` finds in the page, `F12` opens the
-inspector.
+the one closed last, `F12` opens the inspector.
 
 `--profile NAME` runs a Flux of its own beside the default one, with
 its own storage, history, bookmarks and socket; `--headless` runs one
@@ -376,11 +381,18 @@ indigoshell/
                       (turn clock), reveal.py (decode), media.py (pictures
                       and files shown), rows.py, style.py
   applink/          ─ the shell's line to its own apps, and the top bar they set
+    PROTOCOL.md     ─ the app bar protocol: what an app sends, what comes back
+    bar.py          ─ its vocabulary: names, builders, the shape checks (pure)
     protocol.py     ─ one unix socket, one JSON object per line (pure)
-    service.py      ─ AppService: who is connected, who has focus, grabbed keys
+    service.py      ─ AppService: who is connected, who has focus, their
+                      bars, the keys taken, the input or menu open
     context.py      ─ the top bar's area for the focused app
-    flux.py         ─ Flux's tabs, host and load line; the launcher for its
-                      Ctrl+L, Ctrl+T, Ctrl+M
+    view.py         ─ BarView: an app's section, its items kept by id
+    kinds/          ─ the items' look and mouse: tabs, text, button; the
+                      open input's box; the shared look (colour roles, icons)
+    prompt.py       ─ an open input or menu: queries, keys, steps, actions
+    drop.py         ─ the drop-down under the bar: the rows, unrolling
+    catalog.py      ─ MOD+D's app search, the same input
   backend/
     x11.py          ─ the process's single xcffib connection + event pump
     gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback
@@ -389,6 +401,7 @@ indigoshell/
     ipc.py          ─ control socket (line-delimited JSON over AF_UNIX)
     client.py       ─ the CLI side of that socket
     hands.py        ─ what a tool lent to the hub's agent is (pure; Flux's too)
+    voices.py       ─ the agent's voices: names and colours (pure; Flux's too)
     registry.py     ─ plugin discovery, shipped then user, later winning
     naming.py       ─ APP / CLI / env prefix, derived from the package
     paths.py        ─ socket, lock, config, state and log locations
@@ -408,8 +421,6 @@ indigoshell/
     beat.py         ─ cava bands + aubio beat detection, both lazy
     sysinfo.py      ─ 1Hz CPU/RAM sampler, direct-sysfs temperature
     apps.py         ─ installed-app catalog, ranked search, launch history
-    modes.py        ─ launcher modes: lists shown in place of the apps
-    addresses.py    ─ the address mode for Flux: its history and bookmarks
     desktop_entry.py─ .desktop parsing, visibility, Exec -> argv
     icons.py        ─ icon theme lookup (indexed once) and loading
     proc.py         ─ run / fire / launch / subscribe, all coroutines
@@ -421,12 +432,14 @@ indigoshell/
     media.py          meters.py    hud.py       menu.py     systray.py
     notification.py   line_graph.py stdout_text.py
     hardware_panel.py network_panel.py fastfetch.py
-    launcher.py       text_input.py
+    text_input.py
     holo.py           the hologram: raster + glitch scan, on the call and on
                       every `WindowSpec(holo=True)` panel
 flux/               ─ Flux, the browser (see Flux, above): its own process
   __main__.py       ─ python -m flux [url ...]
-  protocol.py       ─ what Flux and the shell say; the control requests
+  protocol.py       ─ what Flux and the agent say: the control requests
+  bar.py            ─ a window's state as its section of the shell's top bar
+  addresses.py      ─ the address inputs' answers: its history and bookmarks
   places.py         ─ what a typed line means, history (SQLite), bookmarks
   profiles.py       ─ the default profile's places, and --profile NAME's
   control.py        ─ the control socket's client (pure asyncio)

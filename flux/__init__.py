@@ -6,34 +6,31 @@ in this checkout, on PySide6 and QtWebEngine (Chromium).
 It owns its top-level X windows: one window holds many pages (tabs),
 each page from the window's top edge. It is a single instance per
 profile: a second invocation hands its URLs to the running one.
-`desktop.py` installs its launcher entry, Flux (`python -m flux
---install`).
+`desktop.py` installs its desktop entry, Flux (`python -m flux
+--install`), which MOD+D's app search finds.
 
-The shell integrates it, as it will its other apps: while a Flux window
-has focus, the shell's top bar shows its tabs, the current page's host
-and its load line, drawn with the shell's own skia text, and the shell
-answers its Ctrl+L, Ctrl+T and Ctrl+M with its launcher. That half is
-the shell's, not this package's: `FluxWindow` in
-indigoshell/applink/flux.py, an app kind of applink/ (the shell's line
-to its apps).
-
-They talk over a unix socket, one JSON object per line
-(indigoshell/applink/protocol.py for the line, `protocol.py` here for
-what Flux says on it). Flux is the client: it connects, says it is a
-Flux window and which X window, then pushes its state whenever it
-changes; the shell answers that it has the window and may send commands
-back. The shell grabs Ctrl+L, Ctrl+T and Ctrl+M on Flux's main windows
-and answers them with its launcher, which lists addresses (history and
-bookmarks) or the window's actions. Either side can start, stop or
-restart at any time. With no shell for a few seconds Flux writes the
+The shell integrates it, as it will its other apps: Flux is an
+indigoshell app (indigoshell/applink/PROTOCOL.md, the app bar protocol).
+Each window connects to the shell's app socket, announces itself (the
+app, its own id, its X window) and sends its section of the shell's top
+bar whole whenever it changes: `bar.py` makes it of the window's state
+(its tabs, the page's host, the `address`, `new_tab` and `find` inputs,
+the `actions` menu). The shell draws it with its own look, takes the
+inputs' and menu's chords (Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M) from the
+window, and sends back what the user does, by id: a tab selected,
+closed, moved or torn out, an input's query (answered from Flux's places
+by `addresses.py`, or with find's count), a submit, a pick, an input
+closed. Nothing of Flux's is in the shell. Either side can start, stop
+or restart at any time. With no shell for a few seconds Flux writes the
 same information into a line at its window's top, and with none at all
-those keys reach it and it asks for addresses with a dialog of its own,
-so it is usable alone.
+(or one that cannot show an input: `fallback`) those keys reach it and
+it asks for addresses with a dialog of its own and finds over the page
+itself, so it is usable alone.
 
-`places.py` is the module both sides read: what a typed line means, the
-history (SQLite in the data dir, written by Flux, read by the shell's
-launcher) and the bookmarks (bookmarks.json in the config dir,
-likewise). `profiles.py` names a profile's places: the default one's,
+`places.py` is the module both halves read: what a typed line means,
+the history (SQLite in the data dir) and the bookmarks (bookmarks.json
+in the config dir), written by Flux's windows and read for its address
+answers. `profiles.py` names a profile's places: the default one's,
 and those of a Flux run with `--profile NAME` beside it. Flux keeps the
 shell's names for its places, sockets and environment (indigoshell's
 `core.naming`): its data is under the shell's data dir, as before it
@@ -60,10 +57,11 @@ from the places `uploads.py` lists.
 
 Import rule (tests/flux_imports.py checks it): of the shell, Flux
 imports only its pure modules: `indigoshell.core`'s (naming, paths,
-log, hands), `indigoshell.applink.protocol`, `indigoshell.fuzzy` and
+log, hands, voices), `indigoshell.applink.protocol` and
+`indigoshell.applink.bar`, `indigoshell.fuzzy` and
 `indigoshell.services.proc` (to start Flux detached). So it runs where
 none of the shell's own dependencies (xcffib, skia, dbus-fast, psutil)
 are installed. Nothing outside `qt/` imports PySide6, and nothing in
-the shell imports `flux.qt`: the shell takes `protocol`, `places`,
-`control` and `hands` from here, all pure.
+the shell imports `flux.qt`: the shell takes `control` and `hands`
+from here (the agent's), both pure, and nothing else of Flux's.
 """

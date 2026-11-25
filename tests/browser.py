@@ -12,22 +12,29 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      window's own fallback line with no shell (only after the shell has
      been away three seconds; find included), the address dialog when
      Ctrl+T / Ctrl+L reach the window, the shell link (the announce, a
-     main window's and the inspector's; the line gone once the shell has
-     the window; the state whole and only on change; commands;
+     main window's bar and the inspector's (no inputs); the line gone
+     once the shell has the window; the bar whole, good, and only on
+     change;
      fullscreen), per-site identity against a local server reached as
      127.0.0.1 and as localhost (headers, navigator, frames, client
      hints, edits and a broken file), a download; Ctrl+L / Ctrl+T /
      Ctrl+M reaching the window with a shell there (a key the shell
-     could not grab): the window's own answers, nothing sent; load here
-     and in a new tab, prompt, a new window's `launcher`, a release
-     whose press the window never saw going to the page, find ended by a
-     load; find in page (both phases, the page never seeing a key find
-     took), bookmarks through the command and by hand; bookmarks that redirect
+     could not grab): the window's own answers, nothing sent; the bar's
+     events: tabs selected, closed, moved before another and torn out
+     by id, a submit loading here and in a new tab, a fallback, a new
+     window's `open`; a release whose press the window never saw going
+     to the page, its own find ended by a load; an address query
+     answered from its places; the shell's find (a query counted, Enter
+     to stepping, n / N, smartcase, no matches, closed by Enter or
+     Escape); the window's own find (both phases, the page never seeing
+     a key find took), bookmarks through the actions' picks and by hand;
+     bookmarks that redirect
      (a 301, a 302 chain onto another host name, a script while loading,
      a script after the load event) counting for the page they land on,
      with what QtWebEngine reported for each, until a link, Back or a new
      address; Remove taking out the right entry, other entries' keys
-     kept; the command with a url; the history recorded; the shell away
+     kept; a row's remove action with an address; the history
+     recorded; the shell away
      (the line after three seconds, never for a reload-sized gap, ten
      for a shell that said it is restarting) and a new window's dialog
      with no shell; URLs handed to the most recently used window, and a
@@ -1134,7 +1141,7 @@ def test_in_process() -> None:
           "window's own line notes it while it runs)", done and notes == [],
           f"{notes[:2]}, {target.stat().st_size if target.exists() else 'no file'}")
 
-    # ── the launcher's answers, find, bookmarks ─────────────────────────
+    # ── the inputs' events, find, bookmarks ─────────────────────────────
     print("  what the shell's inputs send (it took the keys: tests/topbar.py and "
           "tests/browser_launcher.py):")
     w.select(0)
@@ -1217,7 +1224,7 @@ def test_in_process() -> None:
           asked == {"new_tab": ("New tab", ""), "address": ("Open", url("/page/Here"))}
           and len(w.tabs) == tabs_before and len(said) == 3, f"{asked} {said}")
 
-    # Find left open under the launcher: a load into its tab ends it.
+    # The window's own find open: a load into its tab ends it.
     clear_keys()
     press(w, K.Key_F, M.ControlModifier)
     type_text(w, "her")
@@ -1237,7 +1244,7 @@ def test_in_process() -> None:
     stray = w.eventFilter(handle, QKeyEvent(QEvent.Type.KeyRelease, K.Key_Return,
                                             M.NoModifier, "\r"))
     check("a release goes where its press went: Alt+9's (the window took the press) not the "
-          "page's; one whose press the window never saw (the launcher's last key, let go after "
+          "page's; one whose press the window never saw (an input's last key, let go after "
           "it closed) the page's", taken is True and ours is True and stray is False)
 
     # ── the shell's inputs, answered ────────────────────────────────────

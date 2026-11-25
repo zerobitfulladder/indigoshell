@@ -2,9 +2,9 @@
 typed line means.
 
 Pure Python (sqlite3, json, the shell's pure `fuzzy.fold`), because both
-halves use it: the browser records history and writes bookmarks; the
-daemon's launcher reads both for its address mode (services/addresses.py)
-and never writes either.
+halves of the browser use it: its windows record history and write
+bookmarks, and its address inputs' answers read both (addresses.py,
+read-only).
 
 What a typed line means (`classify`): an address when it has a scheme
 the browser knows, starts with `localhost`, is an IP address, is a path

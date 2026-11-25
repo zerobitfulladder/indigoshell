@@ -189,11 +189,17 @@ class DropList(Widget):
     def attach(self, window) -> None:
         super().attach(window)
         self.begin()
-        if (self.prompt is None or not self.prompt.open) and self.service is not None:
-            # Opened by name with nothing to show (MOD+D): the app search.
-            self.service.open_apps(self, window)
         w, h = self.relayout()
         window.resize_content(w, h)
+
+    def on_open(self, window) -> None:
+        """An open is about to show the window (Daemon.open; not when it is
+        made ahead and parked). Opened by name with nothing to show
+        (MOD+D): the app search."""
+        if (self.prompt is None or not self.prompt.open) and self.service is not None:
+            self.service.open_apps(self, window)
+            w, h = self.relayout()
+            window.resize_content(w, h)
 
     def on_dismiss(self) -> None:
         """Closed by name (the toggle) while it shows something: that

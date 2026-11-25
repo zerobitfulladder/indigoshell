@@ -1,10 +1,12 @@
 """The top bar's context area: what the focused indigoshell app shows.
 
 `AppContext` is a widget for a bar's row (config_default's `top_bar`).
-It takes all the room the row leaves it and fills it with the focused
-app window's own `content` (service.AppWindow), which that window's kind
-draws: Flux's tabs and host (applink/flux.py). When the
-window with focus is no app's, it is empty: the bar's background.
+It takes all the room the row leaves it (the bar's own widgets take
+theirs first) and fills it with the focused app window's section, its
+`BarView` (view.py: what the app's bar says, drawn by the shell's
+kinds); while MOD+D's app search is open, with the shell's own section
+holding its box instead (service.AppService.shown). When the window with
+focus is no app's, it is empty: the bar's background.
 
 Focus moving swaps the content: the one shown is attached to the bar's
 window, the one left is detached and forgets the window, so an app
@@ -12,7 +14,7 @@ window in the background keeps its content up to date without
 repainting the bar for it.
 
 The pointer reaches the shown content as any widget in the bar: the
-bar's window hit-tests through this widget into it (Flux's tabs take
+bar's window hit-tests through this widget into it (the tabs take
 their presses and drags: Widget.press). Content swapped out while it
 holds a press lets go of it in its `detach`, which the swap calls.
 """

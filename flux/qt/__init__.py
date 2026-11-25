@@ -36,10 +36,11 @@ Modules, in the order a start runs through them:
 
 Import rule: nothing in this package imports xcffib, skia, or a shell
 module that does (`indigoshell.theme` imports skia). Only the pure
-`indigoshell.core` modules (naming, paths, log), `indigoshell.fuzzy`
-(through places), `indigoshell.applink.protocol`,
-`flux.protocol`, `flux.profiles`,
-`flux.places`, `flux.uploads` (the places
-uploads never come from), and `flux.desktop` (for
-`--install`). The X side (`applink/flux.py`) never sees Qt either.
+`indigoshell.core` modules (naming, paths, log, voices),
+`indigoshell.fuzzy` (through places), `indigoshell.applink.protocol` and
+`indigoshell.applink.bar` (the app bar protocol's vocabulary),
+`flux.protocol`, `flux.profiles`, `flux.places`, `flux.bar` and
+`flux.addresses` (its section of the top bar, its address answers),
+`flux.uploads` (the places uploads never come from), and `flux.desktop`
+(for `--install`). The shell never sees Qt either.
 """

@@ -1,5 +1,5 @@
 """The shell's top bar and its line to the shell's own apps
-(indigoshell/applink, applink/flux.py), and the shell code under it.
+(indigoshell/applink: the app bar protocol), and the shell code under it.
 
     .venv/bin/python tests/topbar.py              all of it, about a minute;
                                                   a test browser window shows in
@@ -18,60 +18,61 @@
    error kills a process whose guard was taken away (so 1 means
    something); EGL drawing to a window destroyed under it.
 3. Flux: the repository's desktop file, its install into a scratch
-   data dir, and the launcher's own catalog code finding, showing and
-   launching it, and rescanning when it appears.
-4. Flux's content for the top bar, painted off screen on the bar's rule
-   and read back as pixels: the tabs in equal slots (the current one
-   risen out of the rule, its title strong and its number cyan in
-   brackets; the rest muted; long titles cut with an ellipsis to their
-   slot; the run around the current tab when even the narrowest slots do
-   not fit), the host with the not-secure padlock and the bookmark glyph,
-   find risen as one tab while typing (the caret) and while stepping
-   (none), "no matches" in the error colour, the current tab's load
-   lighting its outline, a comet on the rule under a tab behind that
-   loads, hover; the motion (a switch sliding the raised part, a close
-   wiping the tab out before the others slide; the clock asked for
-   frames only while something moves).
-5. The app service on a socket of its own: the announce and the answer
-   both ways (Flux; an app kind it does not know; an announce naming no
-   kind; windows that are no window; lines that are no message, types
-   it does not know), focus followed between two Flux windows, a dialog
-   of one of them and a window that is no app's (the context area
-   empty), a Flux window in the background changing without repainting
-   the bar, a connection lost and back, the service stopped and
-   started; the root listener path; the key grabs going with the
-   connection and the service, and made again on the next announce,
-   checked with X itself (another client's grab refused while the
-   service holds one, taken once it is gone).
-5b. The keys the shell takes, on real unmapped windows of the test's
-   own, the service's X connection wrapped in a recorder (keyboard
-   grabs recorded and never sent): GrabKey for Ctrl+L, Ctrl+T, Ctrl+M on
-   a main Flux window, by the keycodes the keymap gives (an oracle read
-   on another connection), once per combination of Caps Lock and Num
-   Lock, asynchronous, and none on a single window; another client's
-   grab of one chord refused (the warning once, that chord left to the
-   app, the rest grabbed); a press delivered to the handler (the keyboard
-   held first, the launcher opened, keys typed after it into the query in
-   order, a release ignored); a keymap change (MappingNotify) re-making
-   the grabs; the grabs released with the window, not when an older
-   connection for the same window goes.
-4b. The mouse on Flux's tabs, through the top bar's own Window (no X:
+   data dir, and the app catalog finding, showing and launching it, and
+   rescanning when it appears.
+4. An app's bar (applink/view.py, the kinds) painted off screen on the
+   bar's background and read back as pixels, from bar dicts: the tabs in
+   equal slots, a box each (the current one's outline bright, its title
+   strong and its number cyan in brackets; the rest muted; long titles
+   cut with an ellipsis; the run around the current tab when even the
+   narrowest slots do not fit), the host with the open padlock and the
+   bookmark; an open input's box in the items' place (the search mark,
+   the text and its caret, the count at the right end, none while
+   stepping, "no matches" in the error colour), the items back after
+   it; the current tab's progress lighting its outline, a comet round a
+   busy tab behind, hover; the motion (a switch sliding the light, a
+   close wiping the tab out before the others slide; the clock asked
+   for frames only while something moves).
+4b. The mouse on an app's tabs, through the top bar's own Window (no X:
    a stand-in display whose keyboard grabs are counted, never made) fed
-   real X events built from their bytes: which tab is under x (slots,
-   gaps, past the last); a left and a right click switching by tab id;
-   a middle click closing (let go elsewhere: nothing); the drag threshold;
-   a drag lifting the tab (the keyboard taken once, for Escape), the
-   others making room, the marker, `move` to where it lands (both ways;
-   dropped in place: nothing); below the bar still a move, past
-   TEAR_OUT_PX `detach` with the root point (never a window's only tab);
-   Escape cancelling, other keys swallowed, a late Escape never closing
-   the bar; the keyboard refused; the keyboard given back on every way
-   out (the tab closing, the Flux window going, an exception, a release
-   never seen, the window going), every grab once; hover; the bar's
-   other widgets (a handler, a position, a slider) as before.
-6. Where Flux's launcher drops from: centred on its window, its top at
-   the top bar's bottom edge, or at the window's own top edge with no
-   bar over it (real unmapped windows of the test's own; no launcher).
+   real X events built from their bytes, the events recorded by id:
+   which tab is under x; a left and a right click selecting; a middle
+   click closing (let go elsewhere: nothing); the drag threshold; a drag
+   lifting the tab (the keyboard taken once, for Escape), the others
+   making room, the marker, `move` before the tab it lands before (both
+   ways; dropped in place: nothing); below the bar still a move, past
+   TEAR_OUT_PX `detach` (never a window's only tab); Escape cancelling,
+   other keys swallowed, a late Escape never closing the bar; the
+   keyboard refused; the keyboard given back on every way out; hover;
+   the bar's other widgets as before.
+5. The app service on a socket of its own, a stand-in app on it sending
+   bars: the announce and the answer both ways (the voices' names; an
+   app other than Flux, the same class; announces that are no X window
+   or name no app or id; lines that are no message, types it does not
+   know); a bar shown and replaced, a bad one keeping the last good (one
+   warning), an answer for nothing open dropped, chords grabbed again
+   when they change; focus followed between two windows, a dialog of one
+   and a window that is no app's (the context area empty), a window in
+   the background changing without repainting the bar, a connection
+   lost and back, the service stopped and started; the key grabs going
+   with the connection and the service, checked with X itself.
+5b. The keys the shell takes, on real unmapped windows of the test's
+   own, the service's X connection wrapped in a recorder (keyboard and
+   pointer grabs recorded and never sent): GrabKey for a bar's chords
+   by the keycodes the keymap gives (an oracle read on another
+   connection), once per combination of Caps Lock and Num Lock, and none
+   for a bar with no inputs; another client's grab of one chord refused
+   (the warning once, that chord left to the app); a press delivered
+   (the keyboard held first, the pointer on the bar's window, the input
+   open in the section, keys typed after it into its box in order, the
+   chord again selecting its text, Escape closing it and giving both
+   back); a menu; no top bar (fallback); `open` with no top bar; a
+   keymap change re-making the grabs; the grabs released with the
+   window.
+6. Whether a top bar is over an app's window (real unmapped windows of
+   the test's own) and where its list drops: the section's left, the
+   bar's bottom edge, an item's left for a menu; the bar on another
+   monitor, the window gone; a bar spanning the screen asking nothing.
 7. The top bar's spec, as computed data: anchors, size, layer, the
    strut it would set (never set on a window here), its look against
    the bottom bar's, its place in WINDOWS, a user widget added the
@@ -82,9 +83,10 @@
 8. On screen: the real `AppService` on an X connection, loop and socket
    of its own, and the real browser (`--unattended`: floating in the
    corner, never focused) on sockets and XDG directories of its own.
-   The browser announces itself as a main Flux window, and the service
-   grabs its keys (another client's grab of them refused, so X itself
-   says so); its state reaches the service; the context area draws it;
+   The browser announces its window, and the service grabs its bar's
+   chords (another client's grab of them refused, so X itself says so);
+   its bar reaches the service; the context area draws it; an event of
+   the bar's switches its tab;
    the browser's window has nothing of the shell's in it, no child
    window and no line (its own pixels, from its composite pixmap, never
    the root or the screen: the page's colour from the top edge);
