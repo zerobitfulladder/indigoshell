@@ -149,7 +149,7 @@ An unknown name draws nothing (one debug line); an unknown role draws `fg`.
 | `submit` | `input`, `text`, `row`: id or null, `shift`: bool | Enter (the selected row) or Shift+Enter (`row` null: the text itself) |
 | `act` | `input`, `action`, `row`, `text` | a row action's chord (Flux: Shift+Delete) |
 | `pick` | `menu`, `row` | a menu row chosen |
-| `closed` | `input` or `menu` | it left the screen (after a submit or pick too, or Escape, a click outside, focus lost) |
+| `closed` | `input` or `menu`, `by` | it left the screen, `by` one of `enter` (a submit or pick, stepping's Enter), `escape`, `click` (outside), `focus` (lost, or its window gone), `shell` (another took its place, the shell stopping) |
 | `fallback` | `input` or `menu` | the shell took the key (or the `open`) but cannot show it: do what you do with no shell |
 
 The shell never sends an app-specific command: Flux's `load`, `bookmark`,
@@ -217,7 +217,8 @@ closes when its window loses focus or goes.
 one query in flight per input: newer text waits, and only the newest goes
 when the answer comes. No timer: a fast app sees every keystroke, a slow
 one the latest text. `seq` rises per connection; an answer for a closed
-input or an older seq is dropped. The list opens with the first answer;
+input or an older seq is dropped. The answer to the latest seq may come
+again, replacing the last (find's count after a step). The list opens with the first answer;
 until then, and between answers, the box echoes typing and the rows stay
 as they were. Static `rows` (a command palette) the shell filters itself,
 as `Choices` does now: the app's order with nothing typed.
@@ -250,7 +251,9 @@ as `Choices` does now: the app's order with nothing typed.
   turns the box to stepping: the text stays shown, typing stops, and `n`
   and `N` send `submit` again (`shift: false` / `true`: the next match,
   the one before). The keyboard stays the shell's, so `n` and `N` never
-  reach the page. Enter, Escape or a click ends it (`closed`).
+  reach the page. Enter, Escape or a click ends it (`closed`, its `by`
+  telling them apart: Flux clears the highlight on Escape and leaves the
+  match selected on Enter, as before).
 
 **Menus.** A menu drops under the item that opens it, flush with the
 bar; opened by a chord, under the item that opens it if there is one (so
@@ -263,8 +266,10 @@ a menu, a long one is found by name. Key hints (`chord`) are drawn, not
 taken: the app handles its own Ctrl+S.
 
 **Opening without a key.** `open` is honoured only while that window or
-its dialog has focus; otherwise, or with no top bar over the window, the
-shell answers `fallback` and gives the keyboard back.
+its dialog has focus, waiting up to `OPEN_WAIT_S` (0.5 s) for it: a new
+window sends it as soon as it is shown, a moment before the window
+manager gives it focus. Otherwise, or with no top bar over the window,
+the shell answers `fallback` and gives the keyboard back.
 
 **The drop-down.** The bar is a dock of fixed height, so the list is a
 second window against its bottom edge (`window.Placement`, as the
