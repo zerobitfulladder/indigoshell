@@ -49,7 +49,9 @@ Keys in the call:
                         agent reads it at its next step
     A / D               greenlight (allow), scrub (deny) — while it asks and
                         the line you are typing is empty
-    Ctrl+C              copy the selection; with none, stop the task
+    Ctrl+C              copy the selection (your line's, else the agent's);
+                        with none, stop the task
+    Ctrl+X / Ctrl+V     cut / paste in your line (Shift+arrows select)
     Ctrl+O              every step of the turn, or just the last few
     PageUp / PageDown   scroll a long reply (the wheel too)
     Ctrl+H              past conversations: Up/Down, Return to go back
@@ -567,7 +569,10 @@ class CallHost(Widget):
                     self._fit()
             return True
         if letter == "c":
-            if not plate.copy("clipboard") and not ev.shift:
+            # Your own line's selection first, then the agent's text; with
+            # neither, Ctrl+C stops the task.
+            if not field_.copy_selection() and not plate.copy("clipboard") \
+                    and not ev.shift:
                 a.interrupt()
             return True
         if letter == "o":

@@ -14,16 +14,26 @@ Keys — readline's, where it has one:
     Left / Right        move; with Ctrl, by word
     Home / End          to either end; Ctrl+A / Ctrl+E as well
     Ctrl+U / Ctrl+K     delete to the start / to the end
+    Shift+Left/Right, Shift+Home/End (with Ctrl: by word)
+                        select
+    Ctrl+C / Ctrl+X     copy / cut the selection to the clipboard
+    Ctrl+V, Shift+Insert
+                        paste the clipboard at the caret, over the
+                        selection; line breaks become spaces (one line)
 
 Anything else is left unconsumed, so Return, Escape, Up and Down reach
-whatever holds the field.
+whatever holds the field — and so do Ctrl+C and Ctrl+X when nothing is
+selected (the call stops the agent on Ctrl+C then).
 
-The text can be selected whole (`select_all`), the way a browser's
-address bar holds the current address: the first character typed
-replaces it, a deleting key empties the field, Left/Home and Right/End
-drop the selection at that end. Keys the field does not take leave it
-selected.
+A selection runs from `anchor` to the caret. The text can be selected
+whole (`select_all`), the way a browser's address bar holds the current
+address. While something is selected the first character typed
+replaces it, a deleting key deletes it, Left/Home and Right/End drop it
+at that end. Keys the field does not take leave it selected.
 """
+
+import asyncio
+import logging
 
 from typing import Callable
 
@@ -31,6 +41,8 @@ import skia
 
 from .. import text, theme
 from .base import KeyEvent, Size, Widget
+
+log = logging.getLogger(__name__)
 
 CARET_W = 2.0
 CARET_PAD_Y = 6.0
@@ -46,6 +58,26 @@ SELECTION = (theme.CYAN_BRIGHT, 0.28)   # behind selected text
 _BACKSPACE, _DELETE, _KP_DELETE = 0xFF08, 0xFFFF, 0xFF9F
 _LEFT, _RIGHT, _HOME, _END = 0xFF51, 0xFF53, 0xFF50, 0xFF57
 _KP_LEFT, _KP_RIGHT, _KP_HOME, _KP_END = 0xFF96, 0xFF98, 0xFF95, 0xFF9C
+_INSERT, _KP_INSERT = 0xFF63, 0xFF9E
+_STARTS = (_LEFT, _KP_LEFT, _HOME, _KP_HOME)
+_ENDS = (_RIGHT, _KP_RIGHT, _END, _KP_END)
+
+
+async def _clipboard_text() -> str:
+    from ..services import clipboard        # the window manager's tool (indigoshell/wm)
+    return await clipboard.paste("clipboard")
+
+
+def _to_clipboard(value: str) -> bool:
+    from ..services import clipboard
+    return clipboard.copy(value, "clipboard")
+
+
+def one_line(value: str) -> str:
+    """Pasted text for a single-line field: line breaks and tabs as
+    single spaces, none at either end."""
+    lines = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return " ".join(line.strip().replace("\t", " ") for line in lines if line.strip())
 
 
 def ctrl_letter(ev: KeyEvent) -> str:
@@ -84,7 +116,10 @@ class TextInput(Widget):
         self.on_change = on_change
         self.text = ""
         self.caret = 0
-        self.selected_all = False
+        self.anchor: int | None = None  # the selection's other end; None: nothing selected
+        # The clipboard, as the field reads and writes it (tests stand in).
+        self.read_clipboard = _clipboard_text
+        self.write_clipboard = _to_clipboard
         # False hides the caret and stops its blinking: a field shown but
         # not typed into (the top bar's find, stepping through matches).
         self.caret_shown = True
@@ -98,6 +133,24 @@ class TextInput(Widget):
     def animation_fps(self) -> int:
         return BLINK_FPS if self.caret_shown and self._blink_age < self.blink_for else 0
 
+    @property
+    def selection(self) -> tuple[int, int] | None:
+        """(start, end) of what is selected; None when nothing is."""
+        if self.anchor is None or self.anchor == self.caret:
+            return None
+        return min(self.anchor, self.caret), max(self.anchor, self.caret)
+
+    @property
+    def selected_all(self) -> bool:
+        return bool(self.text) and self.selection == (0, len(self.text))
+
+    @selected_all.setter
+    def selected_all(self, value: bool) -> None:
+        if value:
+            self.select_all()
+        else:
+            self.anchor = None
+
     def set_text(self, value: str, caret: int | None = None, *,
                  notify: bool = True) -> None:
         """Replace the text. `notify=False` keeps `on_change` quiet, for
@@ -105,25 +158,68 @@ class TextInput(Widget):
         caret = len(value) if caret is None else max(0, min(caret, len(value)))
         changed = value != self.text
         self.text, self.caret = value, caret
-        self.selected_all = False
+        self.anchor = None
         self._wake_caret()
         if changed and notify and self.on_change is not None:
             self.on_change(value)
 
     def select_all(self) -> None:
         """Select the whole text (nothing, when there is none)."""
-        self.selected_all = bool(self.text)
+        self.anchor = 0 if self.text else None
         self.caret = len(self.text)
         self._wake_caret()
 
     def clear(self) -> None:
         self.set_text("")
 
-    def _move(self, caret: int) -> None:
+    def _move(self, caret: int, *, extend: bool = False) -> None:
+        """The caret to `caret`; `extend`: the selection grows or shrinks
+        with it (from where the caret was), else it is dropped."""
+        if extend:
+            if self.anchor is None:
+                self.anchor = self.caret
+        else:
+            self.anchor = None
         caret = max(0, min(caret, len(self.text)))
         if caret != self.caret:
             self.caret = caret
         self._wake_caret()
+
+    # ── the clipboard ───────────────────────────────────────────────────
+    def copy_selection(self, *, cut: bool = False) -> bool:
+        """The selection to the clipboard (and out of the field, `cut`);
+        False when nothing is selected, so the key goes to the holder."""
+        sel = self.selection
+        if sel is None:
+            return False
+        if not self.write_clipboard(self.text[sel[0]:sel[1]]):
+            log.info("nothing on the clipboard: its tool is missing")
+        if cut:
+            self._edit(*sel)
+        return True
+
+    def paste(self) -> None:
+        """The clipboard's text at the caret, over the selection, once it
+        is read (asynchronously: the clipboard is another program's)."""
+        async def run() -> None:
+            try:
+                value = one_line(await self.read_clipboard())
+            except Exception as e:      # noqa: BLE001  (empty, not text, no tool)
+                log.debug("nothing pasted: %s", e)
+                return
+            if value:
+                self.insert(value)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(run())          # no loop (a test): at once
+        else:
+            loop.create_task(run())
+
+    def insert(self, value: str) -> None:
+        """`value` at the caret, over the selection."""
+        start, end = self.selection or (self.caret, self.caret)
+        self._edit(start, end, value)
 
     def _edit(self, start: int, end: int, insert: str = "") -> None:
         """Replace text[start:end] with `insert`; caret lands after it."""
@@ -155,9 +251,26 @@ class TextInput(Widget):
 
     # ── input ───────────────────────────────────────────────────────────
     def key(self, ev: KeyEvent) -> bool:
-        if self.selected_all and self._key_on_selection(ev):
-            return True
         k, letter = ev.keysym, ctrl_letter(ev)
+        if (ev.ctrl and letter == "v") or (ev.shift and not ev.ctrl
+                                           and k in (_INSERT, _KP_INSERT)):
+            self.paste()
+            return True
+        if ev.ctrl and letter in ("c", "x"):
+            return self.copy_selection(cut=letter == "x")
+        if ev.shift and k in _STARTS + _ENDS:
+            if k in (_HOME, _KP_HOME):
+                target = 0
+            elif k in (_END, _KP_END):
+                target = len(self.text)
+            elif k in (_LEFT, _KP_LEFT):
+                target = self._word_left() if ev.ctrl else self.caret - 1
+            else:
+                target = self._word_right() if ev.ctrl else self.caret + 1
+            self._move(target, extend=True)
+            return True
+        if self.selection is not None and self._key_on_selection(ev):
+            return True
         if ev.ctrl:
             if k == _BACKSPACE or letter == "w":
                 self._edit(self._word_left(), self.caret)
@@ -198,20 +311,23 @@ class TextInput(Widget):
         return True
 
     def _key_on_selection(self, ev: KeyEvent) -> bool:
-        """A key while the whole text is selected; False when it is not
-        one that acts on the selection (the caller then handles it, with
-        the selection still there)."""
+        """A key while something is selected; False when it is not one
+        that acts on the selection (the caller then handles it, with the
+        selection still there)."""
         k, letter = ev.keysym, ctrl_letter(ev)
+        start, end = self.selection
         deleting = (k in (_BACKSPACE, _DELETE, _KP_DELETE)
                     or (ev.ctrl and letter in ("w", "u", "k")))
         if deleting or (ev.text and not ev.ctrl):
-            self.set_text("" if deleting else ev.text)
-        elif k in (_LEFT, _KP_LEFT, _HOME, _KP_HOME) or (ev.ctrl and letter == "a"):
-            self.selected_all = False
+            self._edit(start, end, "" if deleting else ev.text)
+        elif k in (_HOME, _KP_HOME) or (ev.ctrl and letter == "a"):
             self._move(0)
-        elif k in (_RIGHT, _KP_RIGHT, _END, _KP_END) or (ev.ctrl and letter == "e"):
-            self.selected_all = False
+        elif k in (_LEFT, _KP_LEFT):
+            self._move(start)
+        elif k in (_END, _KP_END) or (ev.ctrl and letter == "e"):
             self._move(len(self.text))
+        elif k in (_RIGHT, _KP_RIGHT):
+            self._move(end)
         else:
             return False
         return True
@@ -245,13 +361,15 @@ class TextInput(Widget):
         canvas.save()
         canvas.clipRect(r)
         baseline = text.baseline_in(r, self.size)
-        if self.selected_all and self.text:
+        sel = self.selection
+        if sel is not None:
             band = skia.Paint(AntiAlias=False)
             band.setColor(theme.color(*SELECTION))
+            x0 = text.measure(self.text[:sel[0]], self.size)
+            x1 = text.measure(self.text[:sel[1]], self.size)
             canvas.drawRect(skia.Rect.MakeLTRB(
-                left - self._scroll_x, r.top() + CARET_PAD_Y,
-                left - self._scroll_x + text.measure(self.text, self.size),
-                r.bottom() - CARET_PAD_Y), band)
+                left - self._scroll_x + x0, r.top() + CARET_PAD_Y,
+                left - self._scroll_x + x1, r.bottom() - CARET_PAD_Y), band)
         if self.text:
             text.draw(canvas, self.text, left - self._scroll_x, baseline,
                       self.size, theme.color(self.color))
