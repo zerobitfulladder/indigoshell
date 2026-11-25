@@ -32,8 +32,9 @@ dependencies = [
 #
 # On Wayland (backend/wayland.py) the shell needs pywayland, from the
 # distro too (Arch: `python-pywayland`, with `wayland-protocols` and
-# `wlr-protocols` for the XML its bindings are generated from); X11 never
-# imports it.
+# `wlr-protocols` for the XML its bindings are generated from), and
+# python-xkbcommon for the keyboard (backend/wlkeys.py; Arch:
+# `python-xkbcommon`); X11 never imports either.
 
 [project.scripts]
 indigoshell = "indigoshell.app:main"
