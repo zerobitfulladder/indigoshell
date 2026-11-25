@@ -12,7 +12,7 @@ The package, by job:
     remote.py        `RemoteAgent`: the line to the hub (a WebSocket with
                      TLS) and the chat as the call reads it: turns,
                      approvals, ring-backs, how full it is, the earlier
-                     exchanges to scroll back through. No drawing; the
+                     exchanges to page back through. No drawing; the
                      overlay only reads and subscribes.
     activity.py      the agent's steps and questions, as the overlay
                      shows them
@@ -39,7 +39,8 @@ The package, by job:
     ui/rows.py       text on the monospace grid: wrapping, Markdown rows,
                      selection-ready lines
     ui/chip.py       the CALL chip
-    ui/context.py    the bar of how full the chat is
+    ui/context.py    the meter of how full the chat is, in her heading
+    ui/scrollback.py which exchange the plates show (Ctrl+K / Ctrl+J)
     ui/agent_plate.py, ui/you_plate.py
                      the two lines of the call
     ui/bars.py       progress bars: under a step, and on the status chip

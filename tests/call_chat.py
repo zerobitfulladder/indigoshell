@@ -1,5 +1,5 @@
 """The call's one chat (lilac's protocol 2): how full it is, its
-compaction, and scrolling back through it.
+compaction, and paging back through it.
 
     .venv/bin/python tests/call_chat.py
 
@@ -15,23 +15,32 @@ compaction, and scrolling back through it.
    carries the line alone; a welcome whose turn on show the hub started
    (`view.client`) shows its line as a note, not as yours, and keeps it
    as the hub's when it ends; one asked on another device says which.
-2. The keys, on the plate's rows: Ctrl+K up through the chat to the
-   edge and no further, Ctrl+J down to live again; with Super (niri's
-   Mod+Ctrl+J/K resize) or Alt nothing scrolls; Escape goes back live
-   before it hangs up; Return sends and is live.
-3. The window, off the screen and opened twice: scrolled back while a
-   turn streams, live again, the compaction's sweep, its note: nothing
-   left over (`_live.stale`).
+   A line said into a running turn (here, or from another screen) is
+   what your plate shows now, never a row of hers, and the turn keeps
+   every line for its exchange.
+2. The keys, on both plates: Ctrl+K pages to the exchange before (your
+   plate its lines, all of them, with its time and how far back; hers
+   its reply, a hub turn's line a note), again and again to the edge
+   and no further (the chat's start, or her memory); Ctrl+J back, live
+   past the newest; with Super (niri's Mod+Ctrl+J/K resize) or Alt
+   nothing pages; Escape goes back live before it hangs up; Return
+   sends and is live. The heading's meter: lit as `used` of `cap`, its
+   number, nothing lit and no number when unknown.
+3. The window, off the screen and opened twice: paged back while a
+   turn streams and a line goes into it, live again, the compaction's
+   sweep, its note: nothing left over (`_live.stale`).
 """
 
 import asyncio
+import re
 import sys
 import time
 
 import _live
 
 from indigoshell import config_default as config
-from indigoshell.agent.ui import context
+from indigoshell.agent.ui import agent_plate as plate_mod, context
+from indigoshell.agent.ui.agent_plate import AgentPlate
 from indigoshell.agent.ui.call import CallHost
 from indigoshell.widgets.base import KeyEvent
 
@@ -196,52 +205,98 @@ async def test_bookkeeping() -> None:
           "'on iris'", other.heard == "is the pi hot" and other.heard_on == "iris"
           and not other.from_hub and not other.activity)
 
+    mid = _live.ScriptedAgent()
+    mid.dial()
+    await asyncio.sleep(0)
+    mid.say("check the logs")
+    await asyncio.sleep(0)
+    mid.text_start()
+    mid.text("Reading the journal")
+    mid.say("only since boot")
+    await asyncio.sleep(0)
+    mid.text(", since boot then.")
+    parts = [k for k, _after, _said in mid.said_parts()]
+    check("a line said into the running turn: your plate shows it now; her plate's "
+          "parts are only hers", mid.heard == "only since boot" and mid.busy
+          and all(not k.startswith("y") for k in parts)
+          and mid.message == "Reading the journal, since boot then.",
+          f"heard={mid.heard!r} parts={parts} message={mid.message!r}")
+    mid._feed("line", text="and the kernel", device="iris", client="app",
+              attached=0)
+    check("... one from another screen: your plate shows it, on iris",
+          mid.heard == "and the kernel" and mid.heard_on == "iris")
+    mid.end()
+    kept = mid.exchanges[-1]
+    check("... the turn ends: its exchange keeps every line, oldest first",
+          kept["lines"] == ["check the logs", "only since boot", "and the kernel"],
+          f"{kept['lines']}")
+
 
 # ── 2. the keys ─────────────────────────────────────────────────────────
+def shown(host) -> tuple:
+    """What the plates show: your lines, your heading's sign and time,
+    her plate's text rows."""
+    you, her = host.you_plate, host.agent_plate
+    her._build()
+    page = host.pages.page()
+    rows = [r.src[r.start:r.end] for r in her._built
+            if r.kind in ("line", "act") and r.src]
+    notes = [r.label for r in her._built if r.kind == "note"]
+    back = host.pages.count()
+    return you._said(), back, page, rows, notes
+
+
 async def test_keys() -> None:
-    print("2. Ctrl+K and Ctrl+J on the plate")
+    print("2. Ctrl+K and Ctrl+J: both plates, an exchange at a time")
     agent = seeded(12)
+    # The turn played below becomes the newest: these are the two before.
+    agent.kept[-2]["source"] = "hub"
+    agent.kept[-2]["lines"] = ["job resize ended: ok", "and the thumbnails"]
+    agent.kept[-1]["lines"] = ["first line", "said into it", "and this"]
     agent.dial()
     host = CallHost(agent)
     from indigoshell.widgets.base import Widget
     Widget.attach(host, _NoWindow())
     await asyncio.sleep(0)
     await turn(agent, host, "the newest", "Newest reply.")
-    plate = host.agent_plate
-    plate._build()
-    check("live at first", plate.back is None)
+    lines, back, page, rows, _ = shown(host)
+    check("live at first: your plate the line on show, hers its reply",
+          page is None and lines == ["the newest"] and "Newest reply." in rows)
     host.key(ctrl(K, super=True))
     host.key(ctrl(K, alt=True))
-    check("with Super (niri's Mod+Ctrl+K) or Alt: no scroll", plate.back is None)
+    check("with Super (niri's Mod+Ctrl+K) or Alt: no page turn", host.pages.back is None)
     host.key(ctrl(K))
-    plate._build()
-    check("Ctrl+K: back, into the exchanges before the turn on show",
-          plate.back is not None and any(r.key.startswith("x") for r in plate._built))
+    lines, back, page, rows, _ = shown(host)
+    want = agent.kept[-2]                   # before the turn just played
+    check("Ctrl+K: the exchange before on both plates, all its lines oldest first, "
+          "1 back", page is not None and page["id"] == want["id"] and back == 1
+          and lines == ["first line", "said into it", "and this"]
+          and any(want["reply"].split()[0] in r for r in rows), f"{lines} {back} {rows[:2]}")
+    host.key(ctrl(K))
+    lines, back, page, rows, _ = shown(host)
+    check("Ctrl+K again: a hub exchange looks as a live hub turn does: its line a note "
+          "in her plate, only your line in yours", back == 2
+          and lines == ["and the thumbnails"]
+          and any("job resize ended" in r for r in rows), f"{lines} {rows[:2]}")
+    host.key(ctrl(J))
+    host.key(ctrl(J))
+    check("Ctrl+J twice: live again", host.pages.back is None)
     steps = 0
-    while steps < 100:
-        before = plate.back
+    while steps < 40 and not host.pages.page() == "edge":
         host.key(ctrl(K))
-        plate._build()
         steps += 1
-        if plate.back == before:
-            break
-    top = plate._built[1:3]
-    check("Ctrl+K again and again: up to the top, then it stays (the chat's start)",
-          steps < 100 and any(r.kind == "edge" and "starts" in r.label for r in top),
-          f"{steps} steps, {[r.label for r in top if r.kind == 'edge']}")
-    downs = 0
-    while plate.back is not None and downs < 100:
-        host.key(ctrl(J))
-        downs += 1
-    check("Ctrl+J down again: live once it reaches the turn on show",
-          plate.back is None and downs < 100, f"{downs} steps")
+    _lines, _back, page, _rows, notes = shown(host)
     host.key(ctrl(K))
+    check("Ctrl+K to the oldest and one more: nothing older, the chat starts here; "
+          "and no further", page == "edge" and host.pages.page() == "edge"
+          and notes and "starts" in notes[0] and _lines == [], f"{steps} steps {notes}")
     host.key(KeyEvent(keysym=ESCAPE))
-    check("Escape while back: live again, the call stays open", plate.back is None)
+    check("Escape while paged back: live again, the call stays open",
+          host.pages.back is None)
     host.key(ctrl(K))
     host.you_plate.input.set_text("a new line")
     host.key(KeyEvent(keysym=RETURN))
-    check("Return sends and is live", plate.back is None and agent.heard == "a new line")
+    check("Return sends and is live", host.pages.back is None and agent.heard == "a new line")
     agent.text("ok")
     agent.end()
 
@@ -251,12 +306,50 @@ async def test_keys() -> None:
     await asyncio.sleep(0)
     h2 = CallHost(a2)
     Widget.attach(h2, _NoWindow())
-    for _ in range(10):
+    for _ in range(4):
         h2.key(ctrl(K))
-    h2.agent_plate._build()
-    edge = [r.label for r in h2.agent_plate._built if r.kind == "edge"]
-    check("compacted away: the top says earlier is in her memory, and Ctrl+K stops there",
-          edge and "memory" in edge[0] and a2.edge == "compacted", f"{edge}")
+    _lines, _back, page, _rows, notes = shown(h2)
+    check("compacted away: past the oldest she holds, a note that earlier is in her "
+          "memory, and Ctrl+K stops there", page == "edge" and notes
+          and "memory" in notes[0] and a2.edge == "compacted", f"{notes}")
+
+    import skia
+    from indigoshell.agent.ui.context import METER_W
+    a3 = _live.ScriptedAgent()
+    a3.dial()
+    surface = skia.Surface(700, 40)
+
+    def meter() -> tuple[int, int, str]:
+        surface.getCanvas().clear(skia.ColorTRANSPARENT)
+        drawn: list[str] = []
+        real = plate_mod.text.draw
+
+        def spy(canvas, value, *args, **kw):
+            drawn.append(value)
+            return real(canvas, value, *args, **kw)
+        plate_mod.context.text.draw = spy
+        try:
+            plate = AgentPlate(a3)
+            plate.arrange(skia.Rect.MakeXYWH(0, 0, 680, 200))
+            plate._paint_header(surface.getCanvas(), skia.Rect.MakeXYWH(16, 8, 648, 24),
+                                "#c8a2c8")
+        finally:
+            plate_mod.context.text.draw = real
+        px = surface.makeImageSnapshot().toarray()
+        lilac = ((abs(px[..., 0].astype(int) - 0xc8) < 40)
+                 & (abs(px[..., 1].astype(int) - 0xa2) < 40) & (px[..., 3] > 60))
+        return int(lilac.sum()), len(drawn), " ".join(drawn)
+
+    a3.context = {**a3.context, "used": 400_000}
+    full, n_full, words = meter()
+    a3.context = {**a3.context, "used": 50_000}
+    low, _n, _w = meter()
+    a3.context = {**a3.context, "used": None}
+    unknown, _n, words_unknown = meter()
+    check("her heading's meter: more lit at 400k than 50k, the number drawn ('400k'); "
+          "unknown: nothing lit, no number", full > low > unknown
+          and "400k" in words and not re.search(r"\d+k\b", words_unknown),
+          f"lit {full}/{low}/{unknown} px; {words!r} / {words_unknown!r}; {METER_W}px")
 
 
 class _NoWindow:
@@ -290,7 +383,7 @@ async def test_window(display) -> None:
     win = _live.open_window(display, _live.offscreen(spec, content=host))
     await asyncio.sleep(0.5)
     for label in ("first open", "opened again"):
-        host.you_plate.input.set_text("scroll while you talk")
+        host.you_plate.input.set_text("page back while you talk")
         host.key(KeyEvent(keysym=RETURN))
         agent.text_start()
         for i in range(3):
@@ -298,16 +391,27 @@ async def test_window(display) -> None:
             agent.text(f"part {i} of a reply that keeps coming " * 3)
             await asyncio.sleep(0.15)
         agent.end()
-        await asyncio.sleep(QUIET_S)
+        await asyncio.sleep(QUIET_S)            # every timed effect over
         n_back, box_back = _live.stale(win, f"chat-back-{label.replace(' ', '-')}")
-        while host.agent_plate.back is not None:
+        while host.pages.back is not None:
             host.key(ctrl(J))
+        host.you_plate.input.set_text("now the next")
+        host.key(KeyEvent(keysym=RETURN))
+        agent.text_start()
+        agent.text("Starting on it")
+        await asyncio.sleep(0.05)
+        host.you_plate.input.set_text("and one more thing")
+        host.key(KeyEvent(keysym=RETURN))       # into the running turn
+        await asyncio.sleep(0.05)
+        agent.text(" and that thing too.")
+        agent.end()
         agent.compact(keep=4)
         await asyncio.sleep(QUIET_S)
         n_live, box_live = _live.stale(win, f"chat-live-{label.replace(' ', '-')}")
-        check(f"{label}: scrolled back while a reply streamed, then live after a "
-              "compaction: nothing left over",
-              n_back == 0 and n_live == 0 and host.agent_plate.back is None,
+        check(f"{label}: paged back while a reply streamed; live, a line said into "
+              "the turn (your plate switched), a compaction: nothing left over",
+              n_back == 0 and n_live == 0 and host.pages.back is None
+              and agent.exchanges[-1]["lines"][-1] == "and one more thing",
               f"back {n_back}px {box_back}, live {n_live}px {box_live}")
         if label == "first open":
             await _live.reopen(win)

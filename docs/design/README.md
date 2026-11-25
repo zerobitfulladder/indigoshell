@@ -136,7 +136,7 @@ Each hue is a ramp, and the step says the job:
 
 The agent is Lilac, and **every reply, notification and mark of hers is
 drawn in her colour**, `#c8a2c8`: the call's plate tint, frame, chip and
-name, the bar of how full her chat is, a top-bar tab she drives, and in
+name, the meter of how full her chat is, a top-bar tab she drives, and in
 Flux the frame, the mark and the page tint while she drives a tab. The
 hub names her name and colour in its welcome (`welcome.agent`); until a
 call has heard it, and in an app with no shell, she is Lilac in
@@ -332,7 +332,7 @@ linearly in wall-clock time and shape themselves with `smoothstep`.
 | **error** | `ERROR` red: frame, text, cells; red steady for "down" (and hot, failed), red blinking for "wants you" |
 | **on / off** (a dot) | the 5 px square light filled = on, current, picked, online; its 1 px outline = off, offline |
 | **agent working** | her colour; the chip's arcs turn; steps in cyan; the frame's turn trace |
-| **compacting** (her chat, on the hub) | not a turn: the phase word `compacting`, the chip's arcs turning slowly (80°/s), a 3-cell run sweeping back through the context bar's lit cells (70 ms a cell); then a muted note under the turn, `compacted 240k → 31k` |
+| **compacting** (her chat, on the hub) | not a turn: the phase word `compacting`, the chip's arcs turning slowly (80°/s), a 3-cell run sweeping back through the heading meter's lit cells (70 ms a cell); then a muted note under the turn, `compacted 240k → 31k` |
 | **agent driving a tab** | the tab's number, brackets and outline in her colour; in Flux, a 2 px frame + mark in her colour and the page in her tint |
 | **taken over / paused** | her colour 35% of the way to the bar's black |
 | **calling back** | red, both chip pieces blinking in the ring pattern for 40 s, then still at 45% "missed call" |
@@ -571,16 +571,19 @@ its tint through those.
 
 - **Your plate**: `// YOU 21:14` heading (when the turn on show began,
   muted), key hints right-aligned 12 px muted (`⏎ send  ^L look  ^K
-  earlier  ^D devices  esc hang up`; `^C stop` while she works); what you
-  said 15 px `HUD_FG`; the line you type after a magenta `›` with a
-  magenta caret ("say something" / "follow up").
-- **The agent's plate**: `// LILAC working` heading with the turn clock
-  (`00:41`, `YELLOW_DIM`) and `opus 5.5 · stock` (model · effort) at the
-  right; under the heading **the context bar**: how full her chat is, a
-  row of 3 × 3 px level cells (2 px gaps) across the plate in her colour,
-  lit 55% left to right as `used` of `cap` (500k), unlit 13%, with a
-  1 × 7 px `YELLOW_DIM` tick at `compact_at` (200k), no number; `used`
-  unknown (just compacted): nothing lit. Then the turn: **steps** in 13 px —
+  earlier  ^D devices  esc hang up`; `^C stop` while she works); the line
+  you said last 15 px `HUD_FG` (a line said into a running turn takes the
+  plate over; never a row of hers); the line you type after a magenta `›`
+  with a magenta caret ("say something" / "follow up").
+- **The agent's plate**: `// LILAC working` heading; at its right, from
+  the right edge, `opus 5.5 · stock` (model · effort), 14 px left of it
+  **the context meter** — how full her chat is: 96 px of 3 × 3 px level
+  cells (2 px gaps) in her colour, lit 55% left to right as `used` of
+  `cap` (500k), unlit 13%, a 1 × 7 px `YELLOW_DIM` tick at `compact_at`
+  (200k), then 8 px and the number (`132k`, 12 px muted); `used` unknown
+  (just compacted): nothing lit, no number — and 14 px left of that the
+  turn clock (`00:41`, `YELLOW_DIM`) while she works. Then the turn:
+  **steps** in 13 px —
   `›` tool (cyan; muted cyan once done), `⌄` expanded, `×` failed (red),
   `!` info (yellow), `·` note, `∴` thinking (in her colour); **what she
   says**, rendered Markdown 15 px `HUD_FG_BRIGHT`: headings bold and
@@ -595,15 +598,17 @@ its tint through those.
   the chip: 11 px on the 64 px chip, tracked 0.6: `YOU`, `CALL`, `ASK`,
   `DROP`) in the state colour; arcs turning
   while it works, blinking when it wants you, still when it waits.
-- **Scrolling back** (`^K` up, `^J` down, live again at the newest): the
-  earlier exchanges above the turn on show, each under a muted `// 21:14`
-  row (`yesterday 21:14`, `mon 21:14`, `nov 12 21:14`; `on iris` when
-  asked elsewhere) with 12 px above it; your lines as a line said
-  mid-turn shows (magenta 15 px, a 2 px magenta bar at their left); her
-  reply as Markdown; a hub-started turn's line as a `·` note. At the top,
-  muted 13 px: `↑ earlier — ^K`, `loading earlier…`, `the chat starts
-  here`, or past what she still holds word for word, `earlier is in
-  Lilac's memory now: ask her`; at the foot `↓ newer — ^J`.
+- **Paging back** (`^K` the exchange before, `^J` the one after, live
+  again past the newest; Escape: live): one exchange at a time on both
+  plates, in their usual layout. Your plate: its lines, all of them,
+  oldest first, and in the heading `↑ 3 back` (`YELLOW_DIM`), its time
+  (`21:14`, `yesterday 21:14`, `mon 21:14`, `nov 12 21:14`) and `on iris`
+  when asked elsewhere; keys `^K earlier  ^J newer  esc live`. Hers: the
+  reply as Markdown, scrolling as a long reply does; a hub-started
+  turn's line as a `·` note above it, as it shows live. Past the oldest
+  she holds: `↑ nothing older` in your heading, and in hers, muted
+  15 px, `earlier is in Lilac's memory now: ask her` (or `the chat starts
+  here`).
 - **Lists** in the agent's plate: `^D` devices — a square light each, lime
   filled online, muted outline offline.
 - **Progress** (§8.10).

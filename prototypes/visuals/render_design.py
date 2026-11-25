@@ -1450,7 +1450,7 @@ def render_launcher() -> None:
 def call_agent(**state):
     a = hub_agent(**state)
     a.model, a.effort, a._label = "opus", "medium", "opus 5.5"
-    # How full her chat is, as the hub's state says (the context bar).
+    # How full her chat is, as the hub's state says (the heading's meter).
     a.context = {"used": 132_000, "compact_at": 200_000, "cap": 500_000,
                  "window": 1_000_000, "from": None}
     return a

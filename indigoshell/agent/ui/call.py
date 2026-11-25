@@ -9,20 +9,20 @@ side of it:
                │ why does my wifi keep dropping         │ │ YOU  │
                │ › follow up▏                           │ └──────┘
                └────────────────────────────────────────┘
-    ┌──────┐ ┌ // LILAC working ───────────────── 00:41 ┐
-    │ ◜  ◝ │ │ ▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪·▫▫▫▫▫▫▫▫▫▫▫▫▫▫ │
-    │ CALL │ │ › $ journalctl -b -p err | tail -n 40    │
-    │ ◟  ◞ │ │ · checking the wifi driver first         │
-    └──────┘ │ Three resets since boot, all from ...    │
+    ┌──────┐ ┌ // LILAC working ─ 00:41 ▪▪▪▪·▫▫▫ 132k ─┐
+    │ ◜  ◝ │ │ › $ journalctl -b -p err | tail -n 40    │
+    │ CALL │ │ · checking the wifi driver first         │
+    │ ◟  ◞ │ │ Three resets since boot, all from ...    │
+    └──────┘ │                                          │
              └──────────────────────────────────────────┘
 
 The frames are the toasts' and the launcher's: 2px, opaque, beveled at
 the same corners, with the toast's `// NAME tag` heading. Each speaker
 owns one colour throughout — frame, chip, name and a tint in the plate:
 magenta for you, hers for the agent (the hub's welcome names her:
-Lilac, lilac). Under her heading a faint bar says how full the chat is,
-with a tick where the hub compacts it after an idle hour
-(agent/ui/context.py).
+Lilac, lilac). In her heading a short meter says how full the chat is,
+with a tick where the hub compacts it after an idle hour, and the
+number (agent/ui/context.py).
 
 What the agent is *doing* (tool calls, narration between them, its
 thinking) sits above a rule in small type; what it *says* sits below it,
@@ -47,7 +47,8 @@ agent for it, since the call's window is not alive while it is closed.
 
 Keys in the call:
     type / Return       say a line; mid-task it goes in at once and the
-                        agent reads it at its next step
+                        agent reads it at its next step; your plate shows
+                        it, hers goes on with her reply
     A / D               greenlight (allow), scrub (deny) — while it asks and
                         the line you are typing is empty
     Ctrl+C              copy the selection (your line's, else the agent's);
@@ -56,12 +57,14 @@ Keys in the call:
     Ctrl+X / Ctrl+V     cut / paste in your line (Shift+arrows select)
     Ctrl+O              every step of the turn, or just the last few
     PageUp / PageDown   scroll a long reply (the wheel too)
-    Ctrl+K / Ctrl+J     scroll back through the chat, and down again: up
-                        through the turn on show, then into the earlier
-                        exchanges, one at a time (half the plate at most);
-                        down to the turn on show, live again. Escape goes
-                        straight back to it. (Your line's Ctrl+K, delete
-                        to its end, gives way to this in the call.)
+    Ctrl+K / Ctrl+J     page back through the chat an exchange at a time,
+                        and forward again: both plates show the exchange
+                        before (your lines, her reply, its time and how
+                        far back in your heading); past the newest
+                        earlier one, live again; past the oldest she
+                        holds, where the rest is. Escape goes straight
+                        back to live. (Your line's Ctrl+K, delete to its
+                        end, gives way to this in the call.)
     Ctrl+D              the hub's devices (a call to the hub only): which
                         are online or when last seen, their connections,
                         the hands each lends, which wake by push. Escape
@@ -85,7 +88,7 @@ Keys in the call:
 
 There is one chat and it never ends: hang up and call again and she
 still has it. It is the hub's, shared with the other screens (the
-phone), and compacted there as it grows; scrolling back goes as far as
+phone), and compacted there as it grows; paging back goes as far as
 she still holds it word for word (remote.py).
 """
 
@@ -177,6 +180,8 @@ class CallHost(Widget):
         self.agent_plate.media_clicked = self._open_media
         self.agent_plate.touched = agent.acknowledge
         self.you_plate = YouPlate(agent)
+        # Which exchange both plates show (Ctrl+K / Ctrl+J): one for both.
+        self.pages = self.you_plate.pages = self.agent_plate.pages
         self.agent_chip = Chip(CHIP, self._agent_look, self._blink_since,
                                tint=lambda: own_accent(agent))
         self.you_chip = Chip(CHIP, lambda: (YOU_ACCENT, "YOU", "still"),
@@ -318,7 +323,8 @@ class CallHost(Widget):
         self.agent_plate.invalidate()
         a = self.agent
         you_key = (a.busy, a.compacting, a.heard, a.heard_on, a.at,
-                   tuple(a.queued), a.approval is None)
+                   tuple(a.queued), a.approval is None, self.pages.back,
+                   a.back_rev)
         if you_key != self._you_key:
             self._you_key = you_key
             self.you_plate.invalidate()
@@ -535,8 +541,9 @@ class CallHost(Widget):
         a, field_, plate = self.agent, self.you_plate.input, self.agent_plate
         k, letter = ev.keysym, ctrl_letter(ev)
         if k == _ESCAPE:
-            if plate.back is not None:      # back to the turn on show first
-                plate.reset()
+            if self.pages.back is not None:     # back to live first
+                self.pages.live()
+                plate.turn_page()
                 self._fit()
                 return True
             if plate.show_devices:
@@ -552,10 +559,9 @@ class CallHost(Widget):
             self._close_handle = None
         if letter in ("k", "j") and not ev.super and not ev.alt:
             # Never with Super: Mod+Ctrl+J/K resize windows on niri.
-            if letter == "k":
-                plate.older()
-            else:
-                plate.newer()
+            if self.pages.older() if letter == "k" else self.pages.newer():
+                plate.turn_page()
+                self._fit()
             return True
         if letter == "c":
             # Your own line's selection first, then the agent's text; with

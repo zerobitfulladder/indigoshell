@@ -2,19 +2,14 @@
 Markdown, selectable) and, between its words, the steps it ran
 (expandable), in order, a long one with its progress bar under it — or
 the list of the hub's devices, when that is open. A picture or a file
-the agent showed takes its place among them (media.py). Under its
+the agent showed takes its place among them (media.py). In its
 heading, how full the chat is (context.py).
 
-**Scrolling back.** The plate shows the newest exchange, the turn on
-show (live). Ctrl+K scrolls up through it and on into the earlier ones
-(`RemoteAgent.exchanges`, fetched a page at a time as the top comes
-near), Ctrl+J back down; each step stops at an exchange's start, or
-goes half the plate at most. Back at the turn on show, it is live again.
-An earlier exchange is its date and time, your lines as you said them
-(your colour, the bar a line said mid-turn has), and her reply as
-Markdown in hers; one the hub started has its line as a note. At the
-top: more to come (Ctrl+K), the chat's start, or the edge of what she
-still holds word for word, past which only she remembers."""
+**An earlier exchange** (Ctrl+K, scrollback.py) takes the plate as the
+turn on show does: her reply as Markdown, scrolling as a long reply
+does, a turn the hub started with its line as a note above it, what
+she showed as files after it. Its lines are your plate's. Past the
+oldest she holds, a note says where the rest is."""
 
 import time
 from typing import Callable
@@ -24,6 +19,7 @@ import skia
 from ... import shapes, text, theme
 from ...widgets.base import Size, Widget
 from ...services import clipboard
+from ..activity import Activity
 from ..remote import RemoteAgent
 from . import context
 from .bars import Bars
@@ -34,22 +30,16 @@ from .style import (ACT_ROWS_ALL, ACT_ROWS_BUSY, ACT_ROWS_IDLE, ACT_SIZE,
                     ASK_ACCENT, BODY_SIZE, CLICK_S,
                     COPIED_FPS, COPIED_S, DOTS_PER_S, FAIL_ACCENT,
                     MAX_BODY_ROWS, NAME_SIZE, OUT_ROWS,
-                    OUT_ROWS_FULL, PAD_X, PAD_Y, PLATE_W, SLASH_FG,
-                    STATUS_WORDS, TAG_SIZE, TOOL_FG, YOU_ACCENT, accent_of,
-                    ago, clock_text, fill_of, line_h, own_accent,
-                    paint_heading, paint_plate, when)
+                    OUT_ROWS_FULL, PAD_X, PAD_Y, PLATE_W, STATUS_WORDS,
+                    TAG_SIZE, TOOL_FG, accent_of, ago, clock_text, fill_of,
+                    line_h, own_accent, paint_heading, paint_plate)
 from .media import (MEDIA_KINDS, Pictures, paint_file, paint_image,
                     paint_waiting, shown_rows)
 from .rows import Row, code_rows, highlight, markdown_rows, paint_line, text_rows
+from .scrollback import EDGE, Scrollback
 
 
 # ── the agent's plate ───────────────────────────────────────────────────
-
-# The context bar's row, under the heading; an exchange's date row, and
-# the space above it that sets one exchange off from the one before.
-CONTEXT_H = 8
-STAMP_H = line_h(TAG_SIZE) + 12
-
 
 def think_line(agent, now: float) -> str:
     """The thinking row's words: that the agent thinks, never what (the
@@ -83,10 +73,10 @@ class AgentPlate(Widget):
         # A picture or file the agent showed, clicked: its id.
         self.media_clicked: Callable[[str], None] = lambda sid: None
         self.pictures = Pictures()
-        # Scrolled back (Ctrl+K): the first row shown, as the exchange it
-        # is in ("live": the turn on show) and how far into it; None: live.
-        self.back: tuple | None = None
-        self._past: dict = {}       # an earlier exchange's rows, by its id
+        # Which exchange the plates show (Ctrl+K / Ctrl+J), shared with
+        # your plate by the call.
+        self.pages = Scrollback(agent)
+        self._note: tuple[int, Activity] | None = None  # a page's note
         # The hub's devices, while that list is open (Ctrl+D; a call to
         # the hub only). Read live from the agent, which keeps it.
         self.show_devices = False
@@ -111,7 +101,7 @@ class AgentPlate(Widget):
         self._clicks: tuple[float, float, float, int] = (0.0, 0.0, 0.0, 0)
 
     def reset(self) -> None:
-        self.back = None
+        self.pages.live()
         self.show_devices = False
         self.scroll = 0
         self.show_all = False
@@ -149,11 +139,11 @@ class AgentPlate(Widget):
         a = self.agent
         acts = a.activity
         devices = self._devices() if self.show_devices else None
-        ctx = context.shown(a)
+        page = self.pages.page()
         return (a.message, a.phase, a.busy, bool(a.thought), id(a.approval),
-                None if ctx is None else tuple(ctx.values()), a.compacting,
-                id(a.compacted), self.back, a.back_rev, a.back_loading,
-                a.more_back, a.edge, a.exchange, a.at, a.heard,
+                a.compacting, id(a.compacted),
+                page if page is None or page == EDGE else page["id"],
+                a.edge, a.back_rev,
                 a.error, a.hint, len(acts), id(acts[-1]) if acts else None,
                 sum(1 for x in acts if x.result is not None),
                 self.show_all, tuple(sorted(self.expanded)),
@@ -173,16 +163,13 @@ class AgentPlate(Widget):
     def _build_rows(self) -> list[Row]:
         a, w = self.agent, self.inner_w
         rows = [Row("header", line_h(NAME_SIZE, True) + 6)]
-        if context.shown(a) is not None:
-            rows.append(Row("context", CONTEXT_H))
         if self.show_devices:
             self._body = []
             return rows + self._device_rows()
 
-        if self.back is not None:
-            body = self._back_window(w)
-        else:
-            body = self._window(self._live_body(w))
+        page = self.pages.page()
+        body = self._window(self._live_body(w) if page is None
+                            else self._page_body(page, w))
         rows += body
 
         # A question or a failure comes after the turn, never scrolled
@@ -253,11 +240,6 @@ class AgentPlate(Widget):
             if isinstance(item, list):
                 rows += self._step_rows(item, w,
                                         current=a.busy and n == len(items) - 1)
-            elif item[0].startswith("y"):       # a line typed mid-turn
-                key, _after, said = item
-                rows += text_rows(key, said, BODY_SIZE, w, YOU_ACCENT,
-                                  x=text.advance(ACT_SIZE) * 1.5,
-                                  bar=YOU_ACCENT)
             elif item[0].startswith("s"):       # a picture or a file
                 rows += shown_rows(a, self.pictures, item[2], w)
             else:
@@ -406,188 +388,53 @@ class AgentPlate(Widget):
             rows.append(Row("jobinfo", lh, x=x, size=ACT_SIZE, job=job))
         return rows
 
-    # ── scrolling back ──────────────────────────────────────────────────
-    def _combined(self, w: float) -> tuple[list[Row], dict]:
-        """Every exchange here, oldest first, the turn on show last, under
-        the row that says what lies above them; and where each starts
-        (by exchange id, the turn on show's as "live")."""
+    # ── an earlier exchange ─────────────────────────────────────────────
+    def _page_body(self, page, w: float) -> list[Row]:
+        """An earlier exchange as the turn on show would be: her reply
+        (a turn the hub started, or an announcement, its words as a note,
+        as they show live), then what she showed, as files: their bytes
+        come when one is opened. At the edge, where the rest is."""
         a = self.agent
-        rows = [self._edge_row()]
-        tops: dict = {}
-        for x in a.earlier():
-            tops[x["id"]] = len(rows)
-            rows += self._past_rows(x, w)
-        tops["live"] = len(rows)
-        rows.append(self._stamp(a.at, a.heard_on))
-        for i, line in enumerate([a.heard] if a.heard else []):
-            rows += self._you_rows(f"h{i}_", line, w)
-        rows += self._live_body(w)
-        return rows, tops
-
-    def _edge_row(self) -> Row:
-        """What is above the oldest exchange here."""
-        a = self.agent
-        if a.back_loading:
-            label = "loading earlier…"
-        elif a.more_back:
-            label = "↑ earlier — ^K"
-        elif a.edge == "compacted":
-            label = f"earlier is in {a.name.capitalize()}'s memory now: ask her"
-        else:
-            label = "the chat starts here"
-        return Row("edge", line_h(ACT_SIZE) + 10, size=ACT_SIZE, label=label,
-                   color=theme.BASE_MUTED)
-
-    def _stamp(self, at: float | None, device: str | None = None) -> Row:
-        """An exchange's first row: when it began, and the device it was
-        asked on when that is another one."""
-        words = when(at)
-        if device and device != getattr(self.agent, "device", None):
-            words += f"  on {device}" if words else f"on {device}"
-        return Row("stamp", STAMP_H, size=TAG_SIZE, label=words)
-
-    def _you_rows(self, key: str, line: str, w: float) -> list[Row]:
-        """A line of yours, as one said mid-turn shows: your colour, a bar."""
-        return text_rows(key, line, BODY_SIZE, w, YOU_ACCENT,
-                         x=text.advance(ACT_SIZE) * 1.5, bar=YOU_ACCENT)
-
-    def _note_rows(self, key: str, value: str, w: float) -> list[Row]:
-        """A line that is nobody's words: the hub's, an announcement."""
-        cell = text.advance(ACT_SIZE)
-        rows = text_rows(key, value, ACT_SIZE, w, theme.HUD_FG, x=cell * 2)
-        if rows:
-            rows[0].bullet, rows[0].bullet_x = "·", 0.0
-        return rows
-
-    def _past_rows(self, x: dict, w: float) -> list[Row]:
-        """An earlier exchange: its date, your lines, her reply, what she
-        showed (as files: their bytes come when one is opened). Kept, as
-        an exchange never changes."""
-        a = self.agent
-        key = (x["id"], w, own_accent(a), x["at"] is None or when(x["at"]))
-        got = self._past.get(x["id"])
-        if got is not None and got[0] == key:
-            return got[1]
-        k = f"x{x['id']}"
-        rows = [self._stamp(x["at"], x["device"])]
-        lines = list(x["lines"])
-        if x["source"] == "hub" and lines:
-            rows += self._note_rows(f"{k}n_", lines.pop(0), w)
-        if x["source"] == "announcement":
-            lines = []
-        for i, line in enumerate(lines):
-            rows += self._you_rows(f"{k}y{i}_", line, w)
-        if x["reply"].strip():
-            if x["source"] == "announcement":
-                rows += self._note_rows(f"{k}a_", x["reply"].strip(), w)
-            else:
-                rows += markdown_rows(x["reply"].strip(), w, f"{k}m",
-                                      own_accent(a))
-        for item in x["shown"]:
+        if page == EDGE:
+            label = (f"earlier is in {a.name.capitalize()}'s memory now: "
+                     "ask her" if a.edge == "compacted"
+                     else "the chat starts here")
+            return [Row("note", line_h(BODY_SIZE) + 3, label=label,
+                        color=theme.BASE_MUTED)]
+        rows: list[Row] = []
+        note = (page["lines"][0] if page["source"] == "hub" and page["lines"]
+                else page["reply"] if page["source"] == "announcement"
+                else "")
+        if note:
+            if self._note is None or self._note[0] != page["id"]:
+                self._note = (page["id"], Activity("note", note))
+            rows += self._step_rows([self._note[1]], w, current=False)
+        if page["source"] != "announcement" and page["reply"].strip():
+            if rows:
+                rows.append(Row("gap", 6))
+            rows += markdown_rows(page["reply"].strip(), w, f"p{page['id']}_",
+                                  own_accent(a))
+        for item in page["shown"]:
             sid = str(item.get("id") or "")
-            if sid:
-                a.shown.setdefault(sid, {
-                    "id": sid, "kind": str(item.get("kind") or "file"),
-                    "name": str(item.get("name") or sid),
-                    "mime": str(item.get("mime") or ""),
-                    "size": item.get("size"),
-                    "caption": str(item.get("caption") or "")})
-                rows.append(Row("file", line_h(BODY_SIZE) + 3, label=sid))
-        self._past[x["id"]] = (key, rows)
+            if not sid:
+                continue
+            a.shown.setdefault(sid, {
+                "id": sid, "kind": str(item.get("kind") or "file"),
+                "name": str(item.get("name") or sid),
+                "mime": str(item.get("mime") or ""), "size": item.get("size"),
+                "caption": str(item.get("caption") or "")})
+            rows += [Row("gap", 6), Row("file", line_h(BODY_SIZE) + 3,
+                                        label=sid)]
         return rows
 
-    def _back_window(self, w: float) -> list[Row]:
-        """The rows from where the plate is scrolled back to, as many as
-        fit, and one saying the newer ones are below. Near the top, the
-        next page of earlier exchanges is asked for."""
-        body, tops = self._combined(w)
-        self._past = {k: v for k, v in self._past.items() if k in tops}
-        start = self._back_start(body, tops)
-        end = self._fit_forward(body, start)
-        if sum(r.h for r in body[:start]) < self._budget():
-            self.agent.want_older()
-        return body[start:end] + [Row("more", line_h(ACT_SIZE) + 2,
-                                      size=ACT_SIZE, label="↓ newer — ^J")]
-
-    def _back_start(self, body: list[Row], tops: dict) -> int:
-        """Where the plate is scrolled back to, as an index of `body`: the
-        anchor's exchange (or, forgotten, the one after it) and how far
-        into it."""
-        key, offset = self.back
-        top = tops.get(key)
-        if top is None:
-            later = [t for k, t in tops.items()
-                     if k != "live" and isinstance(key, int) and k > key]
-            top, offset = (min(later) if later else tops["live"]), 0
-        return max(0, min(len(body) - 1, top + offset))
-
-    def _anchor(self, tops: dict, index: int) -> tuple:
-        """`index` of the rows as (the exchange it is in, how far in). The
-        edge row above them all counts as -1 into the first exchange, so
-        a page that arrives above it pushes nothing down."""
-        above = [(t, k) for k, t in tops.items() if t <= index]
-        top, key = max(above, key=lambda tk: tk[0]) if above \
-            else min(((t, k) for k, t in tops.items()), key=lambda tk: tk[0])
-        return key, index - top
-
-    def _step(self, body: list[Row], starts: list[int], s: int,
-              up: bool) -> int:
-        """From index `s`, to the next exchange's start that way, or half
-        the plate's height when that is further."""
-        half = self._budget() / 2
-        if up:
-            stop = max((t for t in starts if t < s), default=0)
-            acc, i = 0.0, s
-            while i > stop and acc + body[i - 1].h <= half:
-                i -= 1
-                acc += body[i].h
-            return i if i < s else max(stop, s - 1)
-        stop = min((t for t in starts if t > s), default=len(body))
-        acc, i = 0.0, s
-        while i < stop and acc + body[i].h <= half:
-            acc += body[i].h
-            i += 1
-        return i if i > s else min(stop, s + 1)
-
-    def older(self) -> None:
-        """Ctrl+K: up through the turn on show, then into the exchanges
-        before it; at the top, as far as there is."""
-        a = self.agent
-        if self.back is None and self._live_top() > 0:
-            self.scroll_by(MAX_BODY_ROWS // 2)  # the turn's own start first
-            return
-        body, tops = self._combined(self.inner_w)
-        s = tops["live"] if self.back is None else self._back_start(body, tops)
-        if s <= 0:
-            a.want_older()
-            self.invalidate()
-            return
+    def turn_page(self) -> None:
+        """The plates show another exchange: from the start of its reply
+        (live: its newest rows, as ever), nothing selected or open."""
+        self.scroll = 0 if self.pages.back is None else 1 << 20
         self.anchor = self.focus = None
-        self.back = self._anchor(tops, self._step(body, sorted(
-            {0, *tops.values()}), s, up=True))
+        self.expanded.clear()
+        self.full_output.clear()
         self.relayout()
-
-    def newer(self) -> None:
-        """Ctrl+J: back down; reaching the turn on show, live again."""
-        if self.back is None:
-            self.scroll_by(-(MAX_BODY_ROWS // 2))
-            return
-        body, tops = self._combined(self.inner_w)
-        s = self._step(body, sorted({0, *tops.values()}),
-                       self._back_start(body, tops), up=False)
-        self.anchor = self.focus = None
-        if s >= tops["live"]:
-            self.back, self.scroll = None, 0
-        else:
-            self.back = self._anchor(tops, s)
-        self.relayout()
-
-    def _live_top(self) -> int:
-        """The first row of the turn on show the plate shows, live."""
-        body = self._body
-        if sum(r.h for r in body) <= self._budget():
-            return 0
-        return self._fit_back(body, len(body) - self.scroll)
 
     # ── the hub's devices ───────────────────────────────────────────────
     def has_devices(self) -> bool:
@@ -871,10 +718,6 @@ class AgentPlate(Widget):
             kind = row.kind
             if kind == "header":
                 self._paint_header(canvas, box, accent)
-            elif kind == "context":
-                context.paint(canvas, box, a, own_accent(a))
-            elif kind == "stamp":
-                self._paint_stamp(canvas, box, row)
             elif kind == "act":
                 self._paint_act(canvas, box, row, sel)
             elif kind == "job":
@@ -904,8 +747,8 @@ class AgentPlate(Widget):
                                                    right - left, 1), p)
             elif kind == "line":
                 self._paint_line(canvas, box, row, sel, accent)
-            elif kind in ("note", "more", "toggle", "outmore", "edge"):
-                color = row.color if kind in ("note", "outmore", "edge") \
+            elif kind in ("note", "more", "toggle", "outmore"):
+                color = row.color if kind in ("note", "outmore") \
                     else theme.BASE_MUTED
                 text.draw(canvas, row.label, left + row.x,
                           text.baseline_in(box, row.size), row.size,
@@ -922,20 +765,6 @@ class AgentPlate(Widget):
                 self._paint_device(canvas, box, int(row.label), accent)
             elif kind == "devinfo":
                 self._paint_devinfo(canvas, box, row)
-
-    def _paint_stamp(self, canvas, box, row: Row) -> None:
-        """An exchange's date, muted, on the lower part of its row: the
-        upper part is the space that sets it off from the one before."""
-        if not row.label:
-            return
-        lower = skia.Rect.MakeLTRB(box.left(), box.bottom() - line_h(TAG_SIZE)
-                                   - 2, box.right(), box.bottom())
-        base = text.baseline_in(lower, TAG_SIZE)
-        text.draw(canvas, "//", box.left(), base, TAG_SIZE,
-                  theme.color(SLASH_FG, 0.6), bold=True)
-        text.draw(canvas, row.label, box.left() + text.measure("// ", TAG_SIZE,
-                                                               bold=True),
-                  base, TAG_SIZE, theme.color(theme.BASE_MUTED))
 
     def _device(self, index: int) -> dict | None:
         devices = self._devices()
@@ -1004,12 +833,14 @@ class AgentPlate(Widget):
                    False)
         paint_heading(canvas, box, NAME_SIZE, ((a.name, accent, True), tag))
         tag_base = text.baseline_in(box, TAG_SIZE)
-        # Right side: the model and effort (Ctrl+M / Ctrl+T), and the turn
-        # clock before them while it works.
+        # Right side: the model and effort (Ctrl+M / Ctrl+T), how full the
+        # chat is before them, and the turn clock before that while it
+        # works.
         setting = f"{a.model_label()} · {a.effort_label()}"
         x = box.right() - text.measure(setting, TAG_SIZE)
         text.draw(canvas, setting, x, tag_base, TAG_SIZE,
                   theme.color(theme.BASE_MUTED))
+        x = context.heading(canvas, box, a, own_accent(a), x)
         if a.busy:
             clock = clock_text(time.monotonic() - a.turn_started)
             w = text.measure(clock, TAG_SIZE)

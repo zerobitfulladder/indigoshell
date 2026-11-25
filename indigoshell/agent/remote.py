@@ -354,7 +354,8 @@ class RemoteAgent:
         # ── the turn on show ────────────────────────────────────────
         self.exchange: int | None = None    # its id, once kept
         self.at: float | None = None        # when it began (Unix time)
-        self.heard = ""
+        self.heard = ""                 # the line said last, on show
+        self.lines: list[str] = []      # the turn's lines, the first first
         self.heard_on: str | None = None    # the device it was asked on
         self.message = ""
         self.thought = ""
@@ -389,7 +390,6 @@ class RemoteAgent:
         self._turn_ours = False         # the turn on show was asked here
         self._segments: list[str] = []
         self._seg_after: list[int] = []
-        self._seg_you: list[bool] = []
         self._seg_shown: list[str | None] = []  # a shown thing's id
         # What the agent showed (`shown`), by id, and the bytes fetched.
         self.shown: dict[str, dict] = {}
@@ -398,7 +398,6 @@ class RemoteAgent:
         self._fetching: list[str] = []      # asked for, in order
         self._media_waiters: dict[str, list[asyncio.Future]] = {}
         self.media_rev = 0                  # bumped when bytes arrive
-        self._open_seg: int | None = None
         self._seg_map: dict = {}        # the hub's block numbers → ours
         self._interrupted = False
         self._task: asyncio.Task | None = None
@@ -486,8 +485,7 @@ class RemoteAgent:
             self._emit()
             return
         if self.busy:
-            # Mid-turn: into the turn's story where it was typed.
-            self._you_segment(line)
+            self._said_into(line, len(attach or ()))
         else:
             self._begin_turn(line)
             self._local_turn = self._turn_ours = True
@@ -640,12 +638,10 @@ class RemoteAgent:
     def _keep_turn(self, xid: int, kind: str) -> None:
         """The turn on show ended and was kept as exchange `xid`: it joins
         the scrollback without asking (`done.exchange`)."""
+        lines = list(self.lines)
         if kind == "hub":
-            lines = [next((a.text for a in self.activity
-                           if a.kind == "note"), "")]
-        else:
-            lines = [self.heard] if self.heard else []
-        lines += [s for s, you in zip(self._segments, self._seg_you) if you]
+            lines.insert(0, next((a.text for a in self.activity
+                                  if a.kind == "note"), ""))
         item = {"id": xid, "at": self.at, "source": kind,
                 "device": None if kind == "hub"
                 else self.heard_on or self.device, "lines": lines,
@@ -668,6 +664,7 @@ class RemoteAgent:
             # The turn on show was forgotten: it leaves the screen too.
             self._clear_turn()
             self.heard, self.heard_on, self.heard_attached = "", None, 0
+            self.lines = []
             self.exchange = self.at = None
             self.error = self.hint = None
 
@@ -682,14 +679,12 @@ class RemoteAgent:
         thing the agent showed is a part too, its key starting with "s"
         and its id in place of the words."""
         parts = []
-        for i, (s, after, you, shown) in enumerate(zip(
-                self._segments, self._seg_after, self._seg_you,
-                self._seg_shown)):
+        for i, (s, after, shown) in enumerate(zip(
+                self._segments, self._seg_after, self._seg_shown)):
             if shown is not None:
                 parts.append((f"s{i}_", float(after), shown))
             elif s.strip():
-                parts.append((f"{'y' if you else 'm'}{i}_", float(after),
-                              s.strip()))
+                parts.append((f"m{i}_", float(after), s.strip()))
         if not any(k.startswith("m") for k, _, _ in parts) \
                 and self.message.strip():
             parts.append(("m", float("inf"), self.message.strip()))
@@ -775,6 +770,7 @@ class RemoteAgent:
         self.busy = True
         self.ringing = None
         self.heard = heard
+        self.lines = [heard] if heard else []
         self.heard_on = None
         self.heard_attached = 0
         self._clear_turn()
@@ -791,26 +787,25 @@ class RemoteAgent:
         self.message = self.thought = ""
         self.hangup_line = None
         self.activity.clear()
-        self._segments, self._seg_after, self._seg_you = [], [], []
-        self._seg_shown = []
-        self._open_seg = None
+        self._segments, self._seg_after, self._seg_shown = [], [], []
         self._seg_map = {}
         self._turn = None
 
     def _new_segment(self, value: str) -> int:
         self._segments.append(value)
-        self._seg_you.append(False)
         self._seg_shown.append(None)
         self._seg_after.append(self.activity[-1].id if self.activity else 0)
-        self._open_seg = len(self._segments) - 1
-        return self._open_seg
+        return len(self._segments) - 1
 
-    def _you_segment(self, line: str) -> None:
-        """A line the user said mid-turn, here or on another screen."""
-        self._segments.append(line)
-        self._seg_you.append(True)
-        self._seg_shown.append(None)
-        self._seg_after.append(self.activity[-1].id if self.activity else 0)
+    def _said_into(self, line: str, attached: int = 0,
+                   device: str | None = None) -> None:
+        """A line said into the running turn, here or on another screen
+        (`device`): your plate shows it now, and her plate goes on with
+        her reply. The turn keeps every line, for its exchange."""
+        self.lines.append(line)
+        self.heard = line
+        self.heard_on = device if device and device != self.device else None
+        self.heard_attached = attached
 
     def _shown_segment(self, item: dict) -> None:
         """Something the agent showed, where it arrives in the turn."""
@@ -826,15 +821,11 @@ class RemoteAgent:
                            if isinstance(item.get("size"), int) else None,
                            "caption": str(item.get("caption") or "")}
         self._segments.append("")
-        self._seg_you.append(False)
         self._seg_shown.append(sid)
         self._seg_after.append(self.activity[-1].id if self.activity else 0)
-        self._open_seg = None
 
     def _said(self) -> str:
-        return "\n\n".join(s.strip() for s, you in zip(self._segments,
-                                                        self._seg_you)
-                           if s.strip() and not you)
+        return "\n\n".join(s.strip() for s in self._segments if s.strip())
 
     def _show_view(self, view: dict) -> None:
         """Replace the turn on show with the hub's account of it. Its
@@ -849,6 +840,7 @@ class RemoteAgent:
         # shows one, and kept as the hub's when it ends.
         self.from_hub = view.get("client") == HUB_CLIENT
         self.heard = "" if self.from_hub else line
+        self.lines = [self.heard] if self.heard else []
         device = view.get("device")
         self.heard_on = str(device) if device and device != self.device \
             and not self.from_hub else None
@@ -869,7 +861,6 @@ class RemoteAgent:
         for item in view.get("shown") or []:
             if isinstance(item, dict):
                 self._shown_segment(item)
-        self._open_seg = None
         self.message = str(view.get("text") or "") or self._said()
 
     def _add_step(self, ev: dict) -> None:
@@ -1133,8 +1124,8 @@ class RemoteAgent:
                 self._local_turn = self._turn_ours = True
                 self.heard_attached = len(said[0][1] or ())
             else:
-                for line, _attach in said:
-                    self._you_segment(line)
+                for line, attach in said:
+                    self._said_into(line, len(attach or ()))
             for line, attach in said:
                 self._say(line, attach)
         # The newest page of the scrollback, as the hub has it now: what
@@ -1173,7 +1164,9 @@ class RemoteAgent:
                 # The hub's own line, mid-turn: a note, not your words.
                 self.activity.append(Activity("note", text))
             elif self.busy and not self._local_turn:
-                self._you_segment(text)     # another screen's, mid-turn
+                # Another screen's, mid-turn: your plate shows it.
+                self._said_into(text, int(ev.get("attached") or 0),
+                                ev.get("device"))
             else:
                 return                      # its turn shows it
         elif kind == "turn":
@@ -1186,7 +1179,8 @@ class RemoteAgent:
                 self._turn_ours = False
                 self.from_hub = True
                 self.activity.append(Activity("note", line))
-            elif self._local_turn and line.strip() == self.heard.strip():
+            elif self._local_turn and self.lines \
+                    and line.strip() == self.lines[0].strip():
                 self._local_turn = False    # ours, already on show
             else:
                 self._begin_turn(line)
@@ -1209,7 +1203,6 @@ class RemoteAgent:
             self.message = self._said()
         elif kind == "step":
             self.thought = ""
-            self._open_seg = None
             self._add_step(ev)
         elif kind == "step_done":
             for act in reversed(self.activity):

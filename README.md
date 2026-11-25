@@ -57,16 +57,17 @@ the other devices connected to it and compacted on the hub as it grows.
   from what it *says*; click a step for the whole command and its
   output. Replies render Markdown with clickable links, and any of it
   can be selected and copied.
-- **One chat, and how full it is.** A faint bar under her heading fills
-  as the chat does, with a tick where the hub compacts it after an idle
-  hour; while it compacts, a run of cells sweeps back through it, and a
-  small note says how it went. Ask her to compact when the bar says so.
-- **Scroll back.** `Ctrl+K` scrolls up through the turn on show and on
-  into the earlier exchanges, each with its date and time, your lines
-  in your colour and her reply as it was; `Ctrl+J` comes back down, and
-  reaching the newest is live again. It goes as far as she still holds
-  the chat word for word: past that, the plate says the rest is in her
-  memory, to ask her about.
+- **One chat, and how full it is.** A short meter in her heading fills
+  as the chat does, with the number after it and a tick where the hub
+  compacts it after an idle hour; while it compacts, a run of cells
+  sweeps back through it, and a small note says how it went. Ask her to
+  compact when the meter says so.
+- **Page back.** `Ctrl+K` puts the exchange before on both plates —
+  your lines in yours, with its time and how far back it is, her reply
+  in hers, as they were — and again for the one before that; `Ctrl+J`
+  comes back, and past the newest it is live again. It goes as far as
+  she still holds the chat word for word: past that, her plate says the
+  rest is in her memory, to ask her about.
 - **Chips you read at a glance.** Arcs turning: working. Blinking: it
   wants you — an answer blinks twice, a question blinks until answered.
   While a turn runs, the agent's frame is redrawn clockwise as a turn
@@ -77,7 +78,7 @@ the other devices connected to it and compacted on the hub as it grows.
   `opus 5.5`, never a guess — and the effort by street name: idle,
   stock, boost, overclock, redline (low to max).
 - **Talk over it.** A line sent while it works goes in at once and
-  shows in its plate, in your colour, where you sent it; the agent reads
+  takes your plate, while hers goes on with the reply; the agent reads
   it at its next step and folds it into the task. `Ctrl+C` stops it now
   instead. A line said while the hub is out of reach waits, and goes
   when the line is back.
@@ -142,7 +143,7 @@ the other devices connected to it and compacted on the hub as it grows.
 | `Return` | send — even while it works: it reads the line at its next step |
 | `Esc` | hang up (the work carries on) |
 | `Ctrl+C` | copy the selection; with none, stop the task |
-| `Ctrl+K` · `Ctrl+J` | scroll back through the chat · down again, to live |
+| `Ctrl+K` · `Ctrl+J` | the exchange before, on both plates · the one after, then live |
 | `Ctrl+L` · `Ctrl+Shift+L` | Look: your next line carries Flux's tab · and a screenshot of it |
 | `Ctrl+F` | open the last picture or file the agent showed |
 | `Ctrl+D` | the hub's devices |
@@ -398,10 +399,10 @@ indigoshell/
     watch.py        ─ the reporting end; the yt-dlp/ffmpeg/curl/rsync wrapper
     ui/             ─ call.py (keys, layout), agent_plate.py, you_plate.py,
                       choice.py (GREENLIGHT / SCRUB), bars.py (progress),
-                      chip.py, context.py (the chat's fill), status.py (the
-                      top bar's AgentChip), frame.py
-                      (turn clock), reveal.py (decode), media.py (pictures
-                      and files shown), rows.py, style.py
+                      chip.py, context.py (the chat's fill), scrollback.py
+                      (paging back), status.py (the top bar's AgentChip),
+                      frame.py (turn clock), reveal.py (decode), media.py
+                      (pictures and files shown), rows.py, style.py
   applink/          ─ the shell's line to its own apps, and the top bar they set
     PROTOCOL.md     ─ the app bar protocol: what an app sends, what comes back
     bar.py          ─ its vocabulary: names, builders, the shape checks (pure)

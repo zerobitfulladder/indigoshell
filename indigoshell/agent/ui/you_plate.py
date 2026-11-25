@@ -1,6 +1,11 @@
-"""Your plate: what you said this turn, anything queued, and the line
-you are typing, with the Look chip over it while the next line is to
-carry what you are looking at (Ctrl+L, call.py)."""
+"""Your plate: what you said last in the turn on show (a line said into
+a running turn takes the plate over from the one before), anything
+queued, and the line you are typing, with the Look chip over it while
+the next line is to carry what you are looking at (Ctrl+L, call.py).
+
+Paged back to an earlier exchange (Ctrl+K, scrollback.py), it shows
+that exchange's lines instead, all of them, oldest first, its time in
+the heading and how far back it is."""
 
 import math
 
@@ -11,6 +16,7 @@ from ...widgets.base import Size, Widget
 from ...widgets.text_input import TextInput
 from ..remote import RemoteAgent
 from .frame import Comet
+from .scrollback import EDGE, Scrollback
 from .style import (ACT_SIZE, BODY_SIZE, MAX_HEARD_LINES, NAME_SIZE, PAD_X,
                     PAD_Y, PLATE_W, TAG_SIZE, YOU_ACCENT, YOU_FILL, line_h,
                     paint_heading, paint_plate, when)
@@ -36,6 +42,9 @@ class YouPlate(Widget):
         self.comet = Comet()        # one lap round the plate on a send
         # The Look chip: (words, colour), or None. Set by the call.
         self.look_chip: tuple[str, str] | None = None
+        # Which exchange the plates show: the call shares the agent
+        # plate's with this one.
+        self.pages = Scrollback(agent)
 
     @property
     def animation_fps(self) -> int:
@@ -48,15 +57,28 @@ class YouPlate(Widget):
     def children(self):
         return [self.input]
 
-    def _heard(self) -> list[str]:
-        if not self.agent.heard:
+    def _said(self) -> list[str]:
+        """Your lines on show: the last one said, live; an earlier
+        exchange's all (the hub's own line is a note in her plate)."""
+        page = self.pages.page()
+        if page is None:
+            return [self.agent.heard] if self.agent.heard else []
+        if page == EDGE or page["source"] == "announcement":
             return []
-        lines = text.wrap(self.agent.heard, BODY_SIZE, self.inner_w)
-        if len(lines) > MAX_HEARD_LINES:
-            lines = lines[:MAX_HEARD_LINES]
-            lines[-1] = text.ellipsize(lines[-1] + " …", BODY_SIZE,
-                                       self.inner_w)
-        return lines
+        return page["lines"][1:] if page["source"] == "hub" \
+            else page["lines"]
+
+    def _heard(self) -> list[str]:
+        """Those lines wrapped, cut with an ellipsis past the most shown:
+        MAX_HEARD_LINES live, twice that for an earlier exchange's."""
+        most = MAX_HEARD_LINES * (1 if self.pages.back is None else 2)
+        rows = [r for line in self._said()
+                for r in text.wrap(line, BODY_SIZE, self.inner_w)]
+        if len(rows) > most:
+            rows = rows[:most]
+            rows[-1] = text.ellipsize(rows[-1] + " …", BODY_SIZE,
+                                      self.inner_w)
+        return rows
 
     def _content_h(self) -> float:
         h = line_h(NAME_SIZE, True) + 6
@@ -90,14 +112,16 @@ class YouPlate(Widget):
         when the heading is short of room."""
         a = self.agent
         look = "^L look" if getattr(a, "attachments", False) else ""
-        if a.busy:
+        if self.pages.back is not None:
+            keys = ["⏎ send", look, "^K earlier", "^J newer", "esc live"]
+        elif a.busy:
             keys = ["⏎ send", look, "^C stop", "^K earlier", "^D devices",
                     "esc hang up"]
         else:
             keys = ["⏎ send", look, "^K earlier", "^D devices", "esc hang up"]
         keys = [k for k in keys if k]
         gap = "   "
-        for drop in ("^D devices", "^K earlier", "^L look"):
+        for drop in ("^D devices", "^J newer", "^K earlier", "^L look"):
             if left + 12 + text.measure(gap.join(keys), TAG_SIZE) <= right:
                 break
             if drop in keys:
@@ -140,17 +164,26 @@ class YouPlate(Widget):
         hh = line_h(NAME_SIZE, True) + 6
         box = skia.Rect.MakeXYWH(x, y, right - x, hh)
         # The hub's chat is shared: a line asked on another of your
-        # devices says which. And when it was said, as an earlier
-        # exchange says it.
-        on = getattr(a, "heard_on", None)
-        looked = getattr(a, "heard_attached", 0)
+        # devices says which. When the exchange began; and paged back,
+        # how far (or that nothing is older).
+        page = self.pages.page()
+        if page is None:
+            at = a.at if a.heard else None
+            on, looked, back = a.heard_on, a.heard_attached, ""
+        elif page == EDGE:
+            at, on, looked, back = None, None, 0, "↑ nothing older"
+        else:
+            at = page["at"]
+            on = page["device"] if page["device"] != a.device else None
+            looked, back = page["attached"], f"↑ {self.pages.count()} back"
+        said = bool(self._said())
         head_end = paint_heading(
             canvas, box, NAME_SIZE,
             (("YOU", YOU_ACCENT, True),
-             (when(a.at) if a.heard else "", theme.BASE_MUTED, False),
-             (f"on {on}" if on else "", theme.BASE_MUTED, False),
-             ("+ look" if looked and a.heard else "", theme.CYAN_MID,
-              False)))
+             (back, theme.YELLOW_DIM, False),
+             (when(at), theme.BASE_MUTED, False),
+             (f"on {on}" if on and said else "", theme.BASE_MUTED, False),
+             ("+ look" if looked and said else "", theme.CYAN_MID, False)))
         self._paint_keys(canvas, box, head_end, right)
         y += hh
 
