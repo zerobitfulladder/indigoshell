@@ -9,18 +9,26 @@
 3. What breaks a bar's shape, each reported: an item with no id, ids
    repeated, `current` naming no tab, `opens` naming nothing, a chord
    that is none or opens two things, a row's submenu or action naming
-   nothing, a colour that is no role, the bounds (tabs, items, strings);
-   what does not: kinds, keys and icons it does not know.
+   nothing, a colour that is no role, the bounds (tabs, items, strings),
+   a tab's image that is no id or letter that is not one character, a
+   `fixed` that is no bool; what does not: kinds, keys and icons it does
+   not know, a tab naming an image never sent.
 4. Answers: good ones and broken ones; chords parsed.
+4b. Images: `image` built and read back, its PNG's size read from the
+   header alone, what breaks one (no id, not base64, too many bytes, no
+   PNG, past IMAGE_SIDE), the images a bar names.
 5. Pure: imports with xcffib, skia and PySide6 blocked.
 
 No display, no processes but one; a second or so.
 """
 
+import base64
 import json
 import re
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -35,6 +43,18 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     global failed
     print(f"  {'ok  ' if ok else 'FAIL'} {name}" + (f"  ({detail})" if detail and not ok else ""))
     failed += not ok
+
+
+def png(w: int, h: int, noise: bool = False) -> bytes:
+    """A real RGBA PNG of w x h, made by hand (no decoder here): one
+    colour, or with `noise` bytes that do not compress."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data)))
+    rows = b"".join(b"\0" + (bytes((x * 7 + y * 13) * 31 % 251 for x in range(w * 4)) if noise
+                             else b"\x05\xd9\xe8\xff" * w) for y in range(h))
+    return (B.PNG_SIGNATURE + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows, 0 if noise else 9)) + chunk(b"IEND", b""))
 
 
 print("1. builders")
@@ -80,6 +100,18 @@ check("an announce: app, the app's id for the window, its handle",
       B.announce("flux", 3, 0x400001) == {"type": "announce", "app": "flux", "window": 3,
                                           "handle": {"x11": 0x400001}}
       and B.announce("flux", 3)["handle"] == {})
+t2 = B.tab(7, "Inbox", image="5c1e07a2d39b4f61")
+check("a tab with its image's id, or its letter while it has none",
+      t2 == {"id": 7, "title": "Inbox", "image": "5c1e07a2d39b4f61"}
+      and B.tab(8, "std", letter="d") == {"id": 8, "title": "std", "letter": "d"}
+      and B.tab(9, "x", letter="") == {"id": 9, "title": "x"}, f"{t2}")
+check("a fixed text: `fixed` only when true",
+      B.text("host", "github.com", fixed=True) == {"kind": "text", "id": "host",
+                                                   "text": "github.com", "fixed": True}
+      and "fixed" not in B.text("host", "github.com"))
+im = B.image("5c1e07a2d39b4f61", png(2, 2))
+check("an image: type, id, the PNG as base64", list(im) == ["type", "id", "png"]
+      and im["type"] == "image" and base64.b64decode(im["png"]) == png(2, 2), f"{im}")
 check("open, events", B.open_input("address") == {"type": "open", "input": "address"}
       and B.open_menu("actions") == {"type": "open", "menu": "actions"}
       and B.event("move", item="tabs", tab=44, before=40) == {
@@ -152,6 +184,10 @@ cases = {
     "too many items": lambda b: b["end"].extend(
         {"kind": "text", "id": f"t{i}", "text": ""} for i in range(51)),
     "not a list": lambda b: b.update(start={}),
+    "a tab's image that is no id": lambda b: b["start"][0]["tabs"][0].update(image=True),
+    "a letter of two characters": lambda b: b["start"][0]["tabs"][1].update(letter="do"),
+    "a letter that is a space": lambda b: b["start"][0]["tabs"][1].update(letter=" "),
+    "a fixed that is no bool": lambda b: b["end"][0].update(fixed="yes"),
 }
 missed = {name: probs for name, change in cases.items() if not (probs := broken(change))}
 check(f"each of {len(cases)} breakages reported", not missed, f"missed: {list(missed)}")
@@ -165,6 +201,8 @@ fine = {
     "a hold with a field it does not know": lambda b: b["start"][0]["tabs"][2]["agent"].update(
         since=3),
     "no current tab": lambda b: b["start"][0].update(current=None),
+    "a tab naming an image never sent": lambda b: b["start"][0]["tabs"][1].update(
+        image="never-sent"),
     "nothing at all": lambda b: [b.pop(k) for k in ("start", "end", "inputs", "menus")],
 }
 wrong = {name: probs for name, change in fine.items() if (probs := broken(change))}
@@ -192,6 +230,36 @@ check("chords parsed: modifiers and a key, lower-cased; named keys only where th
       and B.parse_chord("n") == (frozenset(), "n")
       and B.parse_chord("ctrl+ctrl+a") is None and B.parse_chord("hyper+a") is None
       and B.parse_chord("ctrl+") is None and B.parse_chord(3) is None)
+
+print("4b. images")
+side = B.IMAGE_SIDE
+good_image = B.image("a1", png(side, side))
+check("a 32 x 32 PNG (and a 16 x 16 one) can be held; its bytes read back",
+      B.image_problems(good_image) == [] and B.image_problems(B.image(3, png(16, 16))) == []
+      and B.image_png(good_image) == png(side, side), f"{B.image_problems(good_image)}")
+check("a PNG's size from its header alone; none for what is no PNG",
+      B.png_size(png(31, 32)) == (31, 32) and B.png_size(b"GIF89a" + bytes(30)) is None
+      and B.png_size(png(4, 4)[:20]) is None)
+noisy = png(side, side, noise=True)
+bad_images = {
+    "no id": {"type": "image", "png": good_image["png"]},
+    "a bool for an id": {**good_image, "id": False},
+    "not base64": {**good_image, "png": "not base64!"},
+    "past IMAGE_BYTES_MAX": B.image("big", noisy + bytes(B.IMAGE_BYTES_MAX)),
+    "no PNG": B.image("gif", b"GIF89a" + bytes(40)),
+    "past IMAGE_SIDE": B.image("wide", png(side + 1, 8)),
+    "no pixels": B.image("none", png(0, 4)),
+}
+missed = [k for k, v in bad_images.items() if not B.image_problems(v)]
+check(f"each of {len(bad_images)} broken images reported", not missed, f"missed: {missed}")
+check("... saying what", B.image_problems(bad_images["past IMAGE_SIDE"]) == [
+    f"png is {side + 1} x 8 px, not 1..{side} a side"],
+      f"{B.image_problems(bad_images['past IMAGE_SIDE'])}")
+check(f"an uncompressible 32 x 32 RGBA PNG ({len(noisy)} bytes) fits IMAGE_BYTES_MAX",
+      len(noisy) <= B.IMAGE_BYTES_MAX and B.image_problems(B.image("n", noisy)) == [])
+check("the images a bar names: its tabs' (Flux's example: two, the second tab its letter)",
+      B.image_ids(flux_) == {"5c1e07a2d39b4f61", "e84a1b0c7d2f9356"}
+      and B.image_ids(B.bar()) == set(), f"{B.image_ids(flux_)}")
 
 print("5. pure")
 probe = """

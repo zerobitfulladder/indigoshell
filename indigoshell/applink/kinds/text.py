@@ -6,7 +6,11 @@ an icon in a role of its own (Flux's host: a bookmark, an open padlock in
 space's width. Given less room than it takes, it is cut at its end with
 an ellipsis (an icon that does not fit whole is left out). One that
 reacts (`press`, or `opens` an input or menu) is a step brighter under
-the pointer and answers a left click.
+the pointer and answers a left click. A `fixed` one asks for FIXED_W
+whatever it says, its text against the right end of that (where a text
+of its own width would sit in the `end` run): so a host that changes as
+tabs are switched never changes the room the tabs get, and the tabs'
+slots keep their width.
 
 `button`: a label, an icon or both, plain; lit (the strong colour) while
 `on` or while what it opens shows, muted while not `enabled`, a step
@@ -19,7 +23,7 @@ import skia
 from ... import text, theme
 from ...widgets.base import Size, Widget
 from . import Item
-from .look import SIZE, blend, color_of, glyph
+from .look import FIXED_W, SIZE, blend, color_of, glyph
 
 HOVER_TOWARDS = "#ffffff"
 HOVER_K = 0.35                      # a reacting item under the pointer: this much lighter
@@ -63,8 +67,15 @@ class TextItem(Item):
     def reacts(self) -> bool:
         return bool(self.spec.get("press")) or self.spec.get("opens") is not None
 
-    def natural(self) -> float:
+    @property
+    def fixed(self) -> bool:
+        return self.spec.get("fixed") is True
+
+    def _width(self) -> float:
         return sum(text.measure(p, SIZE) for p, _c, _i in self.pieces)
+
+    def natural(self) -> float:
+        return FIXED_W if self.fixed else self._width()
 
     def measure(self, avail: Size) -> Size:
         return Size(min(self.natural(), avail.width), text.line_height(SIZE))
@@ -87,6 +98,8 @@ class TextItem(Item):
         r = self.rect
         base = text.baseline_in(r, SIZE)
         x, right = r.left(), r.right() + 0.5
+        if self.fixed:
+            x = max(x, r.right() - self._width())
         lit = self.hovered and self.reacts
         self.drawn = []
         for chars, color, icon in self.pieces:

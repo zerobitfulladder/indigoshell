@@ -12,6 +12,7 @@ else; an app may write its JSON by hand as well, in any language.
 
     bar(start, end, inputs, menus)          a whole `bar` message
     tabs(id, tabs, current, can)            the `tabs` kind, of tab(...)
+    image(id, png)                          an image a tab may name (a page's icon)
     text(id, text | spans, ...)             the `text` kind, spans of span(...)
     button(id, label | icon, ...)           the `button` kind
     input_(chords, icon, query | rows, ...) an INPUT, for `inputs`
@@ -27,9 +28,18 @@ else; an app may write its JSON by hand as well, in any language.
 is good), as the shell checks it before it takes one: a missing or
 repeated id, `current` naming no tab, `opens` naming nothing, a chord
 that is none, the bounds. Kinds, keys and icon names it does not know
-are no problem: a side ignores those. `keys_problems(msg)` does the
-same for `keys`.
+are no problem: a side ignores those, and neither is a tab naming an
+image the shell does not hold (it shows its letter). `keys_problems(msg)`
+and `image_problems(msg)` do the same for `keys` and `image`; `png_size`
+reads a PNG's size from its header, so no decoder is needed for that.
+`image_ids(bar)` is the images a bar names: what the shell keeps of a
+connection's images, and what an app counts as sent (PROTOCOL.md,
+"Images").
 """
+
+import base64
+import binascii
+import struct
 
 APP = "app"
 WINDOW = "window"
@@ -41,6 +51,7 @@ BAR = "bar"
 ANSWER = "answer"
 OPEN = "open"
 ACTIVE = "active"
+IMAGE = "image"
 KEYS = "keys"
 CHORD = "chord"             # `open`'s: the chord the app caught (Wayland)
 LAST = "last"               # `keys`'s: the window has lost the keyboard
@@ -86,6 +97,9 @@ OPEN_WAIT_S = 0.5           # `open` waits this long for its window's focus and 
 OPEN_WAIT_WAYLAND_S = 2.0   # ... on Wayland, where a window is focused once its first frame shows
 FORWARD_WAIT_S = 0.25       # the shell's own keys wait this long for the app's `last`
 KEYS_MAX = 200              # KEYs in one `keys`
+IMAGE_SIDE = 32             # px an image is a side, at most (a page's icon, as Flux sends it)
+IMAGE_BYTES_MAX = 8192      # bytes of one image's PNG (32 x 32 RGBA stored raw is ~4.2 KB)
+IMAGES_MAX = TABS_MAX       # images the shell holds for one connection at once
 
 MODIFIERS = ("ctrl", "shift", "alt", "super")
 # Keys a chord may end in besides one letter or digit (a row action's,
@@ -140,13 +154,24 @@ def bar(start=(), end=(), inputs: dict | None = None, menus: dict | None = None)
 
 
 def tab(id_, title: str, *, busy: bool = False, progress: int | None = None,
-        badge: dict | None = None, agent: dict | None = None) -> dict:
+        badge: dict | None = None, agent: dict | None = None, image=None,
+        letter: str | None = None) -> dict:
+    """A TAB; `image`: the id of an `image` sent before (a page's icon),
+    `letter`: the one character shown in its place while there is none."""
     return {"id": id_, "title": title, **_some(busy=busy, progress=progress, badge=badge,
-                                                agent=agent)}
+                                                agent=agent, image=image,
+                                                letter=letter or None)}
 
 
 def tabs(id_, tabs_: list[dict], current=None, can=()) -> dict:
     return {"kind": TABS, "id": id_, "tabs": list(tabs_), "current": current, "can": list(can)}
+
+
+def image(id_, png: bytes) -> dict:
+    """`image`: a PNG, at most IMAGE_SIDE px a side, for tabs to name by
+    `id_` (PROTOCOL.md, "Images": sent once, before the first bar that
+    names it)."""
+    return message(IMAGE, id=id_, png=base64.b64encode(png).decode("ascii"))
 
 
 def badge(icon: str, color: str | None = None) -> dict:
@@ -162,9 +187,11 @@ def span(text: str | None = None, *, icon: str | None = None, color: str | None 
 
 
 def text(id_, text_: str | None = None, *, color: str | None = None, spans: list | None = None,
-         press: bool = False, opens=None) -> dict:
+         press: bool = False, opens=None, fixed: bool = False) -> dict:
+    """The `text` kind; `fixed`: a width of the shell's own, the same
+    whatever it says (Flux's host), so the items beside it keep theirs."""
     return {"kind": TEXT, "id": id_, **_some(text=text_, color=color, spans=spans, press=press,
-                                              opens=opens)}
+                                              opens=opens, fixed=fixed)}
 
 
 def button(id_, *, label: str | None = None, icon: str | None = None, color: str | None = None,
@@ -309,6 +336,12 @@ def _check_tabs(p: _Problems, where: str, item: dict) -> None:
         a = t.get("agent")
         if a is not None and not (isinstance(a, dict) and a.get("state") in AGENT_STATES):
             p.add(w, f"agent {a!r}")
+        if t.get("image") is not None and not is_id(t["image"]):
+            p.add(w, f"image {t['image']!r} is no id")
+        letter = t.get("letter")
+        if letter is not None and not (isinstance(letter, str) and len(letter) == 1
+                                       and letter.isprintable() and not letter.isspace()):
+            p.add(w, f"letter {letter!r} is not one character")
     if len(set(map(repr, ids))) != len(ids):
         p.add(where, "tab ids repeat")
     current = item.get("current")
@@ -413,7 +446,7 @@ def bar_problems(msg) -> list[str]:
                 p.add(where, f"colour {item.get('color')!r} is no role")
             if item.get("spans") is not None:
                 _check_spans(p, where, item["spans"])
-            for key in ("press", "on", "enabled"):
+            for key in ("press", "on", "enabled", "fixed"):
                 if not _bool(item.get(key)):
                     p.add(where, f"{key} is not a bool")
             opens = item.get("opens")
@@ -521,6 +554,58 @@ def keys_problems(msg) -> list[str]:
     if not _bool(msg.get("last")):
         p.add("last", "not a bool")
     return list(p)
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def png_size(data: bytes) -> tuple[int, int] | None:
+    """A PNG's (width, height) from its header (the IHDR chunk, which the
+    format puts first); None when `data` is no PNG."""
+    if len(data) < 24 or not data.startswith(PNG_SIGNATURE) or data[12:16] != b"IHDR":
+        return None
+    return struct.unpack(">II", data[16:24])
+
+
+def image_png(msg: dict) -> bytes | None:
+    """An `image`'s PNG bytes; None when its `png` is no base64."""
+    png = msg.get("png")
+    if not isinstance(png, str) or len(png) > (IMAGE_BYTES_MAX + 2) // 3 * 4:
+        return None
+    try:
+        return base64.b64decode(png, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def image_problems(msg) -> list[str]:
+    """What is wrong with an `image`; empty when the shell can hold it
+    (whether the PNG decodes past its header is the shell's to find)."""
+    if not isinstance(msg, dict) or not is_id(msg.get("id")):
+        return ["no id"]
+    data = image_png(msg)
+    if data is None:
+        return [f"png is not base64 of at most {IMAGE_BYTES_MAX} bytes"]
+    if len(data) > IMAGE_BYTES_MAX:
+        return [f"png is {len(data)} bytes, more than {IMAGE_BYTES_MAX}"]
+    size = png_size(data)
+    if size is None:
+        return ["png is no PNG"]
+    if not all(0 < n <= IMAGE_SIDE for n in size):
+        return [f"png is {size[0]} x {size[1]} px, not 1..{IMAGE_SIDE} a side"]
+    return []
+
+
+def image_ids(bar_: dict) -> set:
+    """The images a good bar's tabs name: what the shell holds of a
+    connection's images once it has shown that bar."""
+    out = set()
+    for run in (START, END):
+        for item in bar_.get(run) or ():
+            if item.get("kind") == TABS:
+                out.update(t["image"] for t in item.get("tabs") or ()
+                           if t.get("image") is not None)
+    return out
 
 
 def chords(bar_: dict) -> dict[str, tuple[str, object]]:

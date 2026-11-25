@@ -4,11 +4,14 @@ section 2), and the pieces the kinds paint with.
 
 Each tab is a box of its own: an outline at the agent chip's height with
 its bevel at the top right, the current one bright with a faint light
-inside and a little glow, the others dim. Loading goes round a box's own
-outline: a tab behind runs a comet round its box; the current one's
-outline lights round from the bottom-left corner as the load goes, the
-rest of it dimmed. An open input is one such lit box the section's width
-(input.py). Each piece is one small function, the place to change it.
+inside and a little glow, the others dim; at its left the tab's image
+(a page's icon, or its letter while it has none) glowing in its spot
+(glow.py), then its title. Loading goes round a box's own outline: a
+tab behind runs a comet round its box; the current one's outline lights
+round from the bottom-left corner as the load goes, the rest of it
+dimmed. An open input is one such lit box the section's width
+(input.py), its icon in the spot. Each piece is one small function, the
+place to change it.
 """
 
 import math
@@ -18,37 +21,45 @@ import skia
 
 from ... import text, theme
 from ...core import persona
+from . import glow
 
 # ── the bar's vocabulary ────────────────────────────────────────────────
 # Its text size, its strong neon for what is in front and the muted tone
 # for the rest, its plain foreground for text.
 SIZE = theme.FONT_SIZE
-NUMBER_SIZE = 13                    # bold, as the meters' small figures
+SMALL_SIZE = 13                     # an open input's icon, and its count (bold, as the
+                                    # meters' small figures)
 TAG_SIZE = 11                       # bold: "NEW WINDOW"
 GAP = theme.SPACING_MD              # between two items of a run
 END_SHARE = 0.34                    # `end` takes at most this share of the section
+FIXED_W = 240                       # a `fixed` text (Flux's host): a tab slot's width,
+                                    # 24 characters, a typical host with its marks
 
 TAB_FG = theme.BASE_MUTED
 TAB_CURRENT_FG = theme.FG_STRONG
 TAB_HOVER_FG = theme.FG             # the title of a tab under the pointer
-NUMBER_FG = theme.BASE_MUTED
-NUMBER_CURRENT_FG = theme.CYAN_BRIGHT
-BRACKET_FG = theme.CYAN_MID         # round the current tab's number
-PAUSED_DIM = 0.35                   # a taken-over tab's number: her colour this far
-                                    # towards the bar's background (halfway is too near the
-                                    # muted tabs' colour to tell apart)
+SPOT_FG = theme.CYAN_BRIGHT         # a tab's image glows this colour; an input's icon
+BRACKET_FG = theme.CYAN_MID         # round every tab's image
+IMAGE_DIM_A = 0.6                   # a tab behind: its image's glow and brackets this strong
+IMAGE_HOVER_A = 0.85                # ... one under the pointer
+PAUSED_DIM = 0.35                   # a taken-over tab: her colour this far towards the
+                                    # bar's background (halfway is too near the muted
+                                    # tabs' colour to tell apart)
 
 # The tabs' slots: all the same width, SLOT_W while they fit, narrower
 # alike down to SLOT_MIN, then the run of them around the current tab.
 # Each slot is a box of its own, SLOT_GAP apart. Inside one: SLOT_PAD,
-# the number's spot (bracketed on the current tab), NUMBER_GAP, the
-# title, SLOT_PAD; the number never moves.
+# the image's spot (bracketed), SPOT_GAP, the title,
+# SLOT_PAD; the image never moves. Its glow reaches glow.BLOOM.pad past
+# its glow.ICON_PX square, inside the box but for a pixel or two and
+# well inside the bar's height, so the item's rect still bounds all it
+# paints (and damages).
 SLOT_W = 240
 SLOT_MIN = 110
 SLOT_GAP = 6                        # between two boxes
 SLOT_PAD = 12
-NUMBER_SPOT = 20
-NUMBER_GAP = 6
+SPOT = 20
+SPOT_GAP = 6
 BRACKET_ARM = 4
 
 # The boxes: each tab enclosed by its own outline, the agent chip's
@@ -125,8 +136,9 @@ def blend(a: str, b: str, t: float) -> str:
 
 
 def agent_color(agent) -> str | None:
-    """The colour of a tab's number for the agent's hold on it: hers
-    while she drives, dimmed while the user has taken it over."""
+    """The colour of the agent's hold on a tab (its image's glow, its
+    brackets and outline): hers while she drives, dimmed while the user
+    has taken it over."""
     if not isinstance(agent, dict):
         return None
     color = persona.color()
@@ -257,8 +269,8 @@ def paint_marker(canvas: skia.Canvas, x: float, rect: skia.Rect) -> None:
                                        rect.height() - 2), p)
 
 
-def brackets(canvas: skia.Canvas, spot: skia.Rect, color: str) -> None:
-    """Corner brackets round the number's spot, as the meters' frame."""
+def brackets(canvas: skia.Canvas, spot: skia.Rect, color: str, alpha: float = 1.0) -> None:
+    """Corner brackets round a spot, as the meters' frame."""
     x, y, w, h, a = spot.left(), spot.top(), spot.width(), spot.height(), BRACKET_ARM
     path = skia.Path()
     for rx, ry, rw, rh in ((0, 0, a, 1), (0, 0, 1, a), (w - a, 0, a, 1), (w - 1, 0, 1, a),
@@ -266,33 +278,49 @@ def brackets(canvas: skia.Canvas, spot: skia.Rect, color: str) -> None:
                            (w - 1, h - a, 1, a)):
         path.addRect(skia.Rect.MakeXYWH(x + rx, y + ry, rw, rh))
     p = skia.Paint(AntiAlias=False)
-    p.setColor(theme.color(color))
+    p.setColor(theme.color(color, None if alpha >= 1.0 else round(alpha, 2)))
     canvas.drawPath(path, p)
 
 
-def number_spot(x: float, cy: float) -> skia.Rect:
-    return skia.Rect.MakeXYWH(x + SLOT_PAD, cy - NUMBER_SPOT / 2, NUMBER_SPOT, NUMBER_SPOT)
+def spot_rect(x: float, cy: float) -> skia.Rect:
+    """The spot at the left of a box whose left edge is at `x`: a tab's
+    image, an open input's icon."""
+    return skia.Rect.MakeXYWH(x + SLOT_PAD, cy - SPOT / 2, SPOT, SPOT)
 
 
-def paint_number(canvas: skia.Canvas, number: str, spot: skia.Rect, color: str,
-                 bold: bool = True) -> None:
-    w = text.measure(number, NUMBER_SIZE, bold)
-    text.draw(canvas, number, spot.centerX() - w / 2, baseline(spot.centerY(), NUMBER_SIZE, bold),
-              NUMBER_SIZE, theme.color(color), bold)
+def paint_glyph(canvas: skia.Canvas, chars: str, spot: skia.Rect, color: str) -> None:
+    """An icon's glyph centred in a spot (an open input's)."""
+    w = text.measure(chars, SMALL_SIZE)
+    text.draw(canvas, chars, spot.centerX() - w / 2, baseline(spot.centerY(), SMALL_SIZE),
+              SMALL_SIZE, theme.color(color))
 
 
-def paint_cell(canvas: skia.Canvas, x: float, cy: float, number: str, title: str, *,
-               current: bool, hovered: bool, mark: str | None,
+def tab_glow(image, letter: str | None, mark: str | None) -> "glow.Glow | None":
+    """What a tab shows in its spot: its image, else its letter, glowing
+    in the agent's colour on a tab she holds (`mark`), else SPOT_FG;
+    None for neither."""
+    color = mark or SPOT_FG
+    if image is not None:
+        return glow.of_image(image, color)
+    if letter:
+        return glow.of_letter(letter, color)
+    return None
+
+
+def paint_cell(canvas: skia.Canvas, x: float, cy: float, title: str, *, current: bool,
+               hovered: bool, mark: str | None, image: "glow.Glow | None",
                badge: tuple[str, str] | None = None, w: float = 0.0) -> None:
-    """One tab's number in its spot (bracketed on the current tab, and in
-    the agent's colour on a tab she holds), its title, and its
-    badge (glyph, colour) at the box's right end."""
-    spot = number_spot(x, cy)
-    if current or mark:
-        brackets(canvas, spot, mark or BRACKET_FG)
-    paint_number(canvas, number, spot, mark or (NUMBER_CURRENT_FG if current else NUMBER_FG))
+    """One tab's image glowing in its spot, in corner brackets (in the
+    agent's colour on a tab she holds; both a step dimmer on a tab behind
+    that is not hers), its title, and its badge (glyph, colour) at the
+    box's right end."""
+    spot = spot_rect(x, cy)
+    alpha = 1.0 if current or mark else IMAGE_HOVER_A if hovered else IMAGE_DIM_A
+    if image is not None:
+        glow.paint(canvas, image, spot, alpha)
+    brackets(canvas, spot, mark or BRACKET_FG, alpha)     # over the bloom: crisp
     fg = TAB_CURRENT_FG if current else TAB_HOVER_FG if hovered else TAB_FG
-    text.draw(canvas, title, x + SLOT_PAD + NUMBER_SPOT + NUMBER_GAP, baseline(cy, SIZE), SIZE,
+    text.draw(canvas, title, x + SLOT_PAD + SPOT + SPOT_GAP, baseline(cy, SIZE), SIZE,
               theme.color(fg))
     if badge and badge[0] and w:
         gw = text.measure(badge[0], SIZE)
@@ -302,11 +330,11 @@ def paint_cell(canvas: skia.Canvas, x: float, cy: float, number: str, title: str
 
 def badge_room(badge: tuple[str, str] | None) -> float:
     """What a badge takes from its tab's title: its glyph and a gap."""
-    return text.measure(badge[0], SIZE) + NUMBER_GAP if badge and badge[0] else 0.0
+    return text.measure(badge[0], SIZE) + SPOT_GAP if badge and badge[0] else 0.0
 
 
-def paint_lifted(canvas: skia.Canvas, x: float, w: float, band: Band, number: str,
-                 title: str, mark: str | None, *, out: bool, right: float,
+def paint_lifted(canvas: skia.Canvas, x: float, w: float, band: Band, title: str,
+                 mark: str | None, image: "glow.Glow | None", *, out: bool, right: float,
                  badge: tuple[str, str] | None = None) -> None:
     """The tab being dragged: its box LIFT up, over what it passes; while
     letting go would tear it out, dimmed and saying so beside it (before
@@ -315,8 +343,8 @@ def paint_lifted(canvas: skia.Canvas, x: float, w: float, band: Band, number: st
     if out:
         canvas.saveLayerAlpha(None, round(255 * (1 - TEAR_A)))
     paint_current(canvas, x, w, band, LIFT)
-    paint_cell(canvas, x, band.cy - LIFT, number, title, current=True, hovered=False,
-               mark=mark, badge=badge, w=w)
+    paint_cell(canvas, x, band.cy - LIFT, title, current=True, hovered=False, mark=mark,
+               image=image, badge=badge, w=w)
     if out:
         canvas.restore()
         tag_w = text.measure(TEAR_TAG, TAG_SIZE, True)
@@ -325,14 +353,14 @@ def paint_lifted(canvas: skia.Canvas, x: float, w: float, band: Band, number: st
                   theme.color(TEAR_FG), True)
 
 
-def paint_wipe(canvas: skia.Canvas, x: float, w: float, band: Band, number: str, title: str,
-               k: float) -> None:
+def paint_wipe(canvas: skia.Canvas, x: float, w: float, band: Band, title: str,
+               image: "glow.Glow | None", k: float) -> None:
     """A closed tab wiping out, `k` (0..1) of the way: what is left of its
     box from the left."""
     canvas.save()
     canvas.clipRect(skia.Rect.MakeLTRB(x - 2, band.top - 2, x + w * (1 - k), band.bottom + 2))
     paint_box(canvas, x, w, band, alpha=OUTLINE_DIM_A)
-    paint_cell(canvas, x, band.cy, number, title, current=False, hovered=False, mark=None)
+    paint_cell(canvas, x, band.cy, title, current=False, hovered=False, mark=None, image=image)
     canvas.restore()
 
 

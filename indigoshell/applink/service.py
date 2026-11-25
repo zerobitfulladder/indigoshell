@@ -10,7 +10,10 @@ every app: nothing of any app's is here. The window's `bar` is checked
 kept, a warning once per problem) and shown in its `BarView`
 (applink/view.py), which the top bar's context area shows while the
 window has focus (applink/context.py); the user's doings go back to the
-app as the bar's events.
+app as the bar's events. The images its tabs name (a page's icon) come
+as `image` messages, decoded once and held for the connection while a
+bar names them (PROTOCOL.md, "Images"): each good bar lets go of those
+it does not name.
 
 Focus. The service follows the root window's `_NET_ACTIVE_WINDOW`, the
 window manager's word for which client window has the keyboard, and
@@ -138,6 +141,7 @@ from ..window import Placement, key_event
 from . import bar as B
 from . import protocol
 from .drop import DROP_WINDOW
+from .kinds import glow
 from .prompt import Prompt
 from .view import BarView
 
@@ -162,7 +166,8 @@ class AppWindow:
     until the window's bar comes). `bar` is the last good bar shown; the
     chords of its inputs and menus are the keys the shell takes from the
     window (`keys`: chord -> ("input" | "menu", id)), grabbed again
-    whenever they change.
+    whenever they change. `images` are the app's images it holds (id ->
+    skia image), which the view's tabs draw.
     """
 
     _actives = itertools.count(1)
@@ -174,7 +179,8 @@ class AppWindow:
         self.kind = str(announce.get(B.APP) or "app")   # the app's name, for log lines
         self.app_id = announce.get(B.WINDOW)            # the app's own id for the window
         self._said: set[str] = set()                    # problems warned of, once each
-        self.view = BarView(emit=self.send_event, on_open=self._item_opens)
+        self.images: dict = {}
+        self.view = BarView(emit=self.send_event, on_open=self._item_opens, images=self.images)
         self.content = self.view
         self.bar: dict | None = None
         self.keys: dict[str, tuple[str, object]] = {}
@@ -221,6 +227,8 @@ class AppWindow:
             chord = msg.get(B.CHORD)
             self.service.open_asked(self, what, msg.get(what),
                                     chord=chord if isinstance(chord, str) else None)
+        elif kind == B.IMAGE:
+            self.on_image(msg)
         elif kind == B.ACTIVE:
             self.set_active(msg.get("active") is True)
         elif kind == B.KEYS:
@@ -266,6 +274,21 @@ class AppWindow:
         if msg.get(B.LAST) is True:
             self.service.forwarded(self)
 
+    def on_image(self, msg: dict) -> None:
+        """An image for the window's tabs to name: checked, decoded once,
+        held until a bar goes without it (one sent again under its id
+        replaces it). A tab of the bar showing it repaints."""
+        problems = B.image_problems(msg)
+        if not problems and msg["id"] not in self.images and len(self.images) >= B.IMAGES_MAX:
+            problems = [f"{B.IMAGES_MAX} held already"]
+        image = None if problems else glow.decode(B.image_png(msg))
+        if image is None:
+            self._warn("an image ignored", problems or ["its PNG does not decode"])
+            return
+        self.images[msg["id"]] = image
+        if self.bar is not None and msg["id"] in B.image_ids(self.bar):
+            self.view.invalidate()
+
     def _warn(self, what: str, problems: list[str]) -> None:
         new = [p for p in problems if p not in self._said]
         if not new:
@@ -277,8 +300,12 @@ class AppWindow:
     # ── its bar ─────────────────────────────────────────────────────────
     def show_bar(self, bar: dict) -> None:
         """A good bar (bar.bar_problems found nothing): shown, its chords
-        grabbed, an open input or menu of it kept up to date."""
+        grabbed, an open input or menu of it kept up to date; the images
+        it does not name let go."""
         self.bar = bar
+        named = B.image_ids(bar)
+        for image_id in [i for i in self.images if i not in named]:
+            del self.images[image_id]
         self.view.set_bar(bar)
         keys = B.chords(bar)
         if keys != self.keys:

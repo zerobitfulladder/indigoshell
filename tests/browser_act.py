@@ -49,8 +49,8 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      run against it.
   3. the shell's side (a child process, so skia and Qt stay apart): the
      top bar's tabs painted off screen from the bar Flux sends, the tab
-     the agent drives with its number in her colour, a paused one
-     dimmed, the titles untouched; a malformed hold refusing the
+     the agent drives glowing in her colour (its host's letter, here), a
+     paused one dimmed, the titles untouched; a malformed hold refusing the
      bar; the window's actions with "Let Lilac drive again" only while
      a tab is paused, picking it sending a `pick` naming the tab.
 
@@ -120,8 +120,8 @@ def shell_side(path: str) -> None:
     from indigoshell.applink.service import AppService
     from flux import protocol
     from indigoshell.applink import bar as B
-    from indigoshell.applink.kinds.look import (NUMBER_CURRENT_FG, TAB_CURRENT_FG, TAB_FG,
-                                                agent_color)
+    from indigoshell.applink.kinds.look import (IMAGE_DIM_A, SPOT_FG, TAB_CURRENT_FG, TAB_FG,
+                                                agent_color, blend)
     from indigoshell.applink.service import AppWindow
     from flux import bar as fb
     from indigoshell.core import persona
@@ -174,6 +174,18 @@ def shell_side(path: str) -> None:
 
     lilac = persona.color()
     paused_lilac = agent_color(protocol.agent("paused"))
+    # What the brightest pixel of a tab's glow is: its tint exactly (the
+    # bloom never lifts a mark past it), dimmed on a tab behind.
+    glows = {"cyan": SPOT_FG, "dim": blend(theme.BAR_BG, SPOT_FG, IMAGE_DIM_A),
+             "lilac": lilac, "paused": paused_lilac}
+
+    def glow_of(spot):
+        flat = spot.reshape(-1, 3)
+        peak = flat[flat.max(axis=1).argmax()]
+        near = {k: float(np.abs(peak - np.array([int(c[i:i + 2], 16) for i in (1, 3, 5)])).max())
+                for k, c in glows.items()}
+        best = min(near, key=near.get)
+        return best if near[best] <= 12 else None
     cases = {
         "none": [None, None, None],
         "driving": [None, protocol.agent("driving"), None],
@@ -186,16 +198,17 @@ def shell_side(path: str) -> None:
         tabs = j.view.item("tabs").layout()
         row = []
         colours = {"lilac": lilac, "paused": paused_lilac,
-                   "strong": TAB_CURRENT_FG, "muted": TAB_FG, "cyan": NUMBER_CURRENT_FG}
+                   "strong": TAB_CURRENT_FG, "muted": TAB_FG}
         for t in tabs:
-            # Inside the box, clear of its outline: the number's spot, the title's band.
-            number = img[11:32, int(t["number_x"]):int(t["number_x"] + t["number_w"])]
+            # Inside the spot's brackets: the letter's glow; the title's band.
+            x, y, w = int(t["spot_x"]), int(t["spot_y"]), int(t["spot_w"])
+            spot = img[y + 2:y + w - 2, x + 2:x + w - 2]
             title = img[9:34, int(t["x"]):int(t["x"] + t["w"]) + 1]
-            n = {k: count(number, c, 10) for k, c in colours.items()}
             ti = {k: count(title, c, 10) for k, c in colours.items()}
-            row.append({"number": max(n, key=n.get) if max(n.values()) > 8 else None,
+            row.append({"glow": glow_of(spot), "shows": t["shows"],
                         "title": max(ti, key=ti.get) if max(ti.values()) > 8 else None,
-                        "counts": n})
+                        "peak": spot.reshape(-1, 3)[spot.reshape(-1, 3).max(axis=1).argmax()]
+                        .tolist()})
         out[name] = row
     # A tab's hold that is none: the bar refused, the last good one kept.
     bad = state(cases["driving"])
@@ -1347,20 +1360,21 @@ def test_shell_side() -> None:
         return
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     def seen(case):
-        return [(t["number"], t["title"]) for t in out[case]]
-    check("no hold: the current tab's number cyan and its title strong, the others muted",
-          seen("none") == [("cyan", "strong"), ("muted", "muted"), ("muted", "muted")],
-          f"{seen('none')}")
-    check("Lilac driving tab 2 (not the current one): its number (and its brackets) in Lilac's "
+        return [(t["glow"], t["title"]) for t in out[case]]
+    check("no hold: every tab its host's letter (no icon yet), glowing cyan on the current one "
+          "(its title strong), dimmed behind (titles muted)",
+          seen("none") == [("cyan", "strong"), ("dim", "muted"), ("dim", "muted")]
+          and all(t["shows"] == "letter" for t in out["none"]), f"{seen('none')}")
+    check("Lilac driving tab 2 (not the current one): its glow (and its brackets) in Lilac's "
           "colour, its title still muted; the others as ever",
-          seen("driving") == [("cyan", "strong"), ("lilac", "muted"), ("muted", "muted")],
+          seen("driving") == [("cyan", "strong"), ("lilac", "muted"), ("dim", "muted")],
           f"{seen('driving')}")
-    check("Lilac driving the current tab: its number in her colour, its title strong",
+    check("Lilac driving the current tab: its glow in her colour, its title strong",
           seen("current")[0] == ("lilac", "strong"), f"{seen('current')}")
-    check("paused (the user took over): the number in Lilac dimmed, told apart from Lilac and "
-          "from the muted tabs", seen("paused") == [("cyan", "strong"), ("paused", "muted"),
-                                                    ("muted", "muted")],
-          f"{seen('paused')} {out['paused'][1]['counts']}")
+    check("paused (the user took over): the glow in Lilac dimmed, told apart from Lilac and "
+          "from the tabs behind", seen("paused") == [("cyan", "strong"), ("paused", "muted"),
+                                                     ("dim", "muted")],
+          f"{seen('paused')} {out['paused'][1]['peak']}")
     check("a malformed hold (a state that is none): the bar refused, the last good one kept",
           out["bad_problems"] and out["kept"] == [None, {"state": "paused"}, None],
           f"{out['bad_problems']} {out['kept']}")

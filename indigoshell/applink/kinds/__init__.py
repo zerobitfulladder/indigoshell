@@ -7,8 +7,10 @@ Every item widget is an `Item`: it is given the item's dict whole
 (`set`) every time the app's bar changes and keeps its own state (hover,
 a drag, motion) for as long as the item keeps its id and kind; what the
 user does with it goes out through `emit` (an event naming the item, set
-by the view: applink/view.py) or `open` (an input or menu it opens). Its
-look is the shell's, from look.py: an app says what, never how.
+by the view: applink/view.py) or `open` (an input or menu it opens); the
+images the app sent, which tabs name by id, it finds through `image_of`
+(id -> a skia image, or None). Its look is the shell's, from look.py:
+an app says what, never how.
 """
 
 import logging
@@ -30,6 +32,7 @@ class Item(Widget):
         self.lit = False                # what it opens is showing
         self.emit = None                # emit(type, **fields): an event naming this item
         self.open = None                # open(what id, item): an input or menu it names
+        self.image_of = None            # image_of(id): an image the app sent, or None
 
     def set(self, spec: dict) -> None:
         """The item as the app sends it now (the same id and kind)."""

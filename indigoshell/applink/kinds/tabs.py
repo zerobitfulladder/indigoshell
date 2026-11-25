@@ -4,17 +4,21 @@ each, one look for every app (PROTOCOL.md, section 2).
 Each tab is a box of its own in a slot of the same width (SLOT_W, all
 narrower alike when they do not fit, down to SLOT_MIN, then the run
 around the current one), a few pixels apart, outlined with the agent
-chip's bevel at the top right: its number in a spot of its own and its
-title, shortened with an ellipsis to the box, in the muted tone, the
-outline dim; the current tab's outline bright with a faint light inside,
-its title in the strong colour and its number cyan in small corner
-brackets. A tab's `badge` sits at its box's right end. Loading goes
-round a box's own outline: a tab behind that is `busy` runs a comet
+chip's bevel at the top right: its image in a spot of its own (the
+`image` the app sent for it, a page's icon, glowing cyan: glow.py; its
+`letter` in the same glow while it has none) in small corner brackets,
+and its title, shortened with an ellipsis to the box, in the muted
+tone, the outline dim, the glow and brackets a step down; the current
+tab's outline bright with a faint light inside, its title in the strong
+colour, its image and brackets at full. A tab's `badge` sits at its box's right end. Loading
+goes round a box's own outline: a tab behind that is `busy` runs a comet
 round its box; the current one's `progress` lights its outline round
 from the bottom-left corner, the rest of it dimmed. While the agent
-drives a tab (`agent`), its number, its corner brackets and its box's
-outline are drawn in her colour (core/persona.py); while the user has
-taken it over, in that colour dimmed a third of the way to the bar's background.
+drives a tab (`agent`), its image glows in her colour (core/persona.py)
+and its corner brackets and its box's outline are drawn in it; while
+the user has taken it over, in that colour dimmed a third of the way to
+the bar's background. The keys that pick a tab by its place (Flux's
+Alt+1..9) are the app's; the bar shows no numbers.
 
 The mouse (the bar's window holds the press: Widget.press). A left or
 right press on a tab other than the current one sends `select`; a middle
@@ -49,12 +53,11 @@ import skia
 from ... import text
 from ...widgets.base import Size, Widget
 from . import Item
-from .look import (COMET_FPS, COMET_S, MARKER_W, MOTION_FPS, NUMBER_GAP,
-                   NUMBER_SPOT, OUTLINE, OUTLINE_DIM_A, OUTLINE_HOVER_A, SIZE, SLIDE_S,
-                   SLOT_GAP, SLOT_MIN, SLOT_PAD, SLOT_W, SWITCH_S, WIPE_S, Band, Glide,
-                   agent_color, badge_room, color_of, glyph, number_spot, paint_box,
-                   paint_cell, paint_comet, paint_current, paint_lifted, paint_marker,
-                   paint_trace, paint_wipe, title_in)
+from .look import (COMET_FPS, COMET_S, MARKER_W, MOTION_FPS, OUTLINE, OUTLINE_DIM_A,
+                   OUTLINE_HOVER_A, SIZE, SLIDE_S, SLOT_GAP, SLOT_MIN, SLOT_PAD, SLOT_W, SPOT,
+                   SPOT_GAP, SWITCH_S, WIPE_S, Band, Glide, agent_color, badge_room, color_of,
+                   glyph, paint_box, paint_cell, paint_comet, paint_current, paint_lifted,
+                   paint_marker, paint_trace, paint_wipe, spot_rect, tab_glow, title_in)
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +126,8 @@ class TabsItem(Item):
         self.agents: list[dict | None] = []
         self.busy: list[bool] = []
         self.badges: list[tuple[str, str] | None] = []
+        self.images: list = []                  # each tab's image id (None: none)
+        self.letters: list[str | None] = []     # ... and its letter, while it has none
         self.progress: float | None = None      # the current tab's load, while it shows one
         self.can: frozenset = frozenset()
         # The slots shown: the first tab's index, how many, their width;
@@ -133,12 +138,13 @@ class TabsItem(Item):
         self.drag: TabDrag | None = None        # a left or right press on a tab
         self.closing = None                     # the tab a middle press is on
         # Motion: each tab's slot x as drawn (by id), the current tab's
-        # light's x, the tabs gone and wiping out (since, index, title, x),
-        # what the last paint drew (id -> (index, title, x)), and whether
+        # light's x, the tabs gone and wiping out (since, title, x, image
+        # glow: the app's image may be gone with the tab), what the last
+        # paint drew (id -> (index, title, x, glow)), and whether
         # something moved since (the next frame retargets).
         self._glides: dict = {}
         self._front: Glide | None = None
-        self._leaving: list[tuple[float, int, str, float]] = []
+        self._leaving: list[tuple[float, str, float, object]] = []
         self._drawn_ids: dict = {}
         self._due = False
         self._fresh = True                      # nothing drawn yet: no motion into place
@@ -156,6 +162,8 @@ class TabsItem(Item):
         busy = [bool(t.get("busy")) for t in tabs]
         badges = [(glyph(t["badge"].get("icon")), color_of(t["badge"].get("color")))
                   if isinstance(t.get("badge"), dict) else None for t in tabs]
+        images = [t.get("image") for t in tabs]
+        letters = [t["letter"] if isinstance(t.get("letter"), str) else None for t in tabs]
         here = tabs[current] if current >= 0 else {}
         progress = here.get("progress")
         progress = float(progress) if isinstance(progress, (int, float)) \
@@ -163,12 +171,12 @@ class TabsItem(Item):
         self.can = frozenset(c for c in spec.get("can") or () if isinstance(c, str))
         if titles != self.titles or current != self.current or ids != self.ids \
                 or badges != self.badges:
-            self.titles, self.current, self.ids = titles, current, ids
-            self.agents, self.busy, self.badges = agents, busy, badges
+            self.titles, self.current, self.ids, self.badges = titles, current, ids, badges
             self._moved(layout=True)
-        elif agents != self.agents or busy != self.busy:
-            self.agents, self.busy = agents, busy
+        elif (agents != self.agents or busy != self.busy or images != self.images
+              or letters != self.letters):
             self.invalidate()
+        self.agents, self.busy, self.images, self.letters = agents, busy, images, letters
         if progress != self.progress:
             self.progress = progress
             self.invalidate()
@@ -189,7 +197,7 @@ class TabsItem(Item):
         self.rect = rect
         self.first, self.count, self.slot_w = fit_slots(len(self.titles), max(0, self.current),
                                                         rect.width())
-        room = self.slot_w - 2 * SLOT_PAD - NUMBER_SPOT - NUMBER_GAP
+        room = self.slot_w - 2 * SLOT_PAD - SPOT - SPOT_GAP
         self.labels = [title_in(self.titles[i], room - badge_room(self.badges[i]))
                        for i in range(self.first, self.first + self.count)]
 
@@ -240,6 +248,13 @@ class TabsItem(Item):
 
     def _badge(self, i: int):
         return self.badges[i] if i < len(self.badges) else None
+
+    def _glow(self, i: int):
+        """Tab i's image (or letter) glowing in its colour (look.tab_glow)."""
+        image_id = self.images[i] if i < len(self.images) else None
+        image = self.image_of(image_id) if image_id is not None and self.image_of else None
+        return tab_glow(image, self.letters[i] if i < len(self.letters) else None,
+                        self._mark(i))
 
     # ── the mouse ───────────────────────────────────────────────────────
     def hit(self, x: float, y: float) -> Widget | None:
@@ -396,9 +411,9 @@ class TabsItem(Item):
         # sliding at once, they would pass over it.
         gone = [] if fresh else [(tid, v) for tid, v in self._drawn_ids.items()
                                   if tid not in self.ids]
-        for tid, (i, title, x) in gone:
+        for tid, (_i, title, x, image) in gone:
             g = self._glides.get(tid)
-            self._leaving.append((now, i, title, g.at(now) if g else x))
+            self._leaving.append((now, title, g.at(now) if g else x, image))
         delay = WIPE_S if gone else 0.0
         drawn = {}
         for i, x in placed:
@@ -408,12 +423,12 @@ class TabsItem(Item):
                 self._glides[tid] = Glide(SLIDE_S, x)
             else:
                 g.to(x, now, delay)
-            drawn[tid] = (i, self._label(i), x)
+            drawn[tid] = (i, self._label(i), x, self._glow(i))
         for tid in [t for t in self._glides if t not in drawn]:
             del self._glides[tid]
         if lift is not None:
-            drawn[self.ids[lift["index"]]] = (lift["index"], self._label(lift["index"]),
-                                              lift["x"])
+            i = lift["index"]
+            drawn[self.ids[i]] = (i, self._label(i), lift["x"], self._glow(i))
         self._drawn_ids = drawn
         self._leaving = [w for w in self._leaving if now - w[0] < WIPE_S]
         target = ((self.current - self.first) * self.pitch
@@ -456,17 +471,20 @@ class TabsItem(Item):
             x = dict(placed).get(i)
             if x is not None:
                 paint_comet(canvas, at(i, x), w, band, phase)
+        drawn = self._drawn_ids
         for i, x in placed:
-            paint_cell(canvas, at(i, x), band.cy, str(i + 1), self._label(i),
-                       current=i == self.current and lift is None,
-                       hovered=i == self.hover, mark=self._mark(i), badge=self._badge(i), w=w)
-        for since, i, title, x in self._leaving:
-            paint_wipe(canvas, r.left() + x, w, band, str(i + 1), title,
+            paint_cell(canvas, at(i, x), band.cy, self._label(i),
+                       current=i == self.current and lift is None, hovered=i == self.hover,
+                       mark=self._mark(i), image=drawn[self.ids[i]][3], badge=self._badge(i),
+                       w=w)
+        for since, title, x, image in self._leaving:
+            paint_wipe(canvas, r.left() + x, w, band, title, image,
                        min(1.0, (now - since) / WIPE_S))
         if lift is not None:
             i = lift["index"]
-            paint_lifted(canvas, r.left() + lift["x"], w, band, str(i + 1), self._label(i),
-                         self._mark(i), out=lift["out"], right=r.right(), badge=self._badge(i))
+            paint_lifted(canvas, r.left() + lift["x"], w, band, self._label(i), self._mark(i),
+                         drawn[self.ids[i]][3], out=lift["out"], right=r.right(),
+                         badge=self._badge(i))
             if not lift["out"]:
                 paint_marker(canvas, r.left() + max(MARKER_W / 2,
                                                      lift["slot_x"] - SLOT_GAP / 2), r)
@@ -474,21 +492,27 @@ class TabsItem(Item):
 
     def layout(self) -> list[dict]:
         """Where each tab is, for tests to find in pixels: a tab's slot,
-        its number's spot, its title as drawn."""
+        its image's spot (and what shows there: "image", "letter" or
+        None), its title as drawn."""
         r = self.rect
         placed, _lift = self.arrangement()
         cy = Band.of(r).cy
         out = []
         for i, x in placed:
             left = r.left() + x
-            spot = number_spot(left, cy)
+            spot = spot_rect(left, cy)
             title = self._label(i)
+            image_id = self.images[i] if i < len(self.images) else None
+            shows = ("image" if image_id is not None and self.image_of
+                     and self.image_of(image_id) is not None
+                     else "letter" if i < len(self.letters) and self.letters[i] else None)
             out.append({
                 "index": i, "tab": self.ids[i] if i < len(self.ids) else None,
-                "text": f"{i + 1} {title}" if title else str(i + 1), "title": title,
-                "x": left + SLOT_PAD + NUMBER_SPOT + NUMBER_GAP, "w": text.measure(title, SIZE),
+                "text": title, "title": title,
+                "x": left + SLOT_PAD + SPOT + SPOT_GAP, "w": text.measure(title, SIZE),
                 "slot_x": left, "slot_w": self.slot_w,
-                "number_x": spot.left(), "number_w": spot.width(),
+                "spot_x": spot.left(), "spot_y": spot.top(), "spot_w": spot.width(),
+                "shows": shows, "image": image_id,
                 "current": i == self.current, "hovered": i == self.hover,
                 "busy": i < len(self.busy) and self.busy[i],
                 "agent": self.agents[i] if i < len(self.agents) else None,

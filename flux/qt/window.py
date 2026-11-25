@@ -1467,7 +1467,7 @@ class Window(QWidget):
         if self.agent:
             title = protocol.agent_title() + (f" · {title}" if title else "")
         self.setWindowTitle(title or NAME)
-        self.link.push(self.bar(state))
+        self.link.push(self.bar(state), dict(t.icon for t in self.tabs if t.icon))
         self.line.show_state(state if self.link.fallback else None, self.download)
 
     def _place_line(self, *_) -> None:

@@ -9,8 +9,8 @@ from `applink/` (the line, the service, the bar's app section), removes
 launcher's parts the bar's: one component, two frames.
 
 ```
- top bar, a Flux window focused:
- | [1 Inbox] [2 std - Rust] [3 Weather]            doc.rust-lang.org | own widgets | AgentChip |
+ top bar, a Flux window focused (each tab's icon glowing where ✶ is):
+ | [✶ Inbox] [✶ std - Rust] [✶ Weather]            doc.rust-lang.org | own widgets | AgentChip |
  the same after Ctrl+L, "yo" typed:
  | ⌕ yo▏                                                     12/5321 | own widgets | AgentChip |
  |   SEARCH yo                                                       |
@@ -69,15 +69,27 @@ progress, motion); one whose kind changes is made anew.
 
 | kind | fields | the shell draws | events back |
 |---|---|---|---|
-| `tabs` | `tabs`: [TAB], `current`: tab id or null, `can`: some of `"close"`, `"move"`, `"detach"` | Flux's box tabs: equal slots, numbered, the current one lit, hover, load trace and comet, agent marks, drag lift, tear-out | `select`, `close`, `move`, `detach` |
-| `text` | `text` + `color`, or `spans`: [SPAN]; `press`: bool; `opens`: input or menu id | plain text, ellipsized at its end when short of room; hover when it reacts | `press`, or it opens what it names |
+| `tabs` | `tabs`: [TAB], `current`: tab id or null, `can`: some of `"close"`, `"move"`, `"detach"` | Flux's box tabs: equal slots, each with its image glowing (or its letter) in corner brackets, the current one lit (others' image and brackets dimmed), hover, load trace and comet, agent marks, drag lift, tear-out | `select`, `close`, `move`, `detach` |
+| `text` | `text` + `color`, or `spans`: [SPAN]; `press`: bool; `opens`: input or menu id; `fixed`: bool | plain text, ellipsized at its end when short of room; hover when it reacts; with `fixed` a width of the shell's own whatever it says (`FIXED_W`, a tab slot's: 24 characters), its text against that width's right end | `press`, or it opens what it names |
 | `button` | `label` and/or `icon`, `color`, `on`, `enabled`, `opens` | a plain label or icon; lit while `on` or while what it opens shows; muted when not enabled | `press`, or it opens what it names |
 
 - TAB: `{"id", "title", "busy"?: bool, "progress"?: 0..100, "badge"?:
-  {"icon", "color"}, "agent"?: {"state"}}`. On the current tab
-  `progress` lights its outline round, as now; a tab behind that is busy
-  runs the comet. `badge` sits at the box's right end (the editor's
-  unsaved dot). `agent`: section 5.
+  {"icon", "color"}, "agent"?: {"state"}, "image"?: image id, "letter"?:
+  str}`. On the current tab `progress` lights its outline round, as now;
+  a tab behind that is busy runs the comet. `badge` sits at the box's
+  right end (the editor's unsaved dot). `agent`: section 5. `image`
+  names an `image` the app sent (a page's icon: "Images", section 3),
+  drawn in the tab's spot through the shell's look: its brightness
+  turned round so a light ground goes black and dark marks glow, tinted
+  cyan (the agent's colour on a tab she holds), a soft bloom over it.
+  `letter`, one character, shows in the same glow (as a capital) while
+  the tab has no image the shell holds: Flux's the first letter of the
+  host. With neither the spot stays empty. Tabs carry no numbers: an
+  app's keys that pick a tab by place (Flux's Alt+1..9) are its own.
+- `fixed` (a `text`): the item's width never follows its text, so the
+  items beside it keep theirs as it changes. Flux's host is fixed:
+  switching to a tab with a longer host leaves the tabs their room, and
+  their slots their width.
 - SPAN: `{"text"?: str, "icon"?: name, "color"?: role}`, text or icon.
   Flux's host is three: a bookmark, an open padlock in `error`, the host.
 - No `progress` kind (both consumers show load on a tab), no group or
@@ -140,6 +152,7 @@ An unknown name draws nothing (one debug line); an unknown role draws `fg`.
 | `answer` | `input`, `seq`, `rows`?, `selected`?: row id, `total`?: int, `count`?: {`text`, `color`} | to a `query` |
 | `open` | `input` or `menu`, `chord`?: the chord pressed | open one now: no key pressed (Flux's new window with no address), or, with `chord`, a chord of its bar the app caught itself because the shell cannot take it (`attached`'s `chords`) |
 | `keys` | `keys`: [KEY], `last`?: bool | after an `open` with `chord`: what the window got before the shell had the keyboard, in the order typed, none of it given to the window's content; `last` once the window has lost the keyboard, or the input or menu closed, or `fallback` came (section 4) |
+| `image` | `id`, `png`: base64 | an image for tabs to name (a page's icon), before the first `bar` that names it ("Images", below) |
 
 KEY: `{"keysym": int, "text"?: str, "mods"?: [modifier]}`, one key press
 as typed: its keysym (XKB's numbers, the same on X11 and Wayland:
@@ -148,6 +161,22 @@ Super), the modifiers held (`ctrl`, `shift`, `alt`, `super`). A keysym,
 not a keycode: the layout has had its say, as it has for the shell's
 own keys, and every toolkit gives it (Qt's `nativeVirtualKey`, GDK's
 keyval).
+
+**Images.** A tab's image goes apart from the bars, once:
+`{"type": "image", "id": "1f0c9a7e2b4d6a80", "png": "iVBORw0KGgo..."}`,
+a PNG at most `IMAGE_SIDE` (32) px a side and `IMAGE_BYTES_MAX` (8192)
+bytes, base64. The shell decodes it once and holds it for the
+connection by its id: every image the last good `bar` named, and every
+one sent since; each good bar lets go of the images it does not name.
+So an app sends an image before the first bar that names it, and again
+only after a bar went without it, or on a new connection; after each
+bar it counts the shell as holding just what that bar names. Flux's ids
+are the PNG's hash, so the same icon on ten tabs, or the next page of a
+site, goes once and a changed icon is a new id. One sent again under an
+id the shell holds replaces it. A tab naming an image the shell does not
+hold is no problem: it shows its `letter` (and a warning names an image
+that broke its shape or bounds, or did not decode). At most `IMAGES_MAX`
+(500) are held at once; one more is refused.
 
 **Shell -> app**
 
@@ -174,14 +203,17 @@ the events above, which Flux interprets.
 it differs from the last sent (Flux's `link.push` does this already):
 one per progress step during a load, none while idle. 30 tabs are about
 2.3 KB, decoded in about 15 µs; the shell applies the newest at its next
-frame. Patches are not worth their failure modes at this size.
+frame. Patches are not worth their failure modes at this size. An image
+is 0.3 to 3 KB as PNG, once per icon; the shell makes its glow once per
+image and colour (about a millisecond) and every frame after only draws it.
 
 **Validation.** A `bar` that breaks its shape (a missing or repeated id,
 `current` naming no tab, `opens` naming nothing) is ignored whole, the
 last good one kept, a warning once per connection per problem. Bounds:
 `LINE_LIMIT` (1 MiB) a line, 1000 characters a string (8000 an input's
 `text`: an address may be long), 500 tabs, 50
-other items, 2000 static rows, 200 rows an answer.
+other items, 2000 static rows, 200 rows an answer; an image 32 px a
+side and 8192 bytes, 500 held.
 
 **Windows.** One connection per window and one bar per connection, as
 now, so no message after the announce names its window. Several Flux
@@ -363,9 +395,9 @@ tells each app in `attached` (`{"agent": {"name": "Lilac", "color":
 "#c8a2c8"}}`), which the app adopts in turn. An app marks her by role,
 never by colour:
 
-- a tab she drives: `"agent": {"state": "driving"}`: number, brackets
-  and outline in her colour; `paused` (the user took it over) dimmed a
-  third of the way to the bar's background, as now.
+- a tab she drives: `"agent": {"state": "driving"}`: its image's glow,
+  its brackets and its outline in her colour; `paused` (the user took it
+  over) dimmed a third of the way to the bar's background, as now.
 - her name: a span in the `agent` role (the agent's own Flux window
   starts its bar so). In a row ("Let Lilac drive again") the app writes
   the label with the name `attached` gave, so any language can. Colours
@@ -384,7 +416,9 @@ never by colour:
   `tabs` taking what its other items leave. All is clipped to the
   section; an open input takes all of it, its list drops under it.
 - **When.** Only while the window, or a dialog of it, has focus.
-- **What an app cannot do:** draw pixels; pick fonts, sizes, hex colours,
+- **What an app cannot do:** draw pixels (a tab's `image` is content, a
+  page's own icon, and the shell draws it its own way: its size, tint and
+  glow); pick fonts, sizes, hex colours,
   positions or animations; take focus or grab keys on any window but its
   own (or ones the window manager holds); open an input or menu while not
   focused; reach the bar's own section or the shell's panels. The socket
@@ -394,15 +428,19 @@ never by colour:
 ## 7. Worked examples
 
 **Flux**, three tabs, the second current and loading, the third driven by
-the agent; the page a bookmark reached over http:
+the agent; the first and the third with their pages' icons (sent before,
+as `image`), the second's not come yet (its host's letter); the page a
+bookmark reached over http:
 
 ```json
 {"type": "bar",
  "start": [{"kind": "tabs", "id": "tabs", "current": 41, "can": ["close", "move", "detach"],
-            "tabs": [{"id": 40, "title": "Inbox"},
-                     {"id": 41, "title": "std - Rust", "busy": true, "progress": 62},
-                     {"id": 44, "title": "Weather", "agent": {"state": "driving"}}]}],
- "end": [{"kind": "text", "id": "host", "spans": [{"icon": "bookmark"},
+            "tabs": [{"id": 40, "title": "Inbox", "image": "5c1e07a2d39b4f61"},
+                     {"id": 41, "title": "std - Rust", "busy": true, "progress": 62,
+                      "letter": "d"},
+                     {"id": 44, "title": "Weather", "agent": {"state": "driving"},
+                      "image": "e84a1b0c7d2f9356"}]}],
+ "end": [{"kind": "text", "id": "host", "fixed": true, "spans": [{"icon": "bookmark"},
           {"icon": "unlocked", "color": "error"}, {"text": "doc.rust-lang.org"}]}],
  "inputs": {
    "address": {"chords": ["ctrl+l"], "icon": "search", "placeholder": "address or search",

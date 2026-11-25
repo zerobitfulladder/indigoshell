@@ -2,7 +2,7 @@
 inputs is open (PROTOCOL.md, section 4).
 
 One lit box the section's width, as the current tab's: the input's icon
-in the bracketed spot where a tab has its number, then the text being
+in the bracketed spot where a tab has its image, then the text being
 typed (a `TextInput`: the caret, the selection, the shell's editing
 keys), and at the right end the count (an answer's `count`, "3/12", or
 the rows over the total) small and bold, its colour a role (`info` by
@@ -19,9 +19,9 @@ import skia
 from ... import text, theme
 from ...widgets.base import Size, Widget
 from ...widgets.text_input import TextInput
-from .look import (BOX_H, BRACKET_FG, NUMBER_CURRENT_FG, NUMBER_GAP, NUMBER_SIZE, NUMBER_SPOT,
-                   SIZE, SLOT_PAD, TAB_CURRENT_FG, Band, baseline, brackets, color_of, glyph,
-                   number_spot, paint_current, paint_number)
+from .look import (BOX_H, BRACKET_FG, SIZE, SLOT_PAD, SMALL_SIZE, SPOT, SPOT_FG, SPOT_GAP,
+                   TAB_CURRENT_FG, Band, baseline, brackets, color_of, glyph, paint_current,
+                   paint_glyph, spot_rect)
 
 QUERY_FG = TAB_CURRENT_FG
 PLACEHOLDER_FG = theme.BASE_MUTED
@@ -83,7 +83,7 @@ class InputBox(Widget):
         return Size(avail.width, avail.height)
 
     def _count_w(self) -> float:
-        return text.measure(self.count[0], NUMBER_SIZE, True) if self.count else 0.0
+        return text.measure(self.count[0], SMALL_SIZE, True) if self.count else 0.0
 
     def _toggles_w(self) -> float:
         return sum(text.measure(glyph(t.get("icon")), SIZE) + TOGGLE_GAP for t in self.toggles)
@@ -91,10 +91,10 @@ class InputBox(Widget):
     def arrange(self, rect: skia.Rect) -> None:
         self.rect = rect
         band = Band.of(rect)
-        qx = rect.left() + SLOT_PAD + NUMBER_SPOT + NUMBER_GAP
+        qx = rect.left() + SLOT_PAD + SPOT + SPOT_GAP
         end = rect.right() - SLOT_PAD
         if self.count:
-            end -= self._count_w() + NUMBER_GAP * 2
+            end -= self._count_w() + SPOT_GAP * 2
         end -= self._toggles_w()
         self.field.measure(Size(max(0.0, end - qx), BOX_H))
         self.field.arrange(skia.Rect.MakeLTRB(qx, band.top + 2, max(qx, end), band.bottom - 2))
@@ -122,18 +122,18 @@ class InputBox(Widget):
         canvas.save()
         canvas.clipRect(r)
         paint_current(canvas, r.left(), r.width(), band)
-        spot = number_spot(r.left(), band.cy)
+        spot = spot_rect(r.left(), band.cy)
         brackets(canvas, spot, BRACKET_FG)
         if self.icon:
-            paint_number(canvas, self.icon, spot, NUMBER_CURRENT_FG, bold=False)
+            paint_glyph(canvas, self.icon, spot, SPOT_FG)
         self.field.paint(canvas)
         x = r.right() - SLOT_PAD
         if self.count:
             w = self._count_w()
             x -= w
-            text.draw(canvas, self.count[0], x, baseline(band.cy, NUMBER_SIZE, True), NUMBER_SIZE,
+            text.draw(canvas, self.count[0], x, baseline(band.cy, SMALL_SIZE, True), SMALL_SIZE,
                       theme.color(self.count[1]), True)
-            x -= NUMBER_GAP * 2
+            x -= SPOT_GAP * 2
         self._toggle_at = []
         for t in reversed(self.toggles):
             g = glyph(t.get("icon"))
@@ -149,7 +149,7 @@ class InputBox(Widget):
         """Where each piece is, for tests to find in pixels: the mark (the
         icon's spot), the text, the count."""
         r = self.rect
-        spot = number_spot(r.left(), Band.of(r).cy)
+        spot = spot_rect(r.left(), Band.of(r).cy)
         f = self.field
         shown = f.text or f.placeholder
         out = [{"role": "mark", "text": self.icon, "x": spot.left(), "w": spot.width()},

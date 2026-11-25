@@ -14,6 +14,14 @@ the window catches its bar's chords itself, `app_chords`) and sends the
 bar's events (a tab clicked, an input's query, a submit, a pick,
 `closed`, `fallback`), handed on as the `event` signal.
 
+The pages' icons go apart from the bar (PROTOCOL.md, "Images"): `push`
+is given the PNGs its tabs name, by id, and before a bar goes, each it
+names that this connection's shell does not hold goes as an `image`.
+The shell holds what the last bar named (and what came since), so after
+each bar the connection counts as holding just what that bar names
+(`held`): an icon goes once, and again only after a bar went without it,
+or on a new connection.
+
 Who shows the window's state. The shell does, in its top bar, while the
 window has focus and the shell has said `attached`; with no shell the
 window has to say it itself (`fallback`). No shell counts only after
@@ -82,7 +90,10 @@ class ShellLink(QObject):
         # whether it has the focus (`active`; PROTOCOL.md "On Wayland").
         self.x11 = not QGuiApplication.platformName().startswith("wayland")
         self.bar: dict | None = None        # the latest bar, sent or not
+        self.images: dict[str, bytes] = {}  # ... the PNGs its tabs name, by id
         self._sent: dict | None = None      # what this connection last carried
+        self.held: set = set()              # the images the shell holds on it
+        self.sent_images = 0                # for the tests: images actually written
         self.active = False                 # the window has the keyboard focus
         self._active_sent: bool | None = None   # ... as this connection last said it
         self.app_chords = False             # the shell takes no keys: we catch our chords
@@ -118,9 +129,10 @@ class ShellLink(QObject):
         self.away.stop()
         self.sock.abort()
 
-    def push(self, bar: dict) -> None:
-        """The window's bar now; sent only if it differs from the last."""
-        self.bar = bar
+    def push(self, bar: dict, images: dict[str, bytes]) -> None:
+        """The window's bar now, and the PNGs its tabs name by id; sent
+        only if it differs from the last."""
+        self.bar, self.images = bar, images
         if self.connected() and bar != self._sent:
             self._send_bar()
 
@@ -198,6 +210,7 @@ class ShellLink(QObject):
         # Nobody listening, or the shell went away: try again soon.
         if state == QLocalSocket.LocalSocketState.UnconnectedState:
             self._sent = None
+            self.held = set()
             self._active_sent = None
             self.app_chords = False
             self._set_attached(False)
@@ -208,6 +221,7 @@ class ShellLink(QObject):
     def _on_connected(self) -> None:
         log.debug("connected to the shell")
         self._sent = None
+        self.held = set()
         self.wid = int(self.wid_of()) if self.x11 else None
         self._send(B.announce(protocol.KIND, self.window_id, self.wid))
         self._send_active()
@@ -217,6 +231,15 @@ class ShellLink(QObject):
             self._send_bar()
 
     def _send_bar(self) -> None:
+        named = B.image_ids(self.bar)
+        held = named & self.held
+        for image_id in sorted(named - self.held):
+            png = self.images.get(image_id)
+            if png is not None:
+                self.sent_images += 1
+                self._send(B.image(image_id, png))
+                held.add(image_id)
+        self.held = held
         self._sent = self.bar
         self.sent_bars += 1
         self._send(self.bar)

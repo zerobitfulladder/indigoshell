@@ -10,7 +10,15 @@ page's scripts and cookies), and the tab keeps its id.
 The page's own signals are forwarded to the window as `changed` (what
 the top bar and the window's line show moved), `visited` and `titled` (for the
 history) and as the requests the window decides on (new windows,
-fullscreen, permissions, closing).
+fullscreen, permissions, closing). Its favicon is kept as the PNG the
+shell is sent and that PNG's id (`icon`, favicon.py), for its tab in
+the top bar. The icon goes with its site, not with each page: QtWebEngine
+clears it as every navigation starts and gives it again only after the
+load ends (measured: a null `iconChanged` at the start, the icon a few
+ms after LoadSucceeded locally, after the page's own load on a real
+site), which would flash the tab to its letter on every click within a
+site. So a null is not taken; a page on another host drops it, and the
+tab shows that host's letter until its own icon comes.
 
 What counts as a visit: a main-frame load that succeeded, and a
 same-document navigation on a page that did (a site moving with
@@ -80,6 +88,7 @@ from PySide6.QtWebEngineCore import (QWebEngineLoadingInfo, QWebEngineNavigation
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from flux import bar as flux_bar, places, protocol, zoom
+from flux.qt import favicon
 
 log = logging.getLogger(__name__)
 js_log = logging.getLogger(__name__.rsplit(".", 1)[0] + ".js")
@@ -219,6 +228,8 @@ class Tab(QObject):
         self.loading = False
         self.progress = 100
         self.inspector = None           # the devtools Window, once opened
+        self.icon: tuple[str, bytes] | None = None  # its page's favicon: (id, PNG)
+        self._icon_host = ""            # the host it came with
         self._document_ok = False       # the page shown loaded fine
         self._recorded = ""             # page_key of the last visit recorded
 
@@ -250,6 +261,8 @@ class Tab(QObject):
         page.urlChanged.connect(self._site_zoom)
         page.loadProgress.connect(self._on_progress)
         page.loadingChanged.connect(self._on_loading)
+        page.iconChanged.connect(self._on_icon)
+        page.urlChanged.connect(self._icon_site)
         page.navigationRequested.connect(self._on_navigation)
         page.renderProcessTerminated.connect(self._on_crash)
 
@@ -281,7 +294,24 @@ class Tab(QObject):
         return not protocol.insecure_scheme(self.url().scheme())
 
     def describe(self) -> dict:
-        return flux_bar.tab(self.title(), self.host(), self.loading, id_=self.id)
+        return flux_bar.tab(self.title(), self.host(), self.loading, id_=self.id,
+                            image=self.icon[0] if self.icon else None)
+
+    def _on_icon(self, icon) -> None:
+        png = favicon.png_of(icon)
+        if png is None:
+            return                      # a navigation starting (the module docstring)
+        icon_ = (favicon.id_of(png), png)
+        self._icon_host = self.page.url().host()
+        if icon_ != self.icon:
+            self.icon = icon_
+            self.changed.emit()
+
+    def _icon_site(self, url: QUrl) -> None:
+        """A page arrived: the icon stays only with the host it came with."""
+        if self.icon is not None and url.host() != self._icon_host:
+            self.icon = None
+            self.changed.emit()
 
     # ── the agent's loads ───────────────────────────────────────────────
     @property

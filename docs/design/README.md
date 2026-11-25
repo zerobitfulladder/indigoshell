@@ -76,8 +76,8 @@ off every use in the code (tokens.json `color.palette[*].role`).
 | `MAGENTA_MID` (`FG`) | `#d1004f` | plain neon foreground text: network name, Flux's host, a hovered tab's title, the idle ♫ |
 | `MAGENTA_DIM` (`FG_MUTED`) | `#3a0a2a` | unlit magenta-family cells: empty workspaces, empty tray/battery cells, cava bars at rest, the INDIGO tag's brackets |
 | `MAGENTA_BLOOM` | `#ff80b0` | magenta lifted ~35% toward white: a tab **loading**, the send comet round your plate |
-| **Cyan** `CYAN_BRIGHT` (`HIGHLIGHT`, `POPUP_BORDER`) | `#05d9e8` | **interactive and info**: panel borders, the normal toast frame, every `//` separator, the selected row (22% slab, 85% border), armed rows, links, the agent's steps, the clock, the CPU meter, **sent / up** (the bar's upper light, the network panel's up rate, the speedtest's UP), the tray indicator's lit cells, the current tab's number, the `info` role, the hologram raster, text selection (28%) |
-| `CYAN_MID` (`MUSIC_FG`) | `#05a9c4` | data at rest: song title, lyric line, panel KEY labels, the IP's host octet, row tags (OPEN/SEARCH/RUN), the scroll thumb, brackets round the current tab's number |
+| **Cyan** `CYAN_BRIGHT` (`HIGHLIGHT`, `POPUP_BORDER`) | `#05d9e8` | **interactive and info**: panel borders, the normal toast frame, every `//` separator, the selected row (22% slab, 85% border), armed rows, links, the agent's steps, the clock, the CPU meter, **sent / up** (the bar's upper light, the network panel's up rate, the speedtest's UP), the tray indicator's lit cells, the glow of a tab's icon, the `info` role, the hologram raster, text selection (28%) |
+| `CYAN_MID` (`MUSIC_FG`) | `#05a9c4` | data at rest: song title, lyric line, panel KEY labels, the IP's host octet, row tags (OPEN/SEARCH/RUN), the scroll thumb, brackets round a tab's icon |
 | `CYAN_DIM` | `#0d4a5e` | quiet cyan structure: the meter cluster's corner brackets, unlit meter cells and labels, dividers, a disabled menu item |
 | `CYAN_BLOOM` | `#5ce6f0` | cyan lifted to white: the lyric's beat flash, matched letters on a selected row, the decode's hot cells |
 | **Yellow** `YELLOW_BRIGHT` (`FG_ACCENT`) | `#fcee0c` | **values, caps, attention**: panel readouts and section titles, the volume **cap line**, peak markers, an armed row's label/digit, the selected row's title, **a question** (the call's ASK), inline code, the turn clock's head; *warm*, the heat ramp's middle step |
@@ -208,8 +208,8 @@ call has heard it, and in an app with no shell, she is Lilac in
   dividers, brackets on the bars).
 - **Corner brackets** — four L's, not a box — are how things are grouped
   without enclosing them: the meter cluster (arm 6, 1 px, `CYAN_DIM`), the
-  INDIGO tag (arm 4, `MAGENTA_DIM`), the current tab's number (20 px spot,
-  arm 4, `CYAN_MID`), and inside every call plate (inset 6, arm 12, 1.5 px,
+  INDIGO tag (arm 4, `MAGENTA_DIM`), every tab's icon (20 px spot,
+  arm 4, `CYAN_MID`; 60% on a tab behind), and inside every call plate (inset 6, arm 12, 1.5 px,
   85% of the frame colour; on a 45° corner: arm–cut–arm). **On the bottom
   bar, corner brackets around a whole cluster are the most framing allowed.**
 - **Square dots and lights, never circles — everywhere.** A dot is the
@@ -322,7 +322,7 @@ linearly in wall-clock time and shape themselves with `smoothstep`.
 | **rest** | dim outline/cells, `BASE_MUTED` text, nothing moving |
 | **hover** | one step brighter: a tab's outline 28% → 60% and title → `FG`; a row is selected (cyan slab); a toast action inverts (fill = frame colour, text black); the INDIGO tag gets a `BASE_SURFACE` fill; answers fill 8% → 22% |
 | **pressed** | answers fill 38% |
-| **current / focused** | magenta: the current tab's full outline + faint inner light + glow, title `FG_STRONG`, number cyan in brackets; the current workspace's bars cyan/magenta |
+| **current / focused** | magenta: the current tab's full outline + faint inner light + glow, title `FG_STRONG`, icon glow and brackets at full; the current workspace's bars cyan/magenta |
 | **selected (lists)** | cyan 22% beveled slab with an 85% cyan border; title turns `YELLOW_BRIGHT`, matched letters `CYAN_BLOOM` |
 | **armed** (key down) | cyan 22% tint, label + marker + digit `YELLOW_BRIGHT`, pulsing yellow every 80 ms |
 | **active / picked** | magenta 32% tint (the layout or profile in effect) |
@@ -333,7 +333,7 @@ linearly in wall-clock time and shape themselves with `smoothstep`.
 | **on / off** (a dot) | the 5 px square light filled = on, current, picked, online; its 1 px outline = off, offline |
 | **agent working** | her colour; the chip's arcs turn; steps in cyan; the frame's turn trace |
 | **compacting** (her chat, on the hub) | not a turn: the phase word `compacting`, the chip's arcs turning slowly (80°/s), a 3-cell run sweeping back through the heading meter's lit cells (70 ms a cell); then a muted note under the turn, `compacted 240k → 31k` |
-| **agent driving a tab** | the tab's number, brackets and outline in her colour; in Flux, a 2 px frame + mark in her colour and the page in her tint |
+| **agent driving a tab** | the tab's icon glow, brackets and outline in her colour; in Flux, a 2 px frame + mark in her colour and the page in her tint |
 | **taken over / paused** | her colour 35% of the way to the bar's black |
 | **calling back** | red, both chip pieces blinking in the ring pattern for 40 s, then still at 45% "missed call" |
 | **idle agent** | both chip pieces at 40%, her name |
@@ -416,15 +416,20 @@ the **agent chip**.
 (narrower alike down to 110, then a run round the current tab), 6 px apart.
 Each a **box 32 px tall, 2 px outline, cut 8 px at the top-right only**:
 
-- inside: a 20 px number spot 12 px in, the number 13 px bold; 6 px; the
-  title 16 px, ellipsized; an optional badge glyph at the right end (the
-  unsaved dot is `■`, never a circle);
-- behind: outline `FG_STRONG` at 28%, title and number `BASE_MUTED`;
-  hovered: outline 60%, title `FG`;
+- inside: a 20 px spot 12 px in, in `CYAN_MID` corner brackets, holding the
+  page's icon at 16 px through the glow (applink/kinds/glow.py: brightness
+  turned round so a light ground goes black and dark marks glow, tinted
+  `CYAN_BRIGHT`, a 3 px bloom that lights the dark round the marks but never
+  brightens them past the tint) or, with no icon yet, the host's first
+  letter (13 px bold capital) in the same glow; no numbers; 6 px; the title
+  16 px, ellipsized; an optional badge glyph at the right end (the unsaved
+  dot is `■`, never a circle);
+- behind: outline `FG_STRONG` at 28%, title `BASE_MUTED`, icon and brackets
+  at 60%; hovered: outline 60%, title `FG`, icon and brackets 85%;
 - current: outline `FG_STRONG` full with a 3 px glow (45%) and a faint light
-  rising inside (0 → 10% toward the foot), title `FG_STRONG`, number
-  `CYAN_BRIGHT` in `CYAN_MID` corner brackets;
-- the agent's: number, brackets and outline in her colour (driving),
+  rising inside (0 → 10% toward the foot), title `FG_STRONG`, icon and
+  brackets at full;
+- the agent's: icon glow, brackets and outline in her colour (driving),
   or that colour 35% toward black (the user took over);
 - loading and motion as in §6; a dragged tab lifts 3 px with a 2 px upright
   marker where it lands, and past 40 px below the bar dims and says
@@ -432,7 +437,9 @@ Each a **box 32 px tall, 2 px outline, cut 8 px at the top-right only**:
 
 **Host / text items** at the section's right end (≤ 34% of it): 16 px `FG`
 with Nerd Font icons (bookmark, an open padlock in the `error` role for
-plain http).
+plain http). Flux's host is `fixed`: always 240 px (a tab slot), its text
+against the right end, a longer host cut with an ellipsis, so switching
+tabs never changes the tabs' widths.
 
 **Agent chip** — a **box 360 × 32** and, 6 px right, a **square 32 × 32**,
 both cut 8 px top-right + bottom-left, drawn as the call draws a plate and a
@@ -450,7 +457,7 @@ call; right-click silences a ring.
 ![input 3x](samples/topbar_input_3x.png)
 
 An open input (Flux's Ctrl+L/F) turns the whole section into **one lit box,
-drawn like the current tab**: its icon in the bracketed number spot, the
+drawn like the current tab**: its icon in the bracketed spot, the
 text 16 px `FG_STRONG` with a `FG_STRONG` caret, the placeholder
 `BASE_MUTED`, the count 13 px bold at the right end in a role colour
 (`info` cyan; "no matches" red), toggles before it (`FG_STRONG` on, muted

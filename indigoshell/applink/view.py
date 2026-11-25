@@ -17,7 +17,9 @@ width; the items stay as they are, hidden, and come back as they were.
 What the user does reaches the app as events naming the item (`emit`,
 the AppWindow's), or opens one of the bar's inputs or menus (`on_open`,
 the item that opens it with it, for a menu dropping under it). Items
-lit while what they open shows: `set_lit`.
+lit while what they open shows: `set_lit`. The images the app sent
+(`images`, id -> skia image: the AppWindow's, kept as PROTOCOL.md's
+"Images" says) are looked up by the items at paint time.
 """
 
 import logging
@@ -34,10 +36,11 @@ log = logging.getLogger(__name__)
 class BarView(Widget):
     """An app window's section: its bar's items, or its open input."""
 
-    def __init__(self, emit=None, on_open=None) -> None:
+    def __init__(self, emit=None, on_open=None, images: dict | None = None) -> None:
         super().__init__(flex=1)
         self.emit = emit                # emit(event dict): to the app
         self.on_open = on_open          # on_open(what id, item): an item opens it
+        self.images = images if images is not None else {}
         self.bar: dict | None = None
         self.items: dict = {}           # id -> kinds.Item
         self.start: list = []
@@ -70,6 +73,7 @@ class BarView(Widget):
                         continue
                     widget.emit = self._emitter(item_id)
                     widget.open = self._open
+                    widget.image_of = self.images.get
                     if self.window is not None and self.box is None:
                         widget._parent = self
                         widget.attach(self.window)

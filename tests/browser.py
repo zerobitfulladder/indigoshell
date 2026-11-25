@@ -75,12 +75,14 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import traceback
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -164,6 +166,18 @@ class Site(BaseHTTPRequestHandler):
         if route.startswith("/page/"):
             name = route[len("/page/"):]
             self._send(PAGE.format(title=name, body=f"<p>{name}</p>"))
+        elif route.startswith("/iconpage/"):            # a page with its own favicon
+            name, icon = route[len("/iconpage/"):], query["icon"][0]
+            self._send(f"<!doctype html><head><title>{name}</title>"
+                       f"<link rel=icon href='/icon/{icon}.png'></head>"
+                       f"<body style='margin:0;background:#1a1a2a'><p>{name}</p></body>")
+        elif route.startswith("/icon/") and route[6:-4] in ICONS:
+            png = ICONS[route[6:-4]]
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(png)))
+            self.end_headers()
+            self.wfile.write(png)
         elif route == "/zoomed":            # the page's zoom, as its own script sees it
             self._send(PAGE.format(title="Zoomed", body=(
                 "<script>const say = () => document.title = 'z' + "
@@ -234,6 +248,20 @@ class Site(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+
+def png_of(side: int, rgba: bytes) -> bytes:
+    """A one-colour RGBA PNG, made by hand (no toolkit here)."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data)))
+    rows = b"".join(b"\0" + rgba * side for _ in range(side))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+# Two sites' favicons: one larger than Flux sends (scaled down to 32),
+# one smaller (QtWebEngine offers it at 32 as well, scaled up).
+ICONS = {"a": png_of(48, b"\x20\x20\x30\xff"), "b": png_of(16, b"\xf0\xf0\xf0\xff")}
 
 HTTP = ThreadingHTTPServer(("127.0.0.1", 0), Site)
 threading.Thread(target=HTTP.serve_forever, daemon=True).start()
@@ -715,6 +743,76 @@ def test_zoom_note(w, conn, press, loaded, wait) -> None:
     QTest.qWait(50)
 
 
+def test_favicons(w, conn, navigate, wait) -> None:
+    """Each tab's page icon to the shell: sent once as an `image`, before
+    the bar naming it; kept across a site's pages; dropped (the host's
+    letter) for another host's page; sent again after a bar went without
+    it."""
+    from PySide6.QtCore import QUrl
+    from PySide6.QtTest import QTest
+
+    from indigoshell.applink import bar as B
+
+    def tab_in(bar, tab):
+        tabs = next((i for i in bar.get("start", []) if i.get("kind") == "tabs"), {})
+        return next((t for t in tabs.get("tabs", []) if t["id"] == tab.id), {})
+
+    def since(n):
+        return conn.msgs[n:]
+
+    def images(n):
+        return [m for m in since(n) if m.get("type") == "image"]
+
+    n = len(conn.msgs)
+    tab = w.add_tab(QUrl(url("/iconpage/One?icon=a")))
+    wait(lambda: any(tab_in(b, tab).get("image") for b in conn.bars()[-3:]), 10)
+    sent = images(n)
+    first = next((i for i, m in enumerate(since(n)) if m.get("type") == "bar"
+                  and tab_in(m, tab).get("image")), None)
+    named = tab_in(since(n)[first], tab) if first is not None else {}
+    image_at = next((i for i, m in enumerate(since(n)) if m.get("type") == "image"), None)
+    png = B.image_png(sent[0]) if sent else b""
+    check("a page with its own favicon: the icon goes once as an `image` (a PNG Flux scaled to "
+          "32 px, good by the vocabulary's check), before the first bar naming it on its tab; "
+          "the tab's letter before it came, none after",
+          len(sent) == 1 and B.image_problems(sent[0]) == [] and B.png_size(png) == (32, 32)
+          and image_at is not None and first is not None and image_at < first
+          and named.get("image") == sent[0]["id"] and "letter" not in named
+          and any(tab_in(m, tab).get("letter") == "1" for m in since(n)[:image_at]
+                  if m.get("type") == "bar"),
+          f"{len(sent)} image(s), {named}")
+    a_id = named.get("image")
+    n = len(conn.msgs)
+    ok = navigate(tab, lambda: tab.page.load(QUrl(url("/iconpage/Two?icon=a"))), title="Two")
+    QTest.qWait(150)
+    during = [tab_in(m, tab) for m in since(n) if m.get("type") == "bar"]
+    check("the next page of the site, the same icon: never sent again, and every bar in between "
+          "names it (no flash to the letter while QtWebEngine clears the icon for the load)",
+          ok and not images(n) and during and all(t.get("image") == a_id for t in during),
+          f"{len(images(n))} sent; {[t.get('image') or t.get('letter') for t in during]}")
+    n = len(conn.msgs)
+    ok = navigate(tab, lambda: tab.page.load(QUrl(url("/iconpage/Three?icon=b", "localhost"))),
+                  title="Three")
+    wait(lambda: images(n) and tab_in(conn.bars()[-1], tab).get("image"), 5)
+    shown = [t.get("image") or t.get("letter") for t in
+             (tab_in(m, tab) for m in since(n) if m.get("type") == "bar")]
+    b_img = images(n)
+    check("another host's page: the old icon kept only until that page arrives, then dropped "
+          "(its letter, \"l\" for localhost), then that site's icon sent and named", ok and "l" in shown and a_id not in shown[shown.index("l"):]
+          and len(b_img) == 1
+          and B.png_size(B.image_png(b_img[0])) == (32, 32) and shown[-1] == b_img[0]["id"],
+          f"{shown}")
+    n = len(conn.msgs)
+    ok = navigate(tab, lambda: tab.page.load(QUrl(url("/iconpage/Four?icon=a"))), title="Four")
+    wait(lambda: images(n) and tab_in(conn.bars()[-1], tab).get("image") == a_id, 5)
+    again = images(n)
+    check("the first site again: its icon sent again (a bar went without it, so the shell let "
+          "go of it), the same id", ok and [m["id"] for m in again] == [a_id]
+          and tab_in(conn.bars()[-1], tab).get("image") == a_id, f"{[m['id'] for m in again]}")
+    w.close_tab(tab)
+    QTest.qWait(50)
+
+
 def test_in_process() -> None:
     import logging
 
@@ -1117,6 +1215,7 @@ def test_in_process() -> None:
     check("every bar on this connection well formed, none repeated",
           not bad and dupes == 0, f"{len(every)} bars, problems {bad[:3]}, repeats {dupes}")
     test_zoom_note(w, conn, press, loaded, wait)
+    test_favicons(w, conn, navigate, wait)
     conn.send({"type": "select", "item": "tabs", "tab": w.tabs[0].id})
     wait(lambda: w.current == 0)
     w.add_tab(QUrl(url("/page/Opened")))

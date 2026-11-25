@@ -594,8 +594,8 @@ def bevel_tile() -> skia.Image:
 
 
 def bracket_tile() -> skia.Image:
-    """Corner brackets: the bar's cluster frame, the tag's, the tab
-    number's spot, and the call plate's marks (L on a square corner, a
+    """Corner brackets: the bar's cluster frame, the tag's, a tab
+    image's spot, and the call plate's marks (L on a square corner, a
     cut-arm-cut along a 45-degree one)."""
     from indigoshell.widgets.layout import Brackets, Spacer
     from indigoshell.widgets.systag import Systag
@@ -616,10 +616,10 @@ def bracket_tile() -> skia.Image:
         tag.paint(c)
         caption(c, "tag: arm 4, 1 px", x, y + 58, 10, LABEL_DIM)
         x += 150
-        spot = skia.Rect.MakeXYWH(x, y + 10, look.NUMBER_SPOT, look.NUMBER_SPOT)
-        look.brackets(c, spot, look.BRACKET_FG)
-        look.paint_number(c, "1", spot, look.NUMBER_CURRENT_FG)
-        caption(c, f"tab number: {look.NUMBER_SPOT} px spot, arm {look.BRACKET_ARM}", x,
+        spot = skia.Rect.MakeXYWH(x, y + 10, look.SPOT, look.SPOT)
+        look.paint_cell(c, x - look.SLOT_PAD, spot.centerY(), "", current=True, hovered=False,
+                        mark=None, image=look.tab_glow(None, "w", None))
+        caption(c, f"tab image: {look.SPOT} px spot, arm {look.BRACKET_ARM}", x,
                 y + 58, 10, LABEL_DIM)
         x += 170
         r = skia.Rect.MakeXYWH(x, y - 4, 200, 54)
@@ -971,7 +971,8 @@ def app_view(tabs, current=0, *, host="wiki.example.org", secure=True, bookmarke
     ids = [101 + i for i in range(len(tabs))]
     agents = agents or {}
     items = [B.tab(n, t, busy=i in busy, progress=progress if i == current else None,
-                   agent=B.agent(*agents[i]) if i in agents else None)
+                   agent=B.agent(*agents[i]) if i in agents else None,
+                   letter=(host or t)[:1] or None)
              for i, (t, n) in enumerate(zip(tabs, ids))]
     spans = ([B.span(icon="bookmark")] if bookmarked else []) + (
         [] if secure else [B.span(icon="unlocked", color="error")]) + [B.span(host)]
@@ -979,7 +980,7 @@ def app_view(tabs, current=0, *, host="wiki.example.org", secure=True, bookmarke
     view.attach(Host())
     view.set_bar(B.bar([B.tabs("tabs", items, current=ids[current],
                                can=["close", "move", "detach"])],
-                       [B.text("host", spans=spans)]))
+                       [B.text("host", spans=spans, fixed=True)]))
     view._hover_index = hover
     return view
 
@@ -1056,7 +1057,7 @@ def render_top_states() -> None:
     tabs_tile("current loading 40%: its outline lit round from bottom-left (MAGENTA_BLOOM)",
               progress=40)
     tabs_tile("tab behind loading: a comet runs round its box (1.1 s a lap)", busy=(1,))
-    tabs_tile("the agent drives the current tab: number, brackets, outline in Lilac",
+    tabs_tile("the agent drives the current tab: glow, brackets, outline in Lilac",
               agents={0: ("driving",)})
     tabs_tile("she drives the tab behind; its outline in her colour",
               agents={1: ("driving",)})
@@ -2202,8 +2203,8 @@ def build_tokens() -> dict:
                        "source": f"{thf}:TEMP_MIN_C, TEMP_MAX_C",
                        "note": "empty to full; so yellow from 60 degC, red from 78 degC"},
     }
-    top_bar = {k: tok(look, k) for k in ("TAB_FG", "TAB_CURRENT_FG", "TAB_HOVER_FG", "NUMBER_FG",
-                                          "NUMBER_CURRENT_FG", "BRACKET_FG", "OUTLINE", "LOAD_FG",
+    top_bar = {k: tok(look, k) for k in ("TAB_FG", "TAB_CURRENT_FG", "TAB_HOVER_FG", "SPOT_FG",
+                                          "IMAGE_DIM_A", "BRACKET_FG", "OUTLINE", "LOAD_FG",
                                           "TEAR_FG", "OUTLINE_DIM_A", "OUTLINE_HOVER_A",
                                           "OUTLINE_GLOW", "OUTLINE_GLOW_A", "FILL_A",
                                           "LOAD_DIM_A", "COMET_LEN", "PAUSED_DIM", "TEAR_A")}
@@ -2251,7 +2252,7 @@ def build_tokens() -> dict:
             "panel_key": tok(hud, "KEY_SIZE", "px", "KEY labels, panel body; tracking 1"),
             "panel_section": lit(th.FONT_SIZE - 5, "indigoshell/widgets/hud.py:section_header",
                                  "px", "bold, YELLOW_BRIGHT title + BASE_MUTED subtitle"),
-            "tab_number": tok(look, "NUMBER_SIZE", "px", "bold"),
+            "input_count": tok(look, "SMALL_SIZE", "px", "bold; an open input's icon too"),
             "tab_tag": tok(look, "TAG_SIZE", "px", "bold: NEW WINDOW"),
             "row_name": tok(drop, "NAME_SIZE", "px", "drop-down / launcher row title"),
             "row_meta": tok(drop, "META_SIZE", "px", "row tag (bold, tracking 1), detail, chord"),
@@ -2288,7 +2289,7 @@ def build_tokens() -> dict:
         "menu_label_marker_gap": tok(menu_mod, "GAP", "px"),
         "row_gap": tok(drop, "ROW_GAP", "px"), "row_pad_x": tok(drop, "PAD_X", "px"),
         "slot_gap": tok(look, "SLOT_GAP", "px"), "slot_pad": tok(look, "SLOT_PAD", "px"),
-        "number_gap": tok(look, "NUMBER_GAP", "px"),
+        "spot_gap": tok(look, "SPOT_GAP", "px"),
         "agent_box_gap": tok(status, "BOX_GAP", "px"),
         "brackets_padding": lit([8, 4], "indigoshell/widgets/layout.py:Brackets", "px",
                                 "horizontal, vertical"),
@@ -2334,8 +2335,8 @@ def build_tokens() -> dict:
             "systag": {"arm": lit(4.0, "indigoshell/widgets/systag.py:Systag", "px"),
                        "thick": lit(1.0, "indigoshell/widgets/systag.py:Systag", "px"),
                        "color": "MAGENTA_DIM"},
-            "tab_number": {"arm": tok(look, "BRACKET_ARM", "px"),
-                           "spot": tok(look, "NUMBER_SPOT", "px"), "color": "CYAN_MID"},
+            "tab_image": {"arm": tok(look, "BRACKET_ARM", "px"),
+                          "spot": tok(look, "SPOT", "px"), "color": "CYAN_MID"},
             "call_plate": {"inset": tok(style, "BRACKET_INSET", "px"),
                            "arm": tok(style, "BRACKET_ARM", "px"),
                            "width": tok(style, "BRACKET_W", "px"),

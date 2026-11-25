@@ -3,7 +3,8 @@ a `bar` (indigoshell/applink/PROTOCOL.md; applink/bar.py's builders).
 
 Pure Python, as the rest of Flux's side of the line. A window's state
 (`state`, what qt/window.py's `state()` gives) is Flux's own snapshot of
-it: its tabs (`tab`: id, title, host, loading), the current one, its
+it: its tabs (`tab`: id, title, host, loading, and the id of its page's
+icon, flux/qt/favicon.py, while it has one), the current one, its
 load, whether its page is secure, its address, whether it counts as a
 bookmark, Flux's own find line while one is open (`find`: only with no
 shell, or one that could not show its input), the agent's hold on each
@@ -14,13 +15,16 @@ same.
 
     start   the agent's name in her colour (the `agent` role), for her
             own window ("Lilac"); then the tabs, one look for every app: a
-            tab per page, its id the page's, the current one's load as
-            its `progress`, a tab behind that loads `busy`, the agent's
-            hold on each (`agent`)
+            tab per page, its id the page's, its page's icon (`image`,
+            the PNG itself sent apart: qt/link.py) or, while it has none,
+            the first letter of its host (`letter`), the current one's
+            load as its `progress`, a tab behind that loads `busy`, the
+            agent's hold on each (`agent`)
     end     the current page's host, after an open padlock (`error`)
             when it came over an insecure connection and a bookmark when
             the page counts as one; the zoom in its place (`info`) while
-            the state has one
+            the state has one; `fixed`, so switching to a tab with a
+            longer host leaves the tabs their room
 
             and, while Flux's own find is open, its line before the host
     inputs  `address` (Ctrl+L: the page's address, selected) and
@@ -60,8 +64,17 @@ ZOOM_NOTE_S = 0.5               # the zoom shown in the host's place after a ste
 
 
 # ── a window's state ────────────────────────────────────────────────────
-def tab(title: str, host: str, loading: bool, *, id_: int) -> dict:
-    return {"tab": int(id_), "title": title, "host": host, "loading": bool(loading)}
+def tab(title: str, host: str, loading: bool, *, id_: int, image: str | None = None) -> dict:
+    """One tab of a window's state; `image`: its page's icon's id."""
+    return {"tab": int(id_), "title": title, "host": host, "loading": bool(loading),
+            "image": image}
+
+
+def letter_of(host: str) -> str | None:
+    """What a tab with no icon shows: the first letter of its host, past
+    a "www."; None for no host (an empty page, a file)."""
+    host = host[4:] if host.startswith("www.") else host
+    return host[0] if host and host[0].isprintable() and not host[0].isspace() else None
 
 
 def find(query: str, active: int | None, total: int | None, typing: bool) -> dict:
@@ -112,10 +125,12 @@ def tabs_item(state: dict, *, single: bool) -> dict:
         here = i == current
         loading = bool(t.get("loading"))
         progress = state.get("progress", 100)
+        image = t.get("image")
         out.append(B.tab(t["tab"], _cut(t["title"]), busy=loading,
                          progress=progress if here and loading and progress < 100 else None,
                          agent=B.agent(agents[i]["state"])
-                         if i < len(agents) and agents[i] else None))
+                         if i < len(agents) and agents[i] else None,
+                         image=image, letter=None if image else letter_of(t["host"])))
     return B.tabs(TABS_ITEM, out, current=tabs[current]["tab"] if tabs else None,
                   can=() if single else ("close", "move", "detach"))
 
@@ -130,7 +145,7 @@ def host_item(state: dict) -> dict:
         spans.append(B.span(icon="unlocked", color="error"))
     zoom = state.get("zoom")
     spans.append(B.span(zoom, color="info") if zoom else B.span(_cut(host)))
-    return B.text(HOST_ITEM, spans=spans)
+    return B.text(HOST_ITEM, spans=spans, fixed=True)
 
 
 def find_item(state: dict) -> dict | None:

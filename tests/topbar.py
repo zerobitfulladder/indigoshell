@@ -23,9 +23,17 @@
 4. An app's bar (applink/view.py, the kinds) painted off screen on the
    bar's background and read back as pixels, from bar dicts: the tabs in
    equal slots, a box each (the current one's outline bright, its title
-   strong and its number cyan in brackets; the rest muted; long titles
-   cut with an ellipsis; the run around the current tab when even the
-   narrowest slots do not fit), the host with the open padlock and the
+   strong and its image glowing cyan in brackets; the rest muted, their
+   images and brackets a step dimmer; a tab with no image its letter in
+   the same glow; long titles cut with an ellipsis; the run around the
+   current tab when even the narrowest slots do not fit); the agent's
+   hold glowing in her colour, dimmed when taken over; the glow made once
+   per image and colour (repaints, hover and motion make none; an image
+   replaced under its id makes a new one) and inside the tabs' rect,
+   bloom and a lifted tab's included (their damage); the host a fixed
+   width, the tabs' slots the same width whichever tab (and host) is
+   current, a longer host cut with an ellipsis; the host with the open
+   padlock and the
    bookmark; an open input's box in the items' place (the search mark,
    the text and its caret, the count at the right end, none while
    stepping, "no matches" in the error colour), the items back after
@@ -50,7 +58,8 @@
    colour; an app other than Flux, the same class; announces that are
    no X window or name no app or id; lines that are no message, types
    it does not know); a bar shown and replaced, a bad one keeping the
-   last good (one warning), an answer for nothing open dropped, chords
+   last good (one warning), images held while a bar names them (a
+   broken one refused, said once), an answer for nothing open dropped, chords
    grabbed again when they change; focus followed between two windows,
    a dialog of one and a window that is no app's (the context area
    empty), a window in the background changing without repainting the
@@ -670,18 +679,58 @@ def titles_of(window) -> list[str]:
 
 
 def app_bar(titles, current=0, *, host="127.0.0.1", secure=False, progress=None,
-            busy=(), bookmarked=False, ids=None, can=("close", "move", "detach")) -> dict:
+            busy=(), bookmarked=False, ids=None, can=("close", "move", "detach"),
+            images=None, letters=None, agents=None) -> dict:
     """A bar as an app with tabs and a host sends it (applink/bar.py's
-    builders): the tabs, a box each; the host after its marks."""
+    builders): the tabs, a box each, each with its image's id or letter
+    by index (`images`, `letters`) and the agent's hold (`agents`:
+    index -> state); the host after its marks, fixed as Flux's."""
     from indigoshell.applink import bar as B
     ids = ids or [101 + i for i in range(len(titles))]
+    images, letters, agents = images or {}, letters or {}, agents or {}
     tabs = [B.tab(n, t, busy=i in busy or (progress is not None and i == current),
-                  progress=progress if i == current else None)
+                  progress=progress if i == current else None, image=images.get(i),
+                  letter=letters.get(i), agent=B.agent(agents[i]) if i in agents else None)
             for i, (t, n) in enumerate(zip(titles, ids))]
     spans = ([B.span(icon="bookmark")] if bookmarked else []) + (
         [] if secure else [B.span(icon="unlocked", color="error")]) + [B.span(host)]
     return B.bar([B.tabs("tabs", tabs, current=ids[current], can=can)],
-                 [B.text("host", spans=spans)])
+                 [B.text("host", spans=spans, fixed=True)])
+
+
+def icon_png(kind: str) -> bytes:
+    """A 32 x 32 test icon as an app sends it: "marks" a dark ring on
+    nothing (dark marks with a hole: turned round, they glow), "tile" a
+    white tile with a dark bar across it (a light ground: it goes black,
+    the bar glows)."""
+    import skia
+    s = skia.Surface(32, 32)
+    c = s.getCanvas()
+    c.clear(skia.ColorTRANSPARENT)
+    p = skia.Paint(AntiAlias=True)
+    if kind == "tile":
+        p.setColor(skia.ColorWHITE)
+        c.drawRect(skia.Rect.MakeWH(32, 32), p)
+        p.setColor(skia.ColorSetRGB(20, 20, 20))
+        c.drawRect(skia.Rect.MakeXYWH(4, 12, 24, 8), p)
+    else:
+        p.setColor(skia.ColorSetRGB(24, 24, 28))
+        p.setStyle(skia.Paint.kStroke_Style)
+        p.setStrokeWidth(8)
+        c.drawCircle(16, 16, 11, p)
+    return bytes(s.makeImageSnapshot().encodeToData(skia.kPNG, 100))
+
+
+def glow_px(region, rgb, k: float = 0.4) -> int:
+    """Pixels of a glow in colour `rgb`: hue the same as `rgb`'s (each
+    channel near `rgb` scaled by the pixel's own strength) and at least
+    `k` of its brightness."""
+    import numpy as np
+    want = np.array(rgb, dtype=float)
+    px = region.astype(float)
+    level = px.max(axis=-1) / want.max()
+    near = np.abs(px - want[None, None, :] * level[..., None]).max(axis=-1) <= 40
+    return int((near & (level >= k)).sum())
 
 
 def stand_in_bar(width=1800, left=12, bottom=None):
@@ -717,14 +766,18 @@ def host_layout(view) -> dict:
 def test_content(scratch: Path) -> None:
     import types
 
+    import skia
+
     from indigoshell import theme
+    from indigoshell.applink.kinds import glow
     from indigoshell.applink.kinds import tabs as tabs_mod
     from indigoshell.applink.kinds.input import InputBox
-    from indigoshell.applink.kinds.look import (BRACKET_FG, COMET_FPS, COMET_S, LOAD_FG,
-                                                MOTION_FPS, NUMBER_CURRENT_FG, NUMBER_FG,
-                                                OUTLINE, SLIDE_S, SLOT_GAP, SLOT_MIN, SLOT_W,
+    from indigoshell.applink.kinds.look import (BRACKET_FG, COMET_FPS, COMET_S, FIXED_W, LIFT,
+                                                LOAD_FG, MOTION_FPS, OUTLINE, PAUSED_DIM,
+                                                SLIDE_S, SLOT_GAP, SLOT_MIN, SLOT_W, SPOT_FG,
                                                 SWITCH_S, TAB_CURRENT_FG, TAB_FG, TAB_HOVER_FG,
-                                                WIPE_S, ICONS, ROLE_COLORS)
+                                                WIPE_S, ICONS, ROLE_COLORS, blend)
+    from indigoshell.core import persona
     from indigoshell.applink.kinds.tabs import fit_slots
     from indigoshell.applink.view import BarView
 
@@ -734,11 +787,14 @@ def test_content(scratch: Path) -> None:
     W, H = 1600, theme.TOP_BAR_HEIGHT
 
     class App:
-        """An app window's section, as the shell keeps it: a BarView."""
+        """An app window's section, as the shell keeps it: a BarView, and
+        the images the app sent (here put straight in, decoded)."""
 
         def __init__(self) -> None:
             self.events = []
-            self.view = self.content = BarView(emit=self.events.append)
+            self.images = {"marks": glow.decode(icon_png("marks")),
+                           "tile": glow.decode(icon_png("tile"))}
+            self.view = self.content = BarView(emit=self.events.append, images=self.images)
 
         def on_message(self, bar: dict) -> None:
             self.view.set_bar(bar)
@@ -757,28 +813,52 @@ def test_content(scratch: Path) -> None:
     def rows_at(img, x, top, bottom):
         return img[top:bottom, int(x):int(x) + 1]
 
+    def spot_of(img, t, pad=0):
+        """A tab's image spot (and `pad` px round it), as pixels."""
+        x, y, w = int(t["spot_x"]), int(t["spot_y"]), int(t["spot_w"])
+        return img[y - pad:y + w + pad, x - pad:x + w + pad]
+
+    cyan = hex_rgb(SPOT_FG)
     j, host = flux()
-    j.on_message(app_bar(["Alpha", "Beta", "Gamma"]))
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma", "Delta"], images={0: "marks", 1: "marks",
+                                                                     2: "tile"},
+                         letters={3: "d"}))
     tl = j.view.item("tabs")
     img = paint(j.content, W, H)
     save(scratch / "content-tabs.png", img)
     tabs = tl.layout()
     strong = [count_color(in_rect(img, t["x"], t["w"]), TAB_CURRENT_FG) for t in tabs]
     muted = [count_color(in_rect(img, t["x"], t["w"]), TAB_FG) for t in tabs]
-    numbers = [count_color(in_rect(img, t["number_x"], t["number_w"], 12, 32), c, 30)
-               for t, c in zip(tabs, (NUMBER_CURRENT_FG, NUMBER_FG, NUMBER_FG))]
-    brackets = [count_color(in_rect(img, t["number_x"], t["number_w"], 12, 33), BRACKET_FG, 20)
-                for t in tabs]
+    glows = [glow_px(spot_of(img, t), cyan) for t in tabs]
+    peak = [int(spot_of(img, t)[..., 2].max()) for t in tabs]
+    brackets = [count_color(spot_of(img, t), BRACKET_FG, 20) for t in tabs]
+    arms = [int(spot_of(img, t)[0, 0:3, 2].mean() - spot_of(img, t)[0, 8:12, 2].mean())
+            for t in tabs]            # a bracket's arm along the spot's top, against its middle
     slots = [(t["slot_x"], t["slot_w"]) for t in tabs]
-    check("three tabs from the left, each in a slot of the same width: the current one's title "
-          "strong, its number cyan in corner brackets; the others' titles and numbers muted, "
-          "no brackets", [t["text"] for t in tabs] == ["1 Alpha", "2 Beta", "3 Gamma"]
+    check("four tabs from the left, each in a slot of the same width, no numbers: the current "
+          "one's title strong, its image glowing cyan in corner brackets; the others' titles "
+          "muted, their images and brackets a step dimmer; a tab with no image its letter in "
+          "the same glow", [t["text"] for t in tabs] == ["Alpha", "Beta", "Gamma",
+                                                                  "Delta"]
+          and [t["shows"] for t in tabs] == ["image", "image", "image", "letter"]
           and tabs[0]["slot_x"] < 8 and all(w == SLOT_W for _x, w in slots)
           and slots[1][0] - slots[0][0] == slots[2][0] - slots[1][0] > SLOT_W
           and strong[0] > 20 and muted[0] < 5 and all(m > 20 for m in muted[1:])
-          and all(v < 5 for v in strong[1:]) and all(n > 8 for n in numbers)
-          and brackets[0] > 12 and brackets[1] == brackets[2] == 0,
-          f"strong {strong}, muted {muted}, numbers {numbers}, brackets {brackets}")
+          and all(v < 5 for v in strong[1:]) and glows[0] > 60 and glows[1] > 60
+          and glows[2] > 15 and glows[3] > 10 and peak[0] > peak[1] + 40
+          and brackets[0] > 12 and brackets[1] == brackets[2] == brackets[3] == 0
+          and all(a > 30 for a in arms),
+          f"strong {strong}, muted {muted}, glows {glows}, peak blue {peak}, "
+          f"brackets {brackets}, arms {arms}")
+    tile = spot_of(img, tabs[2])
+    centre, ground = tile[9:11, 9:11], tile[3:5, 3:5]
+    ring = spot_of(img, tabs[0])
+    check("the effect: a white tile's ground goes black and the dark bar across it glows; a dark "
+          "ring on nothing glows, its hole dark but for the bloom",
+          int(ground.max()) < 30 and glow_px(centre, cyan, 0.3) == 4
+          and glow_px(ring[3:5, 8:12], cyan, 0.8) == 8 and int(ring[10, 10, 2]) < 200,
+          f"ground max {int(ground.max())}, bar {centre.tolist()}, ring {ring[3, 9].tolist()}, "
+          f"hole {ring[10, 10].tolist()}")
     x0, w0 = slots[0]
     edges = [count_color(rows_at(img, x + 1, 8, 34), OUTLINE, 30) for x, _w in slots]
     dim = [int(img[8:34, int(x):int(x) + 2, 0].mean()) for x, _w in slots]
@@ -802,6 +882,7 @@ def test_content(scratch: Path) -> None:
     check("nothing loading: nothing bright", bright == 0 and tl.progress is None,
           f"{bright} px")
 
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma"]))
     host.damaged.clear()
     j.on_message(app_bar(["Alpha", "Beta", "Gamma"]))
     same = list(host.damaged)
@@ -816,7 +897,7 @@ def test_content(scratch: Path) -> None:
     save(scratch / "content-many.png", img)
     tabs = tl.layout()
     room = tl.rect
-    numbered = all(t["text"].startswith(str(t["index"] + 1)) for t in tabs)
+    spotted = all(t["spot_x"] + t["spot_w"] < t["x"] for t in tabs)
     ends = max(t["slot_x"] + t["slot_w"] for t in tabs)
     inside = all(t["x"] + t["w"] <= t["slot_x"] + t["slot_w"] for t in tabs)
     current = next((t for t in tabs if t["current"]), {})
@@ -826,7 +907,7 @@ def test_content(scratch: Path) -> None:
           "current one still strong",
           len(tabs) == int((room.width() + SLOT_GAP) // (SLOT_MIN + SLOT_GAP))
           and idx == list(range(idx[0], idx[-1] + 1))
-          and 5 in idx and numbered and inside and all("…" in t["text"] for t in tabs)
+          and 5 in idx and spotted and inside and all("…" in t["text"] for t in tabs)
           and all(t["slot_w"] == SLOT_MIN for t in tabs) and ends <= room.right() + 0.5
           and current.get("index") == 5
           and count_color(in_rect(img, current["x"], current["w"]), TAB_CURRENT_FG) > 20,
@@ -951,13 +1032,13 @@ def test_content(scratch: Path) -> None:
     paint(j.content, W, H)
     j.on_message(app_bar(["Alpha", "Gamma"], 0, ids=[101, 103]))
     paint(j.content, W, H, settle=False)
-    leaving = [(i, t) for _s, i, t, _x in tl._leaving]
+    leaving = [t for _s, t, _x, _g in tl._leaving]
     gamma = tl._glides[103]
     now = time_.monotonic()
     held = gamma.at(now + WIPE_S * 0.5)
     after = gamma.at(now + WIPE_S + SLIDE_S)
     check("a tab closed: it wipes out from its place (WIPE_S), and only then the ones after it "
-          "slide over to close the gap", leaving == [(1, "Beta")] and held == 2 * tl.pitch
+          "slide over to close the gap", leaving == ["Beta"] and held == 2 * tl.pitch
           and after == tl.pitch and tl.animation_fps == MOTION_FPS,
           f"leaving {leaving}, Gamma at {held:.0f} then {after:.0f}")
     paint(j.content, W, H)
@@ -980,6 +1061,80 @@ def test_content(scratch: Path) -> None:
     check("hover: the tab's title brighter, its outline a step brighter than the others'",
           lit > 15 and hovered_edge > plain_edge + 30,
           f"title px {lit}, edge red {hovered_edge} against {plain_edge}")
+
+    # The agent's hold: her colour, dimmed while the user has it.
+    lilac = hex_rgb(persona.color())
+    paused = hex_rgb(blend(persona.color(), theme.BAR_BG, PAUSED_DIM))
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma"], images={0: "marks", 1: "marks",
+                                                             2: "marks"},
+                         agents={1: "driving", 2: "paused"}))
+    img = paint(j.content, W, H)
+    save(scratch / "content-agent.png", img)
+    tabs = tl.layout()
+    held = [(glow_px(spot_of(img, t), cyan), glow_px(spot_of(img, t), lilac, 0.6),
+             int(spot_of(img, t).max())) for t in tabs]
+    check("the agent drives tab 2: its image glows in her colour (in brackets of it); tab 3, "
+          "taken over: her colour dimmed, told apart from her own by its brightness; tab 1 "
+          "still cyan", held[0][0] > 60 and held[0][1] == 0 and held[1][1] > 60
+          and held[1][0] == 0 and held[2][0] == 0 and held[2][2] < held[1][2] - 40
+          and glow_px(spot_of(img, tabs[2]), paused, 0.5) > 40
+          and count_color(spot_of(img, tabs[1]), persona.color(), 20) > 12,
+          f"(cyan, lilac, max) per tab {held}")
+
+    # The glow is made once per image and colour, and stays inside the tabs' rect.
+    made = glow.made
+    for _ in range(3):
+        paint(j.content, W, H)
+    tl.set_hovered(True)
+    tl.motion(tl.layout()[1]["slot_x"] + 60, 20)
+    paint(j.content, W, H)
+    tl.set_hovered(False)
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma"], 2, images={0: "marks", 1: "marks",
+                                                                2: "marks"},
+                         agents={1: "driving", 2: "paused"}))
+    paint(j.content, W, H, settle=False)
+    paint(j.content, W, H)
+    again = glow.made - made
+    j.images["marks"] = glow.decode(icon_png("marks"))     # sent again under its id
+    paint(j.content, W, H)
+    replaced = glow.made - made
+    first = glow.of_image(j.images["tile"], SPOT_FG)
+    same = glow.of_image(j.images["tile"], SPOT_FG) is first
+    check("the glow made once per image and colour: three repaints, hover, a switch's motion "
+          "made none; the image replaced under its id made one per colour shown (3); the same "
+          "asked again is the same image", again == 0 and replaced == 3 and same,
+          f"made {again} on repaints, {replaced} after the replacement")
+    reach = glow.BLOOM.pad + LIFT
+    inside = all(tl.rect.contains(skia.Rect.MakeXYWH(
+        t["spot_x"] + (t["spot_w"] - glow.ICON_PX) / 2 - glow.BLOOM.pad,
+        t["spot_y"] + (t["spot_w"] - glow.ICON_PX) / 2 - reach,
+        glow.ICON_PX + 2 * glow.BLOOM.pad, glow.ICON_PX + glow.BLOOM.pad + reach))
+        for t in tl.layout())
+    g = glow.of_image(j.images["tile"], SPOT_FG)
+    check("a glow reaches BLOOM.pad past its 16 px square, and with a lifted tab's LIFT still "
+          "lies inside the tabs' rect (their paint bounds: what a repaint of them damages)",
+          inside and g.image.width() == glow.ICON_PX + 2 * g.pad == g.image.height()
+          and tl.paint_bounds() == tl.rect, f"pad {g.pad}, rect {tl.rect}")
+
+    # The host a fixed width: the tabs' slots the same whichever tab is current.
+    hosts = ["github.com", "developer.mozilla.org", "a-very-long-subdomain.of.some.example.org"]
+    seen = []
+    for i, name in enumerate(hosts):
+        j.on_message(app_bar(["Alpha", "Beta", "Gamma"], i, host=name, secure=i != 1))
+        img = paint(j.content, W, H)
+        seen.append(([(t["slot_x"], t["slot_w"]) for t in tl.layout()],
+                     j.view.item("host").rect.width(), host_layout(j.view), img))
+    save(scratch / "content-fixed-host.png", seen[2][3])
+    slots_same = seen[0][0] == seen[1][0] == seen[2][0]
+    short, long_ = seen[0][2], seen[2][2]
+    check("the host a fixed width (FIXED_W): switching between tabs with hosts of 10, 21 and 41 "
+          "characters leaves the tabs' slots exactly where and as wide as they were; a short "
+          "host against the right end, a long one cut with an ellipsis",
+          slots_same and seen[0][1] == seen[1][1] == seen[2][1] == FIXED_W
+          and short["text"] == "github.com" and short["x"] + short["w"] > W - 2
+          and long_["text"].endswith("…") and long_["x"] + long_["w"] <= W + 0.5,
+          f"slots {[s_[0][0] for s_ in seen]}, widths {[s_[1] for s_ in seen]}, "
+          f"long {long_['text']!r}")
 
 
 # ── 4b. the mouse on Flux's tabs ────────────────────────────────────────
@@ -1595,7 +1750,7 @@ async def test_service(scratch: Path) -> None:
         img = paint(ctx, 1600, theme.TOP_BAR_HEIGHT)
         texts = [t["text"] for t in wb.view.item("tabs").layout()]
         check("focus on the other Flux window: its tabs; the first's content let go (no window)",
-              ctx.shown is wb.content and texts == ["1 Gamma"]
+              ctx.shown is wb.content and texts == ["Gamma"]
               and all(w_.window is None for w_ in wa.content.walk())
               and count_color(img, TAB_CURRENT_FG) > 20, f"{texts}")
         host.damaged.clear()
@@ -1622,6 +1777,44 @@ async def test_service(scratch: Path) -> None:
               "one kept, one warning for it (not again for the same problem); an answer for "
               "nothing open: dropped", titles_of(wb) == ["Gamma", "Epsilon"]
               and len(warned) == 1 and "current 999 names no tab" in warned[0], f"{warned}")
+
+        # Images: held while a bar names them, each good bar letting go
+        # of the rest; a broken one said, never held.
+        def with_images(*names):
+            bar_ = json.loads(json.dumps(flux_bar(["Gamma", "Epsilon"])))
+            for t, name in zip(bar_["start"][0]["tabs"], names):
+                if name:
+                    t["image"] = name
+            return bar_
+
+        def shown_images():
+            """Each tab's image as the window's tabs item finds it."""
+            tl_ = wb.view.item("tabs")
+            return [i is not None and tl_.image_of(i) is not None for i in tl_.images]
+
+        mark = len(rec.records)
+        b.send(Bv.image("i1", icon_png("marks")))
+        b.send(Bv.image("i2", icon_png("tile")))
+        b.send(with_images("i1", "i1"))
+        both = await until(lambda: shown_images() == [True, True] and set(wb.images))
+        shows = shown_images()
+        b.send(Bv.image("bad", b"GIF89a" + bytes(40)))
+        b.send({"type": "image", "id": "garbled", "png": Bv.image("g", Bv.PNG_SIGNATURE
+                + icon_png("marks")[8:40])["png"]})
+        b.send(with_images(None, "i1"))
+        await until(lambda: shown_images() == [False, True])
+        after = set(wb.images)
+        b.send(flux_bar(["Gamma", "Epsilon"]))
+        await until(lambda: not wb.images)
+        warned = [m for m in rec.at_least(logging.WARNING, mark) if "image ignored" in m]
+        check("images: two sent before the bar naming one of them on both tabs, held and shown "
+              "(the other let go with that bar); a GIF and a PNG that does not decode "
+              "refused, said once each; a bar going without the first tab's image keeps the "
+              "second's; one naming none lets go of all",
+              both == {"i1"} and shows == [True, True] and after == {"i1"}
+              and not wb.images and len(warned) == 2 and "png is no PNG" in warned[0]
+              and "does not decode" in warned[1],
+              f"held {both} -> {after} -> {set(wb.images)}; shows {shows}; {warned}")
 
         # Chords follow the bar: one without find lets Ctrl+F go.
         F_ = keycodes_of(xw.conn, "f")[0]
@@ -1753,11 +1946,11 @@ async def test_service(scratch: Path) -> None:
         ctx.detach()
         check("the context area detached: unhooked from the service",
               service.context is None and ctx._on_focus not in service._followers)
-        expected = ("an app announced", "a bar ignored")
+        expected = ("an app announced", "a bar ignored", "an image ignored")
         unexpected = [m for m in rec.at_least(logging.WARNING)
                       if not any(e_ in m for e_ in expected)]
-        check("no warnings or errors but the ones for the announces that are none and the bad "
-              "bar", unexpected == [], f"{unexpected[:3]}")
+        check("no warnings or errors but the ones for the announces that are none, the bad "
+              "bar and the broken images", unexpected == [], f"{unexpected[:3]}")
     finally:
         for x_ in apps:
             x_.close()
@@ -2535,8 +2728,8 @@ async def on_screen(scratch: Path) -> None:
         hpx = count_color(img[:, int(h["x"]):int(h["x"] + h["w"]) + 1], HOST_FG)
         check("focus on it: the context area draws the browser's state (tab 1 strong, 2 and 3 "
               "muted, the host after the padlock)",
-              ctx.shown is jw.content and [t["text"] for t in tabs] == ["1 Painted", "2 Beta",
-                                                                        "3 Gamma"]
+              ctx.shown is jw.content and [t["text"] for t in tabs] == ["Painted", "Beta",
+                                                                        "Gamma"]
               and strong[0] > 20 and all(m > 20 for m in muted[1:]) and h["text"] == "127.0.0.1"
               and mark > 10 and hpx > 20, f"strong {strong}, muted {muted}")
         ids = [t["id"] for t in jw.bar["start"][0]["tabs"]]

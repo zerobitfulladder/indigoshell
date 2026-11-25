@@ -9,10 +9,17 @@ shell's app socket and speaks the app bar protocol
 indigoshell/applink/bar.py): it announces itself as a "flux" window,
 its own id for it and its X window (`announce`), then sends its section
 of the top bar whole whenever it changes (`bar`, made of the window's
-state by bar.py: its tabs, the page's host, the `address`, `new_tab`
-and `find` inputs, the `actions` menu), answers the queries of its
-inputs (`answer`: its places, addresses.py; find's count) and acts on
-the bar's events, which name its tabs by id. A main window's keys
+state by bar.py: its tabs, the page's host (a `fixed` text), the
+`address`, `new_tab` and `find` inputs, the `actions` menu). A tab names
+its page's favicon by id (`image`), or gives its host's first letter
+while the page has none; the favicon itself goes before the first bar
+that names it, once, as an `image` message: a PNG at most 32 px a side
+(qt/favicon.py), its id the PNG's hash, sent again only after a bar
+went without it or on a new connection (qt/link.py; PROTOCOL.md,
+"Images"). The icon goes with its site: kept across a site's pages,
+dropped for a page on another host (qt/tabs.py). It answers the queries
+of its inputs (`answer`: its places, addresses.py; find's count) and
+acts on the bar's events, which name its tabs by id. A main window's keys
 (Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M) are the chords of its inputs and menu,
 which the shell takes from it; a single window (a page's sign-in popup,
 the inspector) sends one tab and no inputs, so its keys stay its own.
