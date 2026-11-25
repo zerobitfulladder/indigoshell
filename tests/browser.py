@@ -164,9 +164,10 @@ class Site(BaseHTTPRequestHandler):
         if route.startswith("/page/"):
             name = route[len("/page/"):]
             self._send(PAGE.format(title=name, body=f"<p>{name}</p>"))
-        elif route == "/zoomed":            # the page's zoom as its own script saw it run
-            self._send(PAGE.format(title="Zoomed", body="<script>document.title = 'z' + "
-                                   "Math.round(devicePixelRatio * 100)</script>"))
+        elif route == "/zoomed":            # the page's zoom, as its own script sees it
+            self._send(PAGE.format(title="Zoomed", body=(
+                "<script>const say = () => document.title = 'z' + "
+                "Math.round(devicePixelRatio * 100); say(); setInterval(say, 100)</script>")))
         elif route == "/plain":
             self._send("<!doctype html><title>Plain</title><p>no styles at all</p>")
         elif route == "/long":
@@ -579,6 +580,8 @@ def test_site_zoom(browser, w, press, loaded, navigate, wait) -> None:
     press(w, K.Key_Equal, ctrl)
     press(w, K.Key_Equal, ctrl)
     keyed = z(za)
+    QTest.qWait(30)
+    noted = w.line.text()
     wheel(w, 120)
     up = z(za)
     wheel(w, 60)
@@ -586,7 +589,14 @@ def test_site_zoom(browser, w, press, loaded, navigate, wait) -> None:
     wheel(w, 60)
     two_halves = z(za)
     wheel(w, -120)
+    last_step = time.monotonic()
     wheel(w, 120, M.NoModifier)         # no Ctrl: the page scrolls, no zoom
+    back = wait(lambda: "127.0.0.1" in w.line.text(), 3)
+    after = time.monotonic() - last_step
+    check("each zoom step: the zoom in the line in the host's place (\"125%\"), the host again "
+          "half a second after the last one (no shell here: the window's own line)",
+          "125%" in noted and "127.0.0.1" not in noted and back and 0.4 <= after <= 1.0,
+          f"{noted!r}; the host back {after:.2f} s after the last step")
     check("Ctrl+= twice (125%), Ctrl+wheel up a notch (150%; half a notch nothing, two halves "
           "a step: 175%), down a notch (150%); the wheel with no Ctrl no zoom",
           ok and (keyed, up, half, two_halves, z(za)) == (1.25, 1.5, 1.5, 1.75, 1.5),
@@ -606,11 +616,10 @@ def test_site_zoom(browser, w, press, loaded, navigate, wait) -> None:
     w2 = browser.new_window()
     zc = w2.add_tab(QUrl(url("/zoomed")))
     w2.show()
-    shown = wait(lambda: not zc.loading and zc.page.title().startswith("z"), 10)
-    check("the site's page opened again, in a new window: at 150% before its own script ran "
-          "(its devicePixelRatio 1.5); a fresh read of the file says the same",
-          shown and z(zc) == 1.5 and zc.page.title() == "z150"
-          and zoom.ZoomFile(zfile).factor(url("/anything")) == 1.5,
+    shown = wait(lambda: not zc.loading and zc.page.title() == "z150", 10)
+    check("the site's page opened again, in a new window: at 150% (the page's own "
+          "devicePixelRatio 1.5); a fresh read of the file says the same",
+          shown and z(zc) == 1.5 and zoom.ZoomFile(zfile).factor(url("/anything")) == 1.5,
           f"{z(zc)}, the page said {zc.page.title()!r}")
     zfile.write_text(json.dumps({"127.0.0.1": 150, "localhost": 80, "note": "big"}))
     edited = navigate(zl, lambda: zl.page.load(QUrl(url("/page/ZoomN", host="localhost"))),
@@ -633,6 +642,76 @@ def test_site_zoom(browser, w, press, loaded, navigate, wait) -> None:
           z(zl) == 1.0 and all(z(t) == 1.0 for t in w.tabs), f"{[z(t) for t in w.tabs]}")
     w2.close()
     w.close_tab(zl)
+    QTest.qWait(50)
+
+
+def host_spans(bar: dict) -> list:
+    """The host item's spans in a bar: [(text or icon, colour)]."""
+    host = next((i for i in bar.get("end", []) if i.get("id") == "host"), {})
+    return [(sp.get("text") or sp.get("icon"), sp.get("color")) for sp in host.get("spans", [])]
+
+
+def test_zoom_note(w, conn, press, loaded, wait) -> None:
+    """The zoom in the host's place in the window's bar, for half a second
+    after each of the user's zoom steps (the time starting again), and
+    not for a site's zoom given to a page as it loads."""
+    from PySide6.QtCore import Qt, QUrl
+    from PySide6.QtTest import QTest
+    K, ctrl = Qt.Key, Qt.KeyboardModifier.ControlModifier
+    host = "127.0.0.1"
+
+    def bars_since(n):
+        return conn.bars()[n:]
+
+    def text_of(bar):
+        spans = host_spans(bar)
+        return spans[-1] if spans else None
+
+    def until_host(n):
+        """The first bar whose host item says the host, after the n-th bar
+        and after every bar saying a zoom."""
+        def found():
+            got = bars_since(n)
+            last = max((i for i, b in enumerate(got) if text_of(b) and text_of(b)[1] == "info"),
+                       default=-1)
+            return next((b for b in got[last + 1:] if text_of(b) == (host, None)), None)
+        wait(lambda: found() is not None, 3)
+        return found()
+
+    n = len(conn.bars())
+    t0 = time.perf_counter()
+    press(w, K.Key_Equal, ctrl)
+    wait(lambda: any(text_of(b) == ("110%", "info") for b in bars_since(n)), 2)
+    noted = next((b for b in bars_since(n) if text_of(b) == ("110%", "info")), None)
+    back = until_host(n)
+    shown = (conn.when(back) - conn.when(noted)) if noted and back else -1
+    check("Ctrl+= with a shell: the bar's host item says the zoom, \"110%\" in `info`, in the "
+          "host's place (the padlock kept), then the host again half a second later",
+          noted is not None and host_spans(noted)[:-1] == [("unlocked", "error")]
+          and 0.4 <= shown <= 0.9, f"{host_spans(noted) if noted else None}, the host back "
+          f"{shown:.2f} s after; the first bar {conn.when(noted) - t0 if noted else -1:.2f} s "
+          "after the key")
+    n = len(conn.bars())
+    press(w, K.Key_Equal, ctrl)
+    QTest.qWait(250)
+    second_at = time.perf_counter()
+    press(w, K.Key_Minus, ctrl)
+    back = until_host(n)
+    said = [text_of(b)[0] for b in bars_since(n) if text_of(b) and text_of(b)[1] == "info"]
+    after = conn.when(back) - second_at if back else -1
+    check("a second step within the half second starts it again: \"125%\", \"110%\", the host "
+          "half a second after the second", said == ["125%", "110%"] and 0.4 <= after <= 0.9,
+          f"{said}, the host {after:.2f} s after the second step")
+    n = len(conn.bars())
+    tab = w.add_tab(QUrl(url("/page/Noted")))
+    ok = loaded(tab, "Noted")
+    QTest.qWait(100)
+    quiet = [text_of(b) for b in bars_since(n) if text_of(b) and text_of(b)[1] == "info"]
+    check("a page of the site opened at its kept 110%: no zoom in the bar",
+          ok and round(tab.page.zoomFactor(), 2) == 1.1 and quiet == [], f"{quiet}")
+    press(w, K.Key_0, ctrl)
+    until_host(len(conn.bars()))
+    w.close_tab(tab)
     QTest.qWait(50)
 
 
@@ -1037,6 +1116,7 @@ def test_in_process() -> None:
     bad = [p for s in every for p in B.bar_problems(s)]
     check("every bar on this connection well formed, none repeated",
           not bad and dupes == 0, f"{len(every)} bars, problems {bad[:3]}, repeats {dupes}")
+    test_zoom_note(w, conn, press, loaded, wait)
     conn.send({"type": "select", "item": "tabs", "tab": w.tabs[0].id})
     wait(lambda: w.current == 0)
     w.add_tab(QUrl(url("/page/Opened")))
@@ -2038,11 +2118,12 @@ def test_processes() -> None:
                             text=True, timeout=30)
 
     def zoomed():
-        return sorted({t["title"] for c in shell.conns for s in c.states() for t in s["tabs"]
-                       if re.fullmatch(r"z\d+", t["title"]) and not t["loading"]})
-    until(lambda: len(zoomed()) >= 2, 15)
+        """What each /zoomed page says of its zoom now (its tab's last title)."""
+        last = {t["tab"]: t["title"] for c in shell.conns for s in c.states() for t in s["tabs"]}
+        return sorted(t for t in last.values() if re.fullmatch(r"z\d+", t))
+    until(lambda: zoomed() == ["z100", "z150"], 15)
     check("a zoom kept in zoom.json before the browser started: a page of that site (localhost) "
-          "at 150% before its own script ran, another site's (127.0.0.1) at 100%",
+          "at 150% (its own devicePixelRatio), another site's (127.0.0.1) at 100%",
           fourth.returncode == 0 and zoomed() == ["z100", "z150"], f"{zoomed()}")
     zfile.unlink()
     first.send_signal(signal.SIGINT)

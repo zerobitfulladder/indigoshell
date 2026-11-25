@@ -6,8 +6,11 @@ Pure Python, as the rest of Flux's side of the line. A window's state
 it: its tabs (`tab`: id, title, host, loading), the current one, its
 load, whether its page is secure, its address, whether it counts as a
 bookmark, Flux's own find line while one is open (`find`: only with no
-shell, or one that could not show its input), and the agent's hold on
-each tab. The window's line over the page (no shell) says the same.
+shell, or one that could not show its input), the agent's hold on each
+tab, and the zoom the user just set (`zoom`, "110%", for ZOOM_NOTE_S
+after each of their zoom steps; none for a site's zoom given to a page
+as it loads). The window's line over the page (no shell) says the
+same.
 
     start   the agent's name in its voice's colour, for the agent's own
             window ("Lilac"); then the tabs, one look for every app: a
@@ -16,7 +19,8 @@ each tab. The window's line over the page (no shell) says the same.
             hold on each (`agent`)
     end     the current page's host, after an open padlock (`error`)
             when it came over an insecure connection and a bookmark when
-            the page counts as one
+            the page counts as one; the zoom in its place (`info`) while
+            the state has one
 
             and, while Flux's own find is open, its line before the host
     inputs  `address` (Ctrl+L: the page's address, selected) and
@@ -52,6 +56,7 @@ FIND_ITEM = "find"
 FIND_LABEL = "find"
 FIND_CARET = "\u258f"           # ▏, after the query while it is typed (Flux's own line)
 NO_MATCHES = "no matches"
+ZOOM_NOTE_S = 0.5               # the zoom shown in the host's place after a step
 
 
 # ── a window's state ────────────────────────────────────────────────────
@@ -76,12 +81,17 @@ def find_count(f: dict) -> str:
 
 def state(tabs: list[dict], current: int, progress: int, secure: bool, *, url: str,
           bookmarked: bool, find: dict | None = None,
-          agent: list[dict | None] | None = None) -> dict:
+          agent: list[dict | None] | None = None, zoom: str | None = None) -> dict:
     """A window's state (the module docstring)."""
     agents = list(agent) if agent is not None else [None] * len(tabs)
     return {"tabs": tabs, "current": int(current), "progress": int(progress),
             "secure": bool(secure), "url": url, "bookmarked": bool(bookmarked), "find": find,
-            "agent": agents}
+            "agent": agents, "zoom": zoom}
+
+
+def zoom_text(factor: float) -> str:
+    """A zoom as the bar says it: "110%"."""
+    return f"{int(round(factor * 100))}%"
 
 
 # ── its bar ─────────────────────────────────────────────────────────────
@@ -118,7 +128,8 @@ def host_item(state: dict) -> dict:
         spans.append(B.span(icon="bookmark"))
     if not state.get("secure", True):
         spans.append(B.span(icon="unlocked", color="error"))
-    spans.append(B.span(_cut(host)))
+    zoom = state.get("zoom")
+    spans.append(B.span(zoom, color="info") if zoom else B.span(_cut(host)))
     return B.text(HOST_ITEM, spans=spans)
 
 

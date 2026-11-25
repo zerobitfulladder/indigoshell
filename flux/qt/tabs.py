@@ -320,7 +320,10 @@ class Tab(QObject):
             self.progress = 0
             if self.zooms is not None and _blank(self.page.url()):
                 # Nothing shown to re-zoom yet (a new tab, a reopened one):
-                # the site's zoom now, ahead of its page.
+                # the site's zoom now, ahead of its page (a page that gets a
+                # renderer process of its own may still start at the zoom
+                # before: QtWebEngine's zoom is the page's, given to a new
+                # renderer as its page starts).
                 self.set_zoom(self.zooms.factor(info.url().toString()))
         else:
             self.progress = 100

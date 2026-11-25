@@ -49,7 +49,11 @@ typed into find) never reaches the page either.
 Zoom is the user's: Ctrl++ / Ctrl+- / Ctrl+0 and Ctrl+wheel (taken on
 the QWindow too, a step a notch, so Chromium's own wheel zoom never
 happens unseen) step the current page, kept for its site (flux/zoom.py)
-and given to the site's other open pages (app.py `spread_zoom`).
+and given to the site's other open pages (app.py `spread_zoom`). Each
+step shows the zoom ("110%") in the host's place, in the top bar and in
+the fallback line, for bar.py's ZOOM_NOTE_S, the time starting again at
+each step; switching tabs ends it. A site's zoom given to a page as it
+loads shows nothing.
 
 The shell's top bar. While a shell has the window it shows the
 window's section of its top bar (link.py; bar.py makes it of `state()`:
@@ -214,6 +218,7 @@ STRONG = "#ff2a6d"             # theme.FG_STRONG
 MUTED = "#5a4a78"              # theme.BASE_MUTED
 HOST = "#d1004f"               # theme.FG
 WARN = "#ff003c"               # theme.ERROR
+INFO = "#05d9e8"               # theme.CYAN_BRIGHT, the bar's `info`
 FONT = "'FiraCode Nerd Font Mono', 'DejaVu Sans Mono', monospace"
 LINE_HEIGHT = 28               # px, the fallback line
 TITLE_CHARS = 32               # a tab's title in the line, at most
@@ -272,7 +277,10 @@ class FallbackLine(QWidget):
             right.append(f'<span style="color:{HOST}">{BOOKMARK_MARK}</span>')
         if not state["secure"]:
             right.append(f'<span style="color:{WARN}">not secure</span>')
-        right.append(f'<span style="color:{HOST}">{html.escape(current["host"])}</span>')
+        if state.get("zoom"):
+            right.append(f'<span style="color:{INFO}">{html.escape(state["zoom"])}</span>')
+        else:
+            right.append(f'<span style="color:{HOST}">{html.escape(current["host"])}</span>')
         if current["loading"]:
             right.append(f'<span style="color:{MUTED}">{state["progress"]}%</span>')
         self.host.setText("&nbsp;".join(right))
@@ -342,6 +350,7 @@ class Window(QWidget):
         self._key_window = None         # the QWindow our key filter sits on
         self._held_keys: set[int] = set()       # pressed, taken by us
         self._wheel = 0                 # Ctrl+wheel turned, short of a notch
+        self.zoom_note: str | None = None   # the zoom shown in the host's place, for a moment
         self._address_wanted = False    # a new window's address, until the shell says
         self.agent = agent              # the voice whose own window this is (None: the user's)
         self.opener = opener            # a popup's: the window whose page opened it
@@ -392,6 +401,10 @@ class Window(QWidget):
         self._refresh.setSingleShot(True)
         self._refresh.setInterval(0)
         self._refresh.timeout.connect(self._refresh_now)
+        self._zoom_note = QTimer(self)
+        self._zoom_note.setSingleShot(True)
+        self._zoom_note.setInterval(int(flux_bar.ZOOM_NOTE_S * 1000))
+        self._zoom_note.timeout.connect(self._end_zoom_note)
 
         self.setWindowTitle(protocol.agent_title(agent) if agent else NAME)
         self.resize(1280, 800)
@@ -519,6 +532,8 @@ class Window(QWidget):
             self.leave_fullscreen()
         if self.find_phase is not None and self.find_tab is not tab:
             self.end_find(clear=False)
+        if index != self.current:
+            self._end_zoom_note()       # the zoom shown was the tab left's
         self.current = index
         self._related = None
         self.stack.setCurrentWidget(tab.view)
@@ -620,8 +635,19 @@ class Window(QWidget):
 
     def _on_zoom(self, tab: Tab, factor: float) -> None:
         """The user zoomed `tab`'s page (keys, Ctrl+wheel): kept for its
-        site by the tab, followed by the site's other pages."""
+        site by the tab, followed by the site's other pages; the zoom
+        shown in the host's place for a moment (the time starting again)."""
         self.browser.spread_zoom(tab, factor)
+        if tab is self.current_tab():
+            self.zoom_note = flux_bar.zoom_text(factor)
+            self._zoom_note.start()
+            self.refresh()
+
+    def _end_zoom_note(self) -> None:
+        self._zoom_note.stop()
+        if self.zoom_note is not None:
+            self.zoom_note = None
+            self.refresh()
 
     def _on_title(self, url: str, title: str) -> None:
         self.browser.history.retitle(url, title)
@@ -1263,7 +1289,8 @@ class Window(QWidget):
                               url=tab.url().toString(),
                               bookmarked=self.page_bookmark(tab) is not None,
                               find=self._find_state(),
-                              agent=[self.browser.watch.state_of(t.id) for t in self.tabs])
+                              agent=[self.browser.watch.state_of(t.id) for t in self.tabs],
+                              zoom=self.zoom_note)
 
     def bar(self, state: dict) -> dict:
         """Its section of the shell's top bar (bar.py)."""
