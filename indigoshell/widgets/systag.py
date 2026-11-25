@@ -2,9 +2,12 @@
 
 The word is framed by four small corner brackets: an L of arms at each
 corner rather than a closed border, so the frame reads as a targeting
-reticle. (A full beveled box was tried instead and lost the look.) The
-slow colour pulse is a sine over `cycle_s` seconds lerping between two
-magentas.
+reticle. (A full beveled box was tried instead and lost the look.)
+
+The word is still: a resting bar draws nothing (the user's rule: idle
+is still, motion marks events), and this tag's colour pulse was the one
+thing that kept the bar repainting all day. `pulse=True` brings the
+pulse back: a sine over `cycle_s` seconds lerping between two magentas.
 
 The pulse is driven by the host window's frame clock rather than a timer
 of its own — the widget declares `animation_fps` and the window
@@ -32,14 +35,18 @@ def _lerp_hex(a: str, b: str, t: float) -> str:
 
 
 class Systag(Box):
-    # A colour ramp over `cycle_s` seconds, not a motion — the eye cannot
-    # resolve a step of 1/12th of 2.6s, and at 30 it was the single
-    # biggest reason the bar never stopped repainting (27.5 changed
-    # frames a second, all of them this). Raise `fps` if you disagree.
-    animation_fps = 12
+    # With `pulse`: a colour ramp over `cycle_s` seconds, not a motion —
+    # the eye cannot resolve a step of 1/12th of 2.6s.
+    PULSE_FPS = 12
+
+    @property
+    def animation_fps(self) -> int:
+        return self.PULSE_FPS if self.pulse else 0
 
     def __init__(self, value: str = "INDIGO", *,
                  size: float = 13,        # points
+                 color: str | None = None,
+                 pulse: bool = False,
                  pulse_colors: tuple[str, str] | None = None,
                  cycle_s: float = 2.6,
                  bracket_color: str | None = None,
@@ -48,13 +55,15 @@ class Systag(Box):
                  padding: Insets | None = None,
                  **kwargs) -> None:
         self._phase = 0.0
+        self.pulse = pulse
+        self.color = color or theme.MAGENTA_BRIGHT     # the still word's colour
         self.cycle_s = cycle_s
         self.pulse_colors = pulse_colors or (theme.MAGENTA_MID, theme.MAGENTA_BLOOM)
         self.bracket_color = bracket_color or theme.MAGENTA_DIM
         self.corner_arm = corner_arm
         self.corner_thick = corner_thick
         self.label = Label(value, size=text.pt(size), bold=True,
-                           color=self._pulse_color)
+                           color=self._pulse_color if pulse else self.color)
         super().__init__(
             self.label,
             padding=padding or Insets.all(4),

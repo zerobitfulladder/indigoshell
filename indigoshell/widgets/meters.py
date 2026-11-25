@@ -9,6 +9,7 @@ than timers of their own.
 
 import math
 import os
+import time
 from typing import Callable, Union
 
 import psutil
@@ -291,7 +292,18 @@ class BatteryMeter(Widget):
     widget rides the window's 30fps frame clock and advances its own
     accumulator by the mode's interval: same motion, one timer for the
     whole window.
+
+    At rest it is still (the user's rule: idle is still, motion marks
+    events): the level as solid cells in its state's colours. A state
+    that changes — plugged in or out, a crossing of 50% or 20%, full —
+    plays that state's motion for EVENT_S, then the meter settles. The
+    low-battery blink alone keeps going: it is an alarm. The battery is
+    read every POLL_S on a timer of the event loop, not on frames, so a
+    still meter still notices.
     """
+
+    POLL_S = 5.0
+    EVENT_S = 3.0
 
     @property
     def animation_fps(self) -> int:
@@ -303,10 +315,15 @@ class BatteryMeter(Widget):
         the window for three times the frames the sweep could use, and
         every one of them repainted the whole bar.
         """
-        ms = self._state_config()["ms"]
-        if ms <= 0:
+        cfg = self._state_config()
+        if cfg["ms"] <= 0 or not self._moving(cfg):
             return 0
-        return min(30, math.ceil(1000.0 / ms))
+        return min(30, math.ceil(1000.0 / cfg["ms"]))
+
+    def _moving(self, cfg: dict) -> bool:
+        """Whether the meter shows its state's motion now: the alarm's
+        blink always, any other only for EVENT_S after a change."""
+        return cfg["mode"] == "blink" or time.monotonic() < self._event_until
 
     def __init__(self, cells: int = 16, cell_thick: int = 2, gap: int = 2,
                  height: int = 22, corner_arm: int = 4, corner_thick: int = 1,
@@ -340,7 +357,54 @@ class BatteryMeter(Widget):
         self._poll_acc = 0.0
         self._mode = "static"
         self._dir = 0
+        self._event_until = 0.0         # monotonic: the state's motion plays until then
+        self._poll_handle = None        # the event loop's timer, while attached
         self._poll()
+        self._state = self._state_key()
+        self._lit_seen = self._lit_count
+
+    # ── reading the battery ─────────────────────────────────────────────
+    def _state_key(self) -> tuple:
+        cfg = self._state_config()
+        return (self._present, cfg["mode"], cfg["dir"], cfg["sweep"])
+
+    def attach(self, window) -> None:
+        super().attach(window)
+        self._arm()
+
+    def detach(self) -> None:
+        if self._poll_handle is not None:
+            self._poll_handle.cancel()
+            self._poll_handle = None
+        super().detach()
+
+    def _arm(self) -> None:
+        """The next reading. Without a loop (an offline render, which
+        steps the time itself) animate() reads instead."""
+        loop = getattr(self.window, "loop", None)
+        if loop is not None:
+            self._poll_handle = loop.call_later(self.POLL_S, self._wake)
+
+    def _wake(self) -> None:
+        self._poll_handle = None
+        if self.window is None:
+            return
+        self._arm()
+        self._read()
+
+    def _read(self) -> None:
+        """Read the battery; a new state plays its motion, a new level
+        is repainted."""
+        self._poll()
+        state = self._state_key()
+        if state != self._state:
+            self._state = state
+            self._event_until = time.monotonic() + self.EVENT_S
+            self._acc = 0.0
+            self.invalidate()
+        if self._lit_count != self._lit_seen:
+            self._lit_seen = self._lit_count
+            self.invalidate()
 
     # ── state → behaviour table ─────────────────────────────────────────
     def _state_config(self) -> dict:
@@ -399,10 +463,11 @@ class BatteryMeter(Widget):
     def animate(self, t: float) -> None:
         dt_ms = self.tick_dt(t) * 1000.0
 
-        self._poll_acc += dt_ms
-        if self._poll_acc >= 5000:      # battery is polled every 5s
-            self._poll_acc = 0.0
-            self._poll()
+        if self._poll_handle is None:   # no event loop (an offline render): read here
+            self._poll_acc += dt_ms
+            if self._poll_acc >= self.POLL_S * 1000:
+                self._poll_acc = 0.0
+                self._read()
 
         cfg = self._state_config()
         mode, direction = cfg["mode"], cfg["dir"]
@@ -433,6 +498,8 @@ class BatteryMeter(Widget):
     def _cell_color(self, i: int, cfg: dict) -> str:
         if i >= self._lit_count:
             return cfg["empty"]
+        if not self._moving(cfg):
+            return cfg["sweep"]         # at rest: the level, solid
         if self._mode == "sweep":
             return cfg["sweep"] if i < self._sweep_pos else cfg["lit"]
         if self._mode == "blink":
