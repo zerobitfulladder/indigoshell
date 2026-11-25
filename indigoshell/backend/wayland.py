@@ -8,6 +8,13 @@ run time by wlproto.py):
 | `indigoshell` | overlay | all four, size from configure | -1 | the canvas | what is drawn |
 | `indigoshell-reserve-<edge>` | bottom | the edge + both perpendicular | the bars' reach | 1x1 transparent wl_shm, stretched by wp_viewporter | empty |
 
+The canvas surface also carries ext-background-effect's blur region:
+the plates of the `blur` regions shown (the call's), where the
+compositor blurs what is behind them, frosted as picom does on X. For a
+layer surface niri blurs only the wallpaper unless the layer rule
+`background-effect { xray false; }` matches the namespace (the user's
+niri config has it); without the protocol the plates are not frosted.
+
 The canvas is drawn by the GPU (EGL on the Wayland platform,
 egl_wayland.py) with partial redraws: the regions' damage, plus what the
 back buffer's age says it missed, is composed and swapped with that
@@ -453,6 +460,10 @@ class Canvas:
         self.gl = None
         self.strips: dict[str, Strip] = {}
         self.toplevels: Toplevels | None = None
+        self.effects = None             # ext_background_effect_manager_v1
+        self.effect = None              # ... its object on the canvas surface
+        self.can_blur = False
+        self._blur_sent: tuple | None = None   # the blur region as last sent
         self.pointer = self.cursor_device = None
         self.steps = AxisSteps()
         self.keyboard = None            # wl_keyboard
@@ -511,6 +522,12 @@ class Canvas:
             "wp_cursor_shape_manager_v1", wl.cursor_shape_v1.WpCursorShapeManagerV1, 1) \
             if hasattr(wl, "cursor_shape_v1") else None
         self.seat = self._bind("wl_seat", wl.wayland.WlSeat, 7)
+        self.effects = self._bind(
+            "ext_background_effect_manager_v1",
+            wl.ext_background_effect_v1.ExtBackgroundEffectManagerV1, 1) \
+            if hasattr(wl, "ext_background_effect_v1") else None
+        if self.effects is not None:
+            self.effects.dispatcher["capabilities"] = self._effect_caps
         ft = getattr(wl, "wlr_foreign_toplevel_management_unstable_v1", None)
         manager = self._bind("zwlr_foreign_toplevel_manager_v1",
                              ft.ZwlrForeignToplevelManagerV1, 3) if ft else None
@@ -525,12 +542,22 @@ class Canvas:
         if self.seat is not None:
             self.seat.dispatcher["capabilities"] = self._seat_caps
             self.seat.dispatcher["name"] = lambda *a: None
-        log.info("Wayland display %s: layer-shell v%d%s", name,
+        log.info("Wayland display %s: layer-shell v%d%s%s", name,
                  self.globals["zwlr_layer_shell_v1"][1],
-                 "" if self.viewporter else ", no viewporter")
+                 "" if self.viewporter else ", no viewporter",
+                 "" if self.effects else ", no background blur")
 
     def _global(self, _reg, name: int, interface: str, version: int) -> None:
         self.globals[interface] = (name, version)
+
+    def _effect_caps(self, _mgr, flags: int) -> None:
+        blur = bool(flags & 1)
+        if blur != self.can_blur:
+            self.can_blur = blur
+            self._blur_sent = None
+            self.pending_state = True
+            log.info("canvas: the compositor %s blur behind the canvas",
+                     "can" if blur else "cannot")
 
     def _bind(self, iface: str, cls, want: int):
         g = self.globals.get(iface)
@@ -649,6 +676,9 @@ class Canvas:
         self._kb_sent = "none"          # the first frame's commit asks, if anyone holds it
         self.layer.dispatcher["configure"] = self._configure
         self.layer.dispatcher["closed"] = lambda *_: self.closed_under_us()
+        self.effect = (self.effects.get_background_effect(self.surface)
+                       if self.effects is not None else None)
+        self._blur_sent = None
         self.configured = False
         self.has_buffer = False
         self.pending_state = True
@@ -663,12 +693,14 @@ class Canvas:
                 self.target.detach()
         except Exception:
             log.exception("canvas: letting go of the surface failed")
-        for obj in (self.layer, self.surface):
+        for obj in (self.effect, self.layer, self.surface):
             try:
-                obj.destroy()
+                if obj is not None:
+                    obj.destroy()
             except Exception:
                 pass
-        self.layer = self.surface = None
+        self.effect = self.layer = self.surface = None
+        self._blur_sent = None
         self.configured = self.has_buffer = False
         self._kb_sent = None
         self._keyboard_left()
@@ -769,8 +801,8 @@ class Canvas:
     def apply_pending_state(self) -> None:
         """The canvas's double-buffered state that rides on the next
         commit: its input region (what is drawn, or all of it while
-        outside clicks are caught) and whether it asks for the
-        keyboard."""
+        outside clicks are caught), its blur region (the plates of the
+        `blur` regions) and whether it asks for the keyboard."""
         if not self.pending_state or self.surface is None:
             return
         self.pending_state = False
@@ -779,6 +811,7 @@ class Canvas:
             region.add(r.left(), r.top(), r.width(), r.height())
         self.surface.set_input_region(region)
         region.destroy()
+        self._apply_blur()
         want = "exclusive" if self.scene.keyboard.wanted and not self.scene.hidden else "none"
         if want != self._kb_sent and self.layer is not None:
             K = self.wl.wlr_layer_shell_unstable_v1.ZwlrLayerSurfaceV1.keyboard_interactivity
@@ -790,6 +823,25 @@ class Canvas:
                 # until it has had that moment the window stays fullscreen.
                 self._kb_let_go = time.monotonic()
                 self.loop.call_later(KEYBOARD_BACK_S, self.toplevels.recheck)
+
+    def _apply_blur(self) -> None:
+        if self.effect is None:
+            return
+        rects_ = tuple((r.left(), r.top(), r.width(), r.height())
+                       for r in self.scene.blur_rects()) if self.can_blur else ()
+        if rects_ == self._blur_sent:
+            return
+        if rects_:
+            blur = self.compositor.create_region()
+            for x, y, w, h in rects_:
+                blur.add(x, y, w, h)
+            self.effect.set_blur_region(blur)
+            blur.destroy()
+        else:
+            self.effect.set_blur_region(None)
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug("canvas: blur region %s", f"{len(rects_)} rect(s)" if rects_ else "none")
+        self._blur_sent = rects_
 
     def _keyboard_held(self) -> bool:
         """Whether the canvas has the keyboard, or let it go only just

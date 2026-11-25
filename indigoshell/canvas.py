@@ -34,10 +34,11 @@ anywhere else reaches the windows below.
                    that grabs it (`grab_keyboard`), a press held for
                    Escape (`hold_keyboard`), the top bar's open input.
 
-The kinds on the canvas (`on_canvas`): the bars, the panels, the chord
-menu, the launcher, the top bar's drop-down and the toasts. The rest
-(the call with its blur, the systray's panel and menu) is refused at
-open (`NotOnCanvas`) and named once at start.
+The kinds on the canvas (`on_canvas`): every kind the shell ships — the
+bars, the panels, the chord menu, the launcher, the top bar's drop-down,
+the toasts, the call (and its hung-up corner plate) and the systray's
+panel and menu. Any other is refused at open (`NotOnCanvas`) and named
+once at start.
 
 Keyboard and outside clicks replace X's grabs. While a region that takes
 the keyboard is open the canvas asks for it (layer-shell
@@ -47,6 +48,12 @@ had it. While a region that closes on an outside click is open the
 canvas's input region is the whole canvas: a click outside every region
 closes it and is swallowed, as under X's pointer grab, and clicks on the
 other regions (the bars) reach them as X's owner_events did.
+
+Blur replaces picom's. A `blur` region's plates (its content's
+`blur_shape()`, rasterised to whole pixels, so a 45° bevel is a stair of
+one-pixel rows) are where the compositor blurs what is behind the
+canvas (ext-background-effect's blur region), while the region is still:
+not during its spawn or despawn, as on X.
 
 A fullscreen window: the bars are not drawn over it, but whatever the
 user calls up is (`shows`): every region that is not a bar — the
@@ -102,12 +109,12 @@ def edge_of(anchor: Anchor) -> str | None:
 
 
 # The kinds the canvas draws besides the bars, by name: config_default's
-# panels, menu.py's MENU_WINDOW, launcher.py's LAUNCHER_WINDOW and
-# drop.py's DROP_WINDOW (tests/wayland.py checks the names), and the
-# toasts by notification.py's prefix. Not yet: the call (its blur needs
-# ext-background-effect) and the systray's panel and menu (they place
-# themselves by X's monitor).
-CANVAS_KINDS = frozenset({"system", "hardware", "network", "menu", "launcher", "dropdown"})
+# panels, menu.py's MENU_WINDOW, launcher.py's LAUNCHER_WINDOW, drop.py's
+# DROP_WINDOW, call.py's CALL_WINDOW, status.py's STATUS_WINDOW and
+# systray.py's PANEL_WINDOW and MENU_WINDOW (tests/wayland.py checks the
+# names), and the toasts by notification.py's prefix.
+CANVAS_KINDS = frozenset({"system", "hardware", "network", "menu", "launcher", "dropdown",
+                          "call", "call-status", "systray-panel", "systray-menu"})
 TOAST_PREFIX = "notif-"
 
 
@@ -121,6 +128,16 @@ def on_canvas(spec: WindowSpec) -> bool:
     if is_bar(spec):
         return True
     return spec.name in CANVAS_KINDS or spec.name.startswith(TOAST_PREFIX)
+
+
+def pixel_rects(path: skia.Path, clip: skia.IRect, dx: int = 0,
+                dy: int = 0) -> tuple[tuple[int, int, int, int], ...]:
+    """`path` as whole pixels inside `clip` (aliased, as X's SHAPE took
+    it: a 45° bevel becomes one thin rect per pixel row), as (x, y, w,
+    h) rects moved by (dx, dy)."""
+    region = skia.Region()
+    region.setPath(path, skia.Region(clip))
+    return tuple((r.left() + dx, r.top() + dy, r.width(), r.height()) for r in rects(region))
 
 
 def reserved(edge: str, content: tuple[int, int, int, int],
@@ -655,6 +672,24 @@ class Scene:
         region.op(self.bounds, skia.Region.kIntersect_Op)
         return rects(region)
 
+    def blur_rects(self) -> list[skia.IRect]:
+        """Where the compositor blurs what is behind the canvas: the
+        plates of the `blur` regions shown (Region.blur_rects)."""
+        if self.hidden:
+            return []
+        region = skia.Region()
+        for r in self.regions:
+            if self.shows(r):
+                for x, y, w, h in r.blur_rects():
+                    region.op(skia.IRect.MakeXYWH(x, y, w, h), skia.Region.kUnion_Op)
+        region.op(self.bounds, skia.Region.kIntersect_Op)
+        return rects(region)
+
+    def blur_changed(self, region: "Region") -> None:
+        """`region`'s plates moved, or its blur went on or off."""
+        if region in self.regions:
+            self._layout()
+
     def reservations(self) -> dict[str, int]:
         """Edge -> how far the bars on it reach in: what the invisible
         strips reserve."""
@@ -767,6 +802,9 @@ class Region(Window):
         self._suspended = False
         self._painted = 0
         self._said: set[str] = set()
+        # The plates the compositor blurs behind (`blur`), canvas
+        # coordinates; empty while the blur is off.
+        self._blur_rects: tuple = ()
 
     # ── geometry ────────────────────────────────────────────────────────
     def box(self) -> skia.IRect:
@@ -872,6 +910,7 @@ class Region(Window):
         self.surface = self._frozen = self._out = None
         self._small_in = self._small_out = None
         self._picture = None
+        self._blur_on, self._blur_rects = False, ()
         if self.content is not None and not self._parked:
             try:
                 self.content.detach()
@@ -947,11 +986,40 @@ class Region(Window):
             self._said.add(what)
             log.info(message, *args)
 
+    # ── blur: the compositor's, behind the plates ───────────────────────
     def _set_bounding_shape(self) -> None:
-        pass                    # phase 2b: ext-background-effect's blur region
+        """X cuts a `blur` window to its plates (SHAPE) for picom to blur
+        behind; on the canvas the plates are where the compositor blurs
+        (Scene.blur_rects), sent with the canvas's next commit. Runs
+        after every layout and move, as on X; the same plates are not
+        sent again."""
+        if not self.spec.blur or self.wid is None or self.content is None:
+            return
+        out: tuple = ()
+        if self._blur_on:
+            clip = skia.IRect.MakeWH(self.width, self.height)
+            shape_of = getattr(self.content, "blur_shape", None)
+            if shape_of is not None:
+                out = pixel_rects(shape_of(), clip, self.x, self.y)
+            else:
+                cx, cy, cw, ch = self.content_root
+                out = ((cx, cy, cw, ch),)
+        if out == self._blur_rects:
+            return
+        self._blur_rects = out
+        self.scene.blur_changed(self)
 
     def _set_blur(self, on: bool) -> None:
-        pass
+        """The blur in force, or lifted (the spawn and despawn run
+        unblurred, their tear reaching past the plates, as on X)."""
+        if not self.spec.blur or self.wid is None or on == self._blur_on:
+            return
+        self._blur_on = on
+        self._set_bounding_shape()
+
+    def blur_rects(self) -> tuple:
+        """The plates to blur behind, (x, y, w, h) on the canvas."""
+        return self._blur_rects
 
     # ── grabs: the canvas's keyboard and its outside clicks ─────────────
     def _grab(self, what: str, since: float | None = None) -> None:

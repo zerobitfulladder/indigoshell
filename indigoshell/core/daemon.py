@@ -385,6 +385,14 @@ class Daemon:
         from ..canvas import on_canvas
         return on_canvas(spec)
 
+    def primary_monitor(self):
+        """The monitor windows are placed on: X's primary one, or on
+        Wayland the canvas's output."""
+        if self.canvas is not None:
+            return self.canvas.scene.primary_monitor()
+        assert self.display is not None
+        return self.display.primary_monitor()
+
     def _new_window(self, spec):
         if self.canvas is not None:
             from ..canvas import Region
@@ -408,8 +416,7 @@ class Daemon:
         if not self._drawable(spec):
             from ..canvas import NotOnCanvas
             log.debug("%s is not on the Wayland canvas yet; not opened", name)
-            raise NotOnCanvas(f"{name} is not on the Wayland canvas yet "
-                              "(not the call or the systray's so far)")
+            raise NotOnCanvas(f"{name} is not a kind the Wayland canvas draws")
         win = self._parked.pop(name, None)
         if win is not None and win.spec is spec:
             win.placement = placement

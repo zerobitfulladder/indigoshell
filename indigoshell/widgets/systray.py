@@ -111,11 +111,7 @@ class Systray(Widget):
         if not self._broker.items():
             return
         d.kinds[PANEL_WINDOW] = self._panel_spec()
-        from ..canvas import NotOnCanvas
-        try:
-            d.open(PANEL_WINDOW)
-        except NotOnCanvas as e:
-            log.info("%s", e)               # Wayland, until the canvas has panels
+        d.open(PANEL_WINDOW)
 
     def _panel_spec(self) -> WindowSpec:
         # No popup chrome — the beveled rows float directly on the
@@ -230,9 +226,10 @@ class TrayPanel(Column):
         content = _menu_box(TrayMenu(row.item.bus_name, nodes))
         w, h = _measure_size(content)
         win = self.window
-        mon = d.display.primary_monitor()
+        # X's primary monitor, or the Wayland canvas's output.
+        mon = d.primary_monitor()
         # The menu's top-right corner sits MENU_GAP left of the row's
-        # top-left, in root coordinates.
+        # top-left, in root coordinates (the canvas's, on Wayland).
         x = int(win.x + row.rect.left()) - self.MENU_GAP - w
         y = int(win.y + row.rect.top())
         x = max(mon.x, min(x, mon.x + mon.width - w))
