@@ -201,6 +201,9 @@ class AppWindow:
                 prompt.refresh_spec(spec)
             else:
                 prompt.close("shell")       # the app took it away
+        wait = self.service._open_wait
+        if wait is not None and wait[0] is self:
+            self.service._try_open()        # an open asked before this bar came
 
     def _item_opens(self, what_id, item) -> None:
         """An item of the bar opens one of its inputs or menus (a click)."""
@@ -830,12 +833,8 @@ class AppService:
         p = self.prompt
         if p is not None and p.owner is not None and p.owner is not window:
             p.close("focus")
-        wait = self._open_wait
-        if wait is not None and wait[0] is window:
-            self._open_wait = None
-            if wait[3] is not None:
-                wait[3].cancel()
-            self.open_prompt(window, wait[1], wait[2], pressed=False)
+        if self._open_wait is not None and self._open_wait[0] is window:
+            self._try_open()
         log.debug("apps: focus on %s", f"{window.kind} 0x{window.wid:x}" if window else
                   f"0x{self.active:x}, no app's")
         for callback in list(self._followers):
@@ -906,9 +905,11 @@ class AppService:
             self.prompt.close("shell")
         spec = ((window.bar or {}).get(B.INPUTS if what == "input" else B.MENUS) or {}).get(name)
         if not isinstance(spec, dict):
-            log.debug("%s window 0x%x has no %s %r", window.kind or "app", window.wid, what, name)
+            log.info("%s window 0x%x: no %s %r in its bar; the app does without",
+                     window.kind or "app", window.wid, what, name)
             if pressed:
                 self.release_keyboard()
+            window.send_event(B.event(B.FALLBACK, **{what: name}))
             return False
         # From here on every way out must give the keyboard back unless the
         # prompt holds it: an exception left unhandled here would leave the
@@ -946,27 +947,58 @@ class AppService:
 
     def open_asked(self, window: AppWindow, what: str, name) -> None:
         """An app asks for one of its inputs or menus open with no key
-        pressed (`open`): honoured once the window has focus, which a new
-        window gets a moment after it is shown (OPEN_WAIT_S); else, or
-        with nothing of that name in its bar, `fallback`."""
-        if self._open_wait is not None and self._open_wait[3] is not None:
-            self._open_wait[3].cancel()
-        self._open_wait = None
-        if self.focused is window:
-            self.open_prompt(window, what, name, pressed=False)
+        pressed (`open`): honoured once the window has focus and its bar
+        has that input or menu, waiting for both up to OPEN_WAIT_S (a new
+        window asks as soon as it is shown: the window manager may focus
+        it a moment later, and its first bar may come after the ask);
+        else `fallback`."""
+        old = self._open_wait
+        if old is not None:
+            if old[3] is not None:
+                old[3].cancel()
+            if old[0] is not window:
+                log.info("%s window 0x%x: its %s %r gave way to another window's; the app "
+                         "does without", old[0].kind, old[0].wid, old[1], old[2])
+                old[0].send_event(B.event(B.FALLBACK, **{old[1]: old[2]}))
+        self._open_wait = (window, what, name, None)
+        if self._try_open():
             return
-        log.debug("%s window 0x%x asks for its %s %r: waiting for its focus", window.kind,
-                  window.wid, what, name)
-        timer = self.later(B.OPEN_WAIT_S, self._open_late)
-        self._open_wait = (window, what, name, timer)
+        log.debug("%s window 0x%x asks for its %s %r: waiting for %s", window.kind, window.wid,
+                  what, name, self._open_missing(window, what, name))
+        self._open_wait = (window, what, name, self.later(B.OPEN_WAIT_S, self._open_late))
+
+    def _open_missing(self, window: AppWindow, what: str, name) -> str | None:
+        """What an asked-for open still waits for; None when nothing."""
+        if self.focused is not window:
+            return "its window's focus"
+        if not isinstance(((window.bar or {}).get(B.INPUTS if what == "input" else B.MENUS)
+                           or {}).get(name), dict):
+            return f"that {what} in its bar"
+        return None
+
+    def _try_open(self) -> bool:
+        """The open asked for, once nothing is missing (focus moved, or a
+        bar came). True when it went ahead (shown, or refused and said)."""
+        wait = self._open_wait
+        if wait is None:
+            return False
+        window, what, name, timer = wait
+        if window.closed or self._open_missing(window, what, name) is not None:
+            return False
+        self._open_wait = None
+        if timer is not None:
+            timer.cancel()
+        self.open_prompt(window, what, name, pressed=False)
+        return True
 
     def _open_late(self) -> None:
         wait, self._open_wait = self._open_wait, None
         if wait is None:
             return
         window, what, name, _timer = wait
-        log.info("%s window 0x%x has no focus for its %s %r; the app does without",
-                 window.kind, window.wid, what, name)
+        log.info("%s window 0x%x: its %s %r not opened: still waiting for %s after %.1f s; "
+                 "the app does without", window.kind, window.wid, what, name,
+                 self._open_missing(window, what, name) or "nothing", B.OPEN_WAIT_S)
         window.send_event(B.event(B.FALLBACK, **{what: name}))
 
     def _cannot_show(self, window: AppWindow) -> str | None:

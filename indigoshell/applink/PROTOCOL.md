@@ -271,11 +271,13 @@ shown at the menu's top once something is typed: a short menu reads as
 a menu, a long one is found by name. Key hints (`chord`) are drawn, not
 taken: the app handles its own Ctrl+S.
 
-**Opening without a key.** `open` is honoured only while that window or
-its dialog has focus, waiting up to `OPEN_WAIT_S` (0.5 s) for it: a new
-window sends it as soon as it is shown, a moment before the window
-manager gives it focus. Otherwise, or with no top bar over the window,
-the shell answers `fallback` and gives the keyboard back.
+**Opening without a key.** `open` is honoured once that window or its
+dialog has focus and its bar has that input or menu, waiting up to
+`OPEN_WAIT_S` (0.5 s) for both: a new window sends it as soon as it is
+shown, a moment before the window manager gives it focus, and an app may
+send it before its first bar (it should send the bar first). Otherwise,
+or with no top bar over the window, the shell answers `fallback` and
+gives the keyboard back: an `open` is never dropped unanswered.
 
 **The drop-down.** The bar is a dock of fixed height, so the list is a
 second window against its bottom edge (`window.Placement`, as the

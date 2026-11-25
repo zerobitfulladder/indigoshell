@@ -71,7 +71,7 @@ ANSWER_ROWS_MAX = 200       # rows in one answer
 INPUTS_MAX = 50             # inputs, and menus, each
 BUTTONS_MAX = 8             # toggles in one input's box
 ENTER_WAIT_S = 0.25         # Enter waits this long for the latest text's answer
-OPEN_WAIT_S = 0.5           # `open` waits this long for its window to have focus
+OPEN_WAIT_S = 0.5           # `open` waits this long for its window's focus and its bar
 
 MODIFIERS = ("ctrl", "shift", "alt", "super")
 # Keys a chord may end in besides one letter or digit (a row action's,
