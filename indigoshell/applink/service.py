@@ -90,58 +90,115 @@ from dataclasses import dataclass
 
 import xcffib.xproto as xp
 
-from ..window import key_event
+from ..window import Placement, key_event
+from . import bar as B
 from . import protocol
+from .drop import DROP_WINDOW
+from .prompt import Prompt
+from .view import BarView
 
 log = logging.getLogger(__name__)
 
 CLAIM_RETRY_S = 5.0                 # while another shell holds the socket
+PREPARE_S = 2.0                     # after the start: the drop-down made ahead
 LINE_LIMIT = 1 << 20                # bytes in one message: a state with many tabs
 _KEY_PRESS = 2
+_BUTTON_PRESS = 4
 
 _CHORD_MODIFIERS = {"ctrl": xp.ModMask.Control, "shift": xp.ModMask.Shift}
 
 
 class AppWindow:
-    """One window of an indigoshell app, as the shell sees it. Each kind
-    of app subclasses this.
+    """One window of an indigoshell app, as the shell sees it.
 
-    `content` is the widget the top bar's context area shows while this
-    window has focus (None: nothing). It is the kind's to build and keep
-    up to date; the context area attaches it to the bar window when it
-    shows it and detaches it when focus moves on.
+    `view` is its section of the top bar (applink/view.py), which the
+    context area shows while this window has focus (`content`; empty
+    until the window's bar comes). `bar` is the last good bar shown; the
+    chords of its inputs and menus are the keys the shell takes from the
+    window (`keys`: chord -> ("input" | "menu", id)), grabbed again
+    whenever they change.
     """
 
     kind = ""
-    # The chords the shell takes from this kind's windows, written like
-    # "ctrl+l" (modifiers ctrl, shift, alt, super; then one letter), each
-    # with the name `on_key` is given. Read once the window is made: an
-    # instance may set its own.
-    keys: dict[str, str] = {}
 
     def __init__(self, link: "Link", wid: int, announce: dict) -> None:
         self.link = link
         self.service = link.service
         self.wid = wid
-        self.content = None
+        self.view = BarView(emit=self.send_event, on_open=self._item_opens)
+        self.content = self.view
+        self.bar: dict | None = None
+        self.keys: dict[str, tuple[str, object]] = {}
         self.closed = False
         self.placed: int | None = None      # the workspace `place` put it on
+        self._seq = 0
 
     def on_message(self, msg: dict) -> None:
         """Every message after the announce."""
         log.debug("%s window 0x%x: message %r not understood", self.kind or "app",
                   self.wid, msg.get(protocol.TYPE))
 
-    def on_key(self, name: str, key) -> None:
-        """One of `keys` (named `name`) was pressed in the window: the
-        shell has the keyboard, until that key is let go
-        (`service.hold_keyboard` keeps it longer). `key` is the press as
-        a widgets.base.KeyEvent."""
+    # ── its bar ─────────────────────────────────────────────────────────
+    def show_bar(self, bar: dict) -> None:
+        """A good bar (bar.bar_problems found nothing): shown, its chords
+        grabbed, an open input or menu of it kept up to date."""
+        self.bar = bar
+        self.view.set_bar(bar)
+        keys = B.chords(bar)
+        if keys != self.keys:
+            self.keys = keys
+            self.service.grab_keys(self)
+        prompt = self.service.prompt_of(self)
+        if prompt is not None:
+            spec = (bar.get(B.INPUTS if prompt.what == "input" else B.MENUS) or {}).get(
+                prompt.name)
+            if isinstance(spec, dict):
+                prompt.refresh_spec(spec)
+            else:
+                prompt.close("shell")       # the app took it away
+
+    def _item_opens(self, what_id, item) -> None:
+        """An item of the bar opens one of its inputs or menus (a click)."""
+        what = "input" if what_id in ((self.bar or {}).get(B.INPUTS) or {}) else "menu"
+        self.service.open_prompt(self, what, what_id, pressed=False, anchor=item)
+
+    # ── keys ────────────────────────────────────────────────────────────
+    def on_key(self, chord: str, key) -> None:
+        """One of `keys` was pressed in the window: the shell has the
+        keyboard, until that key is let go (`service.hold_keyboard` keeps
+        it longer). `key` is the press as a widgets.base.KeyEvent. While
+        one of the window's inputs or menus is open it is a key for it."""
+        prompt = self.service.prompt_of(self)
+        if prompt is not None:
+            prompt.key(key)
+            return
+        what, name = self.keys.get(chord, (None, None))
+        if what is not None:
+            self.service.open_prompt(self, what, name, pressed=True, chord=chord)
 
     def on_typed(self, key) -> None:
         """Another key pressed while the shell holds the keyboard for this
-        window (after `on_key`, before whatever answers it took the
-        keyboard): reported on the app's window, in the order typed."""
+        window: reported on the app's window, in the order typed, for the
+        input or menu open."""
+        prompt = self.service.prompt_of(self)
+        if prompt is None:
+            log.debug("a key typed into %s window 0x%x with nothing open for it; dropped",
+                      self.kind or "app", self.wid)
+            return
+        prompt.key(key)
+
+    # ── to the app ──────────────────────────────────────────────────────
+    def send_event(self, event: dict) -> None:
+        """An event of the bar's for the app (PROTOCOL.md, section 3)."""
+        self.send(event)
+
+    def next_seq(self) -> int:
+        """The next query's seq: rising per connection."""
+        self._seq += 1
+        return self._seq
+
+    def prompt_closed(self, prompt) -> None:
+        """An input or menu of this window's left the screen."""
 
     def send(self, msg: dict) -> None:
         if not self.closed:
@@ -257,7 +314,7 @@ class Grabs:
     """The keys grabbed on one app window."""
 
     window: AppWindow
-    chords: dict[tuple[int, int], str]      # (keycode, modifiers) -> name
+    chords: dict[tuple[int, int], str]      # (keycode, modifiers) -> chord
     keys: list[tuple[int, int]]             # what X holds: (keycode, modifiers with locks)
 
 
@@ -301,6 +358,9 @@ class AppService:
         self._task: asyncio.Task | None = None
         self._retry: asyncio.TimerHandle | None = None
         self._warned = False
+        # The input or menu open (prompt.py): at most one, the shell's.
+        self.prompt: Prompt | None = None
+        self._pointer_on: int | None = None         # the bar window the pointer is held on
 
     @property
     def path(self) -> str:
@@ -317,9 +377,23 @@ class AppService:
             self.display.add_keymap_listener(self._keymap_changed)
         self._watch_focus()
         self._try_claim()
+        if self._own_display is None:
+            # The drop-down made and parked ahead of the first input opened.
+            asyncio.get_running_loop().call_later(PREPARE_S, self._prepare)
+
+    def _prepare(self) -> None:
+        if not self.running:
+            return
+        try:
+            from ..core.daemon import get_daemon
+            get_daemon().prepare(DROP_WINDOW)
+        except Exception:
+            log.exception("making the drop-down ahead failed")
 
     def stop(self) -> None:
         self.running = False
+        if self.prompt is not None:
+            self.prompt.close("shell")
         if self._restarting():
             # Back in a moment: the apps may wait for it a little longer.
             for link in self.links:
@@ -451,6 +525,8 @@ class AppService:
         if link in self.links:
             self.links.remove(link)
         if window is not None:
+            if self.prompt is not None and self.prompt.owner is window:
+                self.prompt.close("focus")
             self.release_keys(window)
             if window in self.windows:
                 self.windows.remove(window)
@@ -546,7 +622,7 @@ class AppService:
         locks = d.lock_combinations()
         chords: dict[tuple[int, int], str] = {}
         held: list[tuple[int, int]] = []
-        for chord, name in window.keys.items():
+        for chord in window.keys:
             parsed = self._parse(chord)
             codes = d.keycodes(parsed[0]) if parsed else []
             if not codes:
@@ -563,7 +639,7 @@ class AppService:
                 self._refuse(window.kind, chord, "another client has it on that window"
                              if why == "taken" else why)
                 continue
-            chords.update({(code, mods): name for code in codes})
+            chords.update({(code, mods): chord for code in codes})
             held += keys
         if held:
             self.grabs[window.wid] = Grabs(window, chords, held)
@@ -587,9 +663,10 @@ class AppService:
     def _parse(self, chord: str) -> tuple[int, int] | None:
         """(keysym, modifiers) of a chord like "ctrl+l"; None if it is
         not one this can grab."""
-        *mods, key = chord.lower().split("+")
-        if len(key) != 1 or not key.isalnum():
+        parsed = B.parse_chord(chord, grab=True)
+        if parsed is None:
             return None
+        mods, key = parsed
         mask = 0
         for m in mods:
             bit = _CHORD_MODIFIERS.get(m) or (self.display.mod_mask(m)
@@ -693,6 +770,9 @@ class AppService:
         if window is self.focused:
             return
         self.focused = window
+        p = self.prompt
+        if p is not None and p.owner is not None and p.owner is not window:
+            p.close("focus")
         log.debug("apps: focus on %s", f"{window.kind} 0x{window.wid:x}" if window else
                   f"0x{self.active:x}, no app's")
         for callback in list(self._followers):
@@ -727,3 +807,220 @@ class AppService:
             return None
         cx, cy, cw, ch = root
         return cy + ch if cx <= x < cx + cw else None
+
+    def section(self) -> tuple[int, int, int] | None:
+        """The app section of the top bar: its left edge and the bar's
+        bottom edge (root coordinates), and its width; None with no top
+        bar made."""
+        context = self.context
+        window = getattr(context, "window", None)
+        root = getattr(window, "content_root", None)
+        if root is None or getattr(window, "wid", None) is None:
+            return None
+        r = context.rect
+        return int(window.x + r.left()), root[1] + root[3], int(r.width())
+
+    # ── the open input or menu ──────────────────────────────────────────
+    def prompt_of(self, window: AppWindow):
+        """The input or menu open for `window`, or None."""
+        p = self.prompt
+        return p if p is not None and p.open and p.owner is window else None
+
+    def open_prompt(self, window: AppWindow, what: str, name, *, pressed: bool,
+                    chord: str | None = None, anchor=None) -> bool:
+        """Open `window`'s input or menu `name` (what: "input" or "menu"):
+        its box in the bar, its list under it, the keyboard the shell's
+        while it is open. `pressed`: for its chord, the keyboard the
+        shell's since the press. False, and `fallback` to the app, when
+        it cannot show (no top bar over the window, no keyboard)."""
+        held = False
+        if pressed:
+            # First: a passive grab ends with the chord's key, and every
+            # key typed after it until the prompt is up would go to the
+            # window.
+            held = self.hold_keyboard(window)
+        if self.prompt is not None:
+            self.prompt.close("shell")
+        spec = ((window.bar or {}).get(B.INPUTS if what == "input" else B.MENUS) or {}).get(name)
+        if not isinstance(spec, dict):
+            log.debug("%s window 0x%x has no %s %r", window.kind or "app", window.wid, what, name)
+            if pressed:
+                self.release_keyboard()
+            return False
+        # From here on every way out must give the keyboard back unless the
+        # prompt holds it: an exception left unhandled here would leave the
+        # whole desktop's keyboard with the shell.
+        why = self._cannot_show(window)
+        if why is None and not pressed:
+            held = self.hold_keyboard(window)
+        if why is None and not held and self.display is not None:
+            why = "the keyboard is not to be had"
+        prompt = None
+        if why is None:
+            try:
+                prompt = Prompt(self, window, what, name, spec, chord=chord, anchor=anchor)
+            except Exception:
+                log.exception("the %s %r failed to open for %s window 0x%x", what, name,
+                              window.kind or "app", window.wid)
+                why = "it failed to open"
+        if prompt is None:
+            log.info("%s window 0x%x: its %s %r cannot show (%s); the app does without",
+                     window.kind or "app", window.wid, what, name, why)
+            if pressed or held:
+                self.release_keyboard()
+            window.send_event(B.event(B.FALLBACK, **{what: name}))
+            return False
+        self.prompt = prompt
+        self._dismiss_panels()
+        if prompt.box is not None:
+            window.view.show_box(prompt.box)
+        if anchor is not None:
+            window.view.set_lit({anchor.id})
+        self._hold_pointer()
+        prompt.start()
+        self.changed(prompt)
+        return True
+
+    def _cannot_show(self, window: AppWindow) -> str | None:
+        """Why `window`'s input or menu cannot show in the top bar; None
+        when it can."""
+        if self.section() is None:
+            return "no top bar"
+        d = self.display
+        if d is None:
+            return None
+        try:
+            at = d.conn.core.TranslateCoordinates(window.wid, d.root, 0, 0).reply()
+            width = d.conn.core.GetGeometry(window.wid).reply().width
+        except (xp.WindowError, xp.DrawableError):
+            return "the window is gone"
+        finally:
+            d.wake()
+        if self.bar_bottom(at.dst_x + width // 2) is None:
+            return "the top bar is on another monitor"
+        return None
+
+    def changed(self, prompt) -> None:
+        """The prompt's list changed: the drop-down follows."""
+        if prompt is not self.prompt or not prompt.open:
+            return
+        try:
+            if prompt.wants_list():
+                self._drop_show(prompt)
+            else:
+                self._drop_hide()
+        except Exception:
+            log.exception("the drop-down failed")
+
+    def closed(self, prompt) -> None:
+        """The prompt left the screen: everything given back."""
+        if prompt is not self.prompt:
+            return
+        self.prompt = None
+        try:
+            self._drop_hide()
+        except Exception:
+            log.exception("hiding the drop-down failed")
+        self._release_pointer()
+        self.release_keyboard()
+        owner = prompt.owner
+        if owner is not None:
+            owner.view.show_box(None)
+            owner.view.set_lit(())
+            owner.prompt_closed(prompt)
+
+    def next_seq(self, prompt) -> int:
+        return prompt.owner.next_seq() if prompt.owner is not None else 0
+
+    def later(self, delay: float, callback):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        return loop.call_later(delay, callback)
+
+    # ── the drop-down window ────────────────────────────────────────────
+    def _drop_place(self, prompt) -> tuple[int, int, int]:
+        """Where the list drops: (left, top, width) in root coordinates."""
+        left, top, width = self.section() or (0, 0, 400)
+        anchor = prompt.anchor
+        window = getattr(self.context, "window", None)
+        if anchor is not None and window is not None and not anchor.rect.isEmpty():
+            left = int(window.x + anchor.rect.left())
+        return left, top, width
+
+    def _drop_show(self, prompt) -> None:
+        show = getattr(self, "show_drop", None)     # tests put a recorder there
+        if show is not None:
+            show(prompt, self._drop_place(prompt))
+            return
+        from ..core.daemon import get_daemon
+        daemon = get_daemon()
+        spec = daemon.kinds.get(DROP_WINDOW)
+        drop = getattr(spec, "content", None)
+        if drop is None:
+            return
+        left, top, width = self._drop_place(prompt)
+        drop.show(prompt, width)
+        w, h = drop.relayout()
+        win = daemon.instances.get(DROP_WINDOW)
+        if win is None:
+            daemon.open(DROP_WINDOW, placement=Placement(left + w // 2, top))
+            return
+        win.placement = Placement(left + w // 2, top)
+        win.resize_content(w, h)
+        drop.invalidate()
+
+    def _drop_hide(self) -> None:
+        hide = getattr(self, "hide_drop", None)
+        if hide is not None:
+            hide()
+            return
+        try:
+            from ..core.daemon import get_daemon
+            daemon = get_daemon()
+        except RuntimeError:            # no daemon: a test's own service
+            return
+        if DROP_WINDOW in daemon.instances:
+            daemon.close(DROP_WINDOW)
+
+    def _dismiss_panels(self) -> None:
+        """Open panels close, as for a click elsewhere: the prompt's
+        pointer grab takes their outside clicks from them."""
+        try:
+            from ..core.daemon import get_daemon
+            get_daemon().dismiss_others(DROP_WINDOW)
+        except RuntimeError:
+            pass
+
+    # ── the pointer, while a prompt is open ─────────────────────────────
+    def _hold_pointer(self) -> None:
+        """A press outside the bar and its list closes the prompt: the
+        pointer held on the bar's window (owner_events: the bar and the
+        list still get theirs), presses anywhere else reported there."""
+        d, window = self.display, getattr(self.context, "window", None)
+        wid = getattr(window, "wid", None)
+        if d is None or wid is None or self._pointer_on is not None:
+            return
+        if d.grab_pointer(wid):
+            self._pointer_on = wid
+            d.on(wid, self._on_bar_event)
+        else:
+            log.debug("the pointer is not to be had: a click elsewhere will not close it")
+
+    def _release_pointer(self) -> None:
+        wid, self._pointer_on = self._pointer_on, None
+        if wid is None or self.display is None:
+            return
+        self.display.off(wid, self._on_bar_event)
+        self.display.ungrab_pointer()
+
+    def _on_bar_event(self, ev) -> None:
+        if (ev.response_type & 0x7F) != _BUTTON_PRESS or self.prompt is None:
+            return
+        window = getattr(self.context, "window", None)
+        if window is None:
+            return
+        if not (0 <= ev.event_x < window.width and 0 <= ev.event_y < window.height):
+            log.debug("a click outside the bar and its list: the prompt closes")
+            self.prompt.close("click")

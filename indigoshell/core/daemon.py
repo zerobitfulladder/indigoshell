@@ -361,6 +361,22 @@ class Daemon:
         self.display.pump()
         return name
 
+    def prepare(self, name: str) -> None:
+        """Make a keep_alive window of kind `name` and park it unshown, so
+        that its first open costs what a reopen does (the X window, its GL
+        surface and its first frame's setup made already)."""
+        from ..window import Window
+
+        spec = self.kinds.get(name)
+        if (spec is None or not spec.keep_alive or self.display is None
+                or name in self.instances or name in self._parked):
+            return
+        win = Window(self.display, spec, self.loop)
+        win.create()
+        win.park()
+        self._parked[name] = win
+        self.display.pump()
+
     def close(self, name: str) -> bool:
         win = self.instances.pop(name, None)
         if win is None:

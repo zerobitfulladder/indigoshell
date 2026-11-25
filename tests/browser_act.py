@@ -200,16 +200,22 @@ def shell_side(path: str) -> None:
     bad["agent"] = [{"voice": 3, "state": "flying"}]
     out["bad_state_problems"] = protocol.state_problems(bad)
 
-    # The window's actions for the state the stand-in shell got from Flux.
+    # The window's actions for the state the stand-in shell got from Flux:
+    # its bar's `actions` menu; a pick of the hand-back row.
+    from indigoshell.applink.prompt import StaticRows
+
     j.on_message(given["state"])
-    rows, start = j.actions().search("")
-    out["rows"] = [[e.title, e.enabled, e.detail] for e in rows]
+    rows, start = StaticRows(j.bar["menus"]["actions"]["rows"]).search("")
+    out["rows"] = [[r["title"], r.get("enabled", True), r.get("detail")] for r in rows]
     out["start"] = start
-    pick = next((e for e in rows if e.title.endswith("drive again")), None)
-    out["picked"] = j.actions().pick(pick, "") if pick is not None else None
-    out["command"] = j.link.out[-1] if j.link.out else None
+    pick = next((r for r in rows if r["title"].endswith("drive again")), None)
+    n = len(j.link.out)
+    if pick is not None:
+        j.send_event({"type": "pick", "menu": "actions", "row": pick["id"]})
+    out["picked"] = pick["id"] if pick is not None else None
+    out["command"] = j.link.out[-1] if len(j.link.out) > n else None
     j.on_message(state(cases["none"]))
-    out["rows_unpaused"] = [e.title for e in j.actions().search("")[0]]
+    out["rows_unpaused"] = [r["title"] for r in j.bar["menus"]["actions"]["rows"]]
     print(json.dumps(out))
 
 

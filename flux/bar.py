@@ -12,12 +12,30 @@ Pure Python, as the rest of Flux's side of the line.
             when it came over an insecure connection and a bookmark when
             the page counts as one
 
+    inputs  `address` (Ctrl+L: the page's address, selected) and
+            `new_tab` (Ctrl+T, empty), both answered from Flux's places
+            (flux/addresses.py), a bookmark's row taken out with
+            Shift+Delete (`remove`)
+    menus   `actions` (Ctrl+M): first, for each tab the user took over
+            from the agent, handing it back ("Let Lilac drive again");
+            then Add bookmark and Remove bookmark for the page, the one
+            that does not apply dimmed
+
 A main window's tabs can be closed, moved and torn off; a single
-window's (a sign-in popup, the inspector) nothing.
+window's (a sign-in popup, the inspector) nothing, and it has no inputs
+or menus: its keys stay its own.
 """
 
+from flux import places
 from indigoshell.applink import bar as B
-from indigoshell.core.voices import voice_id
+from indigoshell.core.voices import voice_id, voice_name
+
+ADDRESS, NEW_TAB, ACTIONS = "address", "new_tab", "actions"
+TYPED = "typed"                 # the row of what was typed, in an address answer
+REMOVE = "remove"               # the action taking a bookmark's row out
+ADD_ROW, REMOVE_ROW = "add", "remove"
+RESUME = "resume:"              # + a tab id: hand that tab back to the agent
+PLACEHOLDER = "address or search"
 
 TABS_ITEM = "tabs"
 HOST_ITEM = "host"
@@ -52,12 +70,52 @@ def host_item(state: dict) -> dict:
     return B.text(HOST_ITEM, spans=spans)
 
 
-def bar_of(state: dict, *, single: bool = False, agent: str | None = None) -> dict:
+def inputs_of(state: dict) -> dict:
+    url = state.get("url") or ""
+    here = "" if url in ("", "about:blank") else url
+    remove = {REMOVE: B.action("shift+delete", drops=True)}
+    return {ADDRESS: B.input_(chords=["ctrl+l"], icon="search", placeholder=PLACEHOLDER,
+                              text=here or None, select=bool(here), query=True, actions=remove),
+            NEW_TAB: B.input_(chords=["ctrl+t"], icon="search", placeholder=PLACEHOLDER,
+                              query=True, actions=remove)}
+
+
+def actions_rows(state: dict, names: dict | None = None) -> list[dict]:
+    """The window's actions for its current page; first, while the user
+    has taken a tab over from the agent, handing it back. `names`: the
+    voices' names as the shell gave them."""
+    url = state.get("url") or ""
+    marked = bool(state.get("bookmarked"))
+    page = places.recordable(url)
+    host = places.host_of(url)
+    tabs = state["tabs"]
+    rows = []
+    for i, a in enumerate(state.get("agent") or ()):
+        if a and a.get("state") == "paused" and i < len(tabs):
+            vid = voice_id(a.get("voice"))
+            name = (names or {}).get(vid) or voice_name(vid)
+            detail = " · ".join(filter(None, (f"tab {i + 1}", tabs[i].get("host") or "")))
+            rows.append(B.row(f"{RESUME}{tabs[i]['tab']}", f"Let {name} drive again",
+                              icon="play", detail=detail))
+    rows.append(B.row(ADD_ROW, "Add bookmark", icon="bookmark", detail=host or None,
+                      enabled=page and not marked))
+    rows.append(B.row(REMOVE_ROW, "Remove bookmark", icon="bookmark", detail=host or None,
+                      enabled=page and marked))
+    return rows
+
+
+def bar_of(state: dict, *, single: bool = False, agent: str | None = None,
+           names: dict | None = None) -> dict:
     """The bar for a window's state; `agent`: the voice whose own window
-    it is (none for the user's)."""
+    it is (none for the user's); `names`: the voices' names as the shell
+    gave them."""
     start = []
     if agent:
-        from indigoshell.core.voices import voice_name
-        start.append(B.text(OWNER_ITEM, voice_name(agent), color=f"voice:{voice_id(agent)}"))
+        vid = voice_id(agent)
+        start.append(B.text(OWNER_ITEM, (names or {}).get(vid) or voice_name(vid),
+                            color=f"voice:{vid}"))
     start.append(tabs_item(state, single=single))
-    return B.bar(start, [host_item(state)])
+    if single:
+        return B.bar(start, [host_item(state)])
+    return B.bar(start, [host_item(state)], inputs_of(state),
+                 {ACTIONS: B.menu(actions_rows(state, names), chords=["ctrl+m"])})

@@ -633,6 +633,21 @@ def app_bar(titles, current=0, *, host="127.0.0.1", secure=False, progress=None,
                  [B.text("host", spans=spans)])
 
 
+def stand_in_bar(width=1800, left=12, bottom=None):
+    """The top bar as the app service sees it (its context area's window
+    and rect), across a 2560 px monitor at the origin: no window of it is
+    made here."""
+    import types
+
+    import skia
+
+    from indigoshell import theme
+    bottom = bottom or theme.TOP_BAR_HEIGHT
+    window = types.SimpleNamespace(wid=1, x=0, y=0, width=2560, height=bottom,
+                                   content_root=(0, 0, 2560, bottom))
+    return types.SimpleNamespace(window=window, rect=skia.Rect.MakeXYWH(left, 0, width, bottom))
+
+
 def host_layout(view) -> dict:
     """The host item as drawn: its text, where, the marks before it."""
     pieces = view.item("host").layout()
@@ -1473,7 +1488,6 @@ async def test_service(scratch: Path) -> None:
     L, CTRL = keycodes_of(xw.conn, "l")[0], xp.ModMask.Control
     sock = os.path.join(runtime_dir(), f"{APP}-tbt-{os.getpid()}-apps.sock")
     service = AppService({"flux": FluxWindow}, path=sock, display=display)
-    service.show_launcher = lambda mode, placement: False      # no key is pressed here
     apps: list[App] = []
     try:
         service.start()
@@ -1498,7 +1512,7 @@ async def test_service(scratch: Path) -> None:
               "grab of Ctrl+L)",
               got == ATTACHED and isinstance(wa, FluxWindow) and wa.kind == "flux"
               and not wa.single and A in service.grabs
-              and sorted(set(service.grabs[A].chords.values())) == ["actions", "address", "new_tab"]
+              and sorted(set(service.grabs[A].chords.values())) == ["ctrl+l", "ctrl+m", "ctrl+t"]
               and held_by_another(xw.conn, A, L, CTRL), f"{got}")
         b = await app(protocol.announce(B, False), flux_state(["Gamma"]))
         await b.answer()
@@ -1563,7 +1577,7 @@ async def test_service(scratch: Path) -> None:
               and not held_by_another(xw.conn, A, L, CTRL))
         a2 = await app(protocol.announce(A, False), flux_state(["Alpha again"]))
         await a2.answer()
-        wa2 = await until(lambda: service.window_for(A))
+        wa2 = await until(lambda: (w_ := service.window_for(A)) and w_.bar and w_)
         check("... and back (a new connection, as after its X window was replaced): shown again, "
               "its keys grabbed again",
               wa2 is not None and wa2 is not wa and ctx.shown is wa2.content
@@ -1595,9 +1609,11 @@ async def test_service(scratch: Path) -> None:
         wg = await until(lambda: service.window_for(G))
         service.set_active(G)
         warned = [m for m in rec.at_least(logging.WARNING, mark) if "ide" in m]
-        check("an app kind with no class here (\"ide\"): kept and answered, shown as nothing, "
-              "said once; no keys grabbed", got == ATTACHED and type(wg) is AppWindow
-              and wg.content is None and ctx.shown is None and len(warned) == 1
+        img = paint(ctx, 1600, theme.TOP_BAR_HEIGHT)
+        check("an app kind with no class here (\"ide\"): kept and answered, shown as nothing "
+              "(an empty section), said once; no keys grabbed", got == ATTACHED
+              and type(wg) is AppWindow and wg.bar is None and ctx.shown is wg.content
+              and share_of(img, hex_rgb(theme.BAR_BG)) == 1.0 and len(warned) == 1
               and G not in service.grabs, f"{warned}")
 
         bad = []
@@ -1648,7 +1664,7 @@ async def test_service(scratch: Path) -> None:
         await until(lambda: service.listening, 2)
         b2 = await app(protocol.announce(B, False), flux_state(["Gamma back"]))
         got = await b2.answer()
-        wb2 = await until(lambda: service.window_for(B))
+        wb2 = await until(lambda: (w_ := service.window_for(B)) and w_.bar and w_)
         check("started again: apps announce again, focus as it was (still on that window), the "
               "keys grabbed again", got == ATTACHED and wb2 is not None
               and ctx.shown is wb2.content and held_by_another(xw.conn, B, L, CTRL))
@@ -1703,28 +1719,37 @@ class CoreRecorder:
     def UngrabKeyboard(self, time_, is_checked=False):
         self.calls.append(("let go",))
 
+    def GrabPointer(self, owner_events, wid, mask, pointer_mode, keyboard_mode, confine, cursor,
+                    time_, is_checked=True):
+        import types
+
+        import xcffib.xproto as xp
+        self.calls.append(("pointer", wid, owner_events))
+        return types.SimpleNamespace(
+            reply=lambda: types.SimpleNamespace(status=xp.GrabStatus.Success))
+
+    def UngrabPointer(self, time_, is_checked=False):
+        self.calls.append(("pointer let go",))
+
     def of(self, kind: str, since: int = 0) -> list:
         return [c for c in self.calls[since:] if c[0] == kind]
 
 
 def test_grabs(scratch: Path) -> None:
-    import types
-
     import xcffib.xproto as xp
 
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
     from flux import protocol
     from indigoshell.applink.flux import FluxWindow
-    from indigoshell.services.addresses import AddressMode
-    from indigoshell.services.modes import Choices
 
     section("5b. the keys the shell takes (real unmapped windows of the test's own)")
     # The address list reads the history and the bookmarks: scratch ones.
     saved_env = {k: os.environ.get(k) for k in ("XDG_CONFIG_HOME", "XDG_DATA_HOME")}
     os.environ.update(XDG_CONFIG_HOME=str(scratch / "grabs-config"),
                       XDG_DATA_HOME=str(scratch / "grabs-data"))
-    rec = Records("indigoshell.applink.service", "indigoshell.applink.flux")
+    rec = Records("indigoshell.applink.service", "indigoshell.applink.flux",
+                  "indigoshell.applink.prompt")
     display = Display()
     real_core = display.conn.core
     core = CoreRecorder(real_core)
@@ -1740,41 +1765,16 @@ def test_grabs(scratch: Path) -> None:
     service = AppService({"flux": FluxWindow}, path="/nonexistent", display=display)
     service.running = True                  # started, as far as the keys go (no socket here)
     display.add_keymap_listener(service._keymap_changed)
-    typed, shown = [], []
-
-    class Launcher:
-        """What Flux's side needs of the launcher: shows a mode, takes
-        keys for it, holds the keyboard (or not)."""
-        window = types.SimpleNamespace(keyboard_grabbed=True)
-        modes: list = []
-
-        def shows(self, m):
-            return m in self.modes
-
-        def type_ahead(self, m, keys):
-            if not self.shows(m):
-                return False
-            typed.extend(k.text or hex(k.keysym) for k in keys)
-            return True
-
-        def cancel(self, m):
-            self.modes = []
-
-    launcher = Launcher()
-
-    def show(mode, placement):
-        core.calls.append(("launcher", type(mode).__name__))
-        mode.host = launcher
-        launcher.modes = [mode]
-        shown.append(mode)
-        return True
-
-    service.show_launcher = show
+    drops = []
+    service.context = stand_in_bar()
+    service.show_drop = lambda prompt, place: drops.append((prompt.name, place))
+    service.hide_drop = lambda: drops.append("hide")
 
     def flux(wid, announce):
         line = Line(service)
         window = FluxWindow(line, wid, announce)
         service.added(window)
+        window.on_message(flux_state(["Alpha"], host="a.example"))   # its bar: its chords
         return window, line
 
     def key(wid, sym, state=0, release=False):
@@ -1825,7 +1825,7 @@ def test_grabs(scratch: Path) -> None:
               "next such window), Ctrl+M left to the app (the lock combinations that went "
               "through let go again), Ctrl+L and Ctrl+T grabbed",
               len(warned) == 1 and "ctrl+m" in warned[0]
-              and all(sorted(set(service.grabs[w_].chords.values())) == ["address", "new_tab"]
+              and all(sorted(set(service.grabs[w_].chords.values())) == ["ctrl+l", "ctrl+t"]
                       for w_ in (E, F))
               and not held_by_another(other, E, codes["m"][0], CTRL | LOCK)
               and held_by_another(other, E, codes["l"][0], CTRL), f"{warned}")
@@ -1836,51 +1836,54 @@ def test_grabs(scratch: Path) -> None:
         # A press, as the X server reports one: Caps Lock on, the keys
         # after it on the app's window while the shell holds the keyboard.
         n = len(core.calls)
+        service.focused = wa
         key(A, ord("l"), CTRL | LOCK)
         key(A, ord("l"), CTRL | LOCK, release=True)
         key(A, ord("y"), LOCK)
         key(A, ord("o"), LOCK | SHIFT)
         after = core.calls[n:]
+        p = service.prompt
         check("Ctrl+L pressed in it (Caps Lock on): first the keyboard held on that window "
-              "(GrabKeyboard, owner_events off, asynchronous), then the launcher opened on the "
-              "addresses, the page's address in the query, selected; the keyboard not given back "
-              "(the launcher has it)",
-              after[:2] == [("keyboard", A, False, ASYNC, ASYNC), ("launcher", "AddressMode")]
-              and isinstance(shown[-1], AddressMode) and shown[-1].text == "http://a.example/"
-              and shown[-1].select_text and ("let go",) not in after, f"{after[:3]}")
-        check("the keys typed after it, before the launcher had the keyboard: into its query, in "
-              "order, through the keymap (Caps Lock and Shift as typed); the chord's release not "
-              "one of them", typed == ["Y", "o"], f"{typed}")
+              "(GrabKeyboard, owner_events off, asynchronous), then the pointer on the bar's "
+              "window for clicks elsewhere; the address input open in the bar, the page's "
+              "address in it, selected; the keyboard not given back (the input has it)",
+              after[:2] == [("keyboard", A, False, ASYNC, ASYNC), ("pointer", 1, True)]
+              and p is not None and p.name == "address" and wa.view.box is p.box
+              and ("let go",) not in after, f"{after[:3]}")
+        check("the keys typed after it, on the app's window while the shell holds the keyboard: "
+              "into the box, in order, through the keymap (Caps Lock and Shift as typed; the "
+              "first replacing the selected address); the chord's release not one of them",
+              p.box.field.text == "Yo", f"{p.box.field.text!r}")
         key(A, ord("l"), CTRL)
-        check("Ctrl+L again while that launcher is up: a key for it (its pick), not a second "
-              "launcher", typed[-1] == hex(ord("l")) and len(shown) == 1)
+        check("Ctrl+L again while it is open: a key for it (the text selected whole), not a "
+              "second input", service.prompt is p and p.box.field.selected_all)
+        n = len(core.calls)
         key(A, 0xFF1B)
-        check("Escape the same way: the launcher's to answer", typed[-1] == hex(0xFF1B))
+        check("Escape the same way: it closes; the keyboard and the pointer given back",
+              service.prompt is None and ("let go",) in core.calls[n:]
+              and ("pointer let go",) in core.calls[n:] and wa.view.box is None)
 
-        launcher.modes = []                 # closed
-        Launcher.window.keyboard_grabbed = False
-        mark, n = len(rec.records), len(core.calls)
+        n = len(core.calls)
         key(A, ord("m"), CTRL | num)
-        check("Ctrl+M (Num Lock on), the launcher up but without the keyboard: the actions shown, "
-              "and the keyboard given back at once (never held with nothing to type into), said",
-              isinstance(shown[-1], Choices) and ("let go",) in core.calls[n:]
-              and any("did not take the keyboard" in m
-                      for m in rec.at_least(logging.WARNING, mark)))
-        Launcher.window.keyboard_grabbed = True
-        launcher.modes = []
-        service.show_launcher = lambda mode, placement: False
+        m = service.prompt
+        check("Ctrl+M (Num Lock on): the actions menu, the keyboard held for it",
+              m is not None and m.what == "menu" and m.name == "actions"
+              and ("keyboard", A, False, ASYNC, ASYNC) in core.calls[n:]
+              and ("let go",) not in core.calls[n:])
+        key(A, 0xFF1B)
+        service.context = None
         n = len(core.calls)
         key(A, ord("t"), CTRL)
-        check("Ctrl+T with no launcher to show: the keyboard held, then given back, and the "
+        check("Ctrl+T with no top bar to show it in: the keyboard held, then given back, and the "
               "browser told to ask itself: {type: prompt, action: new_tab}",
               [c[0] for c in core.calls[n:]] == ["keyboard", "let go"]
-              and la.out[-1] == {"type": "prompt", "action": "new_tab"}, f"{la.out[-1:]}")
+              and la.out[-1] == {"type": "prompt", "action": "new_tab"}, f"{la.out[-1]}")
         n, sent = len(core.calls), len(la.out)
         wa.on_message(protocol.launcher("address"))
         check("{type: launcher} from the browser (a new window): the same, with no key pressed, "
               "so nothing held or given back", core.calls[n:] == []
               and la.out[sent:] == [{"type": "prompt", "action": "address"}])
-        service.show_launcher = show
+        service.context = stand_in_bar()
         n = len(core.calls)
         key(S, ord("l"), CTRL)
         check("a key event for a window with no grab (the single one): not the service's",
@@ -1913,8 +1916,7 @@ def test_grabs(scratch: Path) -> None:
               "too; X gives another client Ctrl+L on it now",
               let_go == want and A not in service.grabs and A not in display._handlers
               and not held_by_another(other, A, codes["l"][0], CTRL), f"{len(let_go)} let go")
-        unexpected = [m for m in rec.at_least(logging.WARNING)
-                      if "ctrl+m" not in m and "did not take the keyboard" not in m]
+        unexpected = [m for m in rec.at_least(logging.WARNING) if "ctrl+m" not in m]
         check("no other warnings or errors", unexpected == [], f"{unexpected[:3]}")
     finally:
         for w_ in list(service.windows):
@@ -1930,7 +1932,7 @@ def test_grabs(scratch: Path) -> None:
                 os.environ[k] = v
 
 
-# ── 6. where the launcher drops from ────────────────────────────────────
+# ── 6. where the list drops from ────────────────────────────────────────
 
 def test_placement() -> None:
     import types
@@ -1938,36 +1940,33 @@ def test_placement() -> None:
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
     from indigoshell.applink.flux import FluxWindow
-    from indigoshell.window import Placement
 
-    section("6. where Flux's launcher drops from")
+    section("6. whether a top bar is over an app's window, and where its list drops")
     display = Display()
     xw = Windows()
     P = xw.make(300, 150, 1000, 700)
     service = AppService({"flux": FluxWindow}, path="/nonexistent", display=display)
     jw = FluxWindow(Line(service), P, {"single": False})
-    alone = jw.placement()
-
-    def bar(x, y, w, h):
-        return types.SimpleNamespace(window=types.SimpleNamespace(wid=1, content_root=(x, y, w, h)))
-
-    service.context = bar(0, 0, 2560, 34)
-    under_bar = jw.placement()
-    service.context = bar(2560, 0, 1920, 34)
-    elsewhere = jw.placement()
-    service.context = types.SimpleNamespace(window=types.SimpleNamespace(wid=None,
-                                                                        content_root=(0, 0, 0, 0)))
-    unmade = jw.placement()
-    service.context = bar(0, 0, 2560, 34)
+    alone = service._cannot_show(jw)
+    service.context = stand_in_bar(width=1800, left=12)
+    under = service._cannot_show(jw)
+    menu = types.SimpleNamespace(anchor=None)
+    item = types.SimpleNamespace(anchor=types.SimpleNamespace(
+        rect=__import__("skia").Rect.MakeXYWH(300, 0, 60, 34)))
+    places = (service.section(), service._drop_place(menu), service._drop_place(item))
+    service.context.window.content_root = (2560, 0, 1920, 34)
+    elsewhere = service._cannot_show(jw)
+    service.context = stand_in_bar()
     xw.destroy(P)
-    gone = jw.placement()
-    check("no top bar: centred on the window, its top at the window's top edge",
-          alone == Placement(800, 150), f"{alone}")
-    check("a top bar over it: centred on the window, its top at the bar's bottom edge",
-          under_bar == Placement(800, 34), f"{under_bar}")
-    check("the bar on another monitor, or not made: the window's top edge again",
-          elsewhere == Placement(800, 150) and unmade == Placement(800, 150), f"{elsewhere}")
-    check("the window gone: no placement (the launcher's own spot)", gone is None)
+    gone = service._cannot_show(jw)
+    check("no top bar: it cannot show (the app does without)", alone == "no top bar", f"{alone}")
+    check("a top bar over the window: it can; the list drops at the section's left, under the "
+          "bar's bottom edge, the section's width; a menu opened from an item, under the item",
+          under is None and places[0] == (12, 42, 1800) and places[1] == (12, 42, 1800)
+          and places[2] == (300, 42, 1800), f"{under} {places}")
+    check("the bar on another monitor, or the window gone: it cannot",
+          elsewhere == "the top bar is on another monitor" and gone == "the window is gone",
+          f"{elsewhere} {gone}")
     xw.close()
     display.close()
 
@@ -2298,10 +2297,9 @@ async def on_screen(scratch: Path) -> None:
     x = Reader()
     backend = gl.backend(display)
     service = AppService({"flux": FluxWindow}, path=sock, display=display)
-    # No daemon and no launcher here (no key is pressed: that would take
-    # input injected into the display); a launcher wanted is answered
-    # `prompt`, the browser's own dialog, none in an unattended run.
-    service.show_launcher = lambda mode, placement: False
+    # No daemon and no top bar here (no key is pressed: that would take
+    # input injected into the display); an input wanted is answered
+    # `fallback`, the browser's own dialog, none in an unattended run.
     service.start()
     # The person's real focus is not followed here: the test moves it.
     service._active_atom = 0

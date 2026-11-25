@@ -581,6 +581,27 @@ class Display:
         self.conn.core.UngrabKeyboard(xp.Time.CurrentTime)
         self.flush()
 
+    def grab_pointer(self, wid: int) -> bool:
+        """Take the pointer actively for clicks outside this connection's
+        windows: owner_events on, so a press on a window of ours still
+        goes to that window, and one anywhere else is reported on `wid`
+        (with coordinates relative to it), until `ungrab_pointer`."""
+        try:
+            reply = self.conn.core.GrabPointer(
+                True, wid, xp.EventMask.ButtonPress | xp.EventMask.ButtonRelease,
+                xp.GrabMode.Async, xp.GrabMode.Async, xp.Atom._None, xp.Atom._None,
+                xp.Time.CurrentTime).reply()
+        except Exception:
+            log.debug("pointer grab on 0x%x errored", wid, exc_info=True)
+            return False
+        finally:
+            self.wake()
+        return reply.status == xp.GrabStatus.Success
+
+    def ungrab_pointer(self) -> None:
+        self.conn.core.UngrabPointer(xp.Time.CurrentTime)
+        self.flush()
+
     # ── root events ─────────────────────────────────────────────────────
     def add_root_listener(self, callback) -> None:
         """Subscribe to PropertyNotify on the root window.

@@ -14,6 +14,7 @@ from .widgets.base import Insets
 from .agent import CALL_WINDOW, CallHost, CallRouter
 from .agent.ui.status import AgentChip
 from .applink.context import AppContext
+from .applink.drop import DROP_WINDOW, DropList
 from .applink.service import AppService
 from .applink.flux import FluxWindow
 from .widgets.clock import Clock
@@ -420,6 +421,21 @@ WINDOWS = [
         holo=True,                  # the call's hologram look
         effect_scale=0.35,           # raster fallback only
         content=Launcher(rows=12, width=760, terminal=("kitty",)),
+    ),
+
+    # The top bar's drop-down: an open input's or menu's list, flush under
+    # the bar on its background, as if the bar grew down (applink/drop.py).
+    # Placed and sized by whoever opens it; no keyboard or pointer of its
+    # own (the open prompt holds them), no effect: it unrolls by itself.
+    WindowSpec(
+        name=DROP_WINDOW,
+        layer=Layer.OVERLAY,
+        size=(1, 1),                 # placeholder; content-sized
+        override_redirect=True,
+        focusable=False,
+        keep_alive=True,
+        background=theme.BAR_BG,
+        content=DropList(),
     ),
 ]
 
