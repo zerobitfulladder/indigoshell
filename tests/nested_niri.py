@@ -300,7 +300,7 @@ class _Hub(ScriptedAgent):
         pass                            # no line: the test plays the hub
 
 
-HUB = _Hub(voice="indigo")
+HUB = _Hub()
 CALL, CALL_SERVICES = call(HUB)
 WINDOWS = [*WINDOWS, CALL]
 SERVICES = [*SERVICES, *CALL_SERVICES]

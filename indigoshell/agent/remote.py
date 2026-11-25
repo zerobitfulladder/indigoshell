@@ -1,9 +1,10 @@
 """A call to the agent on the hub: lilac, on a Raspberry Pi.
 
 `RemoteAgent` is what the call overlay, the top bar's chip and
-`CallRouter` read: the conversation's attributes and methods, kept from
-the hub's events. The hub's agent is one mind with two voices, Lilac and
-Indigo; lilac's PROTOCOL.md is the reference for how devices talk to it.
+`CallRouter` read: the chat's attributes and methods, kept from the
+hub's events. The hub's agent is Lilac, in one chat that never ends;
+lilac's PROTOCOL.md (protocol 2) is the reference for how devices talk
+to it.
 
 **The line:** a WebSocket over TLS to the hub's gateway, with this
 machine's own certificate (`tls`: the hub's CA, this device's
@@ -19,14 +20,23 @@ is closed still rings. It comes back by itself when either machine was
 away, with a growing pause between tries; opening the call or saying a
 line cuts the pause short.
 
-**Voices:** each line said in the call goes to the agent in `voice`,
-which the call switches (`switch_voice`, Ctrl+S) and remembers across
-reloads; the voices themselves (names, colours) are the hub's, from
-`welcome.voices`, and are remembered too, so the call can name them
-while the line is down. The conversation is shared, so the turn on show
-may be in the other voice (asked from the phone, or before a switch):
-`name` and `accent`, which the overlay paints the agent's plate and
-chip with, follow the voice of the turn on show.
+**Her:** the hub names her once, in its welcome (`welcome.agent`: Lilac,
+#c8a2c8), and every reply and mark is drawn in that name and colour
+(`name`, `accent`); the shell's apps hear it too (core/persona.py).
+
+**The chat** is one conversation, shared with the other screens, and
+compacted on the hub as it grows: `context` says how full it is (the
+call's bar), and the phase `compacting` while it runs, which is not a
+turn: `busy` stays False here and a line said meanwhile waits for it,
+shown as asked. `compacted` is how it went.
+
+**Scrollback:** the turn on show is the newest exchange; `exchanges`
+holds the earlier ones the call has fetched (`scrollback`, a page at a
+time, oldest first), only those she still holds word for word: the
+hub's `edge` says whether older ones exist only in her memory
+(`compacted`) or the chat begins there (`start`). A finished turn joins
+them by its `done.exchange`; `forgotten` drops some; a compaction trims
+them to its `from`.
 
 **Ringing:** the hub says who rings (its `ring` event names devices,
 `*` for all): what was asked from this laptop rings here, what was asked
@@ -69,14 +79,13 @@ import contextlib
 import json
 import logging
 import os
-import re
 import ssl
 import time
 from collections import OrderedDict, deque
 from typing import Callable
 from urllib.parse import urlsplit
 
-from ..core import state
+from ..core import persona
 from .activity import Activity, Approval
 from .hands import Hands
 
@@ -96,7 +105,7 @@ DEFAULT_EFFORT = "medium"
 # Everything the agent did this turn, so the overlay can expand it.
 ACTIVITY_KEEP = 80
 
-PROTOCOL = 1
+PROTOCOL = 2
 # What this connection is to the hub.
 CLIENT = "call"
 # Lines and turns of the hub's own (a job ended, a scheduled turn).
@@ -121,7 +130,9 @@ MEDIA_AUTO_MAX = 12 * 1024 * 1024
 FETCH_TIMEOUT_S = 60.0
 # The hub's phases that the overlay knows by another name.
 PHASES = {"starting": "dialing"}
-_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+COMPACTING = "compacting"
+# Earlier exchanges asked for at once (the hub's default; at most 100).
+SCROLLBACK_PAGE = 30
 
 
 # ── the line ────────────────────────────────────────────────────────────
@@ -207,20 +218,39 @@ class _NoJobs:
         return None
 
 
-class _Session:
-    """A past conversation, as the call's history list reads one (the
-    fields of the SDK's session info, as the hub lists them)."""
+def _exchange(item: dict) -> dict | None:
+    """One exchange of the hub's scrollback, with every field there; None
+    for one with no id."""
+    xid = item.get("id")
+    if not isinstance(xid, int) or isinstance(xid, bool):
+        return None
+    at = item.get("at")
+    lines = item.get("lines")
+    source = item.get("source")
+    return {"id": xid,
+            "at": float(at) if isinstance(at, (int, float)) else None,
+            "source": source if source in ("user", "hub", "announcement")
+            else "user",
+            "device": str(item.get("device") or "") or None,
+            "lines": [str(x) for x in lines] if isinstance(lines, list) else [],
+            "reply": str(item.get("reply") or ""),
+            "attached": int(item.get("attached") or 0),
+            "shown": [x for x in item.get("shown") or [] if isinstance(x, dict)]}
 
-    __slots__ = ("session_id", "summary", "first_prompt", "last_modified")
 
-    def __init__(self, item: dict) -> None:
-        self.session_id = str(item.get("session") or "")
-        self.summary = item.get("title")
-        self.first_prompt = None
-        modified = item.get("modified")
-        # Milliseconds, as the SDK counts them.
-        self.last_modified = float(modified) * 1000 \
-            if isinstance(modified, (int, float)) else 0
+def _context(value) -> dict | None:
+    """`state.context`, its numbers checked: {used, compact_at, cap,
+    window, from}, `used` None while the hub hasn't measured it."""
+    if not isinstance(value, dict):
+        return None
+
+    def number(key):
+        v = value.get(key)
+        return int(v) if isinstance(v, (int, float)) \
+            and not isinstance(v, bool) and v >= 0 else None
+
+    out = {k: number(k) for k in ("used", "compact_at", "cap", "window", "from")}
+    return out if out["cap"] else None
 
 
 def _device(item: dict) -> dict:
@@ -271,12 +301,8 @@ class RemoteAgent:
     """The hub's agent, as the call reads it.
 
     A SERVICES entry (it needs the loop for its line), with a `CallHost`
-    and a `CallStatus` of its own and a `CallRouter` watching it. Give it
-    the `voice` that answers until the call switches it, `endpoints` and
+    of its own and a `CallRouter` watching it. Give it `endpoints` and
     `tls`, and the `hands` this machine lends (hands.py), if any.
-    `state_key` names what it remembers in the shell's state file (the
-    voice chosen, the hub's voices); None remembers nothing. `accent` is
-    the voice's colour until the hub gives its own.
     """
 
     # A line can carry what the user is looking at (the call's Look).
@@ -284,24 +310,19 @@ class RemoteAgent:
     # Pictures bigger than this show as files, fetched when opened.
     media_auto_max = MEDIA_AUTO_MAX
 
-    def __init__(self, *, voice: str, endpoints: list[str], tls: dict,
+    def __init__(self, *, endpoints: list[str], tls: dict,
                  server_name: str = "lilac", hands: Hands | None = None,
-                 accent: str | None = None, state_key: str | None = "hub",
                  workspace: str | None = None) -> None:
         if not endpoints:
             raise ValueError("RemoteAgent needs the hub's endpoints")
         if not all(tls.get(k) for k in ("ca", "cert", "key")):
             raise ValueError("RemoteAgent needs tls: {ca, cert, key}")
-        self.voice = voice              # who answers the next line
-        self.default_voice = voice
-        self.state_key = state_key
         self.endpoints = list(endpoints)
         self.tls = dict(tls)
         self.server_name = server_name
         self.hands = hands
         if hands is not None:
             hands.asker = self._ask_here
-        self._accent = accent
         # Where a relative link in a reply would be opened from.
         self.workspace = workspace or os.path.expanduser("~")
         self.jobs = _NoJobs()
@@ -310,18 +331,29 @@ class RemoteAgent:
         # ── mirrored from the hub ───────────────────────────────────
         self.phase = "offline"
         self.busy = False
+        self.compacting = False         # the hub compacts the chat
         self.model: str | None = None
         self.effort: str | None = None
-        self.session_id: str | None = None
         self.error: str | None = None
         self.hint: str | None = None
         self.device: str | None = None      # this device, as the hub names it
         self.devices: list[dict] = []
         self._label = ""
-        self._voices: dict[str, dict] = {}
+        # How full the chat is: {used, compact_at, cap, window, from}.
+        self.context: dict | None = None
+        # The last compaction: {before, after, at}, `at` monotonic.
+        self.compacted: dict | None = None
+
+        # ── the scrollback ──────────────────────────────────────────
+        self.exchanges: list[dict] = []     # earlier ones, oldest first
+        self.more_back = True           # older ones to ask for
+        self.edge: str | None = None    # with none: "start" | "compacted"
+        self.back_loading = False       # a page asked for, not yet in
+        self.back_rev = 0               # bumped whenever `exchanges` changes
 
         # ── the turn on show ────────────────────────────────────────
-        self.shown_voice = voice            # whose turn is on show
+        self.exchange: int | None = None    # its id, once kept
+        self.at: float | None = None        # when it began (Unix time)
         self.heard = ""
         self.heard_on: str | None = None    # the device it was asked on
         self.message = ""
@@ -332,9 +364,9 @@ class RemoteAgent:
         self.hangup_line: str | None = None
         self.turn_started = 0.0
         self.queued: list[str] = []     # said while the line was down
-        self._queued_voices: list[str] = []
         self._queued_attach: list[list | None] = []
         self.heard_attached = 0         # blocks the line on show came with
+        self.from_hub = False           # a turn the hub started
         self._line_attached: tuple[str, int] = ("", 0)
 
         # ── ours ────────────────────────────────────────────────────
@@ -351,8 +383,8 @@ class RemoteAgent:
         self._ring_turn = None          # the turn rung for
         self._unseen = None             # the hub's unseen turn
         self._seen_sent = None
-        # Said here and not yet heard back: (text, voice).
-        self._mine: deque[tuple[str, str]] = deque()
+        # Said here and not yet heard back.
+        self._mine: deque[str] = deque()
         self._local_turn = False        # begun here, the hub's `turn` due
         self._turn_ours = False         # the turn on show was asked here
         self._segments: list[str] = []
@@ -368,7 +400,6 @@ class RemoteAgent:
         self.media_rev = 0                  # bumped when bytes arrive
         self._open_seg: int | None = None
         self._seg_map: dict = {}        # the hub's block numbers → ours
-        self._sessions: list[_Session] = []
         self._interrupted = False
         self._task: asyncio.Task | None = None
         self._outbox: asyncio.Queue | None = None
@@ -376,51 +407,16 @@ class RemoteAgent:
         self._stopping = False
         self._why_down = ""
 
-    # ── who speaks ──────────────────────────────────────────────────────
+    # ── her ─────────────────────────────────────────────────────────────
     @property
     def name(self) -> str:
-        """The voice of the turn on show, as the call's heading names it."""
-        voice = self._voices.get(self.shown_voice) or {}
-        return str(voice.get("name") or self.shown_voice).upper()
+        """Her name, as the call's headings show it: "LILAC"."""
+        return persona.name().upper()
 
     @property
-    def accent(self) -> str | None:
-        """The colour of the voice of the turn on show."""
-        return self._color(self.shown_voice)
-
-    def _color(self, voice_id: str) -> str | None:
-        voice = self._voices.get(voice_id) or {}
-        if voice.get("color"):
-            return voice["color"]
-        return self._accent if voice_id == self.default_voice else None
-
-    @property
-    def voice_switch(self) -> tuple[str, str | None]:
-        """Who answers the next line, as the call's switch shows it: the
-        voice's name and colour."""
-        voice = self._voices.get(self.voice) or {}
-        return (str(voice.get("name") or self.voice.capitalize()),
-                self._color(self.voice))
-
-    def switch_voice(self) -> None:
-        """The next line goes to the other voice (the next, if the hub
-        ever has more); remembered across reloads."""
-        ids = list(self._voices) or [self.default_voice]
-        if self.voice not in ids:
-            ids.insert(0, self.voice)
-        self.voice = ids[(ids.index(self.voice) + 1) % len(ids)]
-        self._remember("voice", self.voice)
-        if not self.busy and not self.heard and not self.message:
-            self.shown_voice = self.voice   # an empty call: whose it is
-        self._emit()
-
-    def _remember(self, what: str, value) -> None:
-        if self.state_key:
-            state.set(f"{self.state_key}.{what}", value)
-
-    def _recall(self, what: str):
-        return state.get(f"{self.state_key}.{what}") if self.state_key \
-            else None
+    def accent(self) -> str:
+        """Her colour, for every reply and mark."""
+        return persona.color()
 
     @property
     def approval(self) -> Approval | None:
@@ -429,13 +425,6 @@ class RemoteAgent:
 
     # ── service hooks ───────────────────────────────────────────────────
     def start(self) -> None:
-        voices = self._recall("voices")
-        if isinstance(voices, dict):
-            self._voices = {str(k): v for k, v in voices.items()
-                            if isinstance(v, dict)}
-        voice = self._recall("voice")
-        if isinstance(voice, str) and voice:
-            self.voice = self.shown_voice = voice
         self._wake = asyncio.Event()
         self._task = asyncio.get_running_loop().create_task(self._line())
 
@@ -483,15 +472,15 @@ class RemoteAgent:
             self._poke()
 
     def say(self, line: str, attach: list[dict] | None = None) -> None:
-        """Say a line in the chosen voice; `attach`: what the user is
-        looking at (the call's Look), up to ATTACH_MAX content blocks."""
+        """Say a line; `attach`: what the user is looking at (the call's
+        Look), up to ATTACH_MAX content blocks. While the hub compacts
+        the chat, the line waits for it there, shown as asked."""
         line = line.strip()
         if not line:
             return
         attach = list(attach or [])[:ATTACH_MAX] or None
         if not self.connected:
             self.queued.append(line)
-            self._queued_voices.append(self.voice)
             self._queued_attach.append(attach)
             self._poke()
             self._emit()
@@ -502,22 +491,23 @@ class RemoteAgent:
         else:
             self._begin_turn(line)
             self._local_turn = self._turn_ours = True
-            self.shown_voice = self.voice
             self.heard_attached = len(attach or ())
-        self._say(line, self.voice, attach)
+        self._say(line, attach)
         self._emit()
 
-    def _say(self, line: str, voice: str,
-             attach: list[dict] | None = None) -> None:
-        self._mine.append((line, voice))
-        message = {"type": "say", "text": line, "voice": voice}
+    def _say(self, line: str, attach: list[dict] | None = None) -> None:
+        self._mine.append(line)
+        message = {"type": "say", "text": line}
         if attach:
             message["attach"] = attach
         self._send(message)
 
     def interrupt(self) -> None:
+        """Stop the running turn. A compaction can't be stopped (the hub
+        refuses), so nothing is sent for one."""
+        if self.compacting and not self.busy:
+            return
         self.queued.clear()
-        self._queued_voices.clear()
         self._queued_attach.clear()
         if self.busy:
             self._interrupted = True
@@ -572,18 +562,6 @@ class RemoteAgent:
         log.info("%s: the user's answer: %s", self._tag, decision)
         return decision == "allow"
 
-    def new_conversation(self) -> bool:
-        if self.busy or not self.connected:
-            return False
-        self._send({"type": "new"})
-        self._clear_turn()
-        self.heard = ""
-        self.heard_on = None
-        self.shown_voice = self.voice
-        self.error = self.hint = None
-        self._emit()
-        return True
-
     def cycle_model(self, step: int = 1) -> None:
         current = self.model if self.model in MODELS else MODELS[0]
         nxt = MODELS[(MODELS.index(current) + step) % len(MODELS)]
@@ -604,17 +582,93 @@ class RemoteAgent:
         effort = self.effort or DEFAULT_EFFORT
         return EFFORT_NAMES.get(effort, effort)
 
-    def lines(self, limit: int = 40) -> list[_Session]:
-        """Past conversations as last heard; asks for a fresh list too."""
-        self._send({"type": "history"})
-        return self._sessions[:limit]
+    # ── the scrollback ──────────────────────────────────────────────────
+    def earlier(self) -> list[dict]:
+        """The exchanges before the turn on show, oldest first."""
+        return [x for x in self.exchanges if x["id"] != self.exchange]
 
-    def resume_line(self, session_id: str) -> bool:
-        if self.busy or not self.connected:
+    def want_older(self) -> bool:
+        """Ask the hub for the page before the oldest exchange here (the
+        newest page, with none yet). Whether a page is on its way."""
+        if self.back_loading:
+            return True
+        if not self.more_back or not self.connected:
             return False
-        if session_id != self.session_id:
-            self._send({"type": "resume", "session": session_id})
-        return True
+        before = self.exchanges[0]["id"] if self.exchanges else None
+        message = {"type": "scrollback", "limit": SCROLLBACK_PAGE}
+        if before is not None:
+            message["before"] = before
+        self.back_loading = self._send(message)
+        return self.back_loading
+
+    def _got_scrollback(self, ev: dict) -> None:
+        """A page of the hub's scrollback: it replaces what this call had
+        in the span it covers (from its oldest item up to `before`, or to
+        the newest with none; from the start of what she holds when there
+        is no more), so an exchange forgotten meanwhile goes too."""
+        self.back_loading = False
+        items = [x for x in map(_exchange, (i for i in ev.get("items") or []
+                                            if isinstance(i, dict)))
+                 if x is not None]
+        before = ev.get("before")
+        more = bool(ev.get("more"))
+        low = items[0]["id"] if items and more else None
+        if not items and more:
+            return                          # nothing said: keep what is here
+        kept = [x for x in self.exchanges
+                if not ((low is None or x["id"] >= low)
+                        and (before is None or x["id"] < before))]
+        self.exchanges = sorted(kept + items, key=lambda x: x["id"])
+        if low is None or low <= self.exchanges[0]["id"]:
+            # A page that reaches the oldest here says what lies past it.
+            self.more_back = more
+            self.edge = None if more else str(ev.get("edge") or "start")
+        self._trim()
+        self.back_rev += 1
+
+    def _trim(self) -> None:
+        """Drop what she no longer holds word for word (older than
+        `context.from`): the scrollback ends there, at her memory."""
+        start = (self.context or {}).get("from")
+        if start is None or not self.exchanges \
+                or self.exchanges[0]["id"] >= start:
+            return
+        self.exchanges = [x for x in self.exchanges if x["id"] >= start]
+        self.more_back, self.edge = False, "compacted"
+        self.back_rev += 1
+
+    def _keep_turn(self, xid: int, kind: str) -> None:
+        """The turn on show ended and was kept as exchange `xid`: it joins
+        the scrollback without asking (`done.exchange`)."""
+        if kind == "hub":
+            lines = [next((a.text for a in self.activity
+                           if a.kind == "note"), "")]
+        else:
+            lines = [self.heard] if self.heard else []
+        lines += [s for s, you in zip(self._segments, self._seg_you) if you]
+        item = {"id": xid, "at": self.at, "source": kind,
+                "device": self.heard_on or self.device, "lines": lines,
+                "reply": self.message, "attached": self.heard_attached,
+                "shown": [self.shown[sid] for sid in self._seg_shown
+                          if sid is not None and sid in self.shown]}
+        self.exchanges = sorted([x for x in self.exchanges if x["id"] != xid]
+                                + [item], key=lambda x: x["id"])
+        self.exchange = xid
+        self.back_rev += 1
+
+    def _forget(self, ids) -> None:
+        gone = {i for i in ids if isinstance(i, int)} \
+            if isinstance(ids, list) else set()
+        if not gone:
+            return
+        self.exchanges = [x for x in self.exchanges if x["id"] not in gone]
+        self.back_rev += 1
+        if self.exchange in gone and not self.busy:
+            # The turn on show was forgotten: it leaves the screen too.
+            self._clear_turn()
+            self.heard, self.heard_on, self.heard_attached = "", None, 0
+            self.exchange = self.at = None
+            self.error = self.hint = None
 
     def job_of(self, _act: Activity):
         return None
@@ -726,7 +780,11 @@ class RemoteAgent:
         self.error = self.hint = None
         self._interrupted = False
         self.turn_started = time.monotonic()
-        self.phase = "thinking"
+        self.at = time.time()
+        self.exchange = None
+        self.from_hub = False
+        # A line said while the hub compacts waits for it there.
+        self.phase = COMPACTING if self.compacting else "thinking"
 
     def _clear_turn(self) -> None:
         self.message = self.thought = ""
@@ -787,7 +845,9 @@ class RemoteAgent:
         self._turn = view.get("turn")
         self.heard = str(view.get("line") or "")
         self.heard_on = None
-        self.shown_voice = str(view.get("voice") or self.voice)
+        xid, at = view.get("exchange"), view.get("at")
+        self.exchange = xid if isinstance(xid, int) else None
+        self.at = float(at) if isinstance(at, (int, float)) else None
         for step in view.get("steps") or []:
             if isinstance(step, dict):
                 self._add_step(step)
@@ -918,8 +978,7 @@ class RemoteAgent:
             if first is None:
                 raise ConnectionError(link.error or "the hub hung up")
             welcome = self._decode(first)
-            if welcome is None or welcome.get("type") != "welcome" \
-                    or not isinstance(welcome.get("voices"), list):
+            if welcome is None or welcome.get("type") != "welcome":
                 raise ConnectionError("the hub speaks another protocol "
                                       f"(this call speaks {PROTOCOL})")
             if welcome.get("protocol") != PROTOCOL:
@@ -985,6 +1044,8 @@ class RemoteAgent:
             # next welcome shows where it got to.
             self.busy = False
         self._local_turn = False
+        self.compacting = False
+        self.back_loading = False       # its answer won't come now
         self._mine.clear()
         self._fetching.clear()          # asked again on the next line
         self._hub_ask = None
@@ -999,19 +1060,26 @@ class RemoteAgent:
 
     # ── events ──────────────────────────────────────────────────────────
     def _apply_state(self, st: dict) -> None:
-        phase = st.get("phase")
-        if self._local_turn and not st.get("busy"):
+        phase = PHASES.get(st.get("phase"), st.get("phase")) or self.phase
+        self.compacting = phase == COMPACTING
+        if self._local_turn and (self.compacting or not st.get("busy")):
             # A line said here that the hub hasn't started on yet: keep
-            # the turn the call already shows.
-            pass
+            # the turn the call already shows (waiting on a compaction,
+            # it says so).
+            if self.compacting:
+                self.phase = phase
+            elif self.phase == COMPACTING:
+                self.phase = "thinking"     # it ended: the line goes in now
         else:
-            self.busy = bool(st.get("busy"))
-            if phase:
-                self.phase = PHASES.get(phase, phase)
+            # A compaction is the hub's busy, but no turn of the call's.
+            self.busy = bool(st.get("busy")) and not self.compacting
+            self.phase = phase
         self.model = st.get("model") or self.model
         self.effort = st.get("effort") or self.effort
         self._label = st.get("model_label") or self._label
-        self.session_id = st.get("session")
+        if "context" in st:
+            self.context = _context(st.get("context"))
+            self._trim()
         if not self._local_turn:
             self.error = st.get("error")
             self.hint = st.get("hint")
@@ -1019,24 +1087,7 @@ class RemoteAgent:
     def _on_welcome(self, ev: dict) -> None:
         self.connected = True
         self.device = str(ev.get("device") or "") or None
-        voices = {}
-        for v in ev.get("voices") or []:
-            if isinstance(v, dict) and v.get("id"):
-                color = v.get("color")
-                voices[str(v["id"])] = {
-                    "name": str(v.get("name") or v["id"]),
-                    "color": color if isinstance(color, str)
-                    and _COLOR.fullmatch(color) else None}
-        if voices:
-            self._voices = voices
-            self._remember("voices", voices)
-        if self.voice not in voices:
-            fallback = self.default_voice if self.default_voice in voices \
-                else next(iter(voices), self.voice)
-            log.warning("%s: the hub has no voice %r (it has %s); %s answers",
-                        self._tag, self.voice, ", ".join(voices) or "none",
-                        fallback)
-            self.voice = fallback
+        persona.adopt(ev.get("agent"))
         log.info("%s: on the line via %s as %s", self._tag, self.via,
                  self.device)
         self._apply_state(ev.get("state") or {})
@@ -1065,26 +1116,30 @@ class RemoteAgent:
                 self._ring("done" if unseen.get("ok") else "error",
                            self._unseen, _notify_line(unseen.get("notify")))
         if self.queued:                     # said while the line was down
-            said = list(zip(self.queued, self._queued_voices,
-                            self._queued_attach))
+            said = list(zip(self.queued, self._queued_attach))
             self.queued.clear()
-            self._queued_voices.clear()
             self._queued_attach.clear()
             if not self.busy:
                 self._begin_turn(said[0][0])
                 self._local_turn = self._turn_ours = True
-                self.shown_voice = said[0][1]
-                self.heard_attached = len(said[0][2] or ())
+                self.heard_attached = len(said[0][1] or ())
             else:
-                for line, _voice, _attach in said:
+                for line, _attach in said:
                     self._you_segment(line)
-            for line, voice, attach in said:
-                self._say(line, voice if voice in self._voices
-                          else self.voice, attach)
-        self._send({"type": "history"})
+            for line, attach in said:
+                self._say(line, attach)
+        # The newest page of the scrollback, as the hub has it now: what
+        # was forgotten or compacted away while the line was down goes.
+        self.more_back = True
+        self._ask_newest()
         if self.call_open:
             self._send({"type": "warm"})
         self._emit()
+
+    def _ask_newest(self) -> None:
+        """The newest page of the scrollback, whatever is here already."""
+        self.back_loading = self._send({"type": "scrollback",
+                                        "limit": SCROLLBACK_PAGE})
 
     def _on_event(self, ev: dict) -> None:
         kind = ev.get("type")
@@ -1096,7 +1151,7 @@ class RemoteAgent:
             self._apply_state(ev)
         elif kind == "line":
             text = str(ev.get("text") or "").strip()
-            if self._mine and (text, ev.get("voice")) == self._mine[0] \
+            if self._mine and text == self._mine[0] \
                     and ev.get("device") == self.device \
                     and ev.get("client") == CLIENT:
                 self._mine.popleft()        # ours, already on show
@@ -1120,6 +1175,7 @@ class RemoteAgent:
                 self._local_turn = False
                 self._begin_turn("")
                 self._turn_ours = False
+                self.from_hub = True
                 self.activity.append(Activity("note", line))
             elif self._local_turn and line.strip() == self.heard.strip():
                 self._local_turn = False    # ours, already on show
@@ -1133,7 +1189,6 @@ class RemoteAgent:
                 self.heard_on = str(device) if device \
                     and device != self.device else None
             self._turn = ev.get("id")
-            self.shown_voice = str(ev.get("voice") or self.voice)
         elif kind == "thinking":
             self.thought += str(ev.get("text") or "")
         elif kind == "text":
@@ -1183,7 +1238,6 @@ class RemoteAgent:
             self.busy = False
             self._local_turn = False
             self._mine.clear()
-            self.shown_voice = str(ev.get("voice") or self.shown_voice)
             final = str(ev.get("text") or "").strip() or self._said()
             if final:
                 self.message = final
@@ -1191,13 +1245,15 @@ class RemoteAgent:
                 self.phase = "error"
                 self.error = ev.get("error") or "the turn failed"
                 self.hint = ev.get("hint")
+            xid = ev.get("exchange")
+            if isinstance(xid, int) and not isinstance(xid, bool):
+                self._keep_turn(xid, "hub" if self.from_hub else "user")
             turn = ev.get("turn")
             self._unseen = turn
             if self.call_open or self._interrupted:
                 # Seen as it happened, or stopped on purpose.
                 self._seen(turn)
             self._turn_ours = False
-            self._send({"type": "history"})
         elif kind == "ring":
             if not self._for_me(ev.get("to")):
                 return
@@ -1233,19 +1289,37 @@ class RemoteAgent:
             self._shown_segment(ev)
         elif kind == "file":
             self._got_media(ev)
-        elif kind == "history":
-            self._sessions = [_Session(i) for i in ev.get("items") or []
-                              if isinstance(i, dict)]
-            return                          # nothing on show changed
+        elif kind == "compacted":
+            before, after = ev.get("before"), ev.get("after")
+            self.compacted = {
+                "before": before if isinstance(before, int) else None,
+                "after": after if isinstance(after, int) else None,
+                "at": time.monotonic()}
+            start = ev.get("from")
+            if isinstance(start, int):
+                self.context = {**(self.context or {"used": None,
+                                                    "compact_at": None,
+                                                    "cap": None,
+                                                    "window": None}),
+                                "from": start}
+                self._trim()
+        elif kind == "scrollback":
+            self._got_scrollback(ev)
+        elif kind == "forgotten":
+            self._forget(ev.get("ids"))
         elif kind == "error":
             request, reason = ev.get("request"), ev.get("reason")
             log.warning("%s: the hub refused %s: %s", self._tag, request,
                         reason)
-            if request == "fetch" and self._fetching:
-                # The hub answers in order: the oldest fetch failed.
-                self._media_failed[self._fetching[0]] = str(reason or
-                                                            "not found")
-                self._wake_media(self._fetching.pop(0), None)
+            if request == "fetch":
+                sid = str(ev.get("id") or "")
+                if sid in self._fetching:
+                    self._fetching.remove(sid)
+                self._media_failed[sid] = str(reason or "not found")
+                self._wake_media(sid, None)
+                return                      # the picture's row says it
+            if request == "scrollback":
+                self.back_loading = False
             if request == "say":
                 if self._mine:
                     self._mine.popleft()

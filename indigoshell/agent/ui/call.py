@@ -9,19 +9,20 @@ side of it:
                │ why does my wifi keep dropping         │ │ YOU  │
                │ › follow up▏                           │ └──────┘
                └────────────────────────────────────────┘
-    ┌──────┐ ┌ // INDIGO working ──────────────── 00:41 ┐
-    │ ◜  ◝ │ │ › $ journalctl -b -p err | tail -n 40    │
-    │ CALL │ │ · checking the wifi driver first         │
-    │ ◟  ◞ │ │ ───                                      │
+    ┌──────┐ ┌ // LILAC working ───────────────── 00:41 ┐
+    │ ◜  ◝ │ │ ▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪·▫▫▫▫▫▫▫▫▫▫▫▫▫▫ │
+    │ CALL │ │ › $ journalctl -b -p err | tail -n 40    │
+    │ ◟  ◞ │ │ · checking the wifi driver first         │
     └──────┘ │ Three resets since boot, all from ...    │
              └──────────────────────────────────────────┘
 
 The frames are the toasts' and the launcher's: 2px, opaque, beveled at
 the same corners, with the toast's `// NAME tag` heading. Each speaker
 owns one colour throughout — frame, chip, name and a tint in the plate:
-magenta for you, violet for the agent. A call to the hub's agent
-(remote.py), which speaks in two voices, takes the name and colour of
-the voice of the turn on show.
+magenta for you, hers for the agent (the hub's welcome names her:
+Lilac, lilac). Under her heading a faint bar says how full the chat is,
+with a tick where the hub compacts it after an idle hour
+(agent/ui/context.py).
 
 What the agent is *doing* (tool calls, narration between them, its
 thinking) sits above a rule in small type; what it *says* sits below it,
@@ -50,41 +51,42 @@ Keys in the call:
     A / D               greenlight (allow), scrub (deny) — while it asks and
                         the line you are typing is empty
     Ctrl+C              copy the selection (your line's, else the agent's);
-                        with none, stop the task
+                        with none, stop the task (not a compaction: the
+                        hub won't stop one)
     Ctrl+X / Ctrl+V     cut / paste in your line (Shift+arrows select)
     Ctrl+O              every step of the turn, or just the last few
     PageUp / PageDown   scroll a long reply (the wheel too)
-    Ctrl+H              past conversations: Up/Down, Return to go back
-                        to one, Escape or Ctrl+H to leave the list
+    Ctrl+K / Ctrl+J     scroll back through the chat, and down again: up
+                        through the turn on show, then into the earlier
+                        exchanges, one at a time (half the plate at most);
+                        down to the turn on show, live again. Escape goes
+                        straight back to it. (Your line's Ctrl+K, delete
+                        to its end, gives way to this in the call.)
     Ctrl+D              the hub's devices (a call to the hub only): which
                         are online or when last seen, their connections,
                         the hands each lends, which wake by push. Escape
                         or Ctrl+D to leave the list
-    Ctrl+S              who answers your next line: Indigo or Lilac (a
-                        call to the hub only; shown in your plate's
-                        heading, and remembered)
     Ctrl+L              Look (a call to the hub only): your next line
                         carries what you are looking at in Flux, your
                         browser: the tab, the selection, the picture in it
                         or under the pointer. A chip over your line says
                         what; Ctrl+L again, or Escape with the line empty,
                         drops it. Ctrl+Shift+L adds a screenshot of the
-                        tab. (Ctrl+L used to start a new conversation.)
+                        tab.
     Ctrl+F              open the last picture or file the agent showed in
                         the turn (saved to ~/Downloads); a click on one
                         does the same
-    Ctrl+N              a new conversation, from scratch
     Ctrl+M              next model: opus, sonnet, haiku, fable (Shift:
-                        back). Switches the live conversation.
+                        back). Switches the chat at once.
     Ctrl+T              next effort: idle, stock, boost, overclock,
                         redline (low, medium, high, xhigh, max; Shift:
                         back). Reconnects, keeping the context.
     Escape              hang up (the work carries on)
 
-One conversation runs at a time and carries over between calls — hang
-up and call again and the agent still has the context. The conversation
-is the hub's, shared with the other screens (the phone); its past
-conversations are the hub's list (remote.py).
+There is one chat and it never ends: hang up and call again and she
+still has it. It is the hub's, shared with the other screens (the
+phone), and compacted there as it grows; scrolling back goes as far as
+she still holds it word for word (remote.py).
 """
 
 import asyncio
@@ -104,7 +106,7 @@ from ..remote import RemoteAgent
 from .agent_plate import AgentPlate
 from .chip import Chip
 from ...widgets.holo import Projection
-from .style import (CHIP, GAP, HANGUP_CLOSE_S, HISTORY_ROWS, MAX_BODY_ROWS,
+from .style import (CHIP, GAP, HANGUP_CLOSE_S, MAX_BODY_ROWS,
                     NUDGE_S, PLATE_W, ROW_GAP, SPIN, UNBOUNDED, YOU_ACCENT,
                     accent_of, own_accent, plate_path)
 from .you_plate import YouPlate
@@ -149,7 +151,6 @@ def look_label(blocks: list) -> str:
     return words
 
 _RETURN, _KP_ENTER, _ESCAPE = 0xFF0D, 0xFF8D, 0xFF1B
-_UP, _DOWN, _KP_UP, _KP_DOWN = 0xFF52, 0xFF54, 0xFF97, 0xFF99
 _PAGE_UP, _PAGE_DOWN, _KP_PAGE_UP, _KP_PAGE_DOWN = 0xFF55, 0xFF56, 0xFF9A, 0xFF9B
 
 
@@ -316,9 +317,8 @@ class CallHost(Widget):
         # (they animate on their own clocks otherwise).
         self.agent_plate.invalidate()
         a = self.agent
-        you_key = (a.busy, a.heard, getattr(a, "heard_on", None),
-                   getattr(a, "voice", None), tuple(a.queued),
-                   a.approval is None)
+        you_key = (a.busy, a.compacting, a.heard, a.heard_on, a.at,
+                   tuple(a.queued), a.approval is None)
         if you_key != self._you_key:
             self._you_key = you_key
             self.you_plate.invalidate()
@@ -535,8 +535,9 @@ class CallHost(Widget):
         a, field_, plate = self.agent, self.you_plate.input, self.agent_plate
         k, letter = ev.keysym, ctrl_letter(ev)
         if k == _ESCAPE:
-            if plate.history is not None:   # back out of the list first
-                plate.close_history()
+            if plate.back is not None:      # back to the turn on show first
+                plate.reset()
+                self._fit()
                 return True
             if plate.show_devices:
                 plate.close_devices()
@@ -549,24 +550,12 @@ class CallHost(Widget):
         if self._close_handle is not None:  # typing keeps the line open
             self._close_handle.cancel()
             self._close_handle = None
-        if plate.history is not None:
-            # The past-conversations list owns the keys while it is up.
-            if k in (_UP, _KP_UP) or letter in ("p", "k"):
-                plate.hist_move(-1)
-            elif k in (_DOWN, _KP_DOWN) or letter == "j":
-                plate.hist_move(1)
-            elif k in (_RETURN, _KP_ENTER):
-                plate.hist_pick()
-            elif k in (_PAGE_UP, _KP_PAGE_UP):
-                plate.hist_move(-HISTORY_ROWS)
-            elif k in (_PAGE_DOWN, _KP_PAGE_DOWN):
-                plate.hist_move(HISTORY_ROWS)
-            elif letter == "h":
-                plate.close_history()
-            elif letter == "n":
-                if a.new_conversation():
-                    plate.reset()
-                    self._fit()
+        if letter in ("k", "j") and not ev.super and not ev.alt:
+            # Never with Super: Mod+Ctrl+J/K resize windows on niri.
+            if letter == "k":
+                plate.older()
+            else:
+                plate.newer()
             return True
         if letter == "c":
             # Your own line's selection first, then the agent's text; with
@@ -584,15 +573,8 @@ class CallHost(Widget):
         if letter == "t":                   # effort ("think")
             a.cycle_effort(-1 if ev.shift else 1)
             return True
-        if letter == "h":
-            if not a.busy:
-                plate.open_history()
-            return True
         if letter == "d" and plate.has_devices():
             plate.toggle_devices()
-            return True
-        if letter == "s" and hasattr(a, "switch_voice"):
-            a.switch_voice()                # who answers the next line
             return True
         if letter == "l" and getattr(a, "attachments", False):
             self._toggle_look(screenshot=ev.shift)
@@ -601,11 +583,6 @@ class CallHost(Widget):
             sid = plate.last_shown()
             if sid is not None:
                 self._open_media(sid)
-            return True
-        if letter == "n":
-            if a.new_conversation():
-                plate.reset()
-                self._fit()
             return True
         if a.approval is not None and not field_.text and ev.text:
             choice = {"a": "allow", "d": "deny"}.get(

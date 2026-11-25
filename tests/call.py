@@ -59,7 +59,7 @@ def pieces_at(host: CallHost, box: tuple) -> str:
 
 # ── a re-opened call, the agent silent ──────────────────────────────────
 async def silent_tool(display) -> bool:
-    agent = _live.ScriptedAgent(voice="indigo")
+    agent = _live.ScriptedAgent()
     host = CallHost(agent)
     win = open_call(display, host)
     moving = {"trace": host.agent_plate, "chip": host.agent_chip,
@@ -174,7 +174,7 @@ async def settle(agent) -> None:
 
 async def fuzz(display, seed: int) -> bool:
     rng = random.Random(seed)
-    agent = _live.ScriptedAgent(voice="indigo")
+    agent = _live.ScriptedAgent()
     host = CallHost(agent)
     win = open_call(display, host)
     await asyncio.sleep(0.5)

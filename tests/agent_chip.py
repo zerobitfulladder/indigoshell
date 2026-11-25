@@ -6,10 +6,11 @@ tells them.
     .venv/bin/python tests/agent_chip.py --off-screen 1-3 only: no window
 
 1. The state, from a stand-in agent through a real `CallRouter` on a
-   stub daemon (no X): idle (dimmed, the voice of the turn on show, no
-   frames) before any turn; working (the step on the box, the square's
-   arcs turning) while a turn runs, the call open or not; idle again
-   when the turn ends without a ring, keeping the voice that worked; a
+   stub daemon (no X): idle (dimmed, her name and colour, no frames)
+   before any turn; working (the step on the box, the square's arcs
+   turning) while a turn runs, the call open or not, and while the hub
+   compacts the chat (the box saying so, no step); idle again when the
+   turn ends without a ring; a
    question with the call closed: both pieces yellow, the square
    blinking, the box steady; a ring: both red and blinking in the bar's
    ring pattern, then still and dim ("missed call") after RING_FOR_S;
@@ -25,9 +26,9 @@ tells them.
    lines, checked in the words and in every string the box draws.
 3. Layout: with no router the chip takes no width and no gap in the
    bar's row (`collapsed`); with one, idle or not, one fixed width
-   whatever the text and the voice; whole pixels, centred in the bar;
+   whatever the state and the text; whole pixels, centred in the bar;
    hit on either piece, not in the gap or a cut corner; painted off
-   screen (raster): the voice's colour working, yellow asking, red
+   screen (raster): her colour working, yellow asking, red
    ringing (lit and between flashes), dimmed idle, the call's stripes;
    the user's config.py (by its path, scratch XDG, no bytecode) has the
    chip at its top bar's right end and finds its router in SERVICES.
@@ -71,7 +72,8 @@ from indigoshell.widgets.layout import Align, Row
 
 REPO = _live.REPO
 FAILED: list[str] = []
-LILAC, INDIGO = "#c8a2c8", "#b967ff"
+LILAC = "#c8a2c8"
+OTHER = "#05d9e8"           # a second agent's, for the router's order
 SECRET = "SECRET"           # in every thought, reply and note: never on the box
 
 
@@ -110,12 +112,13 @@ class StubDaemon:
 
 class StandIn:
     """What the router and the chip read of an agent (`RemoteAgent`'s
-    attributes): its turn and steps, its ring, its question, its voice;
-    and a thought and a reply that must never show."""
+    attributes): its turn and steps, its ring, its question, a
+    compaction, her name and colour; and a thought and a reply that must
+    never show."""
 
-    def __init__(self, name="INDIGO", accent=INDIGO) -> None:
+    def __init__(self, name="LILAC", accent=LILAC) -> None:
         self.name, self.accent = name, accent
-        self.busy = self.call_open = False
+        self.busy = self.call_open = self.compacting = False
         self.ringing = self.approval = None
         self.ring_started, self.ring_line, self.error = 0.0, None, None
         self.phase = "idle"
@@ -195,15 +198,15 @@ def test_state() -> None:
     section("1. what the pieces show, from the router")
     d, agent, router, chip, win = rig()
     check("found its router among the daemon's SERVICES", chip.routers == [router])
-    check("before any turn: idle, both dimmed, the voice the agent speaks with, no frames",
-          look(chip) == ("idle", "INDIGO", INDIGO) and not chip.collapsed
+    check("before any turn: idle, both dimmed, her name and colour, no frames",
+          look(chip) == ("idle", "LILAC", LILAC) and not chip.collapsed
           and chip.strength() == IDLE_DIM and chip.chip.animation_fps == 0
           and chip.box.animation_fps == 0 and chip.words() == ("", ""), f"{look(chip)}")
 
     agent.activity.append(step("read ~/notes.md"))
     agent.set(busy=True, phase="working")
     check("a turn runs: working, the step on the box, full strength",
-          look(chip) == ("working", "INDIGO", INDIGO) and chip.strength() == 1.0
+          look(chip) == ("working", "LILAC", LILAC) and chip.strength() == 1.0
           and chip.words() == ("working", "read ~/notes.md")
           and win.damaged and win.damaged[-1] == (chip, False), f"{chip.words()}")
     check("... the square's arcs turn at 30 frames a second, the box asks none",
@@ -216,8 +219,6 @@ def test_state() -> None:
     agent.set()
     check("a new step: the box says it, repainted",
           chip.words()[1] == "browser click \"Sign in\"" and len(win.damaged) == n + 1)
-    agent.set(name="LILAC", accent=LILAC)
-    check("a turn in the other voice: its name and colour", look(chip)[1:] == ("LILAC", LILAC))
     agent.set(phase="thinking")
     check("thinking: its arcs at the thinking speed", mode(chip) == "thinking")
 
@@ -228,9 +229,18 @@ def test_state() -> None:
 
     agent.set(busy=False, phase="idle")
     settle(chip)
-    check("the turn ends without a ring: idle, dimmed, the voice that worked, no frames "
-          "once the arcs are back at rest", look(chip) == ("idle", "LILAC", LILAC)
+    check("the turn ends without a ring: idle, dimmed, no frames once the arcs are back "
+          "at rest", look(chip) == ("idle", "LILAC", LILAC)
           and chip.chip.animation_fps == 0 and chip.box.animation_fps == 0)
+
+    agent.set(compacting=True, phase="compacting")
+    check("the hub compacts the chat (no turn): working, the box says so and names no "
+          "step, the arcs at the compacting speed", chip.state == "working"
+          and chip.words() == ("compacting", "") and mode(chip) == "compacting"
+          and chip.chip.animation_fps == CHIP_FPS, f"{chip.words()} {mode(chip)}")
+    agent.set(compacting=False, phase="idle")
+    settle(chip)
+    check("... done: idle again", chip.state == "idle")
 
     agent.set(busy=True, phase="asking", approval=ask(), ringing="ask")
     settle(chip)
@@ -247,7 +257,7 @@ def test_state() -> None:
           chip.state == "working")
     agent.set(call_open=False, approval=None, busy=False, phase="idle")
 
-    agent.set(ringing="done", ring_line="Kernel updated", name="INDIGO", accent=INDIGO)
+    agent.set(ringing="done", ring_line="Kernel updated")
     settle(chip)
     check("a ring: both red (the old ring colour), the square and the box blinking at the "
           "ring's 20 fps", chip.state == "calling" and chip.accent() == RING_ACCENT
@@ -316,7 +326,7 @@ def test_state() -> None:
     # Several routers: calling, then working, then the first.
     d = StubDaemon()
     daemon_mod._DAEMON = d
-    a1, a2 = StandIn(), StandIn("LILAC", LILAC)
+    a1, a2 = StandIn(), StandIn("SECOND", OTHER)
     r1 = CallRouter(a1, call="call", status="s1", show_working=False)
     r2 = CallRouter(a2, call="call2", status="s2", show_working=False)
     for r in (r1, r2):
@@ -327,11 +337,11 @@ def test_state() -> None:
     a1.set(busy=True)
     a2.set(ringing="done")
     check("two calls: the one calling back shows over the one working",
-          chip.state == "calling" and chip.name() == "LILAC")
+          chip.state == "calling" and chip.name() == "SECOND")
     a2.set(ringing=None)
-    check("... then the working one", chip.state == "working" and chip.name() == "INDIGO")
+    check("... then the working one", chip.state == "working" and chip.name() == "LILAC")
     a1.set(busy=False)
-    check("... both idle: the first", chip.state == "idle" and chip.name() == "INDIGO")
+    check("... both idle: the first", chip.state == "idle" and chip.name() == "LILAC")
     chip.detach()
 
     daemon_mod._DAEMON = None
@@ -463,14 +473,13 @@ def test_layout(scratch: str) -> None:
     row = Row([other, chip], spacing=theme.BAR_SPACING, align=Align.CENTER)
     widths = set()
     for scene in (dict(), dict(busy=True, phase="working"),
-                  dict(name="LILAC", accent=LILAC),
                   dict(approval=ask(), ringing="ask"), dict(approval=None, ringing="done")):
         agent.activity.append(step("$ " + "a very long command " * 8))
         agent.set(**scene)
         widths.add(chip.measure(Size(W, H)).width)
-    check("one fixed width whatever the state, the step's length or the voice: BOX_W, the "
-          "gap and the square", widths == {BOX_W + BOX_GAP + BAR_H}, f"{widths}")
-    agent.set(ringing=None, busy=True, phase="working", name="INDIGO", accent=INDIGO)
+    check("one fixed width whatever the state or the step's length: BOX_W, the gap and "
+          "the square", widths == {BOX_W + BOX_GAP + BAR_H}, f"{widths}")
+    agent.set(ringing=None, busy=True, phase="working")
     m = row.measure(Size(W, H))
     row.arrange(skia.Rect.MakeXYWH(0, 0, m.width, H))
     r, box, sq = chip.rect, chip.box.rect, chip.chip.rect
@@ -502,9 +511,9 @@ def test_layout(scratch: str) -> None:
     ring_dark = painted()
     agent.set(ringing=None)
     idle = painted()
-    check("working: the frames in the voice's colour",
-          colour_px(working, box, INDIGO) > 200 and colour_px(working, sq, INDIGO) > 40,
-          f"{colour_px(working, box, INDIGO)} / {colour_px(working, sq, INDIGO)} px")
+    check("working: the frames in her colour",
+          colour_px(working, box, LILAC) > 200 and colour_px(working, sq, LILAC) > 40,
+          f"{colour_px(working, box, LILAC)} / {colour_px(working, sq, LILAC)} px")
     check("a question: both pieces yellow",
           colour_px(asking, box, ASK_ACCENT) > 200 and colour_px(asking, sq, ASK_ACCENT) > 40)
     check("a ring: both red at a flash, much less between flashes",

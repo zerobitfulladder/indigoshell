@@ -8,6 +8,7 @@ import time
 import skia
 
 from ... import shapes, text, theme
+from ...core import persona
 from ...widgets.base import Size
 from ...widgets.holo import (RASTER_ALPHA, RASTER_PITCH,  # noqa: F401
                              paint_raster, raster)
@@ -40,7 +41,6 @@ TAG_SIZE = theme.FONT_SIZE - 4
 BODY_SIZE = theme.FONT_SIZE - 1
 ACT_SIZE = theme.FONT_SIZE - 3
 MAX_BODY_ROWS = 30      # the turn's height before it scrolls, in reply rows
-HISTORY_ROWS = 12       # past conversations listed at once
 MAX_HEARD_LINES = 3
 ACT_ROWS_BUSY = 3       # steps shown of the run still going
 ACT_ROWS_IDLE = 2       # ... and of each finished run
@@ -50,10 +50,11 @@ OUT_ROWS_FULL = 40      # ... after "more lines" is clicked
 
 # ── colour ──────────────────────────────────────────────────────────────
 # Each speaker owns one colour everywhere — frame, chip, name, and a tint
-# in the plate itself: magenta for you, violet for the agent. The agent's
-# frame and chip turn yellow while it asks and red when the line is down;
-# those are signals, so its plate keeps the violet tint through them.
-AGENT_ACCENT = theme.VIOLET_BRIGHT
+# in the plate itself: magenta for you, hers for the agent (the hub's
+# welcome names it: core/persona.py). The agent's frame and chip turn
+# yellow while it asks and red when the line is down; those are signals,
+# so its plate keeps her tint through them.
+AGENT_ACCENT = persona.COLOR
 YOU_ACCENT = theme.MAGENTA_BRIGHT
 # The plate is the panels' violet-black pulled PLATE_TINT toward the
 # speaker's colour, at 88%: the compositor's blur still shows faintly
@@ -74,10 +75,9 @@ YOU_FILL = plate_fill(YOU_ACCENT)
 
 
 def own_accent(agent) -> str:
-    """The agent's own colour: violet for the desktop's, or the `accent`
-    an agent brings (the hub's, `RemoteAgent`: the colour of the voice
-    of the turn on show, so read it each time)."""
-    return getattr(agent, "accent", None) or AGENT_ACCENT
+    """The agent's own colour: hers, as the hub's welcome says it (read
+    it each time: `RemoteAgent.accent`)."""
+    return getattr(agent, "accent", None) or persona.color()
 
 
 _FILLS: dict[str, tuple[str, float]] = {AGENT_ACCENT: AGENT_FILL}
@@ -104,7 +104,7 @@ SELECT_BG = (theme.VIOLET_BRIGHT, 0.38)
 # ── motion ──────────────────────────────────────────────────────────────
 # Arc speeds in degrees per second, by what the agent is doing.
 SPIN = {"dialing": 360.0, "thinking": 110.0, "working": 200.0,
-        "speaking": 260.0}
+        "speaking": 260.0, "compacting": 80.0}
 CHIP_FPS = 30
 BLINK_FPS = 20
 KICK_S = 0.45           # the half-turn your chip makes on a send
@@ -125,7 +125,7 @@ UNBOUNDED = Size(10_000.0, 10_000.0)
 STATUS_WORDS = {
     "offline": "off the line", "dialing": "dialing", "idle": "on the line",
     "thinking": "thinking", "working": "working", "speaking": "speaking",
-    "asking": "needs your ok", "error": "no line",
+    "asking": "needs your ok", "compacting": "compacting", "error": "no line",
 }
 
 
@@ -234,6 +234,28 @@ def font_for(size: float, bold: bool, italic: bool) -> skia.Font:
 def clock_text(seconds: float) -> str:
     s = int(seconds)
     return f"{s // 60:02d}:{s % 60:02d}"
+
+
+def when(epoch: float | None, now: float | None = None) -> str:
+    """When an exchange began, as the call dates it: "21:14" today,
+    "yesterday 21:14", "mon 21:14" this week, "nov 12 21:14" before,
+    "2025 nov 12" in another year."""
+    if epoch is None:
+        return ""
+    now = time.time() if now is None else now
+    t, today = time.localtime(epoch), time.localtime(now)
+    clock = time.strftime("%H:%M", t)
+    days = (time.mktime(today[:3] + (0, 0, 0, 0, 0, -1))
+            - time.mktime(t[:3] + (0, 0, 0, 0, 0, -1))) / 86400
+    if t.tm_year != today.tm_year:
+        return time.strftime("%Y %b %d", t).lower()
+    if days < 0.5:
+        return clock
+    if days < 1.5:
+        return f"yesterday {clock}"
+    if days < 6.5:
+        return f"{time.strftime('%a', t).lower()} {clock}"
+    return f"{time.strftime('%b %d', t).lower()} {clock}"
 
 
 def ago(epoch: float) -> str:

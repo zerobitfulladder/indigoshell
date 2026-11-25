@@ -72,7 +72,7 @@ def job_rows(plate, loose: bool) -> list:
 
 async def main() -> int:
     display = _live.connect()
-    agent = _live.ScriptedAgent(voice="indigo")
+    agent = _live.ScriptedAgent()
     # Jobs of its own, on a socket of the test's own (the hub reports
     # none, so a RemoteAgent has no bars of its own to draw).
     sock = os.path.join(paths.runtime_dir(),

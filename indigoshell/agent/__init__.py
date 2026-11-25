@@ -1,8 +1,8 @@
 """The call: the agent on the line, from a corner of the screen.
 
 The agent lives on a hub, a machine of its own (lilac, on a Raspberry
-Pi): one mind with two voices, Indigo and Lilac. This package is the
-shell's side of it. Press the keybinding (`indigoshell toggle call`),
+Pi): Lilac, in one chat that never ends. This package is the shell's
+side of it. Press the keybinding (`indigoshell toggle call`),
 type, and the agent answers in a frosted overlay; hang up and it keeps
 working, then rings you back through the top bar's chip. While it works
 it uses this machine's hands: the tools the laptop lends it.
@@ -10,10 +10,10 @@ it uses this machine's hands: the tools the laptop lends it.
 The package, by job:
 
     remote.py        `RemoteAgent`: the line to the hub (a WebSocket with
-                     TLS) and the conversation as the call reads it:
-                     turns, approvals, ring-backs, past conversations,
-                     voices. No drawing; the overlay only reads and
-                     subscribes.
+                     TLS) and the chat as the call reads it: turns,
+                     approvals, ring-backs, how full it is, the earlier
+                     exchanges to scroll back through. No drawing; the
+                     overlay only reads and subscribes.
     activity.py      the agent's steps and questions, as the overlay
                      shows them
     hands.py         `Hands`: the tools this machine lends the hub's
@@ -39,6 +39,7 @@ The package, by job:
     ui/rows.py       text on the monospace grid: wrapping, Markdown rows,
                      selection-ready lines
     ui/chip.py       the CALL chip
+    ui/context.py    the bar of how full the chat is
     ui/agent_plate.py, ui/you_plate.py
                      the two lines of the call
     ui/bars.py       progress bars: under a step, and on the status chip
@@ -54,7 +55,7 @@ Wiring it into a config: config_default's `call(hub)` gives the call
 window and the services it needs (the hub's line, and the router the
 top bar's chip reads):
 
-    HUB = RemoteAgent(voice="indigo", endpoints=[...],
+    HUB = RemoteAgent(endpoints=[...],
                       tls={"ca": ..., "cert": ..., "key": ...},
                       hands=laptop_hands())
     CALL, CALL_SERVICES = call(HUB)

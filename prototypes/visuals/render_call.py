@@ -88,10 +88,9 @@ def agent_in(**state) -> RemoteAgent:
     `state` set on it as if the hub's events had left it so. Two keys
     are the hub's own: `approval`, its open question, and `model_label`,
     the model as its `state` names it ("opus 5.5")."""
-    a = RemoteAgent(voice="indigo", endpoints=["wss://hub.invalid:443"],
+    a = RemoteAgent(endpoints=["wss://hub.invalid:443"],
                     tls={"ca": "hub-ca.pem", "cert": "device.pem",
-                         "key": "device.key"},
-                    state_key=None)
+                         "key": "device.key"})
     a._hub_ask = state.pop("approval", None)
     a._label = state.pop("model_label", "")
     for k, v in state.items():

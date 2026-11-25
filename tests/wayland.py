@@ -1218,7 +1218,7 @@ async def test_offscreen_call() -> None:
     scene.keyboard.available = True
     layouts = []
     scene.on_layout = lambda: layouts.append(1)
-    agent = ScriptedAgent(voice="indigo")
+    agent = ScriptedAgent()
     call_spec, _services = cd.call(agent)
     specs = {s.name: s for s in cd.WINDOWS}
     specs["call"] = call_spec

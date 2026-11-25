@@ -178,43 +178,56 @@ def status_spec(content) -> WindowSpec:
 class ScriptedAgent(RemoteAgent):
     """The call's real bookkeeping of the hub's events (`RemoteAgent`)
     with no hub behind it: what the hub says is whatever the test feeds
-    in, in the hub's own event shapes (lilac's PROTOCOL.md), and what the
-    call sends the hub lands in `sent`. Nothing connects: its line is
-    never started, and its endpoints and certificates are stand-ins.
+    in, in the hub's own event shapes (lilac's PROTOCOL.md, protocol 2),
+    and what the call sends the hub lands in `sent`. Nothing connects:
+    its line is never started, and its endpoints and certificates are
+    stand-ins.
 
     It plays the hub's side of a turn as the hub does: a line said in
     the call comes back as `line` and, with no turn running, starts one
     (`turn`, then `state`); the scripted pieces carry the phase the hub
     reports with them (`state`: thinking, speaking, working); and `end()`
-    is `done`, then the `ring` for the device the line came from, then
-    `state` (idle). A `seen` the call sends comes back as the hub's
-    `seen`. Replies to what the call sends arrive once the loop comes
-    round, or before the next scripted event, whichever is first.
+    is `done` (kept as an exchange of the chat), then the `ring` for the
+    device the line came from, then `state` (idle). A `seen` the call
+    sends comes back as the hub's `seen`, and a `scrollback` as a page of
+    the exchanges kept (`history` seeds earlier ones). `compact()` plays
+    a compaction. Replies to what the call sends arrive once the loop
+    comes round, or before the next scripted event, whichever is first.
 
     `track(jobs)` gives it real progress bars (progress.py), matched to
     its steps as the desktop's own agent matched them; the hub reports
     none, so `RemoteAgent` keeps an empty stand-in."""
 
     DEVICE = "laptop"               # this device, as the hub names it
-    VOICES = [{"id": "indigo", "name": "Indigo", "color": "#b967ff"},
-              {"id": "lilac", "name": "Lilac", "color": "#c8a2c8"}]
+    AGENT = {"name": "Lilac", "color": "#c8a2c8"}
     MODEL = "opus"                  # the hub's, until the call sets one
+    CONTEXT = {"used": 61_000, "compact_at": 200_000, "cap": 500_000,
+               "window": 1_000_000, "from": None}
 
-    def __init__(self, *, voice: str) -> None:
-        super().__init__(voice=voice, endpoints=["wss://hub.invalid:443"],
+    def __init__(self) -> None:
+        super().__init__(endpoints=["wss://hub.invalid:443"],
                          tls={"ca": "hub-ca.pem", "cert": "device.pem",
-                              "key": "device.key"},
-                         state_key=None)
+                              "key": "device.key"})
         self.sent: list[dict] = []
         self._to_hub: deque[dict] = deque()
-        # The hub's side of the conversation.
+        # The hub's side of the chat.
         self._turns = 0
         self._hub_turn: int | None = None       # the turn running there
         self._hub_phase = "idle"
-        self._hub_voice = voice
         self._hub_device: str | None = None     # where its line came from
+        self._hub_lines: list[str] = []
+        self._hub_at = 0.0
         self._blocks: list[str] = []
         self._open_block: int | None = None
+        self.kept: list[dict] = []              # the exchanges it keeps
+        self.hub_context = dict(self.CONTEXT)
+        self._edge = "start"            # past the oldest kept
+
+    def history(self, items: list[dict], edge: str = "start") -> None:
+        """Earlier exchanges the hub already keeps (oldest first), and
+        what lies past the oldest when the call asks."""
+        self.kept = [*items, *self.kept]
+        self._edge = edge
 
     # ── the line, stood in for ──────────────────────────────────────────
     def dial(self) -> None:
@@ -226,9 +239,10 @@ class ScriptedAgent(RemoteAgent):
         self.via = "hub.invalid"
         self._on_welcome({
             "type": "welcome", "protocol": PROTOCOL, "device": self.DEVICE,
-            "voices": self.VOICES, "state": self._hub_state(),
-            "view": {"turn": None, "line": "", "voice": self.voice,
-                     "text": "", "blocks": [], "steps": [], "shown": []},
+            "agent": self.AGENT, "state": self._hub_state(),
+            "view": {"turn": None, "at": None, "line": "", "text": "",
+                     "blocks": [], "steps": [], "shown": [],
+                     "exchange": None},
             "ask": None, "unseen": None,
             "devices": [{"name": self.DEVICE, "online": True,
                          "last_seen": time.time(), "clients": [CLIENT],
@@ -236,7 +250,7 @@ class ScriptedAgent(RemoteAgent):
 
     def _send(self, message: dict) -> bool:
         self.sent.append(message)
-        if message.get("type") in ("say", "seen"):
+        if message.get("type") in ("say", "seen", "scrollback"):
             self._to_hub.append(message)
             try:
                 asyncio.get_running_loop().call_soon(self._hear)
@@ -248,15 +262,30 @@ class ScriptedAgent(RemoteAgent):
         self._on_event({"type": kind, **fields})
 
     def _hub_state(self) -> dict:
-        return {"phase": self._hub_phase, "busy": self._hub_turn is not None,
+        return {"phase": self._hub_phase,
+                "busy": self._hub_turn is not None
+                or self._hub_phase == "compacting",
                 "model": self.model or self.MODEL, "model_label": None,
                 "effort": self.effort or "medium",
-                "session": self.session_id, "error": None, "hint": None}
+                "context": dict(self.hub_context), "error": None,
+                "hint": None}
 
     def _phase(self, phase: str) -> None:
         if phase != self._hub_phase:
             self._hub_phase = phase
             self._feed("state", **self._hub_state())
+
+    def _page(self, before, limit: int) -> None:
+        start = self.hub_context.get("from")
+        held = [x for x in self.kept if start is None or x["id"] >= start]
+        older = [x for x in held if before is None or x["id"] < before]
+        page = older[-limit:]
+        more = len(older) > len(page)
+        reply = {"before": before, "more": more, "items": page}
+        if not more:
+            reply["edge"] = "compacted" if start is not None and any(
+                x["id"] < start for x in self.kept) else self._edge
+        self._feed("scrollback", **reply)
 
     def _hear(self) -> None:
         """The hub's answers to what the call sent, in order."""
@@ -265,20 +294,39 @@ class ScriptedAgent(RemoteAgent):
             if message["type"] == "seen":
                 self._feed("seen", turn=message.get("turn"))
                 continue
+            if message["type"] == "scrollback":
+                self._page(message.get("before"),
+                           int(message.get("limit") or 30))
+                continue
             line = message["text"]
-            voice = message.get("voice") or self.voice
-            self._feed("line", text=line, voice=voice, device=self.DEVICE,
+            self._feed("line", text=line, device=self.DEVICE,
                        client=CLIENT,
                        attached=len(message.get("attach") or ()))
             if self._hub_turn is None:  # else folded into the running one
                 self._turns += 1
                 self._hub_turn = self._turns
-                self._hub_voice, self._hub_device = voice, self.DEVICE
+                self._hub_device = self.DEVICE
+                self._hub_lines, self._hub_at = [line], time.time()
                 self._blocks, self._open_block = [], None
-                self._feed("turn", id=self._hub_turn, voice=voice,
+                self._feed("turn", id=self._hub_turn,
                            device=self.DEVICE, client=CLIENT, line=line)
                 self._hub_phase = "thinking"
                 self._feed("state", **self._hub_state())
+            else:
+                self._hub_lines.append(line)
+
+    def compact(self, before: int = 240_000, after: int | None = 31_000,
+                keep: int = 2) -> None:
+        """A compaction on the hub: `compacting` (busy, no turn), then
+        `compacted`, keeping the last `keep` exchanges word for word."""
+        self._hear()
+        self._phase("compacting")
+        start = self.kept[-keep]["id"] if len(self.kept) >= keep else None
+        self.hub_context.update(used=None, **({"from": start} if start else {}))
+        self._feed("compacted", before=before, after=after,
+                   **{"from": start})
+        self.hub_context["used"] = after
+        self._phase("idle")
 
     # ── the turn, scripted ──────────────────────────────────────────────
     def think_start(self) -> None:
@@ -331,12 +379,18 @@ class ScriptedAgent(RemoteAgent):
         first = next((ln.strip(" #*>-`") for ln in said.splitlines()
                       if ln.strip(" #*>-`")), "")
         notify = {"title": self.name.capitalize(), "text": first[:200]}
-        self._feed("done", turn=turn, voice=self._hub_voice, ok=True,
-                   text=said, error=None, hint=None, notify=notify,
-                   seconds=0.0)
+        xid = (self.kept[-1]["id"] if self.kept else 800) + 1
+        self.kept.append({"id": xid, "at": self._hub_at, "source": "user",
+                          "device": self._hub_device, "client": CLIENT,
+                          "lines": list(self._hub_lines), "reply": said,
+                          "attached": 0, "shown": []})
+        self.hub_context["used"] = (self.hub_context["used"] or 0) \
+            + 400 * (len(said) // 40 + 1)
+        self._feed("done", turn=turn, ok=True, text=said, error=None,
+                   hint=None, notify=notify, seconds=0.0, exchange=xid)
         self._feed("ring", what="turn", id=turn,
                    to=[self._hub_device] if self._hub_device else ["*"],
-                   voice=self._hub_voice, ok=True, notify=notify)
+                   ok=True, notify=notify)
         self._feed("state", **self._hub_state())
 
     # ── progress bars ───────────────────────────────────────────────────

@@ -107,7 +107,7 @@ PANEL_SPAWN = ScanLock(duration=0.22, band_px=36.0, tear_px=29.0, split_px=17.0,
 #     from indigoshell.agent import RemoteAgent, laptop_hands
 #     from indigoshell.config_default import (MENUS, SCREEN, SERVICES,
 #                                             STARTUP, WINDOWS, call)
-#     HUB = RemoteAgent(voice="indigo", endpoints=["wss://hub.lan:443"],
+#     HUB = RemoteAgent(endpoints=["wss://hub.lan:443"],
 #                       tls={"ca": ..., "cert": ..., "key": ...},
 #                       hands=laptop_hands())
 #     CALL, CALL_SERVICES = call(HUB)

@@ -11,9 +11,9 @@ from ...widgets.base import Size, Widget
 from ...widgets.text_input import TextInput
 from ..remote import RemoteAgent
 from .frame import Comet
-from .style import (ACT_SIZE, AGENT_ACCENT, BODY_SIZE, MAX_HEARD_LINES,
-                    NAME_SIZE, PAD_X, PAD_Y, PLATE_W, TAG_SIZE, YOU_ACCENT,
-                    YOU_FILL, line_h, paint_heading, paint_plate)
+from .style import (ACT_SIZE, BODY_SIZE, MAX_HEARD_LINES, NAME_SIZE, PAD_X,
+                    PAD_Y, PLATE_W, TAG_SIZE, YOU_ACCENT, YOU_FILL, line_h,
+                    paint_heading, paint_plate, when)
 
 
 _CHIP_H = line_h(ACT_SIZE) + 12     # the Look chip's row
@@ -86,47 +86,26 @@ class YouPlate(Widget):
             self.inner_w - prompt, self._input_h))
 
     def _paint_keys(self, canvas, box, left: float, right: float) -> None:
-        """The keys, right-aligned in the heading, led by the hub's voice
-        switch: who answers your next line, in their colour (^S). The
-        least needed keys go when the heading is short of room."""
+        """The keys, right-aligned in the heading; the least needed go
+        when the heading is short of room."""
         a = self.agent
-        hub = getattr(a, "devices", None) is not None
         look = "^L look" if getattr(a, "attachments", False) else ""
         if a.busy:
-            keys = ["⏎ send", look, "^C stop", "^D devices" if hub else "",
+            keys = ["⏎ send", look, "^C stop", "^K earlier", "^D devices",
                     "esc hang up"]
         else:
-            keys = ["⏎ send", look, "^H history",
-                    "^D devices" if hub else "", "^N new", "esc hang up"]
+            keys = ["⏎ send", look, "^K earlier", "^D devices", "esc hang up"]
         keys = [k for k in keys if k]
-        switch = getattr(a, "voice_switch", None)
         gap = "   "
-        lead = text.measure("^S ", TAG_SIZE) if switch else 0.0
-        name_w = text.measure(switch[0], TAG_SIZE, bold=True) \
-            if switch else 0.0
-
-        def width(ks) -> float:
-            w = text.measure(gap.join(ks), TAG_SIZE)
-            return w + (lead + name_w + text.measure(gap, TAG_SIZE)
-                        if switch else 0.0)
-
-        for drop in ("^D devices", "^H history", "^N new", "^L look"):
-            if left + 12 + width(keys) <= right:
+        for drop in ("^D devices", "^K earlier", "^L look"):
+            if left + 12 + text.measure(gap.join(keys), TAG_SIZE) <= right:
                 break
             if drop in keys:
                 keys.remove(drop)
         hint = gap.join(keys)
-        base = text.baseline_in(box, TAG_SIZE)
-        x = right - text.measure(hint, TAG_SIZE)
-        text.draw(canvas, hint, x, base, TAG_SIZE,
+        text.draw(canvas, hint, right - text.measure(hint, TAG_SIZE),
+                  text.baseline_in(box, TAG_SIZE), TAG_SIZE,
                   theme.color(theme.BASE_MUTED))
-        if switch:
-            name, color = switch
-            x -= text.measure(gap, TAG_SIZE) + name_w
-            text.draw(canvas, name, x, base, TAG_SIZE,
-                      theme.color(color or AGENT_ACCENT), bold=True)
-            text.draw(canvas, "^S ", x - lead, base, TAG_SIZE,
-                      theme.color(theme.BASE_MUTED))
 
     def _paint_chip(self, canvas, x: float, y: float, right: float) -> None:
         """The Look chip: what the next line will carry, in a small
@@ -160,13 +139,15 @@ class YouPlate(Widget):
 
         hh = line_h(NAME_SIZE, True) + 6
         box = skia.Rect.MakeXYWH(x, y, right - x, hh)
-        # The hub's conversation is shared: a line asked on another of
-        # your devices says which.
+        # The hub's chat is shared: a line asked on another of your
+        # devices says which. And when it was said, as an earlier
+        # exchange says it.
         on = getattr(a, "heard_on", None)
         looked = getattr(a, "heard_attached", 0)
         head_end = paint_heading(
             canvas, box, NAME_SIZE,
             (("YOU", YOU_ACCENT, True),
+             (when(a.at) if a.heard else "", theme.BASE_MUTED, False),
              (f"on {on}" if on else "", theme.BASE_MUTED, False),
              ("+ look" if looked and a.heard else "", theme.CYAN_MID,
               False)))

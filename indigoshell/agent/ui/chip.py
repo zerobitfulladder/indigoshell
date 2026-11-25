@@ -31,8 +31,8 @@ class Chip(Widget):
         self.look = look
         # Whose chip: its fill keeps that speaker's tint whatever the
         # accent is doing (yellow while asking, red ringing or down). A
-        # function for a speaker whose colour changes: the hub's agent
-        # speaks in two voices.
+        # function for a colour read each time: hers comes with the
+        # hub's welcome.
         self._tint = tint
         self.ring_since = ring_since or (lambda: 0.0)
         self.angle = -90.0

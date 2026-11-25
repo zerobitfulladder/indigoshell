@@ -8,7 +8,7 @@ works (the call open or not) the box names the step it is on and the
 chip's arcs turn; a question for you turns both yellow and the chip
 blinks ASK; a call back turns both red, blinking, until the call is
 answered or the ring is seen elsewhere; the rest of the time both rest
-dimmed, with the voice that worked last. The box never shows what the
+dimmed, with her name. The box never shows what the
 agent thinks or says: only the step. With no agent configured it is
 not there and takes no room. A click answers (opens the call); a
 right-click silences a ring.
@@ -39,7 +39,7 @@ from .call import CALL_WINDOW
 from .chip import Chip
 from .frame import TRACE_BLEED, Trace
 from ...widgets.holo import RASTER_ALPHA, Projection, paint_raster
-from .style import (ACT_SIZE, AGENT_ACCENT, BLINK_FPS, BRACKET_ALPHA,
+from .style import (ACT_SIZE, BLINK_FPS, BRACKET_ALPHA,
                     BRACKET_W, CHIP_INSET, CHIP_INSET_ALPHA, CHIP_SM, CORNERS, FRAME_W,
                     GAP, PAD_X, PAD_Y, RING_FOR_S, SPIN, STATUS_W,
                     STATUS_WORDS, TAG_SIZE, TOOL_FG, UNBOUNDED, accent_of,
@@ -312,7 +312,9 @@ class CallRouter:
         closed = not a.call_open and self.call not in d.instances
         calling = closed and (a.ringing is not None
                               or a.approval is not None)
-        working = a.busy or bool(a.jobs.shown())    # a command left running
+        # A command left running, or the hub compacting the chat.
+        working = a.busy or bool(a.jobs.shown()) \
+            or getattr(a, "compacting", False)
         want = closed and working and self.show_working and not calling
         have = self.status in d.instances
         if want and not have:
@@ -358,8 +360,9 @@ def _doing(agent, fresh: bool) -> tuple[str, str]:
     """What the box says: a word and its detail. Only what the agent is
     doing: the phase as a word and the step it is on (the newest tool
     step's own line, `Activity.text` of kind "tool"), the question it
-    asks, the ring and the agent's notification for it. Never its
-    thinking (`thought`), its reply (`message`), or notes and info."""
+    asks, the ring and the agent's notification for it, and a compaction
+    of the chat. Never its thinking (`thought`), its reply (`message`),
+    or notes and info."""
     a = agent
     if a.approval is not None:
         return "needs your ok", a.approval.detail or a.approval.title
@@ -368,6 +371,8 @@ def _doing(agent, fresh: bool) -> tuple[str, str]:
             return "line dropped", (a.error if a.phase == "error" else "") or ""
         return ("calling back" if fresh else "missed call",
                 getattr(a, "ring_line", None) or "mod+a to answer")
+    if getattr(a, "compacting", False) and not a.busy:
+        return STATUS_WORDS["compacting"], ""
     if a.busy or a.jobs.shown():
         step = next((act.text for act in reversed(a.activity)
                      if act.kind == "tool"), "")
@@ -396,8 +401,8 @@ class AgentChip(Widget):
     the phase's speed. A question (with the call closed): both yellow,
     the chip blinking. A call back: both red, blinking in the bar's
     ring pattern (style.blink_on) for RING_FOR_S, then still and dim,
-    "missed call", until answered. Idle: both dimmed, the box with the
-    voice of the turn on show (the one that worked last).
+    "missed call", until answered. Idle: both dimmed, the box with her
+    name.
 
     It follows `routers` (`CallRouter`s), which decide its state. None,
     the default, finds them among the running daemon's SERVICES when the
@@ -481,19 +486,16 @@ class AgentChip(Widget):
 
     def name(self) -> str:
         a = self.agent
-        # The voice of the turn on show (a RemoteAgent's `name`): the one
-        # on the task, or the one that worked last.
-        return str(getattr(a, "name", "") or "lilac").upper() if a else ""
+        return str(a.name).upper() if a is not None else ""
 
     def tint(self) -> str:
-        """Whose pieces: the voice's colour, in their fill whatever the
-        frame is doing."""
-        a = self.agent
-        return own_accent(a) if a is not None else AGENT_ACCENT
+        """Whose pieces: her colour, in their fill whatever the frame is
+        doing."""
+        return own_accent(self.agent)
 
     def accent(self) -> str:
         """The frames' colour: yellow asking, red ringing (style's
-        accent_of, as the old plate), else the voice's."""
+        accent_of, as the old plate), else hers."""
         return accent_of(self.agent) if self.state == "calling" \
             else self.tint()
 
@@ -597,7 +599,7 @@ def _beveled(r: skia.Rect, inset: float = 0.0) -> skia.Path:
 
 class _Box(Widget):
     """The box: a plate as `paint_plate` draws one, scaled, with one line
-    on it: the voice's name in the frame's colour, the word (muted), the
+    on it: her name in the frame's colour, the word (muted), the
     detail (cyan for a step, as the old plate's line). Fixed width, the
     line cut with an ellipsis."""
 
@@ -623,7 +625,7 @@ class _Box(Widget):
         r = self.rect
         k = IDLE_DIM if o.state == "idle" else 1.0
         frame_a = o.strength()
-        accent, tint = o.accent(), o.tint()
+        accent = o.accent()
         base, base_a = fill_of(o.agent)
         fill = skia.Paint(AntiAlias=True)
         fill.setColor(theme.color(base, base_a * k))

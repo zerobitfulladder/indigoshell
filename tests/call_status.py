@@ -22,7 +22,7 @@ status.RING_FOR_S = 1.2         # a ring that goes "missed" within the test
 
 async def main() -> int:
     display = _live.connect()
-    agent = _live.ScriptedAgent(voice="indigo")
+    agent = _live.ScriptedAgent()
     agent.dial()
     widget = CallStatus(agent)
     _live.count_frames(widget)

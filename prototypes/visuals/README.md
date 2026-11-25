@@ -19,6 +19,8 @@ code that reuses the theme, font and shapes so they are honest previews.
 | `call_looks*.png`, `gif/call_look_*.gif`, `gif/call_reveal_*.gif` | looks proposed for the call (brackets, tags, trace, sections, signal, open line) and ways for a reply to arrive; brackets + trace + the decode reveal were built |
 | `call_holo.png`, `gif/call_holo*.gif` | the built hologram: the raster, and the scan glitching down the call and the status chip |
 | `call_progress.png` | progress bars from the real widgets: a download, a skill's pipeline, a busy stage, a step's summary, a background job, the status chip |
+| `call_context.png` | the chat's context bar on the real call: A under her heading (built), B at the plate's foot with the number, C a short meter in the heading; early, past the compact tick, near the cap, compacting, compacted |
+| `call_scrollback.png` | the call scrolled back (Ctrl+K) through earlier exchanges: S1 a muted `// time` row (built), S2 a rule with the time, S3 the time beside your line; at the top the chat's start or the edge of what she still holds |
 
 Animated versions of the panel transitions are in `gif/`: one looping
 30fps GIF per effect (open, hold, close, pause) and `panel_all.gif`
@@ -34,6 +36,7 @@ Regenerate from this folder:
     PYTHONPATH=../.. ../../.venv/bin/python render_call_looks.py   # needs ffmpeg
     PYTHONPATH=../.. ../../.venv/bin/python render_call_holo.py    # needs ffmpeg
     PYTHONPATH=../.. ../../.venv/bin/python render_call_progress.py
+    PYTHONPATH=../.. ../../.venv/bin/python render_call_chat.py
     PYTHONPATH=../.. ../../.venv/bin/python readme_call.py         # the README's call media, into docs/media
 
 The panel effects are prototype SkSL inside `render_panels.py`; a chosen
