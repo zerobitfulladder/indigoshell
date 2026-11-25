@@ -84,9 +84,10 @@ ROLE_COLORS = {"fg": theme.FG, "strong": theme.FG_STRONG, "muted": theme.BASE_MU
                "info": theme.CYAN_BRIGHT, "accent": theme.FG_ACCENT, "warn": theme.YELLOW_MID,
                "error": theme.ERROR, "ok": theme.LIME_BRIGHT}
 
-# Nerd Font glyphs (FontAwesome and Codicons), by the names apps use.
+# Nerd Font glyphs (FontAwesome and Codicons), by the names apps use;
+# the unsaved dot is a square (■), never a circle (the user's rule).
 ICONS = {"bookmark": "\uf02e", "unlocked": "\uf09c", "search": "\uf002", "replace": "\uf0ec",
-         "play": "\uf04b", "history": "\uf1da", "unsaved": "\uf111", "branch": "\ue0a0",
+         "play": "\uf04b", "history": "\uf1da", "unsaved": "\u25a0", "branch": "\ue0a0",
          "error": "\uf057", "warning": "\uf071", "info": "\uf05a", "case": "\ueab1",
          "regex": "\ueb38", "file": "\uf15b", "folder": "\uf07b"}
 CHECK = "\uf00c"                    # a row that is `on`

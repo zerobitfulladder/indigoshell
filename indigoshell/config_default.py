@@ -143,11 +143,10 @@ stat_ram = StatMeter("RAM", sysinfo.memory_percent,
 stat_temp = StatMeter("TEMP", sysinfo.temperature_package,
                       value_format="{:.0f}°",
                       dim_color=theme.CYAN_DIM, label_color=theme.CYAN_DIM,
-                      # 30°C -> 0%, 90°C -> 100%
-                      to_pct=lambda t: (t - 30) * (100 / 60),
-                      gradient=((0.0, theme.CYAN_BRIGHT),
-                                (0.5, theme.YELLOW_BRIGHT),
-                                (0.8, theme.ERROR)))
+                      # 30°C -> 0%, 90°C -> 100%; red from 78°C
+                      to_pct=lambda t: ((t - theme.TEMP_MIN_C) * 100
+                                        / (theme.TEMP_MAX_C - theme.TEMP_MIN_C)),
+                      gradient=theme.HEAT_RAMP)
 
 # Now playing — sptlrx pipes the current lyric line; the scramble effect
 # reveals each new line instead of snapping to it, and the line breathes
@@ -447,17 +446,18 @@ def call(hub) -> tuple[WindowSpec, list]:
     the hub's line itself, and the router the top bar's agent chip reads
     (the chip shows the agent's work while the call is hung up, and
     blinks when it rings back; nothing opens in the corner)."""
-    # Top right, clear of the bar. Frosted rather than solid: translucent
-    # plates with `blur`, which has the compositor blur what is behind
-    # them and cuts the window to the plates' outline. Grabs the keyboard
-    # and pointer like the launcher; Escape, an outside click or the
+    # Top right, 16 px under the top bar: never over it, where it would
+    # cover the agent chip. Frosted rather than solid: translucent plates
+    # with `blur`, which has the compositor blur what is behind them and
+    # cuts the window to the plates' outline. Grabs the keyboard and
+    # pointer like the launcher; Escape, an outside click or the
     # keybinding again hangs up, and the work carries on.
     window = WindowSpec(
         name=CALL_WINDOW,
         layer=Layer.OVERLAY,
         anchor=Anchor.TOP | Anchor.RIGHT,
         size=(1, 1),                 # placeholder; content-sized
-        margin=Insets(top=16, right=theme.BAR_MARGIN + 12),
+        margin=Insets(top=theme.TOP_BAR_HEIGHT + 16, right=theme.BAR_MARGIN + 12),
         override_redirect=True,
         focusable=False,
         dismiss_on_outside_click=True,

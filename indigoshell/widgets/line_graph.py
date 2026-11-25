@@ -1,7 +1,7 @@
 """Minimal cyberpunk line graph.
 
 A ring buffer of samples drawn as a stroked polyline, an optional
-translucent fill beneath it, a faint ceiling rule, and an accent dot on
+translucent fill beneath it, a faint ceiling rule, and a square light on
 the newest sample. Owns no data source — feed it with `push(value)`.
 
 """
@@ -10,7 +10,7 @@ from collections import deque
 
 import skia
 
-from .. import theme
+from .. import shapes, theme
 from .base import Size, Widget
 
 
@@ -107,12 +107,8 @@ class LineGraph(Widget):
         n = len(self._samples)
         if n < 2:
             if n == 1 and self.show_dot:
-                dot = skia.Paint(AntiAlias=True)
-                dot.setColor(theme.color(self.color))
-                canvas.drawCircle(
-                    r.right() - 2,
-                    self._y_for(self._samples[0], r.top(), height, vmin, vmax),
-                    2.0, dot)
+                self._paint_dot(canvas, self._y_for(self._samples[0], r.top(),
+                                                    height, vmin, vmax))
             return
 
         # Newest sample anchored to the right edge, so the plot scrolls
@@ -146,6 +142,10 @@ class LineGraph(Widget):
         canvas.drawPath(line, stroke)
 
         if self.show_dot:
-            dot = skia.Paint(AntiAlias=True)
-            dot.setColor(theme.color(self.color))
-            canvas.drawCircle(r.right() - 2, points[-1][1], 2.2, dot)
+            self._paint_dot(canvas, points[-1][1])
+
+    def _paint_dot(self, canvas: skia.Canvas, y: float) -> None:
+        """The newest sample's light: a square flush with the right edge,
+        centred on the sample — never a circle (the user's rule)."""
+        shapes.paint_light(canvas, shapes.light(self.rect.right() - shapes.LIGHT, y),
+                           theme.color(self.color))

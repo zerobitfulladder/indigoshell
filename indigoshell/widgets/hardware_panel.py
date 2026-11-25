@@ -43,12 +43,36 @@ def fmt_bytes(n: float) -> str:
 
 
 def heat_color(pct: float) -> str:
-    """Cool -> warm -> hot ramp, shared by disk and temperature."""
-    if pct >= 90:
-        return theme.MAGENTA_BRIGHT
-    if pct >= 75:
+    """Cool -> warm -> hot, for temperature: the bar's TEMP ramp
+    (theme.HEAT_RAMP), red from 80% of the scale."""
+    chosen = theme.HEAT_RAMP[0][1]
+    for share, color in theme.HEAT_RAMP:
+        if pct >= share * 100:
+            chosen = color
+    return chosen
+
+
+# A disk fills, it does not heat: most disks sit above half full, so the
+# heat ramp would keep this bar yellow all day. Its own points instead,
+# with red (theme.ERROR) only when it is nearly full.
+DISK_WARN_PCT = 75.0
+DISK_FULL_PCT = 90.0
+
+
+def disk_color(pct: float) -> str:
+    """The disk bar: cyan, yellow from DISK_WARN_PCT, red from
+    DISK_FULL_PCT."""
+    if pct >= DISK_FULL_PCT:
+        return theme.ERROR
+    if pct >= DISK_WARN_PCT:
         return theme.YELLOW_BRIGHT
     return theme.CYAN_BRIGHT
+
+
+def temp_pct(celsius: float) -> float:
+    """A temperature on the bar's TEMP scale, 30 °C -> 0%, 90 °C -> 100%."""
+    return ((celsius - theme.TEMP_MIN_C) * 100
+            / (theme.TEMP_MAX_C - theme.TEMP_MIN_C))
 
 
 # ── GPU sampling ────────────────────────────────────────────────────────
@@ -139,7 +163,7 @@ class HardwarePanel(Widget):
 
         # ── disk ────────────────────────────────────────────────────────
         self._disk_value = value_label()
-        self._disk_bar = BarMeter(color=heat_color, min_width=width - 40)
+        self._disk_bar = BarMeter(color=disk_color, min_width=width - 40)
         disk = HudCard(Column([
             Row([key_label("DISK"), meta_label(disk_mount, color=theme.FG),
                  Spacer(), self._disk_value], spacing=10, align=Align.CENTER),
@@ -302,8 +326,8 @@ class HardwarePanel(Widget):
         self._gpu_mem_bar.set_value(gpu["mem_used_mib"] / total * 100.0)
         self._gpu_mem.set_value(
             f"{gpu['mem_used_mib']:.0f} / {gpu['mem_total_mib']:.0f} MiB")
-        # 30°C -> 0%, 100°C -> 100%, same ramp the bar meter reads.
-        self._gpu_temp_bar.set_value((gpu["temp"] - 30) * (100 / 70))
+        # On the bar's TEMP scale, so it turns red where the bar does.
+        self._gpu_temp_bar.set_value(temp_pct(gpu["temp"]))
         self._gpu_temp.set_value(f"{gpu['temp']:.0f}°C")
 
     # ── layout / paint ──────────────────────────────────────────────────

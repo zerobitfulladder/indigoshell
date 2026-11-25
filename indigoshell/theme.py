@@ -68,6 +68,14 @@ HUD_FG_BRIGHT   = "#c8d0e8"
 HUD_PLATE       = "#241840"            # selected-row / active-tab fill
 HUD_SECTION     = "#1a1030"            # section header fill
 
+# Heat, one ramp wherever something runs hot: (share of the scale, colour)
+# steps, cool cyan, warm yellow, hot red. The bar's TEMP and the hardware
+# panel's disk and GPU temperature step at the same points, and the two
+# temperatures read on one scale, 30 °C empty to 90 °C full.
+HEAT_RAMP       = ((0.0, CYAN_BRIGHT), (0.5, YELLOW_BRIGHT), (0.8, ERROR))
+TEMP_MIN_C      = 30.0
+TEMP_MAX_C      = 90.0
+
 # ── Typography ──────────────────────────────────────────────────────────
 FONT            = "FiraCode Nerd Font Mono"
 FONT_FALLBACKS  = ("FiraCode Nerd Font", "JetBrainsMono Nerd Font",

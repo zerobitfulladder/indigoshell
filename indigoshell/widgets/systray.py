@@ -94,9 +94,11 @@ class Systray(Widget):
         lit_count = min(len(self._broker.items()), n)
         paint = skia.Paint(AntiAlias=False)
         for i in range(n):
-            # i=0 is the bottom-most cell; lit fills bottom-up.
+            # i=0 is the bottom-most cell; lit fills bottom-up. A count of
+            # apps you can click through to is info, cyan like the clock
+            # beside it: red is for errors and alarms only.
             y = r.bottom() - (i + 1) * cell_h - i * self.gap
-            color = theme.ERROR if i < lit_count else theme.MAGENTA_DIM
+            color = theme.CYAN_BRIGHT if i < lit_count else theme.MAGENTA_DIM
             paint.setColor(theme.color(color))
             canvas.drawRect(
                 skia.Rect.MakeXYWH(r.left(), y, r.width(), cell_h), paint)
@@ -229,11 +231,12 @@ class TrayPanel(Column):
         # X's primary monitor, or the Wayland canvas's output.
         mon = d.primary_monitor()
         # The menu's top-right corner sits MENU_GAP left of the row's
-        # top-left, in root coordinates (the canvas's, on Wayland).
+        # top-left, in root coordinates (the canvas's, on Wayland); a tall
+        # one moves up, but never over the top bar.
         x = int(win.x + row.rect.left()) - self.MENU_GAP - w
         y = int(win.y + row.rect.top())
         x = max(mon.x, min(x, mon.x + mon.width - w))
-        y = max(mon.y, min(y, mon.y + mon.height - h))
+        y = max(mon.y + theme.TOP_BAR_HEIGHT, min(y, mon.y + mon.height - h))
         d.kinds[MENU_WINDOW] = WindowSpec(
             name=MENU_WINDOW,
             layer=Layer.OVERLAY,
@@ -455,7 +458,7 @@ class _MenuItemRow(Widget):
         if n.toggle_type == "checkmark":
             prefix = {1: "✓ ", -1: "− "}.get(n.toggle_state, "  ")
         elif n.toggle_type == "radio":
-            prefix = "● " if n.toggle_state == 1 else "○ "
+            prefix = "  "           # its cell holds a light (paint)
         return prefix + _strip_mnemonic(n.label)
 
     def measure(self, avail: Size) -> Size:
@@ -480,9 +483,13 @@ class _MenuItemRow(Widget):
         else:
             color = theme.CYAN_MID
         baseline = text.baseline_in(r, _MENU_FONT_SIZE)
-        text.draw(canvas, self._label(),
-                  r.left() + _MENU_ITEM_PAD_X + self.depth * _MENU_INDENT,
-                  baseline, _MENU_FONT_SIZE, theme.color(color))
+        x = r.left() + _MENU_ITEM_PAD_X + self.depth * _MENU_INDENT
+        if n.toggle_type == "radio":
+            # A square light, never a ● (the user's rule): lit when picked.
+            shapes.text_light(canvas, x, baseline, _MENU_FONT_SIZE,
+                              theme.color(color), on=n.toggle_state == 1)
+        text.draw(canvas, self._label(), x, baseline, _MENU_FONT_SIZE,
+                  theme.color(color))
         if n.has_submenu:
             arrow = "▾" if n.id in self.menu._expanded else "▸"
             arrow_w = text.measure(arrow, _MENU_FONT_SIZE)

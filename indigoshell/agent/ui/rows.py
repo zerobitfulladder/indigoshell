@@ -10,7 +10,7 @@ from typing import Any
 
 import skia
 
-from ... import markdown, text, theme
+from ... import markdown, shapes, text, theme
 from ..activity import Activity
 from .style import ACT_SIZE, AGENT_ACCENT, BODY_SIZE, CODE_FG, LINK_FG, SELECT_BG, font_for, line_h
 
@@ -196,7 +196,11 @@ def paint_line(canvas, box, row: Row, sel, accent) -> None:
         canvas.drawRect(skia.Rect.MakeXYWH(x0 - text.advance(ACT_SIZE) * 1.5
                                            + 1, box.top() + 1, 2,
                                            box.height() - 2), p)
-    if row.bullet:
+    if row.bullet == markdown.BULLET:
+        # A list's bullet is the shell's square light, never a round dot.
+        shapes.text_light(canvas, box.left() + row.bullet_x, base, row.size,
+                          theme.color(accent))
+    elif row.bullet:
         text.draw(canvas, row.bullet, box.left() + row.bullet_x, base,
                   row.size, theme.color(accent), bold=True)
     if sel is not None:

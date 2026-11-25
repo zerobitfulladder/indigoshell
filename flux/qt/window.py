@@ -646,6 +646,9 @@ class Window(QWidget):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._watch_keys()
+        # Its bar before the line starts: the shell gets it right after the
+        # announce, ahead of anything that names it (a new window's `open`).
+        self._refresh_now()
         self.link.start()
         self._follow_native()
 
@@ -788,6 +791,7 @@ class Window(QWidget):
         shell answers. The window has just been shown, so the line to the
         shell is usually still being made: what to do waits for it."""
         if self.link.attached:
+            self._refresh_now()             # the bar first: the open names its input
             self.link.send(B.open_input(flux_bar.ADDRESS))
         elif self.link.coming():
             self._address_wanted = True
@@ -797,6 +801,7 @@ class Window(QWidget):
     def _on_attached(self, attached: bool) -> None:
         if attached and self._address_wanted:
             self._address_wanted = False
+            self._refresh_now()             # the bar first: the open names its input
             self.link.send(B.open_input(flux_bar.ADDRESS))
 
     def _on_shell_down(self) -> None:

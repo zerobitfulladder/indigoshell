@@ -4,7 +4,7 @@
     .venv/bin/python tests/topbar.py              all of it, about a minute;
                                                   a test browser window shows in
                                                   the bottom-right corner
-    .venv/bin/python tests/topbar.py --off-screen  1-7 only: nothing shows
+    .venv/bin/python tests/topbar.py --off-screen  all but 8: nothing shows
 
 1. Display (backend/x11.py) on throwaway windows of a second connection:
    several handlers on one window, event masks merged per subscriber
@@ -68,7 +68,9 @@
    chord again selecting its text, Escape closing it and giving both
    back); a menu; no top bar (fallback); `open` with no top bar; a
    keymap change re-making the grabs; the grabs released with the
-   window.
+   window; `open` from a new focused window before its first bar
+   (waited for, open as the bar comes; with a bar without that input,
+   `fallback` past OPEN_WAIT_S and why, at info).
 6. Whether a top bar is over an app's window (real unmapped windows of
    the test's own) and where its list drops: the section's left, the
    bar's bottom edge, an item's left for a menu; the bar on another
@@ -102,6 +104,22 @@
    press is not tried: that would need input injected into the display.
    A test window that its window manager puts on a workspace not shown
    is asked back onto the current one (its own window, nobody else's).
+9. A new Flux window with no address opens its address input in the
+   bar: the real browser started with no URL with the shell running,
+   then a second invocation with none (a new window in it), then, that
+   browser quit, another started just after MOD+D's launcher (a copy
+   taking no keyboard, pointer or focus) has closed; against the real
+   AppService, Daemon and drop-down, the window manager's focus stood in
+   for, given as the service hears of the window (before its first bar
+   comes) and, for the second invocation's, a moment later. Nothing
+   shows: the browser's windows go to qtile's group 8 (a rule on each
+   browser process's pid, added as it starts; each window's group read
+   back from qtile, the browser killed at once if one is anywhere else;
+   the rules removed after, the group left as it was), the shell's
+   windows below the screen's bottom edge (each one's place read back
+   from X), the test's top bar as wide as the screen (so over every
+   window, as the real one is); the keyboard and pointer grabs
+   recorded, never made.
 
 Prints ok/FAIL lines, exits 1 if anything failed. Nothing here touches
 the running shell: no socket, lock, state or window of its. No window
@@ -1977,6 +1995,41 @@ def test_grabs(scratch: Path) -> None:
               "too; X gives another client Ctrl+L on it now",
               let_go == want and A not in service.grabs and A not in display._handlers
               and not held_by_another(other, A, codes["l"][0], CTRL), f"{len(let_go)} let go")
+
+        # A new window's `open` before its first bar, the window focused as
+        # the service hears of it (the window manager focuses a window as it
+        # maps): what Flux did, and the input was dropped without a word.
+        G, H = xw.make(), xw.make()
+        wg, lg = flux(G, bar=False)
+        n = len(core.calls)
+        service.set_active(G)
+        wg.on_message({"type": "open", "input": "address"})
+        early = service.prompt
+        wg.on_message(flux_bar(["Alpha"], host="a.example"))
+        p = service.prompt
+        check("{type: open} from a new window before its first bar, the window focused: waited "
+              "for; the address input open as its bar comes, the keyboard held for it, nothing "
+              "said to the app", early is None and p is not None and p.owner is wg
+              and p.name == "address" and ("keyboard", G, False, ASYNC, ASYNC) in core.calls[n:]
+              and not [m for m in lg.out if m.get("type") == "fallback"],
+              f"{p and p.name}; to the app {[m.get('type') for m in lg.out]}")
+        key(G, 0xFF1B)
+        wh, lh = flux(H, bar=False)
+        mark = len(rec.records)
+        service.set_active(H)
+        wh.on_message({"type": "open", "input": "address"})
+        wh.on_message(flux_bar(["Alpha"], host="a.example", single=True))
+        waited = service._open_wait is not None and service.prompt is None
+        service._open_late()        # OPEN_WAIT_S past (no loop here: its timer, by hand)
+        said = rec.count("still waiting for that input in its bar", logging.INFO, mark)
+        check("... a bar that comes without that input (a single window's): waited for until "
+              "OPEN_WAIT_S, then `fallback` to the app, and why, at info", waited
+              and [m for m in lh.out if m.get("type") == "fallback"]
+              == [{"type": "fallback", "input": "address"}] and said == 1,
+              f"to the app {lh.out[-1:]}, said {said}")
+        for w_ in (wg, wh):
+            service.forget(None, w_)
+        service.set_active(0)
         unexpected = [m for m in rec.at_least(logging.WARNING) if "ctrl+m" not in m]
         check("no other warnings or errors", unexpected == [], f"{unexpected[:3]}")
     finally:
@@ -2662,9 +2715,375 @@ async def live_input(scratch: Path, service, display, x, jw, loop) -> None:
         daemon_mod._DAEMON = None
 
 
+# ── 9. new windows, nothing on screen ──────────────────────────────────
+# qtile's command client, in the system's Python (where qtile lives):
+# `add <pid> <group>` a rule putting that process's windows on the group
+# (its id), `remove <id>`, `windows` [id, group] of each window it manages.
+QTILE = ("from libqtile.command.client import InteractiveCommandClient as C; "
+         "import json, sys; c = C(); a = sys.argv[1:]; "
+         "print(json.dumps(c.add_rule({'net_wm_pid': int(a[1])}, {'group': a[2]}) "
+         "if a[0] == 'add' else c.remove_rule(int(a[1])) if a[0] == 'remove' "
+         "else [[w['id'], w['group']] for w in c.windows()]))")
+SYSTEM_PYTHON = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else "python3"
+TEST_GROUP = "8"
+
+
+def qtile_env() -> dict:
+    """qtile's socket is in its session's cache directory: this run's,
+    or, for a run given a scratch one, the default one."""
+    for cache in (os.environ.get("XDG_CACHE_HOME"), os.path.expanduser("~/.cache")):
+        where = os.path.join(cache or "", "qtile")
+        if cache and os.path.isdir(where) and any(n.startswith("qtilesocket.")
+                                                  for n in os.listdir(where)):
+            return {**os.environ, "XDG_CACHE_HOME": cache}
+    return dict(os.environ)
+
+
+async def qtile(*args: str) -> tuple[bool, object]:
+    """(answered, qtile's answer)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            SYSTEM_PYTHON, "-c", QTILE, *args, env=qtile_env(), stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL)
+    except OSError:
+        return False, None
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), 10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return False, None
+    if proc.returncode != 0:
+        return False, None
+    try:
+        return True, json.loads(out)
+    except ValueError:
+        return False, None
+
+
+class OnTestGroup:
+    """The test's browser windows on qtile's group 8, never the one
+    shown: a rule on each process's pid, added as it starts (its first
+    window comes a second or more later); each window's group read back
+    from qtile as the shell hears of it, the browsers killed at once if
+    one is anywhere else; the rules removed at the end."""
+
+    def __init__(self) -> None:
+        self.rules: list[int] = []
+        self.seen: list[tuple[int, str | None]] = []    # an id may come again (a new client)
+        self.tasks: list[asyncio.Task] = []
+
+    async def rule(self, pid: int) -> bool:
+        ok, rid = await qtile("add", str(pid), TEST_GROUP)
+        if ok and isinstance(rid, int):
+            self.rules.append(rid)
+            return True
+        return False
+
+    async def windows(self) -> list[tuple[int, str]] | None:
+        ok, wins = await qtile("windows")
+        if not ok or not isinstance(wins, list):
+            return None
+        return [(int(w), str(g)) for w, g in wins]
+
+    def watch(self, wid: int, kill) -> None:
+        self.tasks.append(asyncio.ensure_future(self._guard(wid, kill)))
+
+    async def _guard(self, wid: int, kill) -> None:
+        group = None
+        for _ in range(50):
+            group = next((g for w, g in await self.windows() or [] if w == wid), None)
+            if group is not None:
+                break
+            await asyncio.sleep(0.1)
+        self.seen.append((wid, group))
+        if group != TEST_GROUP:
+            kill()
+            print(f"  (browser window 0x{wid:x} on qtile group {group}, not {TEST_GROUP}: "
+                  "the browser killed)", flush=True)
+
+    async def release(self) -> bool:
+        ok = True
+        for rid in self.rules:
+            ok = (await qtile("remove", str(rid)))[0] and ok
+        self.rules.clear()
+        return ok
+
+
+async def new_windows(scratch: Path) -> None:
+    """A new Flux window with no address opens its address input in the
+    bar, the real path whole: the real browser started with no URL, then
+    a second invocation with none (a new window in it), then another
+    browser just after MOD+D's launcher (a copy taking no keyboard,
+    pointer or focus) has closed; against the real AppService and Daemon,
+    a top bar of the test's own and the real drop-down; the window
+    manager's focus stood in for (the person's real focus is not
+    followed): given to the window as the service hears its announce
+    (the window manager focuses a window as it maps, before its line to
+    the shell is made), and for the second invocation's a moment later.
+    Nothing shows: the browsers' windows on qtile's group 8, the shell's
+    below the screen's bottom edge (a monitor there, for the test's
+    display alone), the test's top bar as wide as the screen: over every
+    window, as the real one is. The keyboard and pointer grabs are
+    recorded, never made."""
+    import dataclasses
+
+    from indigoshell import config_default, theme
+    from indigoshell.applink.context import AppContext
+    from indigoshell.applink.drop import DROP_WINDOW
+    from indigoshell.applink.service import AppService, AppWindow
+    from indigoshell.backend.x11 import Display, Monitor
+    from indigoshell.core import daemon as daemon_mod
+    from indigoshell.widgets.base import Insets
+    from indigoshell.widgets.layout import Align, Row
+    from indigoshell.window import Layer, Placement, WindowSpec
+    from flux import places
+
+    section("9. a new Flux window with no address opens its address input (the browser's "
+            f"windows on qtile group {TEST_GROUP}, the shell's below the screen)")
+    group = OnTestGroup()
+    before = await group.windows()
+    if not check(f"qtile answers (its windows, group {TEST_GROUP}'s as it is now) and takes a rule "
+                 "for this process's own windows, before any is made",
+                 before is not None and await group.rule(os.getpid()),
+                 f"{SYSTEM_PYTHON}; rules {group.rules}"):
+        await group.release()
+        return
+    before_ours = {w for w, g in before if g == TEST_GROUP}
+    tag = f"{APP}-tbn-{os.getpid()}"
+    sock = os.path.join(runtime_dir(), f"{tag}-apps.sock")
+    isock = os.path.join(runtime_dir(), f"{tag}-browser.sock")
+    data = scratch / "new-data"
+    benv = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
+    benv.update({"XDG_DATA_HOME": str(data), "XDG_CACHE_HOME": str(scratch / "new-cache"),
+                 "XDG_CONFIG_HOME": str(scratch / "new-config"),
+                 "XDG_STATE_HOME": str(scratch / "new-state"),
+                 env("BROWSER_SOCKET"): isock, env("APPS_SOCKET"): sock,
+                 env("BROWSER_WIDEVINE"): "off"})
+    hist = places.History(data / APP / "browser-history.sqlite")
+    hist.visit("https://news.example/", "News")
+    hist.visit("https://docs.example/", "Docs")
+    hist.close()
+    loop = asyncio.get_running_loop()
+    display = Display()
+    display.attach_loop(loop)
+
+    def pump():
+        while display.pump():
+            pass
+
+    loop.add_reader(display.fd, pump)
+    x = Reader()
+    root_w, root_h = x.screen.width_in_pixels, x.screen.height_in_pixels
+    # A monitor below the screen's bottom edge, for this display alone:
+    # what is placed there stays there (a placement is kept inside the
+    # monitor that holds it).
+    real_monitors = display.monitors()
+    past = Monitor(0, root_h + 200, root_w, 1200, name="test: below the screen")
+    display.monitors = lambda: [*real_monitors, past]
+    grabs: list = []
+    display.grab_keyboard = lambda wid: grabs.append(("keyboard", wid)) or True
+    display.ungrab_keyboard = lambda: grabs.append("keyboard let go")
+    display.grab_pointer = lambda wid: grabs.append(("pointer", wid)) or True
+    display.ungrab_pointer = lambda: grabs.append("pointer let go")
+    service = AppService(path=sock, display=display)
+    service.start()
+    service._active_atom = 0            # the person's real focus is not followed here
+    bar = WindowSpec(name="test-top-bar", layer=Layer.OVERLAY, size=(root_w, theme.TOP_BAR_HEIGHT),
+                     override_redirect=True, focusable=False, background=theme.BAR_BG,
+                     padding=Insets.xy(theme.BAR_MARGIN, 0),
+                     content=Row([AppContext(service)], spacing=theme.BAR_SPACING,
+                                 align=Align.CENTER))
+    drop = next(s_ for s_ in config_default.WINDOWS if s_.name == DROP_WINDOW)
+    real_launcher = next(s_ for s_ in config_default.WINDOWS
+                         if s_.name == config_default.LAUNCHER)
+    launcher = dataclasses.replace(real_launcher, name="test-launcher", grab_keyboard=False,
+                                   dismiss_on_outside_click=False, focusable=False)
+    d = daemon_mod.Daemon({"windows": [bar, drop, launcher]})
+    d.display, d.loop = display, loop
+    events: list = []
+    real_send = AppWindow.send_event
+    procs: list = []
+    placed: dict[str, int | None] = {}
+
+    def below(name) -> bool:
+        """Window `name` of ours wholly below the screen's bottom edge, as X
+        has it; destroyed at once if not."""
+        win = d.instances.get(name)
+        at = None
+        if win is not None and win.wid is not None:
+            try:
+                at = x.conn.core.TranslateCoordinates(win.wid, x.screen.root, 0, 0).reply().dst_y
+            except Exception:
+                at = None
+        placed[name] = at
+        if at is not None and at >= root_h:
+            return True
+        if win is not None:
+            d.instances.pop(name, None)
+            win.destroy()
+            print(f"  (window {name} at y {at}, the screen {root_h} high: destroyed)", flush=True)
+        return False
+
+    def send_event(self, event):
+        events.append((self.wid, event))
+        real_send(self, event)
+    AppWindow.send_event = send_event
+    focus_delay = [0.0]
+    real_added = service.added
+
+    def kill_all():
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+
+    def added(window):
+        """The window manager: the window mapped, and focused at once (or a
+        moment later). Nothing slow here: the shell answers the announce
+        as quickly as it does live, which is what lets the window's
+        `open` come before its first bar."""
+        group.watch(window.wid, kill_all)
+        if focus_delay[0]:
+            loop.call_later(focus_delay[0], service.set_active, window.wid)
+        else:
+            service.set_active(window.wid)
+        real_added(window)
+    service.added = added
+
+    async def start_flux(log_name):
+        """The browser with no URL, its windows on the test group."""
+        with open(scratch / log_name, "w") as err:
+            proc = subprocess.Popen([PY, "-m", "flux.qt", "--unattended"], cwd=REPO,
+                                    env=benv, stdout=err, stderr=err)
+        procs.append(proc)
+        if not await group.rule(proc.pid):
+            proc.kill()
+            check(f"a qtile rule for the browser's windows (pid {proc.pid})", False)
+            return None
+        return proc
+
+    async def opened_for(before):
+        """The address input open for a window newer than `before`."""
+        ok = await until(lambda: service.prompt is not None and service.prompt.open
+                         and service.prompt.owner not in before, 40)
+        return service.prompt if ok else None
+
+    def fluxes():
+        return [w for w in service.windows if w.kind == "flux"]
+
+    async def first_window(log_name, before, case):
+        """A browser started with no URL: its window's address input open in
+        the bar, empty, the keyboard held for it, its history listed under
+        the bar; no fallback."""
+        n = len(events)
+        proc = await start_flux(log_name)
+        p = await opened_for(before) if proc is not None else None
+        fallbacks = [e for w, e in events[n:] if e.get("type") == "fallback"]
+        listed = await until(lambda: p is not None and p.rows and DROP_WINDOW in d.instances
+                             and d.instances[DROP_WINDOW].mapped, 5)
+        listed = bool(listed) and below(DROP_WINDOW)
+        check(f"{case}, Flux started with no URL, its window focused as the shell hears of it "
+              "(before its first bar comes): its address input open in the bar, empty, the "
+              "keyboard held for it, its history listed under the bar (below the screen too); "
+              "no fallback", p is not None and p.name == "address" and p.text == ""
+              and p.owner.view.box is p.box and ("keyboard", p.owner.wid) in grabs
+              and listed and not fallbacks,
+              f"prompt {p and p.name}, fallbacks {fallbacks}, rows "
+              f"{[r['title'] for r in p.rows] if p and p.rows else None}, at {placed}")
+        owner = p.owner if p is not None else None
+        if p is not None:
+            p.close("escape")
+        return proc, owner
+
+    try:
+        d.open("test-top-bar", placement=Placement(past.x + past.width // 2, past.y + 100))
+        if not check("the test's top bar below the screen's bottom edge (X's place of it)",
+                     below("test-top-bar"), f"y {placed}, the screen {root_h} high"):
+            return
+        flux1, first = await first_window("new-flux.log", (), "the shell running")
+        if flux1 is None:
+            return
+        # A second invocation with no URL: a new window in the running Flux,
+        # focused a moment after the shell hears of it.
+        focus_delay[0] = 0.3
+        n = len(events)
+        second = await start_flux("new-flux-2.log")
+        exited = second is not None and await until(lambda: second.poll() is not None, 30, 0.05)
+        p2 = await opened_for((first,))
+        fallbacks = [e for w, e in events[n:] if e.get("type") == "fallback"]
+        check("a second invocation with no URL: a new window in the running browser, focused a "
+              "moment after its announce: its address input open in the bar once it has focus "
+              "(the open waited for it); no fallback", bool(exited) and second.returncode == 0
+              and p2 is not None and p2.name == "address" and p2.owner is not first
+              and p2.owner.view.box is p2.box and not fallbacks,
+              f"exit {second and second.returncode}, prompt {p2 and p2.name}, "
+              f"fallbacks {fallbacks}")
+        if p2 is not None:
+            p2.close("escape")
+        flux1.send_signal(signal.SIGINT)
+        quit_ = await until(lambda: flux1.poll() is not None, 15, 0.05)
+        dropped = await until(lambda: not fluxes(), 5)
+        check("that browser quits (exit 0), its windows dropped by the service",
+              bool(quit_) and flux1.returncode == 0 and bool(dropped), f"exit {flux1.returncode}")
+
+        # MOD+D's launcher, opened and closed just before Flux starts.
+        focus_delay[0] = 0.0
+        d.open("test-launcher", placement=Placement(past.x + past.width // 2, past.y + 300))
+        await until(lambda: d.instances.get("test-launcher") is not None
+                    and d.instances["test-launcher"].mapped, 5)
+        ours = below("test-launcher")
+        d.close("test-launcher")
+        if not check("the test's launcher below the screen's bottom edge (X's place of it), "
+                     "closed", ours, f"y {placed}"):
+            return
+        await first_window("new-flux-3.log", (first, p2 and p2.owner), "the launcher just closed")
+        said = [e for w, e in events if e.get("type") == "closed"]
+        check("... each closed by Escape: `closed` to the browser",
+              len(said) >= 3 and all(e.get("by") == "escape" for e in said[-3:]), f"{said}")
+        await asyncio.gather(*group.tasks)
+        for proc in procs:
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGINT)
+        gone = await until(lambda: all(proc.poll() is not None for proc in procs), 15, 0.05)
+        released = await group.release()
+        after = await group.windows()
+        left = None if after is None else {w for w, g in after if g == TEST_GROUP} - before_ours
+        check(f"every browser window was on qtile group {TEST_GROUP} (qtile's group of each, "
+              "read back as the shell heard of it); the browsers quit, our rules removed, the "
+              "group left as it was", len(group.seen) >= 3
+              and all(g == TEST_GROUP for _w, g in group.seen) and bool(gone) and released
+              and left == set(),
+              f"{[(hex(w), g) for w, g in group.seen]}, left {left}")
+    finally:
+        AppWindow.send_event = real_send
+        for proc in procs:
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGINT)
+                try:
+                    proc.wait(15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(5)
+        for task in group.tasks:
+            task.cancel()
+        await group.release()
+        service.stop()
+        for w in list(d.instances.values()) + list(d._parked.values()) + list(d._dying):
+            w.destroy()
+        d.instances.clear()
+        d._parked.clear()
+        daemon_mod._DAEMON = None
+        loop.remove_reader(display.fd)
+        display.close()
+        for path in (sock, isock, isock + ".lock"):
+            if os.path.exists(path):
+                os.unlink(path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--off-screen", action="store_true", help="sections 1-7 only")
+    parser.add_argument("--off-screen", action="store_true",
+                        help="all but section 8 (the one that shows a browser window)")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()
     scratch = Path(tempfile.mkdtemp(prefix=f"{APP}-topbar-test-"))
@@ -2686,6 +3105,7 @@ def main() -> int:
         test_spec(scratch)
         if not args.off_screen:
             asyncio.run(on_screen(scratch))
+        asyncio.run(new_windows(scratch))
     except Exception:
         FAILED.append("aborted")
         print("\nABORTED:\n" + traceback.format_exc(), flush=True)
