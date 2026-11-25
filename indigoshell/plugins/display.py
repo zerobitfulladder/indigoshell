@@ -8,8 +8,10 @@ and not one per output, or there is a frame with no output enabled and X
 collapses the screen to 640x480 (indigoshell/wm says how). The output
 already in sole use is lit.
 
-The pick is remembered (`display.output` in the state file) and
-`restore()` enforces it at shell start and whenever RandR reports a
+The pick is remembered in the state file, one per window manager:
+`display.output` on X and `display.output.niri` on niri, as the two name
+the same connector differently (X's HDMI-0 is niri's HDMI-A-1), so X's
+pick never reads as a monitor niri doesn't have. `restore()` enforces it at shell start and whenever RandR reports a
 change: if the remembered output is connected it is used; if it is not,
 the laptop panel takes over without forgetting the choice, so plugging
 the monitor back in returns to it. With nothing remembered the screen
@@ -35,9 +37,15 @@ from ..plugin import Item, Menu
 
 log = logging.getLogger(__name__)
 
-STATE_KEY = "display.output"
+STATE_KEY = "display.output"        # X's; another window manager's ends in its name
 _EMBEDDED_PREFIXES = ("eDP", "LVDS")
 _BRAINDANCE_MONITOR = "braindance"
+
+
+def _state_key() -> str:
+    """Where this window manager's pick is remembered (the docstring)."""
+    name = wm.get().name
+    return STATE_KEY if name == "x11" else f"{STATE_KEY}.{name}"
 
 
 async def _query() -> list[wm.Output]:
@@ -81,7 +89,7 @@ async def _use_only(name: str, *, remember: bool = True,
            if o.name != name and (o.connected or o.active)]
     await wm.get().use_only(name, _best_mode(target.modes), off)
     if remember:
-        state.set(STATE_KEY, name)
+        state.set(_state_key(), name)
 
 
 async def _items() -> list[Item]:
@@ -108,7 +116,7 @@ async def restore() -> None:
     or fall back to the laptop panel while it is unplugged."""
     if await _braindance_running():
         return
-    wanted = state.get(STATE_KEY)
+    wanted = state.get(_state_key())
     outputs = await _query()
     connected = {o.name for o in outputs if o.connected}
     if wanted and wanted in connected:

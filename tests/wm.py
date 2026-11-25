@@ -306,7 +306,7 @@ async def test_x11_pure() -> None:
           run.calls[-1] == ["xrandr", "--output", "eDP-1", "--primary", "--mode",
                             "1920x1080", "--rate", "60.02", "--output", "HDMI-1",
                             "--off", "--output", "DP-2", "--off"]
-          and state == {display.STATE_KEY: "eDP-1"}, str(run.calls[-1:]))
+          and state == {"display.output": "eDP-1"}, str(run.calls[-1:]))
     check("display: braindance running (its RandR monitor)",
           await display._braindance_running())
 
@@ -506,6 +506,40 @@ async def test_niri_pure() -> None:
           str(sent[5:7]))
     check("log out: Quit, skipping niri's confirmation (niri msg's shape)",
           sent[-1] == NIRI_MSG["action quit --skip-confirmation"], str(sent[-1]))
+
+    # X's pick (its HDMI-0 is niri's HDMI-A-1) is not niri's: niri's
+    # screen is left as it is, with niri's own pick remembered apart.
+    from indigoshell.plugins import display
+    big, panel = wm.Mode(2560, 1440, 59.951), wm.Mode(1920, 1080, 300.009)
+    outs = [wm.Output("HDMI-A-1", connected=True, active=True, primary=False,
+                      modes=(big,), current=big),
+            wm.Output("eDP-1", connected=True, active=True, primary=False,
+                      modes=(panel,), current=panel)]
+    saved = {"display.output": "HDMI-0"}
+    used = []
+
+    class Quiet(nirimod.Niri):
+        async def outputs(self):
+            return outs
+
+        async def use_only(self, name, mode, off):
+            used.append((name, off))
+    real_get, real_set = display.state.get, display.state.set
+    display.state.get = lambda k, default=None: saved.get(k, default)
+    display.state.set = lambda k, v: saved.update({k: v})
+    use(Quiet("/nonexistent"))
+    try:
+        await display.restore()
+        left_alone = not used
+        await display._use_only("HDMI-A-1")
+    finally:
+        display.state.get, display.state.set = real_get, real_set
+    check("display on niri: X's remembered HDMI-0 leaves both outputs on",
+          left_alone, str(used))
+    check("... a pick from the menu is niri's own, X's kept",
+          used == [("HDMI-A-1", ["eDP-1"])]
+          and saved == {"display.output": "HDMI-0", "display.output.niri": "HDMI-A-1"},
+          str((used, saved)))
 
     async with FakeNiri(ONE) as fake:
         n = nirimod.Niri(fake.path)
