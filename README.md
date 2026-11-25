@@ -10,9 +10,10 @@ browser, a process of its own on PySide6 and QtWebEngine.
 On a Wayland compositor with layer-shell (niri) the same process draws
 on one overlay canvas instead of X windows ([canvas.py](indigoshell/canvas.py)):
 the two bars, the panels, the chord menu, the launcher, the top bar's
-drop-down and the toasts so far, with the keyboard taken through
-layer-shell while one of them needs it; the call and the systray's panel
-are X11 only yet.
+drop-down, the toasts, the call and the systray's panel and menu, with
+the keyboard taken through layer-shell while one of them needs it. Flux
+runs there on Qt's Wayland platform, its tabs on the top bar by niri's
+focus ([Running on niri](#running-on-niri)).
 
 <p align="center">
   <img src="docs/media/hero.png" width="100%"
@@ -568,6 +569,33 @@ so one float rule covers all of them:
 ```python
 Match(wm_class="indigoshell")
 ```
+
+### Running on niri
+
+On niri the shell is the same `main.py`, started by niri: it picks the
+Wayland canvas by itself (`$WAYLAND_DISPLAY` is set and niri offers
+layer-shell; `INDIGOSHELL_BACKEND=x11` would say otherwise).
+[`docs/niri.kdl`](docs/niri.kdl) holds what to add to niri's config:
+the shell at startup through `~/.local/bin/indigoshell` (the link
+above), the layer rule that lets the call's blur show the windows
+behind it, a window rule for the agent's own Flux window, and the keys
+above as niri binds (plus `Mod+M`, `toggle bar`, which hides the bottom
+bar and gives its strip to the windows). The column layout of qtile's
+`Columns` comes from `python3 -m indigoshell.wm.tiling`, started by
+niri's config beside it.
+
+What differs from X11, by design ([PROTOCOL.md](indigoshell/applink/PROTOCOL.md),
+"On Wayland"): niri gives the shell the focused window and its process
+over its IPC, and an app says which of its windows has the focus, so
+the top bar follows niri's focus. A Wayland client cannot grab another's
+keys, so Flux catches its own `Ctrl+L`, `Ctrl+T`, `Ctrl+F` and `Ctrl+M`
+and hands them to the shell, with whatever is typed before the shell
+has the keyboard. The agent's window can't be put on a workspace before
+it maps: the shell moves it there, unfocused, as niri lists it.
+
+`tests/wayland.py --nested` checks all of it in a niri of its own
+(Flux too: its tabs, `Ctrl+L`'s box, the agent's window, the call's
+Look), never in the session it runs from.
 
 ## Configuration
 

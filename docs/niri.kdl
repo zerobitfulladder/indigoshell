@@ -1,0 +1,48 @@
+// indigoshell on niri: the lines to add to ~/.config/niri/config.kdl.
+//
+// Everything here runs the shell through bin/indigoshell linked onto
+// ~/.local/bin (the README: `ln -s "$PWD/bin/indigoshell"
+// ~/.local/bin/indigoshell`), which runs main.py from the checkout with the
+// checkout's venv. On niri main.py picks the Wayland canvas by itself
+// ($WAYLAND_DISPLAY is set and niri offers layer-shell); Flux, started from
+// it, runs on Qt's Wayland platform.
+//
+// `niri validate` checks the file once these are in it. tests/wayland.py
+// --nested reads the window rule below into its nested niri.
+
+// The shell. (Keep starting the column layout, qtile's two columns, as
+// before: `python3 -B -m indigoshell.wm.tiling` in the checkout.)
+spawn-sh-at-startup "exec ~/.local/bin/indigoshell"
+
+// The call's blur shows the windows behind it, not only the wallpaper
+// (niri's default for a layer surface is "xray").
+layer-rule {
+    match namespace="^indigoshell$"
+    background-effect {
+        xray false
+    }
+}
+
+// The agent's own Flux window ("<Voice> · Flux") goes to a workspace the
+// user isn't looking at: the shell moves it there as soon as niri lists
+// it (niri has no way to ask for that before it maps). This keeps it from
+// taking the focus in that moment.
+window-rule {
+    match app-id="^indigoshell-browser$" title=" · Flux$"
+    open-focused false
+}
+
+binds {
+    // qtile's keys that call the shell.
+    Mod+D { spawn-sh "exec ~/.local/bin/indigoshell toggle launcher"; }
+    Mod+A { spawn-sh "exec ~/.local/bin/indigoshell toggle call"; }
+    Mod+Escape { spawn-sh "exec ~/.local/bin/indigoshell menu power"; }
+    Mod+Shift+S { spawn-sh "exec ~/.local/bin/indigoshell menu display"; }
+    // The keyboard layout menu: in place of niri's `switch-layout "next"`.
+    Mod+Shift+O { spawn-sh "exec ~/.local/bin/indigoshell menu layout"; }
+    Mod+Shift+P { spawn-sh "exec ~/.local/bin/indigoshell menu profile"; }
+    Mod+Shift+A { spawn-sh "exec ~/.local/bin/indigoshell menu audio"; }
+    Mod+Shift+G { spawn-sh "exec ~/.local/bin/indigoshell menu graphics"; }
+    // Hide the bottom bar and give its strip to the windows; again, back.
+    Mod+M { spawn-sh "exec ~/.local/bin/indigoshell toggle bar"; }
+}
