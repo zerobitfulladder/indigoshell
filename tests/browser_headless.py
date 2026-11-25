@@ -585,6 +585,13 @@ def test_headless() -> None:
           out.get("tabs_end", ("", [], ""))[0][:120])
     check("the shell's app socket never connected to", len(SHELL_SEEN) == seen_before,
           f"{SHELL_SEEN[seen_before:][:2]}")
+    async def release_it() -> str:
+        blocks = await hands["browser_release"].run(ah.Call("r1", "browser_release", {}, 10.0))
+        return blocks[0]["text"]
+    released = asyncio.run(release_it())
+    check("browser_release asks pi's Flux, not the default profile's",
+          "not running" not in released and "not acting on any tab" in released, released)
+
     async def quit_it() -> str:
         c = await control.connect(profile="pi")
         try:

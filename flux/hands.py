@@ -789,7 +789,7 @@ async def _release(call: Call) -> list[dict]:
     if tab is not None and not protocol.is_id(tab):
         raise HandError("`tab` must be a tab id")
     try:
-        flux = await control.shared(start=False)
+        flux = await _connection()          # the hand's own profile's Flux, never started
     except NotRunning:
         return [text_block("Flux is not running: nothing to let go of.")]
     try:
