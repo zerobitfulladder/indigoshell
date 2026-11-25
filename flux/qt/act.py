@@ -19,8 +19,8 @@ the tests have the cases):
   (reader.js `focusField`) takes them.
 - A key press with text types that text, non-ASCII too (Turkish ğ ş ı
   İ), given the key a keyboard would report: Qt's key for the character
-  when it has one, else the code of the character's uppercase, as X11's
-  xcb does for a symbol Qt has no key for.
+  when it has one, else the code of the character's uppercase, as Qt's
+  own keyboard handling gives for a symbol it has no key for.
 - An input method commit inserts a whole text at once: the page sees
   beforeinput and input (trusted), no keydown. 2100 characters: 0.05 s
   as one commit, 2.4 s as key presses.
@@ -32,7 +32,8 @@ the tests have the cases):
   presses close in time, and two presses stamped alike (a constructed
   event's timestamp is 0) are one, even from two separate requests. So
   every event here is stamped with the monotonic clock in milliseconds
-  (X's own time base on Linux, so the user's presses compare sanely),
+  (libinput's time base, which the compositor passes on, so the user's
+  presses compare sanely),
   and a lone click never lands within the double-click interval of the
   press before it.
 

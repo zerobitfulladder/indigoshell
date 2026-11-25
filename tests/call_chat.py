@@ -26,7 +26,7 @@ compaction, and paging back through it.
    nothing pages; Escape goes back live before it hangs up; Return
    sends and is live. The heading's meter: lit as `used` of `cap`, its
    number, nothing lit and no number when unknown.
-3. The window, off the screen and opened twice: paged back while a
+3. The window, opened twice: paged back while a
    turn streams and a line goes into it, live again, the compaction's
    sweep, its note: nothing left over (`_live.stale`).
 """
@@ -353,7 +353,7 @@ async def test_keys() -> None:
 
 
 class _NoWindow:
-    """What a widget asks of its window, off any screen."""
+    """What a widget asks of its window, stood in for."""
 
     class spec:
         name = "test-call"
@@ -375,12 +375,12 @@ class _NoWindow:
 
 
 # ── 3. the window ───────────────────────────────────────────────────────
-async def test_window(display) -> None:
-    print("3. the window, off the screen, opened twice")
+async def test_window(canvas) -> None:
+    print("3. the window, opened twice")
     agent = seeded(20)
     host = CallHost(agent)
     spec, _services = config.call(agent)
-    win = _live.open_window(display, _live.offscreen(spec, content=host))
+    win = _live.open_window(canvas, spec, content=host)
     await asyncio.sleep(0.5)
     for label in ("first open", "opened again"):
         host.you_plate.input.set_text("page back while you talk")
@@ -430,7 +430,7 @@ async def test_window(display) -> None:
 async def main() -> int:
     await test_bookkeeping()
     await test_keys()
-    await test_window(_live.connect())
+    await test_window(_live.canvas())
     print("FAILED" if FAILED else "all passed",
           f"({len(FAILED)}: {FAILED})" if FAILED else "")
     return 1 if FAILED else 0

@@ -33,14 +33,15 @@ Digits are found by key position as well as by symbol. Alt+Shift+1
 reaches Qt as "!" on a US layout, and on AZERTY the digits are the
 shifted level; XKB's keycodes 10..19 are the top row's 1..9, 0 on every
 layout (evdev's KEY_1.. plus XKB's offset of 8), so the position decides
-when the symbol is not a digit. Qt's native scan code is that keycode on
-X11 and on Wayland alike (measured under niri: Alt+Shift+2 came as "@"
-with scan code 11), and none on a key event made up in-process (a
-test's: 0), where the symbol alone decides.
+when the symbol is not a digit. Qt's native scan code is that keycode
+(measured under niri: Alt+Shift+2 came as "@" with scan code 11), and
+none on a key event made up in-process (a test's: 0), where the symbol
+alone decides.
 
-On Wayland the shell cannot take Ctrl+L, Ctrl+T, Ctrl+F and Ctrl+M: the
-window catches them itself while a shell has it and sends them to the
-shell (window.py, "Keys"), so they reach this table only with no shell.
+The shell cannot take Ctrl+L, Ctrl+T, Ctrl+F and Ctrl+M from the window:
+the window catches them itself while a shell has it and sends them to
+the shell (window.py, "Keys"), so they reach this table only with no
+shell.
 """
 
 from PySide6.QtCore import Qt
@@ -48,7 +49,7 @@ from PySide6.QtCore import Qt
 K = Qt.Key
 M = Qt.KeyboardModifier
 
-_TOP_ROW = {10 + i: i + 1 for i in range(9)}     # X keycode -> digit 1..9
+_TOP_ROW = {10 + i: i + 1 for i in range(9)}     # XKB keycode -> digit 1..9
 _ZERO = 19
 
 _PLAIN = {

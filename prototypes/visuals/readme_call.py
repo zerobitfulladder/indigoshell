@@ -9,7 +9,7 @@ widgets on a clock the frames own.
                                  calling back
 
 The desktop behind is drawn here too — a neon city at night — and
-frosted inside the plates the way picom blurs what is behind them. The
+frosted inside the plates the way the compositor blurs what is behind them. The
 call is painted onto a transparent layer of its own, as the live window
 is, so the scan tears only the call.
 

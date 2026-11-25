@@ -59,7 +59,7 @@ def bright(w, h):
 
 def shot(widget, w, h, back=backdrop):
     """As the screen composes it: the desktop, blurred inside the shapes
-    (picom's job), and the window's own transparent surface over it —
+    (the compositor's job), and the window's own transparent surface over it —
     which is all the projection can snapshot and tear."""
     W, H = w + 2 * MARGIN, h + 2 * MARGIN
     layer = skia.Surface(W, H)

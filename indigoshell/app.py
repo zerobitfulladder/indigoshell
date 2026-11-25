@@ -10,10 +10,11 @@ from .core.naming import APP, CLI, env
 from .core.paths import config_dir, log_path
 
 # The daemon is imported where it is run, not here. Every keybinding
-# spawns this file as a client, and importing the daemon pulls in
-# xcffib and asyncio — 87ms of a 110ms round trip, spent before the
-# request is even sent. Keystrokes typed in that gap go to whichever
-# window had focus, so for the launcher it is latency the user feels.
+# spawns this file as a client, and importing the daemon pulls in skia,
+# the Wayland bindings and asyncio — most of a client's round trip,
+# spent before the request is even sent. Keystrokes typed in that gap go
+# to whichever window had focus, so for the launcher it is latency the
+# user feels.
 
 
 def _load_config():

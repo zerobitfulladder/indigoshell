@@ -30,30 +30,28 @@ One native window per browser window, from the first show to the end.
 Qt makes a top-level's native window GPU-composed (RHI) only when a child
 that renders into a texture is in it at the moment the native window is
 made; one arriving later makes Qt destroy the native window and make
-another (the window manager sees a window close and another open, and
-the shell has to be told the new one). On Wayland just the same: niri
-saw the toplevel closed and a new one opened, with a new id, when a
-QQuickWidget came into a plain window (and not with one in it from the
-start). A web view's own widget (a QQuickWidget)
+another (niri saw the toplevel closed and a new one opened, with a new
+id, when a QQuickWidget came into a plain window, and not with one in it
+from the start). A web view's own widget (a QQuickWidget)
 appears only once its page starts loading, after a window is often
 shown, so every window holds a hidden QQuickWidget from its
 construction (`_gpu`): the native window is made GPU-composed at once,
 and a web view arriving later changes nothing. Only these windows: a new
 GPU-composed top-level is slow to make (measured 250-400 ms to its first
-paint on an NVIDIA X11 desktop, against 4-30 ms plain), which is why it
+paint on an NVIDIA desktop, against 4-30 ms plain), which is why it
 is not the process-wide default (QT_WIDGETS_RHI). Context menus,
 tooltips and dialogs stay plain; a page's <select> list is a
 QQuickWidget of QtWebEngine's own and pays the GPU window's cost.
 
 Keys (keys.py) are taken on the window's QWindow before any widget
 inside, the page included, sees them; if Qt replaces that QWindow
-anyway (WinIdChange) the filter moves to the new one and the shell is
-told the new X window. The release of a key we took (a shortcut, a key
-typed into find) never reaches the page either.
+anyway (WinIdChange) the filter moves to the new one. The release of a
+key we took (a shortcut, a key typed into find) never reaches the page
+either.
 
-On Wayland the shell cannot take the bar's chords from the window
-(`attached` says `chords: "app"`: link.py `app_chords`), so the window
-catches them first, before the Watch and the page: a press of one of
+The shell cannot take the bar's chords from the window, so once it has
+said `attached` the window catches them first, before the Watch and the
+page: a press of one of
 its bar's chords sends `open` with that chord (PROTOCOL.md section 4),
 and every key the window gets after it, until its keyboard is gone to
 the shell (the focus leaves the window), goes to the shell as `keys`,
@@ -62,7 +60,7 @@ the focus goes, or when the shell says the input `closed` or sends
 `fallback` (then the window does without, as with no shell). Whether
 the window has the focus (it, or a dialog or popup of it) is said to the
 shell as it changes (`report_active`): that is how the shell knows
-which Flux window is focused there.
+which Flux window is focused.
 
 Zoom is the user's: Ctrl++ / Ctrl+- / Ctrl+0 and Ctrl+wheel (taken on
 the QWindow too, a step a notch, so Chromium's own wheel zoom never
@@ -339,13 +337,12 @@ def _after_dialog(tab: Tab) -> None:
 
 
 def _key_id(event) -> int:
-    """What ties a release to its press: the XKB keycode (X11's and
-    Wayland's alike), or the key code where the event has none (one
-    made up in-process)."""
+    """What ties a release to its press: the XKB keycode, or the key code
+    where the event has none (one made up in-process)."""
     return event.nativeScanCode() or int(event.key())
 
 
-# X keysyms of the keys an input cares about, for a key event that carries
+# XKB keysyms of the keys an input cares about, for a key event that carries
 # none (one made up in-process): Return, Enter, Escape, BackSpace, Tab,
 # Delete, the arrows, Home, End, PageUp, PageDown.
 _KEYSYMS = {Qt.Key.Key_Return: 0xFF0D, Qt.Key.Key_Enter: 0xFF8D, Qt.Key.Key_Escape: 0xFF1B,
@@ -365,7 +362,7 @@ def _mods_of(event) -> list[str]:
 
 def key_of(event) -> dict | None:
     """A key press as the protocol's KEY (PROTOCOL.md section 3): its
-    keysym (Qt's native one, X11's and Wayland's: the layout applied),
+    keysym (Qt's native one, XKB's: the layout applied),
     the text it types, the modifiers. None for a key that only modifies."""
     if event.key() in keys.MODIFIER_KEYS:
         return None
@@ -423,8 +420,8 @@ class Window(QWidget):
         self._related: tuple[Tab, int] | None = None
         self._key_window = None         # the QWindow our key filter sits on
         self._held_keys: set[int] = set()       # pressed, taken by us
-        # Wayland: the input or menu whose chord we caught, ("input" |
-        # "menu", id), while the keys typed after it go to the shell.
+        # The input or menu whose chord we caught, ("input" | "menu", id),
+        # while the keys typed after it go to the shell.
         self.forwarding: tuple[str, object] | None = None
         self._wheel = 0                 # Ctrl+wheel turned, short of a notch
         self.zoom_note: str | None = None   # the zoom shown in the host's place, for a moment
@@ -467,7 +464,7 @@ class Window(QWidget):
 
         # The shell shows the tabs and host in its top bar when one has
         # this window; the line says them when none does.
-        self.link = ShellLink(self.winId, self.id, self)
+        self.link = ShellLink(self.id, self)
         self.link.attached_changed.connect(self.refresh)
         self.link.attached_changed.connect(self._on_attached)
         self.link.down.connect(self._on_shell_down)
@@ -762,7 +759,6 @@ class Window(QWidget):
         self._refresh_now()
         self.report_active()
         self.link.start()
-        self._follow_native()
 
     def has_focus(self) -> bool:
         """The window, or a dialog or popup of it, has the keyboard focus."""
@@ -792,17 +788,12 @@ class Window(QWidget):
     def event(self, event) -> bool:
         # Qt can replace a window's native window and its QWindow (it did
         # when a web view first showed in a window made plain; `_gpu`
-        # prevents that). Keys come in on the new QWindow, and the shell
-        # has to be told the new X window, once Qt is done replacing it.
+        # prevents that). Keys come in on the new QWindow, once Qt is done
+        # replacing it.
         if event.type() == QEvent.Type.WinIdChange and hasattr(self, "link"):
             self._watch_keys()
-            QTimer.singleShot(0, self, self._follow_native)
+            QTimer.singleShot(0, self, self._watch_keys)
         return super().event(event)
-
-    def _follow_native(self) -> None:
-        if self.testAttribute(Qt.WidgetAttribute.WA_WState_Created) and self.isVisible():
-            self._watch_keys()
-            self.link.follow(int(self.winId()))
 
     def _watch_keys(self) -> None:
         handle = self.windowHandle()
@@ -812,8 +803,8 @@ class Window(QWidget):
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         kind = event.type()
-        if kind == QEvent.Type.KeyPress and self.link.app_chords and self.link.attached:
-            # The shell's chords and what follows them come first (Wayland).
+        if kind == QEvent.Type.KeyPress and self.link.attached:
+            # The shell's chords and what follows them come first.
             if self._forward_key(event) or self._catch_chord(event):
                 self._held_keys.add(_key_id(event))
                 return True
@@ -854,7 +845,7 @@ class Window(QWidget):
         if pressed is None:
             return False
         for chord, (what, name) in B.chords(bar).items():
-            if B.parse_chord(chord, grab=True) == pressed:
+            if B.parse_chord(chord, opener=True) == pressed:
                 break
         else:
             return False

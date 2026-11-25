@@ -5,7 +5,6 @@ description = "A widget-engine desktop shell"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "xcffib>=1.12",
     "skia-python>=144.0",
     "dbus-fast>=5.0",
     "psutil>=7.2.2",
@@ -30,11 +29,10 @@ dependencies = [
 # imports only modules that need none of the dependencies above
 # (tests/flux_imports.py checks), so it runs where they aren't installed.
 #
-# On Wayland (backend/wayland.py) the shell needs pywayland, from the
-# distro too (Arch: `python-pywayland`, with `wayland-protocols` and
-# `wlr-protocols` for the XML its bindings are generated from), and
-# python-xkbcommon for the keyboard (backend/wlkeys.py; Arch:
-# `python-xkbcommon`); X11 never imports either.
+# The canvas (backend/wayland.py) needs pywayland, from the distro too
+# (Arch: `python-pywayland`, with `wayland-protocols` and `wlr-protocols`
+# for the XML its bindings are generated from), and python-xkbcommon for
+# the keyboard (backend/wlkeys.py; Arch: `python-xkbcommon`).
 
 [project.scripts]
 indigoshell = "indigoshell.app:main"

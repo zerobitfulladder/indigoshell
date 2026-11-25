@@ -1,16 +1,13 @@
-"""The keyboard on Wayland: wl_keyboard's keys as the shell's KeyEvents.
+"""The keyboard: wl_keyboard's keys as the shell's KeyEvents.
 
-On X the server hands over keycodes and the shell looks the keysym up in
-the core keymap (backend/x11.py `Display.keysym`). On Wayland the
-compositor sends the keymap itself (wl_keyboard.keymap: an XKB keymap in
-a file descriptor) and the modifier state separately
+The compositor sends the keymap itself (wl_keyboard.keymap: an XKB
+keymap in a file descriptor) and the modifier state separately
 (wl_keyboard.modifiers); xkbcommon (python-xkbcommon, a distro package)
 turns a key into its keysym and text under that state, every layout
 group and level included: "us,tr" switched by the compositor is just
 another group here.
 
-`Keys` makes the KeyEvent exactly as `window.key_event` does on X: the
-keysym names the key, Shift/Control/Alt/Super are the modifiers in
+`Keys` makes the KeyEvent: the keysym names the key, Shift/Control/Alt/Super are the modifiers in
 effect, and `text` is what the key types, empty for any chord holding
 Control, Alt or Super and with control characters taken out (xkb types
 "\\r" for Return and "\\x01" for Ctrl+A; the shell's text fields take
@@ -18,8 +15,8 @@ neither).
 
 A Wayland compositor does not repeat keys; the client does, at the rate
 and after the delay wl_keyboard.repeat_info gives. `Repeat` is that
-timer: the newest key held repeats, as on X, until it comes up, another
-key goes down or the keyboard leaves.
+timer: the newest key held repeats until it comes up, another key goes
+down or the keyboard leaves.
 """
 
 import logging
@@ -32,11 +29,11 @@ log = logging.getLogger(__name__)
 
 # wl_keyboard.key is the evdev code; XKB's keycodes are those plus 8.
 EVDEV_OFFSET = 8
-# What X's server repeats at by default, for a compositor that never says.
+# The usual repeat (X's old default), for a compositor that never says.
 DEFAULT_RATE, DEFAULT_DELAY_MS = 25, 600
 
-# The real modifiers as XKB names them; Alt is Mod1 and Super Mod4, as
-# on X (`Display.mod_mask`). AltGr is Mod5 and is no modifier here: it
+# The real modifiers as XKB names them; Alt is Mod1 and Super Mod4.
+# AltGr is Mod5 and is no modifier here: it
 # picks a level, and the text it types counts.
 _MODS = {"shift": "Shift", "ctrl": "Control", "alt": "Mod1", "super": "Mod4"}
 
@@ -168,7 +165,8 @@ class Repeat:
     """The client's own key repeat (wl_keyboard.repeat_info): after
     `delay` ms the newest key held fires again `rate` times a second
     until it comes up. `fire(key)` is called with the evdev code; the
-    key is read again under the state then, as X's repeats are."""
+    key is read again under the state then, so a modifier changed while
+    it repeats counts."""
 
     def __init__(self, loop, fire) -> None:
         self.loop = loop

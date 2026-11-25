@@ -11,7 +11,7 @@ whole current state first (WorkspacesChanged, WindowsChanged, …) and
 then each change. Nothing here leans on more than the shapes niri
 documents as stable; fields it adds later are ignored.
 
-How niri differs from qtile, as the interface sees it:
+What the interface sees of niri:
 
 - Workspaces are per monitor, dynamic, stacked vertically; each
   monitor keeps one empty one at its end. A workspace's name (what
@@ -19,10 +19,9 @@ How niri differs from qtile, as the interface sees it:
   monitor ("2"), with the monitor's name in front ("eDP-1:2") when
   there are several monitors. The bar shows the workspaces of its own
   monitor, without that spare empty one at the end.
-- There is no primary monitor (`has_primary` is False): "use alone"
-  lights the output at its mode and turns the others off, and niri
-  forgets that at its next config reload of the outputs. No RandR
-  monitors either, so nothing marks a braindance session.
+- There is no primary monitor: "use alone" lights the output at its
+  mode and turns the others off, and niri forgets that at its next
+  config reload of the outputs.
 - Keyboard layouts are niri's own (its config's xkb layouts): the
   layout menu lists those and switches among them.
 - Screenshots go over wlr-screencopy, never through niri's own
@@ -241,7 +240,6 @@ def window_list(windows, workspaces, order: Sequence[str] = ()
         out.append(Window(
             id=w["id"], app=app or "?", title=w.get("title") or "",
             workspace=names.get(w.get("workspace_id"), ""),
-            classes=(app,) if app else (),
             active=active.get(w.get("workspace_id")) == w["id"],
             pid=w.get("pid")))
     return out
@@ -275,8 +273,7 @@ def bar_state(workspaces, windows, output: str | None) -> WorkspaceState:
 def spare_workspace(workspaces, windows, output: str | None,
                     taken=frozenset()) -> tuple[int | None, int | None, str]:
     """Where a window the user must not see appearing goes, on `output`
-    (the focused monitor), as applink/service.py `pick_desktop` chooses
-    on X11: the highest-numbered empty workspace of the bar's that no
+    (the focused monitor): the highest-numbered empty workspace of the bar's that no
     monitor shows, else the highest-numbered hidden one, else the spare
     empty one niri keeps at the end. (niri's workspace id, its index
     among the bar's workspaces or None for the spare, how); (None, None,
@@ -310,7 +307,7 @@ def output_list(outputs: dict) -> list[Output]:
         current = modes[cur] if cur is not None and 0 <= cur < len(modes) \
             else None
         # niri lists connected outputs only; lit ones have a place.
-        out.append(Output(name, True, o.get("logical") is not None, False,
+        out.append(Output(name, True, o.get("logical") is not None,
                           modes, current))
     return out
 
@@ -341,7 +338,6 @@ def output_at(outputs: dict, x: float, y: float) -> str | None:
 # ── the backend ─────────────────────────────────────────────────────────
 class Niri(WM):
     name = "niri"
-    has_primary = False
     clipboard_tool = "wl-copy"
 
     def __init__(self, socket_path: str, capture=None) -> None:
@@ -639,8 +635,7 @@ class NiriWindows(WindowFollower):
         app = w.get("app_id") or ""
         return Window(id=w["id"], app=app or "?", title=w.get("title") or "",
                       workspace=names.get(w.get("workspace_id"), ""),
-                      classes=(app,) if app else (), active=bool(w.get("is_focused")),
-                      pid=w.get("pid"))
+                      active=bool(w.get("is_focused")), pid=w.get("pid"))
 
     def focused(self) -> Window | None:
         w = next((w for w in self.state.windows.values() if w.get("is_focused")), None)

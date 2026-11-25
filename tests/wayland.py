@@ -4,26 +4,21 @@
     .venv/bin/python -B tests/wayland.py            1-3: pure and off screen,
                                                     a few seconds
     .venv/bin/python -B tests/wayland.py --nested   ... then 4: the shell itself
-                                                    in a nested niri on qtile
-                                                    group 8 (two minutes or so)
-        --full     the nested niri on group 7 at the output's full size
-                   instead (only when group 7 is empty, one run at a time)
+                                                    in a nested niri, out of
+                                                    sight (two minutes or so)
         --shots DIR   keep the nested niri's screenshots there
         --raster   the nested shell without the GPU (INDIGOSHELL_GPU=0)
         --only flux   in the nested niri only the start and Flux's section
 
-1. Pure: which display the shell picks ($INDIGOSHELL_BACKEND,
-   $WAYLAND_DISPLAY); which kinds the canvas draws (every kind the shell
-   ships: the bars, panels, chord menu, launcher, drop-down, toasts, the
-   call and the systray's) and which it refuses (one of nobody's); the
-   bars among them; a beveled plate as the whole-pixel stairs a blur
+1. Pure: the bars among the kinds the shell ships (the ones that
+   reserve an edge); a beveled plate as the whole-pixel stairs a blur
    region is made of; the edge a spec reserves and how far; what a back
    buffer of each age must repaint; the foreign-toplevel states that
    hide the canvas, a fullscreen window deactivated for the canvas's
-   keyboard still one; buttons and wheel steps in X's numbers; the
+   keyboard still one; buttons and wheel steps in the widgets' numbers; the
    protocol bindings generated into a scratch cache.
 2. Pure: the pointer's routing over stand-in regions: hover moving
-   between regions and off the canvas, X's implicit grab (motion and
+   between regions and off the canvas, the implicit grab (motion and
    the release to the region that had the press, wherever the pointer
    is; the hover settled after it), a second button, a grab broken by
    the compositor, the wheel, a region taken away under the pointer;
@@ -37,15 +32,14 @@
    of once); the input region while outside clicks are caught.
 2c. Pure: the apps' line on Wayland: the vocabulary's `open` with a
    chord, `active`, KEY and `keys` (and what breaks one); niri's spare
-   workspace; an app service with no X display and the window manager
-   stood in for: the focused app window by niri's focused window's
-   process and the apps' `active` (none, a kitty, two windows of one
-   process, one that never said, the canvas taking the keyboard and
-   giving it back, its grace running out, no window manager at all);
-   `attached` asking a handle-less app for its chords; a chord the app
-   caught opening its input at once with the keyboard, the canvas's own
-   key held until the app's forwarded one and its `last` (or until
-   FORWARD_WAIT_S), keys for nothing dropped, a menu's chord; placing:
+   workspace; an app service with the window manager stood in for:
+   the focused app window by niri's focused window's process and the
+   apps' `active` (none, a kitty, two windows of one process, one that
+   never said, the canvas taking the keyboard and giving it back, its
+   grace running out, no window manager at all); an announce answered
+   `attached`; a chord the app caught opening its input at once with
+   the keyboard, the canvas's own key held until the app's forwarded
+   one and its `last` (or until FORWARD_WAIT_S), keys for nothing dropped, a menu's chord; placing:
    answered at once, the first new window of the process moved, `with`,
    niri's windows not known yet. Outside clicks go to the newest catcher
    only (the tray's menu over its panel).
@@ -57,7 +51,7 @@
    region hidden and back, the canvas resized and the bars following,
    the canvas taken away and back.
 3b. Off screen: the launcher and the chord menu (config_default's,
-   a stand-in daemon): centred / bottom right as on X, their spawn, the
+   a stand-in daemon): centred / bottom right, their spawn, the
    keyboard and outside clicks taken, keys typed into the query with
    the damage inside the launcher, Escape and an outside click closing
    (the keyboard given back at once), a digit run on its release.
@@ -73,11 +67,11 @@
    over it (shown, blurred, the bars' strips empty) and none after; the
    top bar shown while its open input catches the outside clicks.
 4. `--nested`: a nested niri (its config the user's own, read at run
-   time, minus what it starts; a private D-Bus; its window on qtile
-   group 8, put there by a runtime rule that is removed again), and the
-   shell in it — DISPLAY unset, its own runtime, config, state, data and
-   cache directories, a config.py of the user's shape plus a probe
-   widget and a stand-in app — checked: it chose Wayland and the GPU
+   time, minus what it starts; a private D-Bus; a client of a headless
+   cage, tests/_niri.py, so it shows nowhere), and the shell in it — no
+   DISPLAY, its own runtime, config, state, data and cache directories,
+   a config.py of the user's shape plus a probe widget and a stand-in
+   app — checked: it chose Wayland and the GPU
    (not llvmpipe), its layer surfaces, a kitty tiled between the
    strips, both bars in a screenshot, hover and clicks reaching the
    workspaces (niri follows), a press-drag-release on the probe, the
@@ -121,14 +115,8 @@
 
 import argparse
 import asyncio
-import contextlib
-import json
 import os
-import re
 import shutil
-import signal
-import socket
-import subprocess
 import sys
 import tempfile
 import time
@@ -136,7 +124,7 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-# The session's own, for qtile's client and the nested niri (section 4).
+# The session's own, for the nested niri (section 4).
 ORIG_ENV = dict(os.environ)
 
 # Before anything of the shell's is imported: scratch directories, and no
@@ -170,45 +158,16 @@ def test_pure() -> None:
     import skia
 
     from indigoshell import config_default as cd, theme
+    from indigoshell.agent import CALL_WINDOW
     from indigoshell.backend import wayland as wb, wlproto
-    from indigoshell.canvas import (AxisSteps, DamageHistory, button_of, edge_of,
-                                    on_canvas, reserved, scroll_buttons)
-    from indigoshell.window import Anchor
+    from indigoshell.canvas import (AxisSteps, DamageHistory, button_of, edge_of, is_bar,
+                                    reserved, scroll_buttons)
+    from indigoshell.widgets import notification
+    from indigoshell.window import Anchor, WindowSpec, pixel_rects
 
-    section("1. pure: the display, the kinds on the canvas, damage, states, input")
-    order = wb.backend_order
-    check("no $WAYLAND_DISPLAY: X11", order({"DISPLAY": ":0"}) == ["x11"])
-    check("$WAYLAND_DISPLAY set: Wayland first (if it has layer-shell), then X11",
-          order({"WAYLAND_DISPLAY": "wayland-1", "DISPLAY": ":0"}) == ["wayland", "x11"])
-    check("$INDIGOSHELL_BACKEND forces one either way",
-          order({"WAYLAND_DISPLAY": "w", "INDIGOSHELL_BACKEND": "x11"}) == ["x11"]
-          and order({"INDIGOSHELL_BACKEND": "Wayland"}) == ["wayland"])
-    check("an empty $WAYLAND_DISPLAY is no Wayland", order({"WAYLAND_DISPLAY": ""}) == ["x11"])
-    check("connect() on X: None, nothing opened", wb.connect({"DISPLAY": ":0"}) is None)
-
-    from indigoshell.agent import CALL_WINDOW, STATUS_WINDOW
-    from indigoshell.applink.drop import DROP_WINDOW
-    from indigoshell.applink.launcher import LAUNCHER_WINDOW
-    from indigoshell.canvas import CANVAS_KINDS, is_bar, pixel_rects
-    from indigoshell.widgets import notification, systray
-    from indigoshell.widgets.menu import MENU_WINDOW
-    from indigoshell.window import WindowSpec
-
-    drawn = [s.name for s in cd.WINDOWS if on_canvas(s)]
-    check("the canvas draws every kind config_default ships: the bars, the three panels, the "
-          "chord menu, the launcher, the drop-down",
-          sorted(drawn) == sorted(["bar", "topbar", "system", "hardware", "network", "menu",
-                                   "launcher", "dropdown"]), str(drawn))
-    check("... named as their modules name them, the call's, its corner plate's and the "
-          "systray's panel and menu with them",
-          CANVAS_KINDS == {cd.SYSTEM_PANEL, cd.HARDWARE_PANEL, cd.NETWORK_PANEL, MENU_WINDOW,
-                           LAUNCHER_WINDOW, DROP_WINDOW, CALL_WINDOW, STATUS_WINDOW,
-                           systray.PANEL_WINDOW, systray.MENU_WINDOW}, str(CANVAS_KINDS))
+    section("1. pure: the bars, damage, states, input")
     call_spec = WindowSpec(name=CALL_WINDOW, layer=cd.Layer.OVERLAY,
                            anchor=cd.Anchor.TOP | cd.Anchor.RIGHT, blur=True)
-    check("toasts (notification.py's names) and the call are on it; a kind of nobody's is not",
-          on_canvas(WindowSpec(name=notification._win_name(7))) and on_canvas(call_spec)
-          and not on_canvas(WindowSpec(name="somebodys-own")))
     check("the bars are the kinds that reserve one edge; the call, a panel, a toast are not",
           [is_bar(s) for s in cd.WINDOWS if s.name in ("bar", "topbar", "system", "launcher")]
           .count(True) == 2 and not is_bar(call_spec)
@@ -234,8 +193,7 @@ def test_pure() -> None:
                                 Anchor.TOP | Anchor.BOTTOM)]
           == ["top", "bottom", "left", "right", None, None, None])
     bh, th = theme.BAR_HEIGHT, theme.TOP_BAR_HEIGHT
-    check("reservations as X's struts: the bottom bar 42 px, the top bar its height, a "
-          "margin included",
+    check("reservations: the bottom bar 42 px, the top bar its height, a margin included",
           reserved("bottom", (0, 1440 - bh, 2560, bh), (2560, 1440)) == bh
           and reserved("top", (0, 0, 2560, th), (2560, 1440)) == th
           and reserved("top", (0, 6, 2560, th), (2560, 1440)) == th + 6
@@ -485,12 +443,12 @@ def test_pointer() -> None:
           and p.buttons == set(), f"{closed} {top.log} {bottom.log}")
     p.button(1, True)
     p.button(1, False)
-    check("... while a press on a region (the bar) still reaches it, as X's owner_events did",
+    check("... while a press on a region (the bar) still reaches it",
           closed == [1] and [e for e in top.log if e[0] in ("press", "release")]
           == [("press", 1, 30, 20), ("release", 1, 30, 20)], str(top.log))
     p.motion(500, 500)
     p.scroll([5])
-    check("the wheel on no region is an outside click too (X's buttons 4-7 under the grab)",
+    check("the wheel on no region is an outside click too",
           closed == [1, 1])
 
 
@@ -517,7 +475,7 @@ async def test_keyboard() -> None:
         return keys.event(code)
 
     a, A, ret, esc = ev(30), ev(30, "shift"), ev(28), ev(1)
-    check("us: a, Shift+A (its keysym the upper one, as X's), Return and Escape typing nothing",
+    check("us: a, Shift+A (its keysym the upper one), Return and Escape typing nothing",
           (a.keysym, a.text, a.shift) == (0x61, "a", False) and (A.keysym, A.text, A.shift)
           == (0x41, "A", True) and (ret.keysym, ret.text) == (0xFF0D, "")
           and (esc.keysym, esc.text) == (0xFF1B, ""), f"{a} {A} {ret} {esc}")
@@ -570,7 +528,7 @@ async def test_keyboard() -> None:
     r.release(30)                           # the old key's release stops nothing
     await asyncio.sleep(0.05)
     r.stop()
-    check("a second key down: the first stops, the newest repeats (as X's)",
+    check("a second key down: the first stops, the newest repeats",
           fired and set(fired) == {31}, str(fired))
     fired.clear()
     r.press(42, repeats=False)
@@ -702,7 +660,7 @@ async def test_apps() -> None:
           and B.keys_problems({"type": "keys", "keys": [], "last": 1}) != []
           and B.keys_problems({"type": "keys"}) != [])
 
-    # niri's spare workspace, as pick_desktop chooses on X11.
+    # niri's spare workspace.
     ws = [{"id": 1, "idx": 1, "name": "1", "output": "o", "is_active": True},
           {"id": 2, "idx": 2, "name": "2", "output": "o"},
           {"id": 3, "idx": 3, "name": "3", "output": "o"},
@@ -716,13 +674,13 @@ async def test_apps() -> None:
           and niri.spare_workspace(ws, wins, "o", {2})[:2] == (4, None)
           and niri.spare_workspace(ws[:1] + ws[4:], wins[:1], "o")[0] is None)
 
-    # A service on Wayland: no X display, the window manager stood in for.
+    # A service with the window manager stood in for.
     fake = FakeWindows()
     svc = AppService(path=os.path.join(SCRATCH, "apps.sock"), windows=fake)
     scene = Scene(None)
     scene.keyboard.available = True
     svc._scene = lambda: scene
-    svc.running, svc.on_wayland, svc.wm_windows = True, True, fake
+    svc.running, svc.wm_windows = True, fake
     svc.context = types.SimpleNamespace(
         window=types.SimpleNamespace(wid=1, x=0, y=0, width=2560, height=42,
                                      content_root=(0, 0, 2560, 42)),
@@ -735,7 +693,7 @@ async def test_apps() -> None:
     def window(app, wid, pid):
         out = sent.setdefault((pid, wid), [])
         link = types.SimpleNamespace(service=svc, pid=pid, send=out.append, closed=False)
-        w = AppWindow(link, None, B.announce(app, wid))
+        w = AppWindow(link, B.announce(app, wid))
         svc.added(w)
         return w
 
@@ -793,7 +751,7 @@ async def test_apps() -> None:
     for w in (a, b, c):
         svc.forget(w.link, w)
 
-    # The attached message on Wayland asks the app for its chords.
+    # An app's line: its announce is answered `attached`.
     class Writer:
         def __init__(self):
             self.out = []
@@ -813,9 +771,8 @@ async def test_apps() -> None:
     w = Writer()
     link = Link(svc, w)
     link.on_message(B.announce("flux", 9))
-    check("an announce with no handle is a Wayland window: `attached` says `chords: \"app\"`",
-          link.window is not None and link.window.wid is None
-          and w.out[-1].get("chords") == "app" and w.out[-1]["type"] == "attached",
+    check("an announce makes the app's window, answered `attached`",
+          link.window is not None and w.out[-1]["type"] == "attached",
           str(w.out))
     svc.forget(link, link.window)
 
@@ -908,8 +865,8 @@ async def test_apps() -> None:
     first = list(told)
     sc.release_outside("menu")
     sc.outside_click()
-    check("an outside click with the tray's menu over its panel closes the menu only, as X's "
-          "one grab did; the panel takes the next one", first == ["menu"]
+    check("an outside click with the tray's menu over its panel closes the menu only; the "
+          "panel takes the next one", first == ["menu"]
           and told == ["menu", "panel"], str(told))
     kb = KeyboardRouter()
     kb.available = True
@@ -925,7 +882,8 @@ async def test_offscreen() -> None:
     import skia
 
     from indigoshell import config_default as cd, theme, wm
-    from indigoshell.canvas import Region, Scene
+    from indigoshell.canvas import Scene
+    from indigoshell.window import Window
 
     section("3. off screen: the real bars as regions of a 2560x1440 canvas (CPU)")
 
@@ -951,13 +909,13 @@ async def test_offscreen() -> None:
     regions = {}
     try:
         for name in ("bar", "topbar"):
-            r = Region(scene, specs[name], loop)
+            r = Window(scene, specs[name], loop)
             r.create()
             r.show()
             regions[name] = r
         bar, top = regions["bar"], regions["topbar"]
         bh, th = theme.BAR_HEIGHT, theme.TOP_BAR_HEIGHT
-        check("where they sit: as their X windows on a 2560x1440 monitor",
+        check("where they sit on a 2560x1440 canvas: the bars along its bottom and top",
               (bar.x, bar.y, bar.width, bar.height) == (0, 1440 - bh, 2560, bh)
               and (top.x, top.y, top.width, top.height) == (0, 0, 2560, th),
               f"{(bar.x, bar.y, bar.width, bar.height)} {(top.x, top.y, top.width, top.height)}")
@@ -1004,8 +962,8 @@ async def test_offscreen() -> None:
         area = sum(r.width() * r.height() for r in __import__(
             "indigoshell.canvas", fromlist=["rects"]).rects(tick))
         # The meters' labels relayout their bar when their text changes
-        # (Label.set_value: invalidate(layout=True)), on X11 as here, so
-        # the bottom bar may be repainted whole; never more than it.
+        # (Label.set_value: invalidate(layout=True)), so the bottom bar
+        # may be repainted whole; never more than it.
         check("a second later: the bottom bar damaged (the clock, the meters), within it",
               not tick.isEmpty() and tb.top() >= 1440 - bh and area <= 2560 * bh,
               f"bounds {tb}, {area} px")
@@ -1061,7 +1019,8 @@ async def test_offscreen_overlays() -> None:
     import skia
 
     from indigoshell import config_default as cd
-    from indigoshell.canvas import Region, Scene, rects
+    from indigoshell.canvas import Scene, rects
+    from indigoshell.window import Window
     from indigoshell.core import daemon as core_daemon
     from indigoshell.plugin import Item, Menu
     from indigoshell.widgets.base import KeyEvent
@@ -1084,7 +1043,7 @@ async def test_offscreen_overlays() -> None:
             self.instances, self.closed = {}, []
 
         def open(self, name):
-            r = Region(scene, specs[name], loop)
+            r = Window(scene, specs[name], loop)
             r.create()
             self.instances[name] = r
             r.show()
@@ -1154,7 +1113,7 @@ async def test_offscreen_overlays() -> None:
                                                   Item("TWO", run=lambda: ran.append(2))]))
         menu = daemon.open(MENU_WINDOW)
         mx, my, mw, mh = menu.content_root
-        check("the chord menu: bottom right above the bar as on X, the keyboard taken",
+        check("the chord menu: bottom right above the bar, the keyboard taken",
               mx + mw == 2560 - specs[MENU_WINDOW].margin.right
               and my + mh == 1440 - specs[MENU_WINDOW].margin.bottom
               and scene.keyboard.holds(menu), f"{menu.content_root}")
@@ -1191,7 +1150,8 @@ async def test_offscreen_call() -> None:
 
     from indigoshell import config_default as cd, theme, wm
     from indigoshell.agent.ui.call import BOTTOM_CLEAR
-    from indigoshell.canvas import Region, Scene, rects
+    from indigoshell.canvas import Scene, rects
+    from indigoshell.window import Window
     from indigoshell.core import daemon as core_daemon
     from indigoshell.widgets.base import KeyEvent
 
@@ -1231,7 +1191,7 @@ async def test_offscreen_call() -> None:
         def open(self, name, *_a, **_k):
             if name in self.instances:
                 return self.instances[name]
-            r = Region(scene, specs[name], loop)
+            r = Window(scene, specs[name], loop)
             r.create()
             self.instances[name] = r
             r.show()
@@ -1268,7 +1228,7 @@ async def test_offscreen_call() -> None:
         cx, cy, cw, ch = call.content_root
         m = call_spec.margin
         entering = scene.blur_rects()
-        check("the call: top right as on X (its margins), as tall as the canvas allows less "
+        check("the call: top right (its margins), as tall as the canvas allows less "
               "the bar's clearance, the keyboard and the outside clicks taken",
               cx + cw == 2560 - m.right and cy == m.top and ch == 1440 - m.top - BOTTOM_CLEAR
               and scene.keyboard.holds(call) and call in scene.catchers,
@@ -1367,7 +1327,7 @@ async def test_offscreen_call() -> None:
 
         # ── a fullscreen window: what shows ──────────────────────────────
         for name in ("bar", "topbar"):
-            r = Region(scene, specs[name], loop)
+            r = Window(scene, specs[name], loop)
             r.create()
             r.show()
             bars.append(r)
@@ -1433,9 +1393,7 @@ def test_nested(args) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--nested", action="store_true",
-                        help="also run the shell in a nested niri (qtile group 8)")
-    parser.add_argument("--full", action="store_true",
-                        help="the nested niri on group 7 at full size")
+                        help="also run the shell in a nested niri, out of sight")
     parser.add_argument("--raster", action="store_true",
                         help="the nested shell without the GPU")
     parser.add_argument("--shots", metavar="DIR", help="keep the nested screenshots here")

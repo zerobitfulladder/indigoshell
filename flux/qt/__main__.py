@@ -17,8 +17,8 @@ window; no URL asks it for a new window) and exits.
                      first request opens one (flux/control.py,
                      `ensure_running`). With a browser already running,
                      exit at once and hand it nothing.
-    --software-gl    a window drawn without the GPU, for a screen that is
-                     another machine's (`ssh -X`): startup.py
+    --software-gl    a window drawn without the GPU, for a machine with
+                     none to spare: startup.py
     --profile NAME   a browser of the profile NAME, beside the default one:
                      its own storage, cache, history, bookmarks, log and
                      socket (flux/profiles.py). Hand-offs go to that
@@ -85,7 +85,7 @@ def main(argv: list[str], prog: str | None = None) -> int:
                         help="with no URL, open no window: only listen (for the agent); "
                              "with a browser running, do nothing")
     parser.add_argument("--software-gl", action="store_true",
-                        help="draw the windows without the GPU (a screen over ssh -X)")
+                        help="draw the windows without the GPU")
     parser.add_argument("--profile", type=_profile, metavar="NAME",
                         help="the profile NAME's browser, beside the default one")
     parser.add_argument("--log-level", choices=shell_log.LEVELS)

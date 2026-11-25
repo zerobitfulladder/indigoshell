@@ -1,14 +1,13 @@
 """The browser (flux/qt), with nobody at it.
 
     .venv/bin/python tests/browser.py              off screen, about a minute
-    .venv/bin/python tests/browser.py --on-screen  the shell's app service and a real window, ~40 s
 
 Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. pure parts: the key table, sites.json rules, the messages (every
      one typed; the state check), Widevine found/copied in fake
      directories, Chromium's flags
-  2. one browser in this process, driven through its QWindow the way X
-     delivers keys: every tab key, link/popup/close requests, the
+  2. one browser in this process, driven through its QWindow the way a
+     keyboard delivers keys: every tab key, link/popup/close requests, the
      window's own fallback line with no shell (only after the shell has
      been away three seconds; find included), the address dialog when
      Ctrl+T / Ctrl+L reach the window, the shell link (the announce, a
@@ -17,9 +16,10 @@ Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
      change;
      fullscreen), per-site identity against a local server reached as
      127.0.0.1 and as localhost (headers, navigator, frames, client
-     hints, edits and a broken file), a download; Ctrl+L / Ctrl+T /
-     Ctrl+M reaching the window with a shell there (a key the shell
-     could not grab): the window's own answers, nothing sent; the bar's
+     hints, edits and a broken file), a download; Ctrl+L and Ctrl+M
+     with a shell there: caught before the page and sent as `open` with
+     the chord, the keys typed after one forwarded until the shell says
+     it closed (`last`); the bar's
      events: tabs selected, closed, moved before another and torn out
      by id, a submit loading here and in a new tab, a fallback, a new
      window's `open`; a release whose press the window never saw going
@@ -47,15 +47,6 @@ Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
      browser.log): what each end says, info by default and the page's
      console only at debug, a crash's trace, an exception from a Qt slot,
      the terminal only when stderr is one, the rotation
-
---on-screen runs the shell's own app service (indigoshell/applink) in
-this process and the browser with three tabs in an unattended window
-(`--unattended`: nothing asks), and reads the browser window's
-own pixels (its composite pixmap: never the root, never the screen):
-the page from the window's top edge, its keys grabbed by the service,
-the top bar's content drawn from the browser's state, the line only
-when the shell is away: tests/topbar.py's on-screen section, which has
-the details.
 
 Everything runs in a scratch directory (XDG_DATA_HOME, XDG_CACHE_HOME,
 XDG_CONFIG_HOME, downloads) with sockets of its own, so nothing touches
@@ -93,8 +84,7 @@ sys.path.insert(0, str(REPO / "tests"))
 
 import _cage                    # noqa: E402
 
-if "--on-screen" not in sys.argv[1:]:
-    _cage.inside()              # out of sight: this test runs as a hidden cage's client
+_cage.inside()                  # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
@@ -286,8 +276,7 @@ def requests_to(path_prefix: str) -> list[dict]:
 # ── a stand-in for the shell: just the socket ──────────────────────────
 
 def window_of(announce: dict):
-    """Flux's own id for the window a connection announced (on Wayland,
-    as in the hidden cage, there is no X window to know it by)."""
+    """Flux's own id for the window a connection announced."""
     return announce.get("window")
 
 
@@ -310,8 +299,10 @@ def bar_state(bar: dict) -> dict:
 class FakeShell:
     """Listens where the shell would, answers {"type": "attached"} to
     every announce, and keeps every message per connection with the time
-    it arrived. It grabs no key: Ctrl+L, Ctrl+T, Ctrl+M reach the window
-    here as they do when the shell could not grab them."""
+    it arrived. A chord's `open` it answers with `fallback` (a shell that
+    cannot show inputs: the window does what it does with no shell),
+    unless `fallback` is off; anything else a test wants said back (an
+    event, `closed`) the test sends itself."""
 
     class Conn:
         def __init__(self, sock):
@@ -343,6 +334,7 @@ class FakeShell:
         self.server.bind(path)
         self.server.listen()
         self.conns: list[FakeShell.Conn] = []
+        self.fallback = True
         threading.Thread(target=self._accept, daemon=True).start()
 
     def _accept(self):
@@ -363,6 +355,9 @@ class FakeShell:
                 conn.msgs.append(msg)
                 if msg.get("type") == "announce":
                     conn.send({"type": "attached"})
+                elif msg.get("type") == "open" and msg.get("chord") and self.fallback:
+                    what = "input" if "input" in msg else "menu"
+                    conn.send({"type": "fallback", what: msg[what]})
         except (OSError, ValueError):
             pass
         conn.open = False
@@ -404,7 +399,7 @@ def test_pure() -> None:
     expect = []
     for n in range(1, 10):
         expect.append((f"Alt+{n}", int(K.Key_1) + n - 1, alt, 0, ("tab", n)))
-        expect.append((f"Alt+Shift+{n} as Qt sends it on X (US: Alt+{us_shifted[n - 1]}, keycode {9 + n})",
+        expect.append((f"Alt+Shift+{n} as Qt sends it (US: Alt+{us_shifted[n - 1]}, keycode {9 + n})",
                        ord(us_shifted[n - 1]), alt | shift, 9 + n, ("move", n)))
         expect.append((f"Alt+Shift+{n} as a digit", int(K.Key_1) + n - 1, alt | shift, 0, ("move", n)))
     expect += [
@@ -412,7 +407,7 @@ def test_pure() -> None:
         ("Ctrl+T", int(K.Key_T), ctrl, 0, "new_tab"),
         ("Ctrl+W", int(K.Key_W), ctrl, 0, "close_tab"),
         ("Ctrl+Tab", int(K.Key_Tab), ctrl, 0, "next_tab"),
-        ("Ctrl+Shift+Tab (X: Backtab)", int(K.Key_Backtab), ctrl | shift, 0, "prev_tab"),
+        ("Ctrl+Shift+Tab (Backtab)", int(K.Key_Backtab), ctrl | shift, 0, "prev_tab"),
         ("Ctrl+Shift+Tab (Tab)", int(K.Key_Tab), ctrl | shift, 0, "prev_tab"),
         ("Ctrl+L", int(K.Key_L), ctrl, 0, "address"),
         ("Ctrl+M", int(K.Key_M), ctrl, 0, "actions"),
@@ -466,11 +461,10 @@ def test_pure() -> None:
     from indigoshell.applink import bar as B
     lines = [b'{"type": "attached"}', b'{"attached": true}', b"[1]", b"nope", b'{"type": 4}']
     check("every message has its type: one without, or with one that is no string, is no "
-          "message; the announce (the app, its id for the window, its X window), an `open` of "
-          "an input, the instance's open",
+          "message; the announce (the app, its id for the window), an `open` of an input, "
+          "the instance's open",
           [protocol.decode(x) for x in lines] == [{"type": "attached"}, None, None, None, None]
-          and B.announce("flux", 3, 7) == {"type": "announce", "app": "flux", "window": 3,
-                                           "handle": {"x11": 7}}
+          and B.announce("flux", 3) == {"type": "announce", "app": "flux", "window": 3}
           and B.open_input("address") == {"type": "open", "input": "address"}
           and protocol.open_urls(["u"]) == {"type": "open", "urls": ["u"]})
     check("the find line's count: n/total, no matches, nothing before the count",
@@ -879,6 +873,8 @@ def test_in_process() -> None:
     def press(window, key, mods=M.NoModifier):
         QTest.keyClick(window.windowHandle(), key, mods)
         QTest.qWait(30)
+        if window.forwarding is not None:       # a chord the shell answers: its answer
+            wait(lambda: window.forwarding is None, 2)
 
     def titles(window):
         return [t.page.title() for t in window.tabs]
@@ -906,7 +902,7 @@ def test_in_process() -> None:
         return p is not None and shiboken6.isValid(p) and p.isVisible()
 
     def type_text(window, text):
-        """Keys that type `text`, as X delivers them: text in the event."""
+        """Keys that type `text`, as a keyboard delivers them: text in the event."""
         for ch in text:
             for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
                 QApplication.sendEvent(window.windowHandle(), QKeyEvent(
@@ -953,7 +949,7 @@ def test_in_process() -> None:
           f"shown {line_at[0] if line_at else -1:.2f} s after the window; {text!r}")
 
     # ── keys ────────────────────────────────────────────────────────────
-    print("  keys, delivered to the window's QWindow as X would:")
+    print("  keys, delivered to the window's QWindow as a keyboard does:")
     press(w, K.Key_2, M.AltModifier)
     a2 = w.current
     press(w, K.Key_3, M.AltModifier)
@@ -976,7 +972,7 @@ def test_in_process() -> None:
           (n1, n2, p1, p2) == (1, 0, 2, 1), f"{(n1, n2, p1, p2)}")
     press(w, K.Key_1, M.AltModifier | M.ShiftModifier)       # Beta to the front
     m1 = (titles(w), w.current)
-    # Alt+Shift+3 as X delivers it on a US layout: "#", keycode 12.
+    # Alt+Shift+3 as the compositor delivers it on a US layout: "#", keycode 12.
     QApplication.sendEvent(w.windowHandle(), QKeyEvent(
         QEvent.Type.KeyPress, K.Key_NumberSign, M.AltModifier | M.ShiftModifier, 12, 0, 0, "#"))
     QTest.qWait(30)
@@ -1202,9 +1198,9 @@ def test_in_process() -> None:
     conn = shell.conns[0] if shell.conns else None
     wait(lambda: conn and conn.states())
     first = conn.msgs[0] if conn and conn.msgs else {}
-    check("announce first: {type: announce, app: flux, window: its id, handle: {}} (Wayland: "
-          "the connection is the window)",
-          first == {"type": "announce", "app": "flux", "window": w.id, "handle": {}},
+    check("announce first: {type: announce, app: flux, window: its id} (the connection is "
+          "the window)",
+          first == {"type": "announce", "app": "flux", "window": w.id},
           f"{first}")
     from flux import bar as fb
     from indigoshell.applink import bar as B
@@ -1220,20 +1216,32 @@ def test_in_process() -> None:
           and states[-1]["url"] == url("/page/Alpha")
           and set(B.chords(bars[-1])) == {"ctrl+l", "ctrl+t", "ctrl+f", "ctrl+m"},
           f"{states[-1] if states else None}")
-    mark = len(logs.records)
-    press(w, K.Key_M, M.ControlModifier)
-    press(w, K.Key_L, M.ControlModifier)
-    asked = wait(lambda: prompt_up(w), 3)
-    value = w.prompt.textValue() if asked else None
-    if asked:
-        w.prompt.reject()
-    said = [m for m in logs.messages(logging.INFO, mark) if "Ctrl+M" in m]
-    check("Ctrl+M and Ctrl+L reaching the window with a shell there (one that could not grab "
-          "them): Ctrl+M one line in the log, Ctrl+L the window's own dialog holding the "
-          "address; nothing but bars (and whether it has the focus) said to the shell",
-          len(said) == 1 and asked and value == url("/page/Alpha")
-          and all(m["type"] in ("bar", "active") for m in conn.msgs[1:]),
-          f"{said} {value!r} {[m['type'] for m in conn.msgs[1:]]}")
+    n = len(conn.msgs)
+    shell.fallback = False              # a shell that shows them
+
+    def said_since():
+        return [m for m in conn.msgs[n:] if m["type"] not in ("bar", "active")]
+
+    QTest.keyClick(w.windowHandle(), K.Key_L, M.ControlModifier)
+    type_text(w, "y")
+    wait(lambda: [m["type"] for m in said_since()] == ["open", "keys"], 3)
+    conn.send({"type": "closed", "input": "address", "by": "escape"})
+    wait(lambda: len(said_since()) == 3, 3)
+    QTest.keyClick(w.windowHandle(), K.Key_M, M.ControlModifier)
+    wait(lambda: len(said_since()) == 4, 3)
+    conn.send({"type": "closed", "menu": "actions", "by": "escape"})
+    wait(lambda: len(said_since()) == 5, 3)
+    sent = said_since()
+    shell.fallback = True
+    check("Ctrl+L and Ctrl+M with a shell there: caught before the page, each an `open` with "
+          "its chord; a key typed after Ctrl+L forwarded as `keys` until the shell says it "
+          "closed (then `last`), the same for the menu; no dialog of the window's own",
+          [m["type"] for m in sent] == ["open", "keys", "keys", "open", "keys"]
+          and sent[0] == {"type": "open", "input": "address", "chord": "ctrl+l"}
+          and [k.get("text") for k in sent[1]["keys"]] == ["y"]
+          and sent[2] == sent[4] == {"type": "keys", "keys": [], "last": True}
+          and sent[3] == {"type": "open", "menu": "actions", "chord": "ctrl+m"}
+          and w.forwarding is None and not prompt_up(w), f"{sent}")
     count = len(conn.states())
     for _ in range(5):
         w.refresh()
@@ -1366,8 +1374,8 @@ def test_in_process() -> None:
     press(w, K.Key_2, M.AltModifier)
     key_ok = w.current == 1
     press(w, K.Key_1, M.AltModifier)
-    check("Qt replacing the native window: keys taken on the new one; on Wayland the "
-          "connection is the window, and it stays",
+    check("Qt replacing the native window: keys taken on the new one; the connection is the "
+          "window, and it stays",
           int(w.winId()) != old_wid and w.windowHandle() is not old_handle and kept and key_ok,
           f"0x{old_wid:x} -> 0x{int(w.winId()):x}, line kept {kept}, Alt+2 {key_ok}")
     wait(lambda: w.link.attached, 2)
@@ -1767,7 +1775,7 @@ def test_in_process() -> None:
     press(w, K.Key_F, M.ControlModifier)
     type_text(w, "bra")
     wait_find(query="bra", total=3)
-    # Through the window, as X delivers a click: the window sees it first.
+    # Through the window, as a click comes: the window sees it first.
     QTest.mouseClick(w.windowHandle(), Qt.MouseButton.LeftButton, M.NoModifier,
                      QPoint(20, w.stack.y() + 300))
     clicked = wait(lambda: find_state() is None, 2)
@@ -2483,26 +2491,8 @@ def test_log_file() -> None:
           f"{files}, largest {max(sizes)} bytes")
 
 
-# ── --on-screen: the shell's app service and the real window ────────────
-
-def test_on_screen() -> None:
-    """The real AppService (indigoshell/applink), in this process on an
-    X connection and socket of its own, and the real browser:
-    tests/topbar.py's on-screen section, whose ok/FAIL lines count here
-    too."""
-    import asyncio
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import topbar
-
-    asyncio.run(topbar.on_screen(SCRATCH))
-    FAILED.extend(topbar.FAILED)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--on-screen", action="store_true",
-                        help="only the on-screen check with the shell's app service")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()
     print(f"scratch {SCRATCH}", flush=True)
@@ -2513,12 +2503,9 @@ def main() -> int:
     os.dup2(stream.fileno(), 2)         # Chromium and Qt talk on fd 2
     t0 = time.monotonic()
     try:
-        if args.on_screen:
-            test_on_screen()
-        else:
-            test_pure()
-            test_in_process()
-            test_processes()
+        test_pure()
+        test_in_process()
+        test_processes()
     except Exception:
         FAILED.append("aborted")
         print("\nABORTED:\n" + traceback.format_exc(), flush=True)

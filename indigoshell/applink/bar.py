@@ -21,7 +21,7 @@ else; an app may write its JSON by hand as well, in any language.
     answer(input, seq, rows, ...)           the answer to a `query`
     open_input(id, chord) / open_menu(...)  `open`, with the chord the app caught
     active(bool)                            the window's focus, as the app has it
-    key(keysym, text, mods) / keys(...)     a KEY, and `keys` (Wayland's type-ahead)
+    key(keysym, text, mods) / keys(...)     a KEY, and `keys` (the type-ahead after a chord)
     event(type, **fields)                   a message from the shell
 
 `bar_problems(msg)` lists what keeps a `bar` from being shown (empty: it
@@ -43,8 +43,6 @@ import struct
 
 APP = "app"
 WINDOW = "window"
-HANDLE = "handle"
-X11 = "x11"
 
 # ── message types ───────────────────────────────────────────────────────
 BAR = "bar"
@@ -53,7 +51,7 @@ OPEN = "open"
 ACTIVE = "active"
 IMAGE = "image"
 KEYS = "keys"
-CHORD = "chord"             # `open`'s: the chord the app caught (Wayland)
+CHORD = "chord"             # `open`'s: the chord the app caught
 LAST = "last"               # `keys`'s: the window has lost the keyboard
 # Shell -> app.
 SELECT, CLOSE, MOVE, DETACH = "select", "close", "move", "detach"
@@ -62,10 +60,6 @@ CLOSED, FALLBACK = "closed", "fallback"
 EVENTS = (SELECT, CLOSE, MOVE, DETACH, PRESS, QUERY, SUBMIT, ACT, PICK, CLOSED, FALLBACK)
 # Why an input or menu closed (`closed`'s `by`).
 BY = ("enter", "escape", "click", "focus", "shell")
-# `attached`'s `chords`: the shell takes no keys from the window, the app
-# catches its bar's chords and sends `open` with the chord (Wayland).
-CHORDS = "chords"
-CHORDS_APP = "app"
 
 # ── the bar ─────────────────────────────────────────────────────────────
 START, END, INPUTS, MENUS = "start", "end", "inputs", "menus"
@@ -93,8 +87,8 @@ ANSWER_ROWS_MAX = 200       # rows in one answer
 INPUTS_MAX = 50             # inputs, and menus, each
 BUTTONS_MAX = 8             # toggles in one input's box
 ENTER_WAIT_S = 0.25         # Enter waits this long for the latest text's answer
-OPEN_WAIT_S = 0.5           # `open` waits this long for its window's focus and its bar
-OPEN_WAIT_WAYLAND_S = 2.0   # ... on Wayland, where a window is focused once its first frame shows
+OPEN_WAIT_S = 2.0           # `open` waits this long for its window's focus (a window has it
+                            # once its first frame shows) and its bar
 FORWARD_WAIT_S = 0.25       # the shell's own keys wait this long for the app's `last`
 KEYS_MAX = 200              # KEYs in one `keys`
 IMAGE_SIDE = 32             # px an image is a side, at most (a page's icon, as Flux sends it)
@@ -121,11 +115,11 @@ def is_id(value) -> bool:
     return isinstance(value, str) and 0 < len(value) <= ID_MAX
 
 
-def parse_chord(chord, *, grab: bool = False) -> tuple[frozenset, str] | None:
+def parse_chord(chord, *, opener: bool = False) -> tuple[frozenset, str] | None:
     """A chord like "ctrl+shift+p" as (modifiers, key), lower-cased; None
-    when it is none. With `grab`, only one letter or digit may end it
-    (the keys the shell takes from an app's window); otherwise a named
-    key may too ("shift+delete")."""
+    when it is none. With `opener`, only one letter or digit may end it
+    (an input's or menu's chord, which the app catches in its window);
+    otherwise a named key may too ("shift+delete")."""
     if not isinstance(chord, str) or not chord or len(chord) > 64:
         return None
     *mods, key = chord.lower().split("+")
@@ -133,7 +127,7 @@ def parse_chord(chord, *, grab: bool = False) -> tuple[frozenset, str] | None:
         return None
     if len(key) == 1 and key.isascii() and key.isalnum():
         return frozenset(mods), key
-    if not grab and key in NAMED_KEYS:
+    if not opener and key in NAMED_KEYS:
         return frozenset(mods), key
     return None
 
@@ -246,8 +240,8 @@ def count(text_: str, color: str | None = None) -> dict:
 
 
 def open_input(input_id, chord: str | None = None) -> dict:
-    """`open`; `chord`: the chord of the bar the app caught itself
-    (`attached`'s `chords: "app"`), which is a key pressed."""
+    """`open`; `chord`: the chord of the bar the app caught, which is a
+    key pressed."""
     return message(OPEN, input=input_id, **_some(chord=chord))
 
 
@@ -272,11 +266,10 @@ def keys(keys_: list, *, last: bool = False) -> dict:
     return message(KEYS, keys=list(keys_), **_some(last=last))
 
 
-def announce(app: str, window, x11: int | None = None) -> dict:
+def announce(app: str, window) -> dict:
     """The first message on a connection: the app, its own id for the
-    window, the window's platform handle."""
-    return message("announce", **{APP: app, WINDOW: window,
-                                  HANDLE: {X11: int(x11)} if x11 else {}})
+    window."""
+    return message("announce", **{APP: app, WINDOW: window})
 
 
 event = message
@@ -398,7 +391,7 @@ def _check_chords(p: _Problems, where: str, chords, taken: dict) -> None:
         p.add(where, "chords is not a list of at most 8")
         return
     for c in chords:
-        parsed = parse_chord(c, grab=True)
+        parsed = parse_chord(c, opener=True)
         if parsed is None:
             p.add(where, f"chord {c!r} is none (modifiers, then one letter or digit)")
         elif parsed in taken:

@@ -1,22 +1,8 @@
 """The shell's top bar and its line to the shell's own apps
 (indigoshell/applink: the app bar protocol), and the shell code under it.
 
-    .venv/bin/python tests/topbar.py              all of it, about a minute;
-                                                  a test browser window shows in
-                                                  the bottom-right corner
-    .venv/bin/python tests/topbar.py --off-screen  all but 8: nothing shows
+    .venv/bin/python tests/topbar.py              all of it, off screen, a few seconds
 
-1. Display (backend/x11.py) on throwaway windows of a second connection:
-   several handlers on one window, event masks merged per subscriber
-   and taken back one subscriber at a time, `watch_window_properties`
-   before and after another selection, a destroyed window forgotten,
-   the root path as it was, errors on foreign windows quiet and the
-   rest as loud as before; the workspaces widget's own calls, against a
-   window standing in for a client.
-2. The Xlib error guard (backend/gl.py), in child processes: an X error
-   on EGL's connection is logged once and the process lives; the same
-   error kills a process whose guard was taken away (so 1 means
-   something); EGL drawing to a window destroyed under it.
 3. Flux: the repository's desktop file, its install into a scratch
    data dir, and the app catalog finding, showing and launching it, and
    rescanning when it appears.
@@ -41,100 +27,60 @@
    busy tab behind, hover; the motion (a switch sliding the light, a
    close wiping the tab out before the others slide; the clock asked
    for frames only while something moves).
-4b. The mouse on an app's tabs, through the top bar's own Window (no X:
-   a stand-in display whose keyboard grabs are counted, never made) fed
-   real X events built from their bytes, the events recorded by id:
-   which tab is under x; a left and a right click selecting; a middle
-   click closing (let go elsewhere: nothing); the drag threshold; a drag
-   lifting the tab (the keyboard taken once, for Escape), the others
-   making room, the marker, `move` before the tab it lands before (both
-   ways; dropped in place: nothing); below the bar still a move, past
-   TEAR_OUT_PX `detach` (never a window's only tab); Escape cancelling,
-   other keys swallowed, a late Escape never closing the bar; the
-   keyboard refused; the keyboard given back on every way out; hover;
-   the bar's other widgets as before.
-5. The app service on a socket of its own, a stand-in app on it sending
-   bars: the announce and the answer both ways (the agent's name and
-   colour; an app other than Flux, the same class; announces that are
-   no X window or name no app or id; lines that are no message, types
-   it does not know); a bar shown and replaced, a bad one keeping the
-   last good (one warning), images held while a bar names them (a
-   broken one refused, said once), an answer for nothing open dropped, chords
-   grabbed again when they change; focus followed between two windows,
-   a dialog of one and a window that is no app's (the context area
-   empty), a window in the background changing without repainting the
-   bar, a connection lost and back, the service stopped and started;
-   the key grabs going with the connection and the service, checked
-   with X itself.
-5b. The keys the shell takes, on real unmapped windows of the test's
-   own, the service's X connection wrapped in a recorder (keyboard and
-   pointer grabs recorded and never sent): GrabKey for a bar's chords
-   by the keycodes the keymap gives (an oracle read on another
-   connection), once per combination of Caps Lock and Num Lock, and none
-   for a bar with no inputs; another client's grab of one chord refused
-   (the warning once, that chord left to the app); a press delivered
-   (the keyboard held first, the pointer on the bar's window, the input
-   open in the section, keys typed after it into its box in order, the
-   chord again selecting its text, Escape closing it and giving both
-   back); a menu; no top bar (fallback); `open` with no top bar; a
-   keymap change re-making the grabs; the grabs released with the
-   window; `open` from a new focused window before its first bar
-   (waited for, open as the bar comes; with a bar without that input,
-   `fallback` past OPEN_WAIT_S and why, at info).
-6. Whether a top bar is over an app's window (real unmapped windows of
-   the test's own) and where its list drops: the section's left, the
-   bar's bottom edge, an item's left for a menu; the bar on another
-   monitor, the window gone; a bar spanning the screen asking nothing.
-7. The top bar's spec, as computed data: anchors, size, layer, the
-   strut it would set (never set on a window here), its look against
-   the bottom bar's, its place in WINDOWS, a user widget added the
+4b. The mouse on an app's tabs, through the top bar's own Window on an
+   off-screen canvas (canvas.Scene: its keyboard's takers counted, no
+   compositor), fed the pointer and the keys as the canvas's routers
+   deliver them, the events recorded by id: which tab is under x; a left
+   and a right click selecting; a middle click closing (let go
+   elsewhere: nothing); the drag threshold; a drag lifting the tab (the
+   keyboard taken once, for Escape), the others making room, the marker,
+   `move` before the tab it lands before (both ways; dropped in place:
+   nothing); below the bar still a move, past TEAR_OUT_PX `detach`
+   (never a window's only tab); Escape cancelling, other keys swallowed,
+   a late Escape never closing the bar; no keyboard to take; the keyboard
+   given back on every way out (the compositor breaking the press's grab
+   among them); hover; the bar's other widgets as before.
+5. The app service on a socket of its own, stand-in apps on it sending
+   bars, the window manager stood in for (its focused window, as the
+   test says it): the announce and the answer both ways (the agent's
+   name and colour; an app other than Flux, the same class; announces
+   that name no app or id; lines that are no message, types it does not
+   know); a bar shown and replaced, a bad one keeping the last good (one
+   warning), images held while a bar names them (a broken one refused,
+   said once), an answer for nothing open dropped; focus followed
+   between two windows (the compositor's focused window's process and
+   the apps' own `active`), a window of another process (the context
+   area empty), none, a window in the background changing without
+   repainting the bar, a connection lost and back, the service stopped
+   and started.
+5b. The inputs and menus the app's chords open, the canvas's keyboard
+   and outside clicks stood in for (taken and given back, recorded): an
+   `open` with Ctrl+L from the focused window (the keyboard taken first,
+   the outside clicks caught, the input open in the section, the
+   address in it selected), the keys the app forwards and the canvas's
+   own after them typed into its box in order, the chord again selecting
+   its text, Escape closing it and giving both back; a menu; no top bar
+   (fallback); `open` with no top bar; `open` from a new focused window
+   before its first bar (waited for, open as the bar comes; with a bar
+   without that input, `fallback` past OPEN_WAIT_S and why, at info).
+6. Where an input's list drops: the section's left, the bar's bottom
+   edge, an item's left for a menu; none with no top bar.
+7. The top bar's spec, as computed data: anchors, size, layer, where it
+   sits on a monitor against the bottom bar, its look against the
+   bottom bar's, its place in WINDOWS, a user widget added the
    documented way, the whole bar painted off screen; the user's own
    config.py (when there is one) imported by its path with scratch XDG
    directories and no bytecode written, and the top bar in what it
    exports.
-8. On screen: the real `AppService` on an X connection, loop and socket
-   of its own, and the real browser (`--unattended`: nothing asks,
-   muted) on sockets and XDG directories of its own.
-   The browser announces its window, and the service grabs its bar's
-   chords (another client's grab of them refused, so X itself says so);
-   its bar reaches the service; the context area draws it; an event of
-   the bar's switches its tab; the live path of its address input: the
-   real Daemon, a top bar of the test's own (a small window in the
-   corner over the browser's: no dock, no strut) and the real drop-down
-   window, Ctrl+L delivered to the service as X reports it (the grabs
-   recorded, never made), the browser answering from a history seeded
-   with addresses far past 128 characters and a title past 1000, the
-   list mapped flush under that bar and read back, "yo" typed, Escape;
-   the browser's window has nothing of the shell's in it, no child
-   window and no line (its own pixels, from its composite pixmap, never
-   the root or the screen: the page's colour from the top edge);
-   the service stopped: the grabs gone, no line in the browser's window
-   for three seconds, then its own line, gone again when the service is
-   back (and the grabs with it). The grab's activation by a real key
-   press is not tried: that would need input injected into the display.
-   A test window that its window manager puts on a workspace not shown
-   is asked back onto the current one (its own window, nobody else's).
-9. A new Flux window with no address opens its address input in the
-   bar: the real browser started with no URL with the shell running,
-   then a second invocation with none (a new window in it), then, that
-   browser quit, another started just after MOD+D's launcher (a copy
-   taking no keyboard, pointer or focus) has closed; against the real
-   AppService, Daemon and drop-down, the window manager's focus stood in
-   for, given as the service hears of the window (before its first bar
-   comes) and, for the second invocation's, a moment later. Nothing
-   shows: the browser's windows go to qtile's group 8 (a rule on each
-   browser process's pid, added as it starts; each window's group read
-   back from qtile, the browser killed at once if one is anywhere else;
-   the rules removed after, the group left as it was), the shell's
-   windows below the screen's bottom edge (each one's place read back
-   from X), the test's top bar as wide as the screen (so over every
-   window, as the real one is); the keyboard and pointer grabs
-   recorded, never made.
+
+The real browser and the real shell together (Flux's bar in the top
+bar, its chords, its line while the shell is away) run in
+tests/wayland.py --nested; tests/browser.py drives Flux's end of the
+line against a stand-in shell.
 
 Prints ok/FAIL lines, exits 1 if anything failed. Nothing here touches
-the running shell: no socket, lock, state or window of its. No window
-with a strut is ever mapped (the window manager would move the
-desktop's windows for it).
+the running shell: no socket, lock, state or window of its, and nothing
+shows on any screen.
 """
 
 import argparse
@@ -143,20 +89,17 @@ import json
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import traceback
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from indigoshell.core.naming import APP, CLI, env      # noqa: E402  (pure)
+from indigoshell.core.naming import APP, CLI           # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir          # noqa: E402
 
 PY = sys.executable
@@ -194,308 +137,6 @@ class Records(logging.Handler):
 
     def at_least(self, level: int, since: int = 0) -> list[str]:
         return [r.getMessage() for r in self.records[since:] if r.levelno >= level]
-
-
-# ── 1. Display ──────────────────────────────────────────────────────────
-
-def test_display() -> None:
-    import xcffib
-    import xcffib.xproto as xp
-
-    from indigoshell.backend.x11 import Display
-    from indigoshell.widgets.workspaces import Workspaces
-
-    section("1. Display: handlers and event masks per window")
-    rec = Records("indigoshell.backend.x11")
-    d = Display()
-    other = xcffib.connect()                    # the "other client"
-    root = other.get_setup().roots[0]
-    P, S = xp.EventMask.PropertyChange, xp.EventMask.StructureNotify
-    atom = other.core.InternAtom(False, len(b"_BST_TEST"), b"_BST_TEST").reply().atom
-
-    def window() -> int:
-        """Unmapped and override-redirect: no window manager involved,
-        nothing on screen."""
-        wid = other.generate_id()
-        other.core.CreateWindow(root.root_depth, wid, root.root, 0, 0, 50, 50, 0,
-                                xp.WindowClass.InputOutput, root.root_visual,
-                                xp.CW.OverrideRedirect, [1])
-        other.core.GetInputFocus().reply()       # made before `d` names it
-        return wid
-
-    def poke(wid: int) -> None:
-        other.core.ChangeProperty(xp.PropMode.Replace, wid, atom, xp.Atom.CARDINAL, 32,
-                                  1, (1).to_bytes(4, "little"))
-        other.flush()
-
-    def resize(wid: int, w: int) -> None:
-        other.core.ConfigureWindow(wid, xp.ConfigWindow.Width, [w])
-        other.flush()
-
-    def settle() -> None:
-        d.conn.core.GetInputFocus().reply()      # the server has done all of ours
-        other.core.GetInputFocus().reply()
-        time.sleep(0.05)
-        d.conn.core.GetInputFocus().reply()
-        while d.pump():
-            pass
-
-    def mask(wid: int) -> int:
-        return d.conn.core.GetWindowAttributes(wid).reply().your_event_mask
-
-    def kinds(log_):
-        return [type(e).__name__.replace("Event", "") for e in log_]
-
-    a, b = [], []
-    ha, hb = a.append, b.append
-    w1 = window()
-    d.on(w1, ha)
-    d.on(w1, hb)
-    d.on(w1, hb)                                 # twice is once
-    d.select(w1, P, "a")
-    settle()
-    poke(w1)
-    settle()
-    check("two handlers on one window both get its event (one added twice: once)",
-          kinds(a) == ["PropertyNotify"] and kinds(b) == ["PropertyNotify"],
-          f"a {kinds(a)}, b {kinds(b)}")
-    d.select(w1, S, "b")
-    settle()
-    merged = mask(w1)
-    a.clear(), b.clear()
-    resize(w1, 60)
-    poke(w1)
-    settle()
-    check("masks merge: PropertyChange (a) | StructureNotify (b), both kinds arrive",
-          merged == P | S and set(kinds(a)) == {"ConfigureNotify", "PropertyNotify"},
-          f"mask 0x{merged:x}, a got {kinds(a)}")
-    d.unselect(w1, "b")
-    d.off(w1, hb)
-    settle()
-    left = mask(w1)
-    a.clear(), b.clear()
-    resize(w1, 70)
-    poke(w1)
-    settle()
-    check("one taken back: the other's mask and events stay, its own stop",
-          left == P and kinds(a) == ["PropertyNotify"] and b == [],
-          f"mask 0x{left:x}, a {kinds(a)}, b {kinds(b)}")
-
-    w2, w3 = window(), window()
-    d.select(w2, S, "other")
-    d.watch_window_properties(w2)
-    d.watch_window_properties(w3)
-    d.select(w3, S, "other")
-    settle()
-    check("watch_window_properties after a StructureNotify selection, and before one: both kept",
-          mask(w2) == P | S and mask(w3) == P | S, f"0x{mask(w2):x}, 0x{mask(w3):x}")
-
-    c = []
-    d.on(w2, c.append)
-    other.core.DestroyWindow(w2)
-    other.flush()
-    settle()
-    check("a window destroyed with handlers attached: they hear it, then it is forgotten",
-          kinds(c)[-1:] == ["DestroyNotify"] and w2 not in d._handlers and w2 not in d._selected,
-          f"heard {kinds(c)}")
-
-    before = (d._root_mask, list(d._handlers.get(d.root, [])))
-    got = []
-    d.add_root_listener(got.append)
-    d.add_root_listener(got.append)
-    d._select_root(xp.EventMask.SubstructureNotify)
-    settle()
-    roots = d._handlers.get(d.root, [])
-    check("root path as before: one handler, masks merged in _root_mask, two listeners kept",
-          before == (0, []) and roots == [d._on_root_event]
-          and d._root_mask == P | xp.EventMask.SubstructureNotify
-          and mask(d.root) == d._root_mask and d._root_listeners == [got.append, got.append],
-          f"root mask 0x{mask(d.root):x}")
-    d.conn.core.ChangeWindowAttributes(d.root, xp.CW.EventMask, [0])    # leave the root be
-    d.off(d.root)
-
-    # Errors: on a window another client destroyed, quiet; any other,
-    # loud as ever.
-    mark = len(rec.records)
-    w4 = window()
-    other.core.DestroyWindow(w4)
-    other.flush()
-    settle()
-    d.select(w4, S, "late")                      # BadWindow, a foreign window
-    own_gone = d.conn.generate_id()               # an id of ours never made
-    d.conn.core.MapWindow(own_gone)              # BadWindow, ours: a bug
-    d.conn.flush()
-    settle()
-    quiet = rec.count("X error on window", logging.DEBUG, mark)
-    loud = rec.count("X protocol error", logging.WARNING, mark)
-    check("X errors: on a foreign window quiet (debug), on ours a warning",
-          quiet == 1 and loud == 1, f"quiet {quiet}, warnings {loud}")
-
-    # The workspaces widget's own calls, with the client list pointing at
-    # a window of ours: it watches it, someone else here selects more on
-    # it, the widget sees only what it asked for, and dropping it as stale
-    # leaves the other's handler and mask alone.
-    section("1b. the workspaces widget beside another watcher, on one window")
-    w5 = window()
-    clients = [w5]
-    real_get_ints = d.get_ints
-
-    def get_ints(wid, name, length=64):
-        if wid == d.root and name == "_NET_CLIENT_LIST":
-            return list(clients)
-        return real_get_ints(wid, name, length)
-
-    d.get_ints = get_ints
-    d._select_root = lambda mask_: None          # no root selection for this part
-
-    class FakeWindow:
-        display = d
-
-        def damage(self, *_a, **_k):
-            pass
-
-    ws = Workspaces()
-    delivered, refreshed = [], []
-    ws.attach(FakeWindow())
-    follower = ws._follower                      # the X11 one (indigoshell/wm/x11.py)
-    real_handler, real_refresh = follower._on_client_property, follower._refresh
-
-    def spy_refresh():
-        refreshed.append(1)
-        real_refresh()
-
-    follower._refresh = spy_refresh
-    other_events = []
-    d.select(w5, S, "other")
-    d.on(w5, other_events.append)
-    settle()
-    handlers = d._handlers.get(w5, [])
-    m_both = mask(w5)
-    # Spy on what reaches the widget's handler, after it registered.
-    d._handlers[w5] = [h if h != real_handler else (lambda ev: (delivered.append(ev),
-                                                                  real_handler(ev)))
-                       for h in handlers]
-    refreshed.clear()
-    resize(w5, 80)
-    poke(w5)
-    settle()
-    props = sum(isinstance(e, xp.PropertyNotifyEvent) for e in delivered)
-    check("watched by the widget and another: mask Property|Structure; both hear both kinds",
-          m_both == P | S and len(handlers) == 2
-          and {"ConfigureNotify", "PropertyNotify"} <= set(kinds(delivered))
-          and {"ConfigureNotify", "PropertyNotify"} <= set(kinds(other_events)),
-          f"mask 0x{m_both:x}, widget got {kinds(delivered)}")
-    check("the widget refreshes on its PropertyNotify only, not on the other's ConfigureNotify",
-          len(refreshed) == props == 1, f"refreshes {len(refreshed)}, property events {props}")
-    d._handlers[w5] = handlers                   # spy off
-    clients.clear()
-    follower._clients_dirty = True
-    real_refresh()                               # w5 is stale now
-    other_events.clear()
-    resize(w5, 90)
-    settle()
-    check("the widget dropping it as stale leaves the other's handler and mask",
-          d._handlers.get(w5) == [other_events.append] and mask(w5) & S
-          and kinds(other_events) == ["ConfigureNotify"],
-          f"handlers {len(d._handlers.get(w5, []))}, mask 0x{mask(w5):x}")
-    d.unselect(w5, "other")
-    settle()
-    check("... and the other letting go then leaves what the widget had selected",
-          mask(w5) == P, f"0x{mask(w5):x}")
-    for wid in (w1, w3, w4, w5):
-        other.core.DestroyWindow(wid)
-    other.flush()
-    settle()
-    other.disconnect()
-    d.close()
-
-
-# ── 2. the Xlib guard ───────────────────────────────────────────────────
-
-XLIB_CHILD = r"""
-import ctypes, logging, sys, time
-sys.path.insert(0, sys.argv[1])
-logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(name)s %(message)s")
-for noisy in ("indigoshell.backend.x11",):
-    logging.getLogger(noisy).setLevel(logging.WARNING)
-from indigoshell.backend.x11 import Display, xp
-from indigoshell.backend import gl
-mode = sys.argv[2]
-d = Display()
-b = gl.backend(d)
-x11 = b.lib.x11
-x11.XDefaultRootWindow.restype = ctypes.c_ulong
-x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
-x11.XCreateSimpleWindow.restype = ctypes.c_ulong
-x11.XCreateSimpleWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong] + [ctypes.c_int] * 2 \
-    + [ctypes.c_uint] * 3 + [ctypes.c_ulong] * 2
-for name in ("XDestroyWindow", "XMapWindow"):
-    getattr(x11, name).argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
-if mode == "unguarded":
-    x11.XSetErrorHandler(None)          # Xlib's own handler again
-if mode in ("guarded", "unguarded"):
-    # A window of this connection's own, made and destroyed: mapping it
-    # then is a BadWindow that touches nobody else's window.
-    w = x11.XCreateSimpleWindow(b.xdpy, x11.XDefaultRootWindow(b.xdpy), 0, 0, 10, 10, 0, 0, 0)
-    x11.XDestroyWindow(b.xdpy, w)
-    x11.XSync(b.xdpy, 0)
-    x11.XMapWindow(b.xdpy, w)
-    x11.XSync(b.xdpy, 0)
-else:
-    # EGL drawing into a window destroyed under it: made on the xcb
-    # connection, its surface on EGL's, then destroyed on xcb.
-    conn = d.conn
-    wid = conn.generate_id()
-    cmap = conn.generate_id()
-    conn.core.CreateColormap(xp.ColormapAlloc._None, cmap, d.root, b.visual_id)
-    conn.core.CreateWindow(32, wid, d.root, -100, -100, 64, 16, 0, xp.WindowClass.InputOutput,
-                           b.visual_id, xp.CW.BackPixel | xp.CW.BorderPixel
-                           | xp.CW.OverrideRedirect | xp.CW.Colormap, [0, 0, 1, cmap])
-    conn.core.GetInputFocus().reply()
-    s = b.create(wid, 64, 16)
-    b.make_current(s)
-    s.skia_surface.getCanvas().clear(0xFF00FF00)
-    s.swap()
-    conn.core.DestroyWindow(wid)
-    conn.core.GetInputFocus().reply()
-    time.sleep(0.1)
-    bound = b.make_current(s)
-    s.skia_surface.getCanvas().clear(0xFFFF0000)
-    s.swap()
-    b.make_idle()
-    s.destroy()
-    x11.XSync(b.xdpy, 0)
-    print("make_current on the dead window:", bound)
-print("survived; Xlib errors", gl.xlib_errors, flush=True)
-"""
-
-
-def test_xlib_guard(scratch: Path) -> None:
-    section("2. the Xlib error guard on EGL's connection (child processes)")
-    script = scratch / "xlib_child.py"
-    script.write_text(XLIB_CHILD)
-
-    def run(mode):
-        p = subprocess.run([PY, str(script), str(REPO), mode], capture_output=True,
-                           text=True, timeout=60)
-        return p.returncode, p.stdout + p.stderr
-
-    code, out = run("guarded")
-    warned = [line for line in out.splitlines()
-              if "Xlib error" in line and not line.startswith("survived")]
-    check("guarded: a BadWindow on EGL's Xlib connection is logged once, the process lives",
-          code == 0 and "survived; Xlib errors 1" in out and len(warned) == 1
-          and warned[0].startswith("WARNING"), f"exit {code}; {warned}")
-    code, out = run("unguarded")
-    check("control, the guard taken away: the same error ends the process (Xlib's handler)",
-          code != 0 and "survived" not in out and "BadWindow" in out,
-          f"exit {code}; {[ln for ln in out.splitlines() if 'Error' in ln][:1]}")
-    code, out = run("egl")
-    lines = [ln for ln in out.splitlines() if "Xlib error" in ln or "survived" in ln
-             or "make_current" in ln]
-    check("EGL drawing to a window destroyed under it: the process lives",
-          code == 0 and any("survived" in ln for ln in lines), f"exit {code}; {lines}")
 
 
 # ── 3. Flux ─────────────────────────────────────────────────────────────
@@ -568,8 +209,7 @@ class Host:
     """What a widget tree needs of its window, off screen: the damage it
     reports is kept."""
 
-    def __init__(self, display=None) -> None:
-        self.display = display
+    def __init__(self) -> None:
         self.damaged: list = []
 
     def damage(self, widget=None, *, layout: bool = False) -> None:
@@ -577,11 +217,12 @@ class Host:
 
 
 class Line:
-    """What an AppWindow has of its connection: the service, and a send
-    that keeps what was sent."""
+    """What an AppWindow has of its connection: the service, the app's
+    process (this one), and a send that keeps what was sent."""
 
     def __init__(self, service) -> None:
         self.service = service
+        self.pid = os.getpid()
         self.out: list[dict] = []
 
     def send(self, msg: dict) -> None:
@@ -664,11 +305,10 @@ def flux_bar(titles, current=0, *, single=False, **kw) -> dict:
     return fb.bar_of(flux_state(titles, current, **kw), single=single)
 
 
-def announce(wid: int, app: str = "flux", window=None) -> dict:
-    """An app window's announce: the app, its own id for the window (the
-    X window's here), its X window."""
+def announce(window, app: str = "flux") -> dict:
+    """An app window's announce: the app, its own id for the window."""
     from indigoshell.applink import bar as B
-    return B.announce(app, wid if window is None else window, wid)
+    return B.announce(app, window)
 
 
 def titles_of(window) -> list[str]:
@@ -1169,63 +809,6 @@ def test_content(scratch: Path) -> None:
 
 # ── 4b. the mouse on Flux's tabs ────────────────────────────────────────
 
-class StubDisplay:
-    """What a Window needs of its display for input, no X: every
-    keyboard grab and ungrab counted (never sent), the pointer's buttons
-    as a test sets them, Escape and "a" as the keymap."""
-
-    def __init__(self) -> None:
-        import types
-        self.grabs = self.ungrabs = self.pumps = 0
-        self.refuse = False
-        self.buttons = 0                # the pointer's button mask, as QueryPointer says
-        self.root = 1
-        self.screen = types.SimpleNamespace(root_depth=24)
-        query = types.SimpleNamespace(
-            QueryPointer=lambda root: types.SimpleNamespace(
-                reply=lambda: types.SimpleNamespace(mask=self.buttons)))
-        self.conn = types.SimpleNamespace(core=query)
-
-    def grab_keyboard(self, wid: int) -> bool:
-        if self.refuse:
-            return False
-        self.grabs += 1
-        return True
-
-    def ungrab_keyboard(self) -> None:
-        self.ungrabs += 1
-
-    def pump(self) -> int:
-        self.pumps += 1
-        return 0
-
-    def keysym(self, keycode: int, state: int = 0) -> int:
-        return 0xFF1B if keycode == 9 else 0x61
-
-    def mod_mask(self, role: str) -> int:
-        return 0
-
-    @property
-    def held(self) -> int:
-        return self.grabs - self.ungrabs
-
-
-def x_event(kind: str, wid: int, x: int, y: int, detail: int = 0):
-    """A real xcffib event, built from its wire bytes: a button press or
-    release, a motion, a key press, or a leave."""
-    import struct
-
-    import xcffib
-    import xcffib.xproto as xp
-    code, cls = {"press": (4, xp.ButtonPressEvent), "release": (5, xp.ButtonReleaseEvent),
-                 "motion": (6, xp.MotionNotifyEvent), "key": (2, xp.KeyPressEvent),
-                 "leave": (8, xp.LeaveNotifyEvent)}[kind]
-    raw = struct.pack("=BBHIIIIhhhhHBB", code, detail, 0, 0, 1, wid, 0, x, y, x, y, 0, 1, 0)
-    ev = cls(xcffib.MemoryUnpacker(raw))
-    ev.response_type = code         # the connection sets it on events it reads
-    return ev
-
-
 def test_mouse(scratch: Path) -> None:
     import asyncio
 
@@ -1237,12 +820,13 @@ def test_mouse(scratch: Path) -> None:
                                                 TAB_HOVER_FG, TEAR_FG)
     from indigoshell.applink.kinds.tabs import DRAG_START_PX, TEAR_OUT_PX, landing, slot_at
     from indigoshell.applink.view import BarView
-    from indigoshell.widgets.base import Size, Widget
+    from indigoshell.canvas import Scene
+    from indigoshell.widgets.base import KeyEvent, Size, Widget
     from indigoshell.widgets.layout import Align, Row
     from indigoshell.window import Window, WindowSpec
 
-    section("4b. the mouse on an app's tabs: the bar's window driven with synthetic X events "
-            "(no X: the keyboard grabs counted, never made); events by id")
+    section("4b. the mouse on an app's tabs: the bar's window on an off-screen canvas, driven "
+            "as the canvas's routers drive it (the keyboard's takers counted); events by id")
     W, H = 1600, theme.TOP_BAR_HEIGHT
     pitch = SLOT_W + SLOT_GAP
     check("slots by x: each gap goes with the slot before it, nothing past the last; a dragged "
@@ -1292,14 +876,32 @@ def test_mouse(scratch: Path) -> None:
     drags = Spot(40, on_drag=lambda w, x, y, commit: seen.append(("drag", x, commit)))
     row = Row([AppContext(service), plain, where, drags], spacing=20, align=Align.CENTER)
     loop = asyncio.new_event_loop()
-    display = StubDisplay()
-    win = Window(display, WindowSpec(name="test-top-bar", content=row, focusable=False), loop)
-    win.wid, win.x, win.y = 0x500001, 0, 0
+    scene = Scene(loop)
+    scene.resize(W, H)
+    scene.keyboard.available = True
+    win = Window(scene, WindowSpec(name="test-top-bar", content=row), loop)
+    win.create()                            # on the canvas (attached, laid out), never shown
+    kb = scene.keyboard
+    hold = ("hold", win)                    # the window's token while a press holds the keyboard
+    counts = {"take": 0, "give": 0}
+    real_take, real_give = kb.take, kb.give_back
+
+    def take(token, handler):
+        counts["take"] += token == hold
+        real_take(token, handler)
+
+    def give_back(token):
+        counts["give"] += token == hold and kb.holds(token)
+        real_give(token)
+    kb.take, kb.give_back = take, give_back
+
+    def held() -> int:
+        """Whether the hold has the canvas's keyboard now (1) or not (0)."""
+        return int(kb.holds(hold))
     dismissed = []
     win._dismiss_others = lambda: dismissed.append(1)
     closes = []
     win._request_close = lambda: closes.append(1)
-    row.attach(win)
 
     def lay_out():
         row.measure(Size(W, H))
@@ -1313,8 +915,18 @@ def test_mouse(scratch: Path) -> None:
     lay_out()
     tl = j.view.item("tabs")
 
-    def send(kind, x, y, detail=0):
-        win._on_event(x_event(kind, win.wid, int(x), int(y), detail))
+    def send(kind, x, y, button=0):
+        """The pointer as the canvas's PointerRouter hands it on."""
+        if kind in ("press", "release"):
+            win.pointer_button(button, kind == "press", float(int(x)), float(int(y)))
+        elif kind == "motion":
+            win.pointer_motion(float(int(x)), float(int(y)))
+        else:
+            win.pointer_leave()
+
+    def key(keysym: int, text: str = ""):
+        """A key as the canvas's KeyboardRouter hands it on."""
+        win.key_press(KeyEvent(keysym=keysym, text=text))
 
     def mid(i):
         return tl.rect.left() + i * pitch + SLOT_W / 2
@@ -1339,7 +951,7 @@ def test_mouse(scratch: Path) -> None:
           "panels dismissed as a press on the bar always did); the current one sends nothing",
           since(n) == [{"type": "select", "item": "tabs", "tab": 102},
                        {"type": "select", "item": "tabs", "tab": 103}]
-          and display.grabs == 0 and win.holding is None and len(dismissed) == 3,
+          and counts["take"] == 0 and win.holding is None and len(dismissed) == 3,
           f"{since(n)}")
 
     n = len(sent)
@@ -1356,7 +968,7 @@ def test_mouse(scratch: Path) -> None:
     n = len(sent)
     send("press", mid(0), 20, 1)
     send("motion", mid(0) + DRAG_START_PX - 2, 21)
-    still = tl.lift_layout() is None and display.grabs == 0
+    still = tl.lift_layout() is None and counts["take"] == 0
     send("motion", mid(0) + DRAG_START_PX + 1, 21)
     lifted = tl.lift_layout()
     send("motion", mid(2) + 10, 22)
@@ -1372,11 +984,11 @@ def test_mouse(scratch: Path) -> None:
           "keyboard taken once, for Escape), follows the pointer, the others close up, a marker "
           "between two boxes where it lands; let go: `move` before the tab it lands before, the "
           "keyboard given back",
-          still and lifted is not None and lifted["to"] == 0 and display.grabs == 1
+          still and lifted is not None and lifted["to"] == 0 and counts["take"] == 1
           and over["to"] == 2 and placed == {1: 0, 2: pitch, 3: 2 * pitch}
           and mark > 4 and lift_px > 20
           and since(n) == [{"type": "move", "item": "tabs", "tab": 101, "before": 104}]
-          and display.held == 0
+          and held() == 0
           and win.holding is None, f"{over}, {placed}, marker px {mark}, {since(n)}")
 
     j.on_message(state(["Beta", "Gamma", "Alpha", "Delta"], 2, [102, 103, 101, 104]))
@@ -1395,7 +1007,7 @@ def test_mouse(scratch: Path) -> None:
           "select; dropped where it was: nothing more", since(n) == [
               {"type": "move", "item": "tabs", "tab": 101, "before": 102},
               {"type": "select", "item": "tabs", "tab": 103},
-              {"type": "select", "item": "tabs", "tab": 104}] and display.held == 0,
+              {"type": "select", "item": "tabs", "tab": 104}] and held() == 0,
           f"{since(n)}")
 
     j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
@@ -1417,7 +1029,7 @@ def test_mouse(scratch: Path) -> None:
           and others == [0, pitch, 2 * pitch] and cue > 10
           and since(n) == [{"type": "select", "item": "tabs", "tab": 102},
                            {"type": "detach", "item": "tabs", "tab": 102}]
-          and display.held == 0, f"{since(n)}, new-window mark px {cue}")
+          and held() == 0, f"{since(n)}, new-window mark px {cue}")
 
     n = len(sent)
     send("press", mid(1), 20, 1)
@@ -1425,7 +1037,7 @@ def test_mouse(scratch: Path) -> None:
     send("release", mid(1) + 20, H + 20, 1)
     check("let go between the bar and the tear-out line: a move (here, to where it was: "
           "nothing)", since(n) == [{"type": "select", "item": "tabs", "tab": 102}]
-          and display.held == 0)
+          and held() == 0)
 
     j.on_message(state(["Solo"]))
     lay_out()
@@ -1435,7 +1047,7 @@ def test_mouse(scratch: Path) -> None:
     solo = tl.lift_layout()
     send("release", mid(0) + 30, H + TEAR_OUT_PX + 50, 1)
     check("a window's only tab is never torn out: no mark, nothing sent",
-          solo is not None and not solo["out"] and since(n) == [] and display.held == 0,
+          solo is not None and not solo["out"] and since(n) == [] and held() == 0,
           f"{solo} {since(n)}")
 
     j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
@@ -1443,28 +1055,28 @@ def test_mouse(scratch: Path) -> None:
     n = len(sent)
     send("press", mid(0), 20, 1)
     send("motion", mid(3), 20)
-    send("key", 0, 0, 10)                   # "a": swallowed, the drag goes on
+    key(0x61, "a")                          # swallowed, the drag goes on
     going = tl.lift_layout() is not None
-    send("key", 0, 0, 9)                    # Escape
-    gone = tl.lift_layout() is None and win.holding is None and display.held == 0
+    key(0xFF1B)                             # Escape
+    gone = tl.lift_layout() is None and win.holding is None and held() == 0
     send("motion", mid(3) + 5, 20)
     send("release", mid(3), 20, 1)
-    send("key", 0, 0, 9)                    # late: the hold is over
+    key(0xFF1B)                             # late: the hold is over
     check("Escape while dragging puts the tab back: the keyboard given back at once, the "
           "release after it does nothing, another key in the drag is swallowed, and an Escape "
           "after the hold reaches nothing (never the window's Escape-closes)",
-          going and gone and since(n) == [] and closes == [] and display.held == 0,
+          going and gone and since(n) == [] and closes == [] and held() == 0,
           f"{since(n)}")
 
-    display.refuse = True
+    kb.available = False                    # no keymap: no keyboard to take
     n = len(sent)
     send("press", mid(0), 20, 1)
     send("motion", mid(1) + 10, 20)
     send("release", mid(1) + 10, 20, 1)
-    display.refuse = False
-    check("the keyboard refused: the drag works without Escape, nothing to give back",
+    kb.available = True
+    check("no keyboard to take: the drag works without Escape, nothing to give back",
           since(n) == [{"type": "move", "item": "tabs", "tab": 101, "before": 103}]
-          and display.ungrabs == display.grabs)
+          and counts["give"] == counts["take"])
 
     # Every way out of a hold gives the keyboard back.
     j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
@@ -1474,11 +1086,11 @@ def test_mouse(scratch: Path) -> None:
     def lift_at(i):
         send("press", mid(i), 20, 1)
         send("motion", mid(i) + 40, 20)
-        return display.held == 1 and win.holding is tl
+        return held() == 1 and win.holding is tl
 
     began = lift_at(0)
     j.on_message(state(["Beta", "Gamma", "Delta"], 0, [102, 103, 104]))
-    outs["its tab closed meanwhile"] = began and display.held == 0 and win.holding is None \
+    outs["its tab closed meanwhile"] = began and held() == 0 and win.holding is None \
         and tl.drag is None
     n = len(sent)
     send("release", mid(1), 20, 1)
@@ -1488,7 +1100,7 @@ def test_mouse(scratch: Path) -> None:
     began = lift_at(0)
     ctx = row.children()[0]
     ctx._on_focus(None)
-    outs["the app window gone (its content taken off the bar)"] = began and display.held == 0 \
+    outs["the app window gone (its content taken off the bar)"] = began and held() == 0 \
         and win.holding is None and tl.window is None
     send("motion", mid(1), 20)
     send("release", mid(1), 20, 1)
@@ -1504,29 +1116,25 @@ def test_mouse(scratch: Path) -> None:
     tl.motion = broken
     send("motion", mid(1), 20)
     tl.motion = real_motion
-    outs["an exception in its handler"] = began and display.held == 0 and win.holding is None \
+    outs["an exception in its handler"] = began and held() == 0 and win.holding is None \
         and tl.drag is None
     send("release", mid(1), 20, 1)
 
     began = lift_at(0)
-    display.buttons = 1 << 8                # still down
-    win._check_hold()
-    kept = win.holding is tl and win._hold_check is not None
-    display.buttons = 0                     # up, and no release ever came
-    win._check_hold()
-    outs["its release never seen (the button found up)"] = began and kept \
-        and display.held == 0 and win.holding is None and display.pumps >= 2
+    win.pointer_lost()                      # the compositor broke the press's grab
+    outs["its release never coming (the compositor broke the press's grab)"] = began \
+        and held() == 0 and win.holding is None and tl.drag is None
     send("release", mid(1), 20, 1)
 
     began = lift_at(0)
     win._end_hold(cancel=True)              # what park, dismiss and destroy call first
-    outs["the window parked, dismissed or destroyed"] = began and display.held == 0 \
-        and tl.drag is None and win._hold_check is None
+    outs["the window parked, dismissed or destroyed"] = began and held() == 0 \
+        and tl.drag is None
     send("release", mid(1), 20, 1)
     for name, ok in outs.items():
         check(f"the keyboard given back: {name}", ok)
-    check("every grab given back, none twice", display.grabs == display.ungrabs > 0,
-          f"{display.grabs} grabs, {display.ungrabs} ungrabs")
+    check("every take given back, none twice", counts["give"] == counts["take"] > 0,
+          f"{counts['take']} taken, {counts['give']} given back")
 
     j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
     lay_out()
@@ -1614,115 +1222,48 @@ async def until(pred, timeout: float = 5.0, every: float = 0.02):
         await asyncio.sleep(every)
 
 
-class Windows:
-    """Unmapped override-redirect windows on a connection of the test's
-    own: real X windows for apps to announce, never shown."""
+class Follower:
+    """The window manager's WindowFollower, stood in for: the test says
+    which window has the focus (`service.set_focus`)."""
 
-    def __init__(self) -> None:
-        import xcffib
-        self.conn = xcffib.connect()
-        self.screen = self.conn.get_setup().roots[0]
-        self.made: list[int] = []
-
-    def make(self, x=300, y=150, w=1000, h=700, transient_for: int | None = None) -> int:
-        import struct
-
-        import xcffib.xproto as xp
-        wid = self.conn.generate_id()
-        s = self.screen
-        self.conn.core.CreateWindow(s.root_depth, wid, s.root, x, y, w, h, 0,
-                                    xp.WindowClass.InputOutput, s.root_visual,
-                                    xp.CW.OverrideRedirect, [1])
-        if transient_for is not None:
-            self.conn.core.ChangeProperty(xp.PropMode.Replace, wid, xp.Atom.WM_TRANSIENT_FOR,
-                                          xp.Atom.WINDOW, 32, 1, struct.pack("<I", transient_for))
-        self.conn.core.GetInputFocus().reply()
-        self.made.append(wid)
-        return wid
-
-    def destroy(self, wid: int) -> None:
-        self.conn.core.DestroyWindow(wid)
-        self.conn.core.GetInputFocus().reply()
-        if wid in self.made:
-            self.made.remove(wid)
+    ready = True
 
     def close(self) -> None:
-        for wid in list(self.made):
-            self.conn.core.DestroyWindow(wid)
-        self.conn.flush()
-        self.conn.disconnect()
-
-
-def keycodes_of(conn, keysym) -> list[int]:
-    """The keycodes that type `keysym` (or a letter) with or without
-    Shift, read from the server on a connection of the test's own: an
-    oracle for Display.keycodes."""
-    if isinstance(keysym, str):
-        keysym = ord(keysym)
-    setup = conn.get_setup()
-    lo, hi = setup.min_keycode, setup.max_keycode
-    r = conn.core.GetKeyboardMapping(lo, hi - lo + 1).reply()
-    per, syms = r.keysyms_per_keycode, list(r.keysyms)
-    return [lo + i for i in range(hi - lo + 1) if keysym in syms[i * per:i * per + 2]]
-
-
-def numlock_mask(conn) -> int:
-    """The modifier bit Num Lock sets, read on a connection of the
-    test's own."""
-    r = conn.core.GetModifierMapping().reply()
-    per, codes = r.keycodes_per_modifier, list(r.keycodes)
-    numlock = set(keycodes_of(conn, 0xFF7F))
-    return next((1 << bit for bit in range(8)
-                 if numlock & set(codes[bit * per:(bit + 1) * per])), 0)
-
-
-def held_by_another(conn, wid: int, code: int, mods: int) -> bool:
-    """Whether another client holds a passive grab of (code, mods) on
-    `wid`: X refuses this connection the same grab (BadAccess). When it
-    does not, the grab just made is let go at once."""
-    import xcffib.xproto as xp
-    try:
-        conn.core.GrabKeyChecked(False, wid, mods, code, xp.GrabMode.Async,
-                                 xp.GrabMode.Async).check()
-    except xp.AccessError:
-        return True
-    conn.core.UngrabKey(code, wid, mods)
-    conn.core.GetInputFocus().reply()
-    return False
-
-
+        pass
 
 
 async def test_service(scratch: Path) -> None:
     import types
 
-    import xcffib.xproto as xp
-
     from indigoshell import theme
     from indigoshell.applink.context import AppContext
     from indigoshell.applink.service import AppService, AppWindow
-    from indigoshell.backend.x11 import Display
     from indigoshell.applink import bar as Bv
     from indigoshell.applink.kinds.look import TAB_CURRENT_FG
 
-    section("5. the app service: announces both ways, focus, losses, key grabs going and coming")
+    section("5. the app service: announces both ways, focus, losses, the service stopped and "
+            "started")
     rec = Records("indigoshell.applink.service", "indigoshell.applink.prompt")
-    loop = asyncio.get_running_loop()
-    display = Display()
-    display.attach_loop(loop)
-
-    def pump():
-        while display.pump():
-            pass
-
-    loop.add_reader(display.fd, pump)
-    xw = Windows()
-    A, B, E, G, G2, D = (xw.make() for _ in range(6))
-    C = xw.make(transient_for=A)            # a dialog of A's
-    L, CTRL = keycodes_of(xw.conn, "l")[0], xp.ModMask.Control
+    # The apps' process (this one's, for every stand-in app) and another.
+    ours = types.SimpleNamespace(id=11, pid=os.getpid(), app=f"{APP}-browser")
+    kitty = types.SimpleNamespace(id=12, pid=1, app="kitty")
     sock = os.path.join(runtime_dir(), f"{APP}-tbt-{os.getpid()}-apps.sock")
-    service = AppService(path=sock, display=display)
+    service = AppService(path=sock, windows=Follower())
     apps: list[App] = []
+
+    def window_of(app_id, kind: str = "flux"):
+        """The newest app window announced with that id."""
+        return next((w_ for w_ in reversed(service.windows)
+                     if w_.app_id == app_id and w_.kind == kind), None)
+
+    async def focus(target: App, window) -> bool:
+        """`target`'s window has the keyboard focus: it says it is active and
+        every other app window says it is not, as real apps do."""
+        for x_ in apps:
+            if not x_.w.is_closing():
+                x_.send(Bv.active(x_ is target))
+        return bool(await until(lambda: service.focused is window, 2))
+
     try:
         service.start()
         await until(lambda: service.listening, 2)
@@ -1737,46 +1278,32 @@ async def test_service(scratch: Path) -> None:
                 a.send(m)
             return a
 
-        a = await app(announce(A), flux_bar(["Alpha", "Beta"]))
+        a = await app(announce(1), flux_bar(["Alpha", "Beta"]))
         got = await a.answer()
-        wa = await until(lambda: (w_ := service.window_for(A)) and len(titles_of(w_)) == 2 and w_)
+        wa = await until(lambda: (w_ := window_of(1)) and len(titles_of(w_)) == 2 and w_)
         check("an app window (Flux's): answered {type: attached} with the agent's name and "
-              "colour; kept "
-              "with its own id and its bar; its inputs' and menu's chords grabbed on it (Ctrl+L, "
-              "Ctrl+T, Ctrl+F, Ctrl+M: X refuses another client the same grab of Ctrl+L)",
-              got.get("type") == "attached"
-              and got.get("agent") == {"name": "Lilac", "color": "#c8a2c8"}
-              and isinstance(wa, AppWindow) and wa.kind == "flux" and wa.app_id == A
-              and A in service.grabs
-              and sorted(set(service.grabs[A].chords.values())) == ["ctrl+f", "ctrl+l", "ctrl+m",
-                                                                     "ctrl+t"]
-              and held_by_another(xw.conn, A, L, CTRL), f"{got}")
-        b = await app(announce(B), flux_bar(["Gamma"]))
+              "colour, nothing else; kept with its own id, its process and its bar",
+              got == {"type": "attached", "agent": {"name": "Lilac", "color": "#c8a2c8"}}
+              and isinstance(wa, AppWindow) and wa.kind == "flux" and wa.app_id == 1
+              and wa.link.pid == os.getpid(), f"{got}")
+        b = await app(announce(2), flux_bar(["Gamma"]))
         await b.answer()
-        wb = await until(lambda: (w_ := service.window_for(B)) and w_.bar and w_)
+        wb = await until(lambda: (w_ := window_of(2)) and w_.bar and w_)
 
         ctx = AppContext(service)
-        host = Host(display)
+        host = Host()
         ctx.attach(host)
         check("the context area hooked in: the service knows where it is", service.context is ctx)
 
-        # The root listener's path, with the property read stood in for:
-        # the real focus is the person's.
-        real_get_int = display.get_int
-        display.get_int = lambda wid, name: (A if name == "_NET_ACTIVE_WINDOW"
-                                              else real_get_int(wid, name))
-        service._on_root_property(types.SimpleNamespace(atom=display.atom("WM_NAME")))
-        unmoved = service.active
-        service._on_root_property(types.SimpleNamespace(atom=service._active_atom))
-        display.get_int = real_get_int
-        check("_NET_ACTIVE_WINDOW changing on the root (a PropertyNotify): read, and the focused "
-              "app window follows; another property changes nothing",
-              unmoved != A and service.active == A and service.focused is wa
-              and ctx.shown is wa.content, f"active 0x{service.active:x}")
-        # From here the person's real focus is not followed: moved by hand.
-        service._active_atom = 0
+        service.set_focus(ours)
+        neither = service.focused
+        focused = await focus(a, wa)
+        check("the compositor's focused window is of the apps' process: the window of it that "
+              "says it is active is focused (none while neither has said), the context area "
+              "showing it", neither is None and focused and ctx.shown is wa.content,
+              f"{service.focused and service.focused.label}")
 
-        service.set_active(B)
+        await focus(b, wb)
         img = paint(ctx, 1600, theme.TOP_BAR_HEIGHT)
         texts = [t["text"] for t in wb.view.item("tabs").layout()]
         check("focus on the other Flux window: its tabs; the first's content let go (no window)",
@@ -1846,100 +1373,72 @@ async def test_service(scratch: Path) -> None:
               and "does not decode" in warned[1],
               f"held {both} -> {after} -> {set(wb.images)}; shows {shows}; {warned}")
 
-        # Chords follow the bar: one without find lets Ctrl+F go.
-        F_ = keycodes_of(xw.conn, "f")[0]
-        no_find = flux_bar(["Gamma", "Epsilon"])
-        no_find = dict(no_find, inputs={k: v for k, v in no_find["inputs"].items() if k != "find"})
-        b.send(no_find)
-        regrabbed = await until(lambda: sorted(set(service.grabs[B].chords.values()))
-                                == ["ctrl+l", "ctrl+m", "ctrl+t"], 2)
-        check("a bar whose chords changed: the grabs follow (Ctrl+F let go, X gives it to another "
-              "client again; Ctrl+L still the shell's)", bool(regrabbed)
-              and not held_by_another(xw.conn, B, F_, CTRL) and held_by_another(xw.conn, B, L, CTRL))
-
-        service.set_active(D)
+        service.set_focus(kitty)
         img = paint(ctx, 1600, theme.TOP_BAR_HEIGHT)
-        check("focus on a window that is no app's: the context area empty (the bar's background)",
-              service.focused is None and ctx.shown is None
+        check("focus on a window of another process (no app's): the context area empty (the "
+              "bar's background)", service.focused is None and ctx.shown is None
               and share_of(img, hex_rgb(theme.BAR_BG)) == 1.0)
-        service.set_active(C)
-        check("focus on a dialog of the first Flux window's (transient for it): that window's",
-              service.focused is wa and ctx.shown is wa.content)
-        service.set_active(0)
-        check("no window with focus: empty", ctx.shown is None)
+        service.set_focus(None)
+        check("no window with focus: empty", service.focused is None and ctx.shown is None)
 
-        service.set_active(A)
+        service.set_focus(ours)
+        await focus(a, wa)
         a.close()
-        gone = await until(lambda: service.window_for(A) is None)
+        gone = await until(lambda: window_of(1) is None)
         check("the focused window's connection lost: dropped, its bar with it, the context area "
-              "empty; its key grabs let go (X gives another client the grab of Ctrl+L now)",
+              "empty (the other window says it is not active)",
               bool(gone) and ctx.shown is None and service.focused is None
-              and wa.closed and wb in service.windows and A not in service.grabs
-              and not held_by_another(xw.conn, A, L, CTRL))
-        a2 = await app(announce(A), flux_bar(["Alpha again"]))
+              and wa.closed and wb in service.windows)
+        a2 = await app(announce(1), Bv.active(True), flux_bar(["Alpha again"]))
         await a2.answer()
-        wa2 = await until(lambda: (w_ := service.window_for(A)) and w_.bar and w_)
-        check("... and back (a new connection, as after its X window was replaced): shown again, "
-              "its keys grabbed again",
+        wa2 = await until(lambda: (w_ := window_of(1)) and w_.bar and w_)
+        check("... and back on a new connection (Flux started again), saying it is active: "
+              "shown again",
               wa2 is not None and wa2 is not wa and ctx.shown is wa2.content
-              and titles_of(wa2) == ["Alpha again"]
-              and held_by_another(xw.conn, A, L, CTRL))
-        a3 = await app(announce(A), flux_bar(["Alpha third"]))
-        await a3.answer()
-        wa3 = await until(lambda: service.window_for(A) is not wa2 and service.window_for(A))
-        a2.close()
-        await until(lambda: wa2.closed)
-        check("the same X window announced on a second connection, then the first one closing: "
-              "the grabs stay (the newer window's)",
-              wa3 is not None and service.grabs.get(A) is not None
-              and service.grabs[A].window is wa3 and held_by_another(xw.conn, A, L, CTRL))
+              and titles_of(wa2) == ["Alpha again"])
 
-        e = await app(announce(E), flux_bar(["Popup"], single=True))
+        e = await app(announce(5), flux_bar(["Popup"], single=True))
         got = await e.answer()
-        we = await until(lambda: (w_ := service.window_for(E)) and w_.bar and w_)
-        check("a window whose bar has no inputs (Flux's sign-in popup, the inspector): attached "
-              "and shown, no key grabbed on it (X lets another client take Ctrl+L there)",
-              got.get("type") == "attached" and we is not None and we.keys == {}
-              and E not in service.grabs and not held_by_another(xw.conn, E, L, CTRL))
+        we = await until(lambda: (w_ := window_of(5)) and w_.bar and w_)
+        check("a window whose bar has no inputs (Flux's sign-in popup, the inspector): attached, "
+              "its bar kept (no chords in it)",
+              got.get("type") == "attached" and we is not None and Bv.chords(we.bar) == {})
 
         mark = len(rec.records)
-        g = await app(announce(G, app="ide", window="main"))
+        g = await app(announce("main", app="ide"))
         got = await g.answer()
-        g2 = await app(announce(G2, app="ide", window="second"))
+        g2 = await app(announce("second", app="ide"))
         await g2.answer()
-        wg = await until(lambda: service.window_for(G))
-        service.set_active(G)
+        wg = await until(lambda: window_of("main", "ide"))
+        await focus(g, wg)
         img = paint(ctx, 1600, theme.TOP_BAR_HEIGHT)
         check("another app (\"ide\"): the same window class, nothing of its own in the shell; "
-              "kept and answered, its section empty until its bar comes; no keys grabbed",
+              "kept and answered, its section empty until its bar comes",
               got.get("type") == "attached" and type(wg) is AppWindow and wg.kind == "ide"
               and wg.app_id == "main" and wg.bar is None and ctx.shown is wg.content
               and share_of(img, hex_rgb(theme.BAR_BG)) == 1.0
-              and not rec.at_least(logging.WARNING, mark) and G not in service.grabs)
+              and not rec.at_least(logging.WARNING, mark))
 
         bad = []
-        for wid in (0, display.root, "x", True, 1 << 30, display.conn.generate_id()):
-            z = await app({"type": "announce", "app": "flux", "window": 1,
-                           "handle": {"x11": wid}})
-            bad.append(await z.answer(0.3))
-        for msg in ({"type": "announce", "window": 1, "handle": {"x11": xw.make()}},
-                    {"type": "announce", "app": "", "window": 1, "handle": {"x11": xw.make()}},
-                    {"type": "announce", "app": "flux", "handle": {"x11": xw.make()}},
-                    {"type": "announce", "app": "flux", "window": 1, "handle": {}}):
+        for msg in ({"type": "announce", "window": 1},
+                    {"type": "announce", "app": "", "window": 1},
+                    {"type": "announce", "app": 3, "window": 1},
+                    {"type": "announce", "app": "flux"},
+                    {"type": "announce", "app": "flux", "window": True},
+                    {"type": "announce", "app": "flux", "window": "x" * (Bv.ID_MAX + 1)}):
             z = await app(msg)
             bad.append(await z.answer(0.3))
-        early = await app(flux_bar(["Early"]), announce(xw.make()))
+        early = await app(flux_bar(["Early"]), announce(9))
         got_early = await early.answer()
-        check("announces that are no X window (0, the root, not a number, too large, one of the "
-              "shell's own, none), or name no app or no id of the app's: ignored, no answer; a "
-              "bar before the announce: ignored", bad == [None] * 10
-              and got_early.get("type") == "attached"
+        check("announces that name no app or no id of the app's (none, empty, not a string; "
+              "none, a bool, too long): ignored, no answer; a bar before the announce: ignored",
+              bad == [None] * 6 and got_early.get("type") == "attached"
               and not any(titles_of(w_) == ["Early"] for w_ in service.windows), f"{bad}")
 
         mark = len(rec.records)
         b.w.write(b'not json\n{"no": "type"}\n[1, 2]\n')
         b.send({"type": "from-the-future", "x": 1})
-        b.send(announce(B))
+        b.send(announce(2))
         b.send(flux_bar(["Gamma", "Epsilon", "Zeta"]))
         await until(lambda: len(titles_of(wb)) == 3)
         said = [m for m in rec.at_least(logging.DEBUG, mark)
@@ -1949,30 +1448,27 @@ async def test_service(scratch: Path) -> None:
               len(titles_of(wb)) == 3 and len(said) == 5
               and not rec.at_least(logging.WARNING, mark), f"{said}")
 
-        service.set_active(B)
+        await focus(b, wb)
         service._restarting = lambda: True          # as the daemon says on a reload
         service.stop()
         del service._restarting
-        notes = [await x_.answer(1) for x_ in (b, e, a3, g)]
-        eofs = [await x_.answer(1) for x_ in (b, e, a3, g)]
+        notes = [await x_.answer(1) for x_ in (b, e, a2, g)]
+        eofs = [await x_.answer(1) for x_ in (b, e, a2, g)]
         check("the service stopped for a reload: every app told {type: restarting}, then hears "
-              "its line close; the socket file gone; the context area empty; every key grab let "
-              "go (X gives another client Ctrl+L on both windows)",
+              "its line close; the socket file gone; the context area empty",
               all(n_ == {"type": "restarting"} for n_ in notes)
               and all(x_ == {"eof": True} for x_ in eofs)
-              and not os.path.exists(sock) and not service.windows and ctx.shown is None
-              and not service.grabs and not held_by_another(xw.conn, A, L, CTRL)
-              and not held_by_another(xw.conn, B, L, CTRL),
+              and not os.path.exists(sock) and not service.windows and ctx.shown is None,
               f"{notes} {eofs} sock {os.path.exists(sock)} windows {len(service.windows)} "
-              f"shown {ctx.shown} grabs {list(service.grabs)}")
+              f"shown {ctx.shown}")
         service.start()
         await until(lambda: service.listening, 2)
-        b2 = await app(announce(B), flux_bar(["Gamma back"]))
+        b2 = await app(announce(2), Bv.active(True), flux_bar(["Gamma back"]))
         got = await b2.answer()
-        wb2 = await until(lambda: (w_ := service.window_for(B)) and w_.bar and w_)
-        check("started again: apps announce again, focus as it was (still on that window), the "
-              "keys grabbed again", got.get("type") == "attached" and wb2 is not None
-              and ctx.shown is wb2.content and held_by_another(xw.conn, B, L, CTRL))
+        wb2 = await until(lambda: (w_ := window_of(2)) and w_.bar and w_)
+        check("started again: the app announces again and says it is active (the compositor's "
+              "focus as it was): shown again", got.get("type") == "attached"
+              and wb2 is not None and ctx.shown is wb2.content)
         ctx.detach()
         check("the context area detached: unhooked from the service",
               service.context is None and ctx._on_focus not in service._followers)
@@ -1985,264 +1481,123 @@ async def test_service(scratch: Path) -> None:
         for x_ in apps:
             x_.close()
         service.stop()
-        loop.remove_reader(display.fd)
-        display.close()
-        xw.close()
 
 
-# ── 5b. the keys the shell takes ────────────────────────────────────────
+# ── 5b. the inputs and menus the app's chords open ─────────────────────
 
-class CoreRecorder:
-    """The service's X connection's core requests, recorded: the key
-    grabs passed on to the server, the keyboard grabs (active ones, which
-    would take the person's keyboard) recorded and never sent."""
+def test_prompts(scratch: Path) -> None:
+    from indigoshell.applink import bar as Bv
+    from indigoshell.applink.service import AppService, AppWindow
+    from indigoshell.widgets.base import KeyEvent
 
-    def __init__(self, core) -> None:
-        self._core, self.calls = core, []
-
-    def __getattr__(self, name):
-        return getattr(self._core, name)
-
-    def GrabKeyChecked(self, owner_events, wid, mods, key, pointer_mode, keyboard_mode):
-        self.calls.append(("grab", wid, key, mods, owner_events, pointer_mode, keyboard_mode))
-        return self._core.GrabKeyChecked(owner_events, wid, mods, key, pointer_mode,
-                                         keyboard_mode)
-
-    def UngrabKey(self, key, wid, mods, is_checked=False):
-        self.calls.append(("ungrab", wid, key, mods))
-        return self._core.UngrabKey(key, wid, mods)
-
-    def GrabKeyboard(self, owner_events, wid, time_, pointer_mode, keyboard_mode,
-                     is_checked=True):
-        import types
-
-        import xcffib.xproto as xp
-        self.calls.append(("keyboard", wid, owner_events, pointer_mode, keyboard_mode))
-        return types.SimpleNamespace(
-            reply=lambda: types.SimpleNamespace(status=xp.GrabStatus.Success))
-
-    def UngrabKeyboard(self, time_, is_checked=False):
-        self.calls.append(("let go",))
-
-    def GrabPointer(self, owner_events, wid, mask, pointer_mode, keyboard_mode, confine, cursor,
-                    time_, is_checked=True):
-        import types
-
-        import xcffib.xproto as xp
-        self.calls.append(("pointer", wid, owner_events))
-        return types.SimpleNamespace(
-            reply=lambda: types.SimpleNamespace(status=xp.GrabStatus.Success))
-
-    def UngrabPointer(self, time_, is_checked=False):
-        self.calls.append(("pointer let go",))
-
-    def of(self, kind: str, since: int = 0) -> list:
-        return [c for c in self.calls[since:] if c[0] == kind]
-
-
-def test_grabs(scratch: Path) -> None:
-    import xcffib.xproto as xp
-
-    from indigoshell.applink.service import AppService
-    from indigoshell.backend.x11 import Display
-    from indigoshell.applink.service import AppWindow
-
-    section("5b. the keys the shell takes (real unmapped windows of the test's own)")
+    section("5b. the inputs and menus the app's chords open (the canvas's keyboard and outside "
+            "clicks stood in for)")
     # The address list reads the history and the bookmarks: scratch ones.
     saved_env = {k: os.environ.get(k) for k in ("XDG_CONFIG_HOME", "XDG_DATA_HOME")}
-    os.environ.update(XDG_CONFIG_HOME=str(scratch / "grabs-config"),
-                      XDG_DATA_HOME=str(scratch / "grabs-data"))
-    rec = Records("indigoshell.applink.service", "indigoshell.applink.prompt",
-                  "indigoshell.applink.prompt")
-    display = Display()
-    real_core = display.conn.core
-    core = CoreRecorder(real_core)
-    display.conn.core = core
-    xw = Windows()
-    other = xw.conn
-    A, S, N, E, F = (xw.make() for _ in range(5))
-    CTRL, LOCK, SHIFT = xp.ModMask.Control, xp.ModMask.Lock, xp.ModMask.Shift
-    ASYNC = xp.GrabMode.Async
-    num = numlock_mask(other)
-    locks = sorted({0, LOCK, num, LOCK | num})
-    codes = {c: keycodes_of(other, c) for c in "ltfmyo"}
-    service = AppService(path="/nonexistent", display=display)
-    service.running = True                  # started, as far as the keys go (no socket here)
-    display.add_keymap_listener(service._keymap_changed)
+    os.environ.update(XDG_CONFIG_HOME=str(scratch / "prompts-config"),
+                      XDG_DATA_HOME=str(scratch / "prompts-data"))
+    rec = Records("indigoshell.applink.service", "indigoshell.applink.prompt")
+    service = AppService(path="/nonexistent")
+    service.running = True                  # started, as far as the prompts go (no socket here)
+    calls: list[str] = []
+    service.hold_keyboard = lambda: calls.append("keyboard") or True
+    service.release_keyboard = lambda: calls.append("let go")
+    service._catch_outside = lambda: calls.append("outside")
+    service._release_outside = lambda: calls.append("outside let go")
     drops = []
     service.context = stand_in_bar()
     service.show_drop = lambda prompt, place: drops.append((prompt.name, place))
     service.hide_drop = lambda: drops.append("hide")
 
-    def flux(wid, single=False, bar=True):
+    def flux(window_id, single=False, bar=True):
         line = Line(service)
-        window = AppWindow(line, wid, announce(wid))
+        window = AppWindow(line, announce(window_id))
         service.added(window)
-        if bar:                     # its bar: its chords
+        if bar:                     # its bar: its inputs and menu
             window.on_message(flux_bar(["Alpha"], host="a.example", single=single))
         return window, line
 
-    def key(wid, sym, state=0, release=False):
-        code = (codes.get(chr(sym)) if sym < 0x100 else None) or keycodes_of(other, sym)
-        ev = xp.KeyPressEvent.synthetic(code[0], 0, display.root, wid, 0, 0, 0, 0, 0, state, 1)
-        ev.response_type = 3 if release else 2
-        display.dispatch(ev)
+    def key(sym, text="", **mods):
+        """A key the canvas gets while the service has its keyboard."""
+        service.key_press(KeyEvent(keysym=sym, text=text, **mods))
 
     try:
-        wa, la = flux(A)
-        grabs = core.of("grab")
-        want = {(A, codes[c][0], CTRL | lock) for c in "ltfm" for lock in locks}
-        check("a Flux window's bar: GrabKey on its window for the chords of its inputs and menu "
-              "(Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M), by the keycodes the keymap gives (read on "
-              "another connection), once per combination of Caps Lock and Num Lock, owner_events "
-              "off, asynchronous for both devices",
-              {(w_, k, m) for _, w_, k, m, *_ in grabs} == want and len(grabs) == len(want)
-              and all(c[4:] == (False, ASYNC, ASYNC) for c in grabs)
-              and all(len(codes[c]) == 1 for c in "ltfm"),
-              f"{len(grabs)} grabs; lock masks {locks}; keycodes {codes}")
-        check("X itself: another client's grab of Ctrl+L on that window refused, with Caps Lock "
-              "and with Num Lock too; of Ctrl+Shift+L not (that one is not the shell's)",
-              held_by_another(other, A, codes["l"][0], CTRL)
-              and held_by_another(other, A, codes["l"][0], CTRL | LOCK)
-              and held_by_another(other, A, codes["l"][0], CTRL | num)
-              and not held_by_another(other, A, codes["l"][0], CTRL | SHIFT))
-        check("events on that window are the service's (Display.on), for that window only",
-              service._on_app_event in display._handlers.get(A, [])
-              and all(service._on_app_event not in hs for w_, hs in display._handlers.items()
-                      if w_ != A))
-
-        n = len(core.calls)
-        ws, _ = flux(S, single=True)
-        wn, _ = flux(N, bar=False)
-        check("a bar with no inputs (Flux's popup, the inspector), and a window with no bar yet: "
-              "no grab at all, no routing", core.calls[n:] == [] and not ws.keys and not wn.keys
-              and S not in service.grabs and N not in service.grabs
-              and S not in display._handlers and N not in display._handlers)
-
-        # Another client holds Ctrl+M on E and F first.
-        for wid in (E, F):
-            other.core.GrabKeyChecked(False, wid, CTRL, codes["m"][0], ASYNC, ASYNC).check()
-        mark, n = len(rec.records), len(core.calls)
-        we, _ = flux(E)
-        wf, _ = flux(F)
-        warned = rec.at_least(logging.WARNING, mark)
-        check("another client already holding Ctrl+M on a window: one warning (not again for the "
-              "next such window), Ctrl+M left to the app (the lock combinations that went "
-              "through let go again), Ctrl+L and Ctrl+T grabbed",
-              len(warned) == 1 and "ctrl+m" in warned[0]
-              and all(sorted(set(service.grabs[w_].chords.values()))
-                      == ["ctrl+f", "ctrl+l", "ctrl+t"] for w_ in (E, F))
-              and not held_by_another(other, E, codes["m"][0], CTRL | LOCK)
-              and held_by_another(other, E, codes["l"][0], CTRL), f"{warned}")
-        for wid in (E, F):
-            other.core.UngrabKey(codes["m"][0], wid, CTRL)
-        other.core.GetInputFocus().reply()
-
-        # A press, as the X server reports one: Caps Lock on, the keys
-        # after it on the app's window while the shell holds the keyboard.
-        n = len(core.calls)
-        service.focused = wa
-        key(A, ord("l"), CTRL | LOCK)
-        key(A, ord("l"), CTRL | LOCK, release=True)
-        key(A, ord("y"), LOCK)
-        key(A, ord("o"), LOCK | SHIFT)
-        after = core.calls[n:]
+        wa, la = flux(1)
+        wa.on_message(Bv.active(True))
+        focused = service.focused is wa
+        n = len(calls)
+        wa.on_message(Bv.open_input("address", "ctrl+l"))
         p = service.prompt
-        check("Ctrl+L pressed in it (Caps Lock on): first the keyboard held on that window "
-              "(GrabKeyboard, owner_events off, asynchronous), then the pointer on the bar's "
-              "window for clicks elsewhere; the address input open in the bar, the page's "
-              "address in it, selected; the keyboard not given back (the input has it)",
-              after[:2] == [("keyboard", A, False, ASYNC, ASYNC), ("pointer", 1, True)]
+        address = p.box.field.text if p is not None and p.box is not None else None
+        check("Ctrl+L caught by the focused app window (`open` with its chord): first the "
+              "keyboard taken, then the outside clicks caught; the address input open in the "
+              "bar, the page's address in it, selected; the keyboard not given back (the input "
+              "has it)", focused and calls[n:] == ["keyboard", "outside"]
               and p is not None and p.name == "address" and wa.view.box is p.box
-              and ("let go",) not in after, f"{after[:3]}")
-        check("the keys typed after it, on the app's window while the shell holds the keyboard: "
-              "into the box, in order, through the keymap (Caps Lock and Shift as typed; the "
-              "first replacing the selected address); the chord's release not one of them",
-              p.box.field.text == "Yo", f"{p.box.field.text!r}")
-        key(A, ord("l"), CTRL)
+              and bool(address) and p.box.field.selected_all, f"{calls[n:]} {address!r}")
+        wa.on_message(Bv.keys([Bv.key(ord("y"), "y")]))
+        key(ord("o"), "o")                  # the canvas's own, before the app's `last`
+        waited = p.box.field.text
+        wa.on_message(Bv.keys([], last=True))
+        check("the keys the app's window got after the chord (forwarded, `keys`) and the "
+              "canvas's own after them: into the box in the order typed (the first replacing "
+              "the selected address; the canvas's waiting for the app's `last`)",
+              waited == "y" and p.box.field.text == "yo", f"{waited!r} {p.box.field.text!r}")
+        key(ord("l"), ctrl=True)
         check("Ctrl+L again while it is open: a key for it (the text selected whole), not a "
               "second input", service.prompt is p and p.box.field.selected_all)
-        n = len(core.calls)
-        key(A, 0xFF1B)
-        check("Escape the same way: it closes; the keyboard and the pointer given back",
-              service.prompt is None and ("let go",) in core.calls[n:]
-              and ("pointer let go",) in core.calls[n:] and wa.view.box is None)
+        n = len(calls)
+        key(0xFF1B)
+        check("Escape: it closes; the keyboard and the outside clicks given back, the items "
+              "back in the section",
+              service.prompt is None and "let go" in calls[n:]
+              and "outside let go" in calls[n:] and wa.view.box is None, f"{calls[n:]}")
 
-        n = len(core.calls)
-        key(A, ord("m"), CTRL | num)
+        n = len(calls)
+        wa.on_message(Bv.open_menu("actions", "ctrl+m"))
         m = service.prompt
-        check("Ctrl+M (Num Lock on): the actions menu, the keyboard held for it",
+        check("Ctrl+M caught: the actions menu, the keyboard taken for it",
               m is not None and m.what == "menu" and m.name == "actions"
-              and ("keyboard", A, False, ASYNC, ASYNC) in core.calls[n:]
-              and ("let go",) not in core.calls[n:])
-        key(A, 0xFF1B)
+              and "keyboard" in calls[n:] and "let go" not in calls[n:])
+        wa.on_message(Bv.keys([], last=True))   # the window lost the keyboard: nothing forwarded
+        key(0xFF1B)
+        closed = service.prompt is None
         service.context = None
-        n = len(core.calls)
-        key(A, ord("t"), CTRL)
-        check("Ctrl+T with no top bar to show it in: the keyboard held, then given back, and the "
-              "app told to do without: {type: fallback, input: new_tab}",
-              [c[0] for c in core.calls[n:]] == ["keyboard", "let go"]
-              and la.out[-1] == {"type": "fallback", "input": "new_tab"}, f"{la.out[-1]}")
-        n, sent = len(core.calls), len(la.out)
+        n = len(calls)
+        wa.on_message(Bv.open_input("new_tab", "ctrl+t"))
+        check("Escape closing the menu (once the app's `last` came); Ctrl+T caught with no "
+              "top bar to show it in: the keyboard taken, then given back, and the app told to "
+              "do without: {type: fallback, input: new_tab}",
+              closed and calls[n:] == ["keyboard", "let go"] and service.prompt is None
+              and la.out[-1] == {"type": "fallback", "input": "new_tab"},
+              f"{calls[n:]} {la.out[-1]}")
+        n, sent = len(calls), len(la.out)
         wa.on_message({"type": "open", "input": "address"})
         check("{type: open} from the app (a new window), focused, with no top bar: the same, "
-              "with no key pressed, so nothing held or given back", core.calls[n:] == []
+              "with no key pressed, so nothing taken or given back", calls[n:] == []
               and la.out[sent:] == [{"type": "fallback", "input": "address"}])
         service.context = stand_in_bar()
-        n = len(core.calls)
-        key(S, ord("l"), CTRL)
-        check("a key event for a window with no grab (the single one): not the service's",
-              core.calls[n:] == [])
-
-        n = len(core.calls)
-        real_keycodes = display.keycodes
-        moved_l = codes["l"][0] + 1
-        display.keycodes = lambda sym: [moved_l] if sym == ord("l") else real_keycodes(sym)
-        display.dispatch(xp.MappingNotifyEvent.synthetic(xp.Mapping.Keyboard, 8, 248))
-        moved = core.calls[n:]
-        display.keycodes = real_keycodes
-        n = len(core.calls)
-        display.dispatch(xp.MappingNotifyEvent.synthetic(xp.Mapping.Pointer, 0, 0))
-        pointer = core.calls[n:]
-        display.dispatch(xp.MappingNotifyEvent.synthetic(xp.Mapping.Keyboard, 8, 248))
-        check("the keymap changed (MappingNotify; Ctrl+L on another key now): every window's "
-              "grabs let go and made again, Ctrl+L on its new key; a pointer mapping change: "
-              "nothing",
-              ("ungrab", A, codes["l"][0], CTRL) in moved
-              and ("grab", A, moved_l, CTRL, False, ASYNC, ASYNC) in moved
-              and ("grab", A, codes["l"][0], CTRL, False, ASYNC, ASYNC) not in moved
-              and {c[1] for c in moved if c[0] == "grab"} == {A, E, F} and pointer == []
-              and held_by_another(other, A, codes["l"][0], CTRL))
-
-        n = len(core.calls)
-        service.forget(None, wa)
-        let_go = {(c[1], c[2], c[3]) for c in core.of("ungrab", n)}
-        check("the window's connection gone: each of its grabs let go (UngrabKey), the routing "
-              "too; X gives another client Ctrl+L on it now",
-              let_go == want and A not in service.grabs and A not in display._handlers
-              and not held_by_another(other, A, codes["l"][0], CTRL), f"{len(let_go)} let go")
 
         # A new window's `open` before its first bar, the window focused as
         # the service hears of it (the window manager focuses a window as it
-        # maps): what Flux did, and the input was dropped without a word.
-        G, H = xw.make(), xw.make()
-        wg, lg = flux(G, bar=False)
-        n = len(core.calls)
-        service.set_active(G)
+        # maps).
+        wg, lg = flux(7, bar=False)
+        n = len(calls)
+        wg.on_message(Bv.active(True))
         wg.on_message({"type": "open", "input": "address"})
         early = service.prompt
         wg.on_message(flux_bar(["Alpha"], host="a.example"))
         p = service.prompt
         check("{type: open} from a new window before its first bar, the window focused: waited "
-              "for; the address input open as its bar comes, the keyboard held for it, nothing "
+              "for; the address input open as its bar comes, the keyboard taken for it, nothing "
               "said to the app", early is None and p is not None and p.owner is wg
-              and p.name == "address" and ("keyboard", G, False, ASYNC, ASYNC) in core.calls[n:]
+              and p.name == "address" and "keyboard" in calls[n:]
               and not [m for m in lg.out if m.get("type") == "fallback"],
               f"{p and p.name}; to the app {[m.get('type') for m in lg.out]}")
-        key(G, 0xFF1B)
-        wh, lh = flux(H, bar=False)
+        key(0xFF1B)
+        wh, lh = flux(8, bar=False)
         mark = len(rec.records)
-        service.set_active(H)
+        wh.on_message(Bv.active(True))
         wh.on_message({"type": "open", "input": "address"})
         wh.on_message(flux_bar(["Alpha"], host="a.example", single=True))
         waited = service._open_wait is not None and service.prompt is None
@@ -2253,18 +1608,11 @@ def test_grabs(scratch: Path) -> None:
               and [m for m in lh.out if m.get("type") == "fallback"]
               == [{"type": "fallback", "input": "address"}] and said == 1,
               f"to the app {lh.out[-1:]}, said {said}")
-        for w_ in (wg, wh):
-            service.forget(None, w_)
-        service.set_active(0)
-        unexpected = [m for m in rec.at_least(logging.WARNING) if "ctrl+m" not in m]
-        check("no other warnings or errors", unexpected == [], f"{unexpected[:3]}")
+        unexpected = rec.at_least(logging.WARNING)
+        check("no warnings or errors", unexpected == [], f"{unexpected[:3]}")
     finally:
         for w_ in list(service.windows):
             service.forget(None, w_)
-        display.remove_keymap_listener(service._keymap_changed)
-        display.conn.core = real_core
-        xw.close()
-        display.close()
         for k, v in saved_env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -2277,47 +1625,28 @@ def test_grabs(scratch: Path) -> None:
 def test_placement() -> None:
     import types
 
-    from indigoshell.applink.service import AppService
-    from indigoshell.backend.x11 import Display
-    from indigoshell.applink.service import AppWindow
+    import skia
 
-    section("6. whether a top bar is over an app's window, and where its list drops")
-    display = Display()
-    xw = Windows()
-    P = xw.make(300, 150, 1000, 700)
-    service = AppService(path="/nonexistent", display=display)
-    jw = AppWindow(Line(service), P, announce(P))
-    alone = service._cannot_show(jw)
+    from indigoshell.applink.service import AppService, AppWindow
+
+    section("6. where an input's list drops")
+    service = AppService(path="/nonexistent")
+    jw = AppWindow(Line(service), announce(1))
+    jw.on_message(flux_bar(["Alpha"]))
+    alone = service.section()
+    opened = service.open_prompt(jw, "menu", "actions", pressed=False)
     service.context = stand_in_bar(width=1800, left=12)
-    service.context.window.content_root = (0, 0, 2000, 42)    # less than the whole screen
-    under = service._cannot_show(jw)
     menu = types.SimpleNamespace(anchor=None)
     item = types.SimpleNamespace(anchor=types.SimpleNamespace(
-        rect=__import__("skia").Rect.MakeXYWH(300, 0, 60, 34)))
+        rect=skia.Rect.MakeXYWH(300, 0, 60, 34)))
     places = (service.section(), service._drop_place(menu), service._drop_place(item))
-    service.context.window.content_root = (2560, 0, 1920, 34)
-    elsewhere = service._cannot_show(jw)
-    service.context = stand_in_bar()
-    sw = display.geometry()[0]
-    service.context.window.content_root = (0, 0, sw, 42)
-    spans = service._cannot_show(jw)
-    service.context.window.content_root = (0, 0, 2000, 42)
-    xw.destroy(P)
-    gone = service._cannot_show(jw)
-    service.context.window.content_root = (0, 0, sw, 42)
-    gone_spanned = service._cannot_show(jw)
-    check("no top bar: it cannot show (the app does without)", alone == "no top bar", f"{alone}")
-    check("a top bar over the window: it can; the list drops at the section's left, under the "
-          "bar's bottom edge, the section's width; a menu opened from an item, under the item",
-          under is None and places[0] == (12, 42, 1800) and places[1] == (12, 42, 1800)
-          and places[2] == (300, 42, 1800), f"{under} {places}")
-    check("the bar on another monitor, or the window gone: it cannot",
-          elsewhere == "the top bar is on another monitor" and gone == "the window is gone",
-          f"{elsewhere} {gone}")
-    check("a bar spanning the whole screen is over every window: no round trip asked (the "
-          "window, even gone, is not looked at)", spans is None and gone_spanned is None)
-    xw.close()
-    display.close()
+    check("no top bar: no section, an input or menu cannot show (the app told to do without)",
+          alone is None and opened is False
+          and jw.link.out[-1] == {"type": "fallback", "menu": "actions"}, f"{alone} {opened}")
+    check("a top bar: the list drops at the section's left, under the bar's bottom edge, the "
+          "section's width; a menu opened from an item, under the item",
+          places[0] == (12, 42, 1800) and places[1] == (12, 42, 1800)
+          and places[2] == (300, 42, 1800), f"{places}")
 
 
 # ── 7. the top bar's spec ───────────────────────────────────────────────
@@ -2349,19 +1678,17 @@ print(json.dumps({"names": names, "context": isinstance(first, AppContext),
 
 
 def test_spec(scratch: Path) -> None:
-    import types
-
     import skia
 
     from indigoshell import config_default as cd, theme
+    from indigoshell.applink import bar as Bv
     from indigoshell.applink.context import AppContext
-    from indigoshell.applink.service import AppService
-    from indigoshell.backend.x11 import Monitor
     from indigoshell.applink.kinds.look import TAB_CURRENT_FG
-    from indigoshell.applink.service import AppWindow
+    from indigoshell.applink.service import AppService, AppWindow
+    from indigoshell.canvas import Scene
     from indigoshell.core.paths import config_dir
     from indigoshell.widgets.label import Label
-    from indigoshell.window import Anchor, Layer, Window
+    from indigoshell.window import Anchor, Layer, Monitor, Window
 
     section("7. the top bar's spec, as computed data")
     names = [s.name for s in cd.WINDOWS]
@@ -2370,81 +1697,48 @@ def test_spec(scratch: Path) -> None:
     check("in WINDOWS right after the bottom bar, opened at start like it",
           names.index(cd.TOP_BAR) == names.index("bar") + 1 and top.autostart, f"{names[:4]}")
     check("anchored to the top edge, full width, as tall as the bottom bar (TOP_BAR_HEIGHT), a "
-          "dock that reserves its space, never focused",
+          "dock that reserves its space, never taking the keyboard",
           top.anchor == Anchor.TOP and top.size == (None, theme.TOP_BAR_HEIGHT) == bar.size
           and bar.size == (None, theme.BAR_HEIGHT) and top.layer == Layer.DOCK
-          and top.exclusive and not top.focusable and top.margin == bar.margin)
+          and top.exclusive and not top.grab_keyboard and top.margin == bar.margin)
     check("the bottom bar's look: its background, gutter, rule (none: the bottom bar draws none "
-          "either) and font size; managed like it (not override-redirect, so no keep_above: "
-          "the window manager stacks it, and a focused fullscreen window over it)",
+          "either) and font size",
           (top.background, top.padding, top.rule, top.rule_thick, top.rule_glow)
           == (bar.background, bar.padding, bar.rule, bar.rule_thick, bar.rule_glow)
-          and top.rule is None
-          and not top.override_redirect and not top.keep_above and top.sticky == bar.sticky,
-          f"rule {top.rule!r}")
+          and top.rule is None, f"rule {top.rule!r}")
     first = list(top.content.children())[0]
     check("its row: the context area first, taking the room, on the service in SERVICES",
           isinstance(first, AppContext) and first.flex == 1 and first.service is cd.APPS
           and cd.APPS in cd.SERVICES and isinstance(cd.APPS, AppService))
 
-    class FakeDisplay:
-        screen = types.SimpleNamespace(root_depth=24)
+    scene = Scene(None)
 
-        def __init__(self, monitors, size):
-            self._monitors, self._size, self.props = monitors, size, {}
+    def place(spec, mon):
+        """Where a window of `spec` sits on monitor `mon` (made nowhere)."""
+        return Window(scene, spec)._compute_geometry(mon)
 
-        def monitors(self):
-            return list(self._monitors)
-
-        def primary_monitor(self):
-            return self._monitors[0]
-
-        def geometry(self):
-            return self._size
-
-        def set_prop(self, wid, name, type_, values):
-            self.props[name] = list(values)
-
-    def struts(spec, monitors, size):
-        fd = FakeDisplay(monitors, size)
-        win = Window(fd, spec)
-        geo = win._compute_geometry(fd.primary_monitor())
-        win.content_root, win.wid = geo, 1
-        win._set_struts()
-        return geo, fd.props.get("_NET_WM_STRUT_PARTIAL"), fd.props.get("_NET_WM_STRUT")
-
-    one = [Monitor(0, 0, 2560, 1440, True, "HDMI-0")]
-    geo, partial, plain = struts(top, one, (2560, 1440))
-    bgeo, bpartial, _ = struts(bar, one, (2560, 1440))
+    one = Monitor(0, 0, 2560, 1440, True, "HDMI-0")
     th = theme.TOP_BAR_HEIGHT
-    check(f"on a 2560x1440 monitor: 2560x{th} at +0+0; the strut it would set reserves the top "
-          f"{th} px across the monitor (never set on a real window here)",
-          geo == (0, 0, 2560, th) and partial == [0, 0, th, 0, 0, 0, 0, 0, 0, 2559, 0, 0]
-          and plain == [0, 0, th, 0], f"{geo} {partial}")
-    check("... the bottom bar's for comparison: 42 px at the bottom",
-          bgeo == (0, 1398, 2560, 42) and bpartial == [0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 2559],
-          f"{bgeo} {bpartial}")
-    two = [Monitor(1920, 0, 2560, 1440, True, "A"), Monitor(0, 360, 1920, 1080, False, "B")]
-    geo2, partial2, _ = struts(top, two, (4480, 1440))
-    _, bpartial2, _ = struts(bar, two, (4480, 1440))
-    check("primary on the right of a second monitor: on the primary, like the bottom bar, the "
-          "strut spanning only its columns", geo2 == (1920, 0, 2560, th)
-          and partial2[2] == th and partial2[8:10] == [1920, 4479]
-          and bpartial2[10:12] == [1920, 4479], f"{geo2} {partial2}")
+    geo, bgeo = place(top, one), place(bar, one)
+    check(f"on a 2560x1440 monitor: 2560x{th} at +0+0; the bottom bar for comparison: 42 px at "
+          "the bottom", geo == (0, 0, 2560, th) and bgeo == (0, 1398, 2560, 42), f"{geo} {bgeo}")
+    right = Monitor(1920, 0, 2560, 1440, True, "A")
+    geo2, bgeo2 = place(top, right), place(bar, right)
+    check("on a monitor right of another: across that one, like the bottom bar",
+          geo2 == (1920, 0, 2560, th) and bgeo2 == (1920, 1398, 2560, 42), f"{geo2} {bgeo2}")
 
     # The whole bar painted, with a widget of the user's at the right.
     svc = AppService(path="/nonexistent")
     spec = cd.top_bar(Label("MINE", color=theme.CYAN_BRIGHT), apps=svc)
-    fd = FakeDisplay(one, (2560, 1440))
-    win = Window(fd, spec)
+    win = Window(scene, spec)
     W, H = 2560, theme.TOP_BAR_HEIGHT
     win.content_rect = skia.Rect.MakeWH(W, H)
     win.content_root, win.width, win.height = (0, 0, W, H), W, H
     spec.content.attach(win)
-    jw = AppWindow(Line(svc), 0x400001, announce(0x400001))
+    jw = AppWindow(Line(svc), announce(1))
     jw.on_message(flux_bar(["Alpha", "Beta"], loading=True, progress=50))
     svc.added(jw)
-    svc.set_active(0x400001)
+    jw.on_message(Bv.active(True))
     win._layout_content()
     surface = skia.Surface(W, H)
     win.paint(surface.getCanvas(), W, H)
@@ -2499,817 +1793,8 @@ def test_spec(scratch: Path) -> None:
           and out.get("same_order"), f"{out.get('added')}")
 
 
-# ── 8. on screen ────────────────────────────────────────────────────────
-
-# Pages in the test browser's history, as a real one has them: addresses
-# far past 128 characters (a video's with its playlist, a search's past
-# 1000), a title past 1000. (An answer holding one such row was refused
-# whole by the shell: no list ever showed.)
-LIVE_PAGES = [
-    ("https://www.youtube.com/", "YouTube"),
-    ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf"
-     "&index=4&pp=iAQB8AUB&t=42s&ab_channel=SomeChannelName", "Yodeling at dawn - YouTube"),
-    ("https://search.example/search?q=" + "yodel+" * 200 + "&src=1", "yodel - Search"),
-    ("https://example.org/long", "Yo " + "very " * 300 + "long title"),
-    ("https://news.example/", "News"),
-]
-
-PAINTED_BG = (0x10, 0x60, 0x90)     # a page colour no other page here has
-LINE_BG = (0x05, 0x03, 0x10)        # the browser's own line: theme.BAR_BG
-PAGE = ("<!doctype html><title>{title}</title>"
-        "<body style='margin:0;background:#1a1a2a;color:#ccc'><p>{title}</p></body>")
-
-
-class Site(BaseHTTPRequestHandler):
-    def do_GET(self):
-        path = self.path.split("?")[0]
-        if path == "/painted":
-            body = ("<!doctype html><title>Painted</title><body style='margin:0;background:"
-                    "#%02x%02x%02x'></body>" % PAINTED_BG).encode()
-        elif path.startswith("/page/"):
-            body = PAGE.format(title=path[len("/page/"):]).encode()
-        else:
-            self.send_error(404)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *_):
-        pass
-
-
-class Reader:
-    """A connection of the test's own, for reading what the browser's
-    window shows (its own composite pixmap) and its properties."""
-
-    def __init__(self) -> None:
-        import xcffib
-        import xcffib.composite
-        self.conn = xcffib.connect()
-        self.setup = self.conn.get_setup()
-        self.screen = self.setup.roots[0]
-        self.composite = self.conn(xcffib.composite.key)
-        self.composite.QueryVersion(0, 4).reply()
-
-    def region(self, wid: int, x: int, y: int, w: int, h: int):
-        """A rect of `wid`'s own pixels (inside the window manager's
-        border), as RGB; None when it cannot be read (not viewable)."""
-        import numpy as np
-        import xcffib.xproto as xp
-        core = self.conn.core
-        try:
-            at = core.GetGeometry(wid).reply().border_width
-            pix = self.conn.generate_id()
-            self.composite.NameWindowPixmap(wid, pix)
-            try:
-                img = core.GetImage(xp.ImageFormat.ZPixmap, pix, at + x, at + y, w, h,
-                                    0xFFFFFFFF).reply()
-            finally:
-                core.FreePixmap(pix)
-                self.conn.flush()
-        except (xp.DrawableError, xp.MatchError, xp.WindowError):
-            return None
-        a = np.frombuffer(bytes(img.data.buf()), np.uint8)[:w * h * 4]
-        return a.reshape(h, w, 4)[..., [2, 1, 0]].astype(np.int16)
-
-    def children(self, wid: int) -> list[int]:
-        try:
-            return list(self.conn.core.QueryTree(wid).reply().children)
-        except Exception:
-            return []
-
-    def map_state(self, wid: int) -> int:
-        try:
-            return self.conn.core.GetWindowAttributes(wid).reply().map_state
-        except Exception:
-            return -1
-
-    def cardinal(self, wid: int, name: str) -> int | None:
-        import xcffib.xproto as xp
-        atom = self.conn.core.InternAtom(False, len(name), name.encode()).reply().atom
-        try:
-            r = self.conn.core.GetProperty(False, wid, atom, xp.Atom.CARDINAL, 0, 1).reply()
-        except Exception:
-            return None
-        return r.value.to_atoms()[0] if r.value_len else None
-
-    def to_current_desktop(self, wid: int) -> tuple[int | None, int | None]:
-        """When the window manager put the test's window on a workspace
-        that is not shown, ask it to move that window (ours, nobody
-        else's) to the current one: an EWMH _NET_WM_DESKTOP request. The
-        workspaces themselves are left as they are. (desktop it was on,
-        current desktop)."""
-        import xcffib.xproto as xp
-        current = self.cardinal(self.screen.root, "_NET_CURRENT_DESKTOP")
-        mine = self.cardinal(wid, "_NET_WM_DESKTOP")
-        if current is None or mine is None or mine in (current, 0xFFFFFFFF):
-            return mine, current
-        atom = self.conn.core.InternAtom(False, 15, b"_NET_WM_DESKTOP").reply().atom
-        data = xp.ClientMessageData.synthetic([current, 1, 0, 0, 0], "I" * 5)
-        event = xp.ClientMessageEvent.synthetic(32, wid, atom, data)
-        self.conn.core.SendEvent(False, self.screen.root,
-                                 xp.EventMask.SubstructureRedirect
-                                 | xp.EventMask.SubstructureNotify, event.pack())
-        self.conn.flush()
-        return mine, current
-
-
-async def on_screen(scratch: Path) -> None:
-    import xcffib.xproto as xp
-
-    from indigoshell import theme
-    from indigoshell.applink.context import AppContext
-    from indigoshell.applink.service import AppService
-    from indigoshell.backend import gl
-    from indigoshell.backend.x11 import Display
-    from indigoshell.applink import bar as Bv
-    from indigoshell.applink.kinds.look import TAB_CURRENT_FG, TAB_FG
-    HOST_FG, INSECURE_FG = theme.FG, theme.ERROR
-
-    section("8. on screen: the real service and the real browser")
-    rec = Records("indigoshell.applink.service", "indigoshell.applink.prompt",
-                  "indigoshell.backend.x11")
-    tag = f"{APP}-tbs-{os.getpid()}"
-    sock = os.path.join(runtime_dir(), f"{tag}-apps.sock")
-    isock = os.path.join(runtime_dir(), f"{tag}-browser.sock")
-    benv = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
-    benv.update({"XDG_DATA_HOME": str(scratch / "data"), "XDG_CACHE_HOME": str(scratch / "cache"),
-                 "XDG_CONFIG_HOME": str(scratch / "config"),
-                 "XDG_STATE_HOME": str(scratch / "state"),
-                 env("BROWSER_SOCKET"): isock, env("APPS_SOCKET"): sock,
-                 env("BROWSER_WIDEVINE"): "off"})
-    http = ThreadingHTTPServer(("127.0.0.1", 0), Site)
-    threading.Thread(target=http.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{http.server_address[1]}"
-
-    loop = asyncio.get_running_loop()
-    display = Display()
-    display.attach_loop(loop)
-
-    def pump():
-        while display.pump():
-            pass
-
-    loop.add_reader(display.fd, pump)
-    x = Reader()
-    backend = gl.backend(display)
-    service = AppService(path=sock, display=display)
-    # No daemon and no top bar here (no key is pressed: that would take
-    # input injected into the display); an input wanted is answered
-    # `fallback`, the browser's own dialog, none in an unattended run.
-    service.start()
-    # The person's real focus is not followed here: the test moves it.
-    service._active_atom = 0
-    ctx = AppContext(service)
-    ctx.attach(Host(display))
-    browser = None
-
-    def fluxes():
-        return [w for w in service.windows if w.kind == "flux" and w.bar]
-
-    def titles(w):
-        return titles_of(w)
-
-    def idle(w):
-        return not any(t.get("busy") for t in w.bar["start"][0]["tabs"])
-
-    async def shown(wid, timeout=15.0) -> bool:
-        """Until the window is on screen: qtile unmaps a workspace's
-        windows while another is shown. A window put on a workspace not
-        shown is asked back onto the current one (see Reader)."""
-        moved = x.to_current_desktop(wid)
-        if moved[0] != moved[1] and None not in moved and moved[0] != 0xFFFFFFFF:
-            print(f"  (test window 0x{wid:x} was put on desktop {moved[0]}, the shown one is "
-                  f"{moved[1]}: asked back onto it)", flush=True)
-        if x.map_state(wid) != 2:
-            print(f"  (browser window 0x{wid:x} not shown yet; waiting)", flush=True)
-        return bool(await until(lambda: x.map_state(wid) == 2, timeout))
-
-    def top_rows(wid, rows=4, width=240):
-        return x.region(wid, 0, 0, width, rows)
-
-    async def rows_until(wid, colour, timeout, every=0.05):
-        """The window's top rows once they are mostly `colour`; None if
-        they never were within `timeout`."""
-        got = []
-
-        def ready():
-            r = top_rows(wid)
-            if r is not None and share_of(r, colour) > 0.9:
-                got.append(r)
-                return True
-            return False
-        await until(ready, timeout, every)
-        return got[0] if got else None
-
-    try:
-        from flux import places
-        hist = places.History(scratch / "data" / APP / "browser-history.sqlite")
-        for i, (page_url, page_title) in enumerate(LIVE_PAGES):
-            for _ in range(len(LIVE_PAGES) - i):
-                hist.visit(page_url, page_title)
-        hist.close()
-        log_path = scratch / "browser.log"
-        with open(log_path, "w") as err:
-            browser = subprocess.Popen(
-                [PY, str(REPO / "main.py"), "browser", "--unattended", f"{base}/painted",
-                 f"{base}/page/Beta", f"{base}/page/Gamma"],
-                cwd=REPO, env=benv, stdout=err, stderr=err)
-        jw = await until(lambda: next((w for w in fluxes() if titles(w) == ["Painted", "Beta",
-                                                                            "Gamma"]
-                                       and idle(w)), None), 40)
-        check("the browser announced its window as a Flux window, its bar a main window's "
-              "(its chords); its three tabs reached the service", jw is not None
-              and jw.kind == "flux" and "ctrl+l" in jw.keys,
-              f"{[titles(w) for w in fluxes()]}")
-        if jw is None:
-            return
-        top = jw.wid
-        CTRL = xp.ModMask.Control
-        chord = {c: keycodes_of(x.conn, c)[0] for c in "ltfm"}
-        held = {c: held_by_another(x.conn, top, code, CTRL) for c, code in chord.items()}
-        check("its Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M grabbed by the service on that window: X "
-              "refuses another client the same grabs", all(held.values()), f"{held}")
-        await asyncio.sleep(0.5)
-        check("one window, never replaced after showing; nothing of the shell's inside it",
-              [w.wid for w in fluxes()] == [top] and x.children(top) == [],
-              f"children {x.children(top)}")
-        viewable = await shown(top)
-        page = await rows_until(top, PAINTED_BG, 10)
-        if page is not None:
-            save(scratch / "browser-top-rows.png", page)
-        check("the browser window's own pixels: the page's colour from its top edge (no line)",
-              viewable and page is not None, f"viewable {viewable}")
-
-        service.set_active(top)
-        img = paint(ctx, 1600, theme.TOP_BAR_HEIGHT)
-        save(scratch / "context-real-browser.png", img)
-        tabs = jw.view.item("tabs").layout()
-        strong = [count_color(img[:, int(t["x"]):int(t["x"] + t["w"]) + 1], TAB_CURRENT_FG)
-                  for t in tabs]
-        muted = [count_color(img[:, int(t["x"]):int(t["x"] + t["w"]) + 1], TAB_FG)
-                 for t in tabs]
-        h = host_layout(jw.view)
-        mark = count_color(img[:, int(h["x"] - h["mark_w"]):int(h["x"])], INSECURE_FG)
-        hpx = count_color(img[:, int(h["x"]):int(h["x"] + h["w"]) + 1], HOST_FG)
-        check("focus on it: the context area draws the browser's state (tab 1 strong, 2 and 3 "
-              "muted, the host after the padlock)",
-              ctx.shown is jw.content and [t["text"] for t in tabs] == ["Painted", "Beta",
-                                                                        "Gamma"]
-              and strong[0] > 20 and all(m > 20 for m in muted[1:]) and h["text"] == "127.0.0.1"
-              and mark > 10 and hpx > 20, f"strong {strong}, muted {muted}")
-        ids = [t["id"] for t in jw.bar["start"][0]["tabs"]]
-        jw.send_event(Bv.event("select", item="tabs", tab=ids[1]))
-        moved = await until(lambda: jw.bar["start"][0]["current"] == ids[1], 5)
-        check("an event of the bar's to it ({type: select, item: tabs, tab: the second tab's "
-              "id}): the browser switches, its bar follows", bool(moved) and jw.view.item("tabs").current == 1)
-        jw.send_event(Bv.event("select", item="tabs", tab=ids[0]))
-        await until(lambda: jw.bar["start"][0]["current"] == ids[0], 5)
-        await live_input(scratch, service, display, x, jw, loop)
-        service.set_active(0)
-        check("focus elsewhere: the context area empty", ctx.shown is None)
-
-        # The shell away: nothing for three seconds, then the line.
-        await shown(top)
-        service.stop()
-        t0 = time.monotonic()
-        released = not held_by_another(x.conn, top, chord["l"], CTRL)
-        await asyncio.sleep(2.0)
-        early = top_rows(top)
-        line = await rows_until(top, LINE_BG, 5)
-        took = time.monotonic() - t0
-        pushed = x.region(top, 0, 34, 240, 4)
-        check("the shell stopped: its key grabs gone (another client may take Ctrl+L there); no "
-              "line in the browser's window for three seconds (the page stays where it is), then "
-              "its own line at the top, the page below it",
-              released and early is not None and share_of(early, PAINTED_BG) > 0.95
-              and line is not None
-              and 2.8 <= took <= 4.5 and pushed is not None and share_of(pushed, PAINTED_BG) > 0.9,
-              f"line {took:.2f} s after the stop")
-        service.start()
-        t0 = time.monotonic()
-        back = await until(lambda: any(w.wid == top for w in fluxes()), 5)
-        gone = await rows_until(top, PAINTED_BG, 5)
-        regrabbed = bool(back) and held_by_another(x.conn, top, chord["l"], CTRL)
-        check("the shell back: the browser announces again (its retry is every 2 s while the "
-              "line shows), its keys grabbed again, and the line goes, the page at the top edge "
-              "again", bool(back) and regrabbed and gone is not None,
-              f"{time.monotonic() - t0:.2f} s")
-        n_gl = backend is not None
-        browser.send_signal(signal.SIGINT)
-        code = browser.wait(20)
-        dropped = await until(lambda: not fluxes(), 5)
-        check("the browser quits: exit 0, its window dropped by the service", code == 0
-              and bool(dropped), f"exit {code}; GL here {n_gl}")
-        bad = rec.at_least(logging.WARNING)
-        check("no warnings or errors from the service, Flux's side, or the display", not bad,
-              f"{bad[:3]}")
-    finally:
-        if browser is not None and browser.poll() is None:
-            browser.kill()
-            browser.wait(10)
-        ctx.detach()
-        service.stop()
-        loop.remove_reader(display.fd)
-        display.close()
-        http.shutdown()
-        for path in (sock, isock, isock + ".lock"):
-            if os.path.exists(path):
-                os.unlink(path)
-
-
-async def live_input(scratch: Path, service, display, x, jw, loop) -> None:
-    """Ctrl+L on the real browser's window, the live path whole: the real
-    Daemon opening the real drop-down window under a top bar of the
-    test's own (a small window in the corner over the browser's: no dock,
-    no strut), the browser answering from its history over the socket.
-    Keys are delivered to the service's handler as X reports them under
-    its grab; the keyboard and pointer grabs are recorded, never made."""
-    import xcffib.xproto as xp
-
-    from indigoshell import config_default, theme
-    from indigoshell.applink.context import AppContext
-    from indigoshell.applink.drop import DROP_WINDOW
-    from indigoshell.core import daemon as daemon_mod
-    from indigoshell.widgets.base import Insets
-    from indigoshell.widgets.layout import Align, Row
-    from indigoshell.window import Layer, Placement, WindowSpec
-
-    print("  the live path: Ctrl+L, the browser's answers, the list under a bar", flush=True)
-    top = jw.wid
-    core = x.conn.core
-    at = core.TranslateCoordinates(top, x.screen.root, 0, 0).reply()
-    geo = core.GetGeometry(top).reply()
-    bw = min(geo.width + 40, 700)
-    bar = WindowSpec(name="test-top-bar", layer=Layer.OVERLAY, size=(bw, theme.TOP_BAR_HEIGHT),
-                     override_redirect=True, focusable=False, background=theme.BAR_BG,
-                     padding=Insets.xy(theme.BAR_MARGIN, 0),
-                     content=Row([AppContext(service)], spacing=theme.BAR_SPACING,
-                                 align=Align.CENTER))
-    drop = next(s_ for s_ in config_default.WINDOWS if s_.name == DROP_WINDOW)
-    grabs: list = []
-    saved = {k: getattr(display, k) for k in ("grab_keyboard", "ungrab_keyboard",
-                                              "grab_pointer", "ungrab_pointer")}
-    display.grab_keyboard = lambda wid: grabs.append(("keyboard", wid)) or True
-    display.ungrab_keyboard = lambda: grabs.append("keyboard let go")
-    display.grab_pointer = lambda wid: grabs.append(("pointer", wid)) or True
-    display.ungrab_pointer = lambda: grabs.append("pointer let go")
-    d = daemon_mod.Daemon({"windows": [bar, drop]})
-    d.display, d.loop = display, loop
-    said: list[dict] = []
-    real_send = jw.send
-
-    def send(msg):
-        said.append(msg)
-        real_send(msg)
-    jw.send = send
-
-    def press(sym, state=0):
-        ev = xp.KeyPressEvent.synthetic(display.keycodes(sym)[0], 0, display.root, top,
-                                        0, 0, 0, 0, 0, state, 1)
-        ev.response_type = 2
-        display.dispatch(ev)
-
-    try:
-        d.open("test-top-bar", placement=Placement(at.dst_x + geo.width // 2,
-                                                   max(0, at.dst_y - theme.TOP_BAR_HEIGHT - 8)))
-        service.set_active(top)
-        press(ord("l"), xp.ModMask.Control)
-        p = service.prompt
-        opened = p is not None and p.owner is jw and jw.view.box is p.box
-        shown = await until(lambda: DROP_WINDOW in d.instances
-                            and d.instances[DROP_WINDOW].mapped and p.rows, 5)
-        win = d.instances.get(DROP_WINDOW)
-        left, bottom, width = service.section() or (0, 0, 0)
-        queries = [m for m in said if m.get("type") == "query"]
-        check("Ctrl+L on the real browser's window: the address input open in the section, the "
-              "page's address queried and answered by the browser, the list's window mapped "
-              "flush under the bar at the section's left and width",
-              opened and bool(shown) and queries and queries[0]["seq"] == 1
-              and queries[0]["text"] == jw.bar["inputs"]["address"]["text"]
-              and win is not None and win.content_root[:3] == (left, bottom, width),
-              f"opened {opened}, shown {bool(shown)}, queries {len(queries)}, "
-              f"{win.content_root if win else None} vs {(left, bottom, width)}")
-        await asyncio.sleep(0.3)
-        img = x.region(win.wid, 0, 0, win.width, win.height) if win is not None else None
-        if img is not None:
-            save(scratch / "live-drop.png", img)
-        cyan = count_color(img, theme.CYAN_BRIGHT, 90) if img is not None else 0
-        check("... its own pixels: the rows drawn, the selection's cyan slab",
-              img is not None and cyan > 100, f"cyan px {cyan}")
-        for c in "yo":
-            press(ord(c))
-        typed = await until(lambda: p.text == "yo" and p.taken >= 2 and p.inflight is None
-                            and any(r.get("tag") == "SEARCH" for r in p.rows), 5)
-        titles_ = [r["title"] for r in p.rows]
-        selected = p.selected_row()["title"] if p.rows else None
-        check("\"yo\" typed after it: into the box (the address replaced), each answer taken "
-              "in turn (one query in flight): the typed row first, pages with addresses far "
-              "past 128 characters and a title past 1000 (cut) among the rows, YouTube's front "
-              "page selected", bool(typed) and titles_[0] == "yo" and selected == "YouTube"
-              and "Yodeling at dawn - YouTube" in titles_ and "yodel - Search" in titles_
-              and any(t.startswith("Yo very") and len(t) <= 300 for t in titles_),
-              f"{p.text!r} {[t[:30] for t in titles_]} selected {selected!r}")
-        await asyncio.sleep(0.2)
-        long_row = next((r for r in p.rows if r["title"] == "yodel - Search"), None)
-        img = x.region(win.wid, 0, 0, win.width, win.height)
-        if img is not None:
-            save(scratch / "live-drop-yo.png", img)
-        check("... the list's window grown to the rows (its own pixels: the rows drawn)",
-              win.content_root[3] > 52 * 3 and img is not None
-              and count_color(img, theme.HUD_FG_BRIGHT, 40) > 200 and long_row is not None
-              and len(long_row["id"]) <= 128, f"{win.content_root}")
-        press(0xFF1B)
-        parked = await until(lambda: DROP_WINDOW in d._parked, 3)
-        check("Escape: closed (`closed` by escape to the browser), the list parked, the box "
-              "gone, the keyboard and pointer given back", bool(parked)
-              and service.prompt is None and jw.view.box is None
-              and said[-1] == {"type": "closed", "input": "address", "by": "escape"}
-              and "keyboard let go" in grabs and "pointer let go" in grabs, f"{said[-1:]}")
-    finally:
-        jw.send = real_send
-        for k, v in saved.items():
-            setattr(display, k, v)
-        for w in list(d.instances.values()) + list(d._parked.values()) + list(d._dying):
-            w.destroy()
-        d.instances.clear()
-        d._parked.clear()
-        daemon_mod._DAEMON = None
-
-
-# ── 9. new windows, nothing on screen ──────────────────────────────────
-# qtile's command client, in the system's Python (where qtile lives):
-# `add <pid> <group>` a rule putting that process's windows on the group
-# (its id), `remove <id>`, `windows` [id, group] of each window it manages.
-QTILE = ("from libqtile.command.client import InteractiveCommandClient as C; "
-         "import json, sys; c = C(); a = sys.argv[1:]; "
-         "print(json.dumps(c.add_rule({'net_wm_pid': int(a[1])}, {'group': a[2]}) "
-         "if a[0] == 'add' else c.remove_rule(int(a[1])) if a[0] == 'remove' "
-         "else [[w['id'], w['group']] for w in c.windows()]))")
-SYSTEM_PYTHON = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else "python3"
-TEST_GROUP = "8"
-
-
-def qtile_env() -> dict:
-    """qtile's socket is in its session's cache directory: this run's,
-    or, for a run given a scratch one, the default one."""
-    for cache in (os.environ.get("XDG_CACHE_HOME"), os.path.expanduser("~/.cache")):
-        where = os.path.join(cache or "", "qtile")
-        if cache and os.path.isdir(where) and any(n.startswith("qtilesocket.")
-                                                  for n in os.listdir(where)):
-            return {**os.environ, "XDG_CACHE_HOME": cache}
-    return dict(os.environ)
-
-
-async def qtile(*args: str) -> tuple[bool, object]:
-    """(answered, qtile's answer)."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            SYSTEM_PYTHON, "-c", QTILE, *args, env=qtile_env(), stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL)
-    except OSError:
-        return False, None
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), 10)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return False, None
-    if proc.returncode != 0:
-        return False, None
-    try:
-        return True, json.loads(out)
-    except ValueError:
-        return False, None
-
-
-class OnTestGroup:
-    """The test's browser windows on qtile's group 8, never the one
-    shown: a rule on each process's pid, added as it starts (its first
-    window comes a second or more later); each window's group read back
-    from qtile as the shell hears of it, the browsers killed at once if
-    one is anywhere else; the rules removed at the end."""
-
-    def __init__(self) -> None:
-        self.rules: list[int] = []
-        self.seen: list[tuple[int, str | None]] = []    # an id may come again (a new client)
-        self.tasks: list[asyncio.Task] = []
-
-    async def rule(self, pid: int) -> bool:
-        ok, rid = await qtile("add", str(pid), TEST_GROUP)
-        if ok and isinstance(rid, int):
-            self.rules.append(rid)
-            return True
-        return False
-
-    async def windows(self) -> list[tuple[int, str]] | None:
-        ok, wins = await qtile("windows")
-        if not ok or not isinstance(wins, list):
-            return None
-        return [(int(w), str(g)) for w, g in wins]
-
-    def watch(self, wid: int, kill) -> None:
-        self.tasks.append(asyncio.ensure_future(self._guard(wid, kill)))
-
-    async def _guard(self, wid: int, kill) -> None:
-        group = None
-        for _ in range(50):
-            group = next((g for w, g in await self.windows() or [] if w == wid), None)
-            if group is not None:
-                break
-            await asyncio.sleep(0.1)
-        self.seen.append((wid, group))
-        if group != TEST_GROUP:
-            kill()
-            print(f"  (browser window 0x{wid:x} on qtile group {group}, not {TEST_GROUP}: "
-                  "the browser killed)", flush=True)
-
-    async def release(self) -> bool:
-        ok = True
-        for rid in self.rules:
-            ok = (await qtile("remove", str(rid)))[0] and ok
-        self.rules.clear()
-        return ok
-
-
-async def new_windows(scratch: Path) -> None:
-    """A new Flux window with no address opens its address input in the
-    bar, the real path whole: the real browser started with no URL, then
-    a second invocation with none (a new window in it), then another
-    browser just after MOD+D's launcher (a copy taking no keyboard,
-    pointer or focus) has closed; against the real AppService and Daemon,
-    a top bar of the test's own and the real drop-down; the window
-    manager's focus stood in for (the person's real focus is not
-    followed): given to the window as the service hears its announce
-    (the window manager focuses a window as it maps, before its line to
-    the shell is made), and for the second invocation's a moment later.
-    Nothing shows: the browsers' windows on qtile's group 8, the shell's
-    below the screen's bottom edge (a monitor there, for the test's
-    display alone), the test's top bar as wide as the screen: over every
-    window, as the real one is. The keyboard and pointer grabs are
-    recorded, never made."""
-    import dataclasses
-
-    from indigoshell import config_default, theme
-    from indigoshell.applink.context import AppContext
-    from indigoshell.applink.drop import DROP_WINDOW
-    from indigoshell.applink.service import AppService, AppWindow
-    from indigoshell.backend.x11 import Display, Monitor
-    from indigoshell.core import daemon as daemon_mod
-    from indigoshell.widgets.base import Insets
-    from indigoshell.widgets.layout import Align, Row
-    from indigoshell.window import Layer, Placement, WindowSpec
-    from flux import places
-
-    section("9. a new Flux window with no address opens its address input (the browser's "
-            f"windows on qtile group {TEST_GROUP}, the shell's below the screen)")
-    group = OnTestGroup()
-    before = await group.windows()
-    if not check(f"qtile answers (its windows, group {TEST_GROUP}'s as it is now) and takes a rule "
-                 "for this process's own windows, before any is made",
-                 before is not None and await group.rule(os.getpid()),
-                 f"{SYSTEM_PYTHON}; rules {group.rules}"):
-        await group.release()
-        return
-    before_ours = {w for w, g in before if g == TEST_GROUP}
-    tag = f"{APP}-tbn-{os.getpid()}"
-    sock = os.path.join(runtime_dir(), f"{tag}-apps.sock")
-    isock = os.path.join(runtime_dir(), f"{tag}-browser.sock")
-    data = scratch / "new-data"
-    benv = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
-    benv.update({"XDG_DATA_HOME": str(data), "XDG_CACHE_HOME": str(scratch / "new-cache"),
-                 "XDG_CONFIG_HOME": str(scratch / "new-config"),
-                 "XDG_STATE_HOME": str(scratch / "new-state"),
-                 env("BROWSER_SOCKET"): isock, env("APPS_SOCKET"): sock,
-                 env("BROWSER_WIDEVINE"): "off"})
-    hist = places.History(data / APP / "browser-history.sqlite")
-    hist.visit("https://news.example/", "News")
-    hist.visit("https://docs.example/", "Docs")
-    hist.close()
-    loop = asyncio.get_running_loop()
-    display = Display()
-    display.attach_loop(loop)
-
-    def pump():
-        while display.pump():
-            pass
-
-    loop.add_reader(display.fd, pump)
-    x = Reader()
-    root_w, root_h = x.screen.width_in_pixels, x.screen.height_in_pixels
-    # A monitor below the screen's bottom edge, for this display alone:
-    # what is placed there stays there (a placement is kept inside the
-    # monitor that holds it).
-    real_monitors = display.monitors()
-    past = Monitor(0, root_h + 200, root_w, 1200, name="test: below the screen")
-    display.monitors = lambda: [*real_monitors, past]
-    grabs: list = []
-    display.grab_keyboard = lambda wid: grabs.append(("keyboard", wid)) or True
-    display.ungrab_keyboard = lambda: grabs.append("keyboard let go")
-    display.grab_pointer = lambda wid: grabs.append(("pointer", wid)) or True
-    display.ungrab_pointer = lambda: grabs.append("pointer let go")
-    service = AppService(path=sock, display=display)
-    service.start()
-    service._active_atom = 0            # the person's real focus is not followed here
-    bar = WindowSpec(name="test-top-bar", layer=Layer.OVERLAY, size=(root_w, theme.TOP_BAR_HEIGHT),
-                     override_redirect=True, focusable=False, background=theme.BAR_BG,
-                     padding=Insets.xy(theme.BAR_MARGIN, 0),
-                     content=Row([AppContext(service)], spacing=theme.BAR_SPACING,
-                                 align=Align.CENTER))
-    drop = next(s_ for s_ in config_default.WINDOWS if s_.name == DROP_WINDOW)
-    real_launcher = next(s_ for s_ in config_default.WINDOWS
-                         if s_.name == config_default.LAUNCHER)
-    launcher = dataclasses.replace(real_launcher, name="test-launcher", grab_keyboard=False,
-                                   dismiss_on_outside_click=False, focusable=False)
-    d = daemon_mod.Daemon({"windows": [bar, drop, launcher]})
-    d.display, d.loop = display, loop
-    events: list = []
-    real_send = AppWindow.send_event
-    procs: list = []
-    placed: dict[str, int | None] = {}
-
-    def below(name) -> bool:
-        """Window `name` of ours wholly below the screen's bottom edge, as X
-        has it; destroyed at once if not."""
-        win = d.instances.get(name)
-        at = None
-        if win is not None and win.wid is not None:
-            try:
-                at = x.conn.core.TranslateCoordinates(win.wid, x.screen.root, 0, 0).reply().dst_y
-            except Exception:
-                at = None
-        placed[name] = at
-        if at is not None and at >= root_h:
-            return True
-        if win is not None:
-            d.instances.pop(name, None)
-            win.destroy()
-            print(f"  (window {name} at y {at}, the screen {root_h} high: destroyed)", flush=True)
-        return False
-
-    def send_event(self, event):
-        events.append((self.wid, event))
-        real_send(self, event)
-    AppWindow.send_event = send_event
-    focus_delay = [0.0]
-    real_added = service.added
-
-    def kill_all():
-        for proc in procs:
-            if proc.poll() is None:
-                proc.kill()
-
-    def added(window):
-        """The window manager: the window mapped, and focused at once (or a
-        moment later). Nothing slow here: the shell answers the announce
-        as quickly as it does live, which is what lets the window's
-        `open` come before its first bar."""
-        group.watch(window.wid, kill_all)
-        if focus_delay[0]:
-            loop.call_later(focus_delay[0], service.set_active, window.wid)
-        else:
-            service.set_active(window.wid)
-        real_added(window)
-    service.added = added
-
-    async def start_flux(log_name):
-        """The browser with no URL, its windows on the test group."""
-        with open(scratch / log_name, "w") as err:
-            proc = subprocess.Popen([PY, "-m", "flux.qt", "--unattended"], cwd=REPO,
-                                    env=benv, stdout=err, stderr=err)
-        procs.append(proc)
-        if not await group.rule(proc.pid):
-            proc.kill()
-            check(f"a qtile rule for the browser's windows (pid {proc.pid})", False)
-            return None
-        return proc
-
-    async def opened_for(before):
-        """The address input open for a window newer than `before`."""
-        ok = await until(lambda: service.prompt is not None and service.prompt.open
-                         and service.prompt.owner not in before, 40)
-        return service.prompt if ok else None
-
-    def fluxes():
-        return [w for w in service.windows if w.kind == "flux"]
-
-    async def first_window(log_name, before, case):
-        """A browser started with no URL: its window's address input open in
-        the bar, empty, the keyboard held for it, its history listed under
-        the bar; no fallback."""
-        n = len(events)
-        proc = await start_flux(log_name)
-        p = await opened_for(before) if proc is not None else None
-        fallbacks = [e for w, e in events[n:] if e.get("type") == "fallback"]
-        listed = await until(lambda: p is not None and p.rows and DROP_WINDOW in d.instances
-                             and d.instances[DROP_WINDOW].mapped, 5)
-        listed = bool(listed) and below(DROP_WINDOW)
-        check(f"{case}, Flux started with no URL, its window focused as the shell hears of it "
-              "(before its first bar comes): its address input open in the bar, empty, the "
-              "keyboard held for it, its history listed under the bar (below the screen too); "
-              "no fallback", p is not None and p.name == "address" and p.text == ""
-              and p.owner.view.box is p.box and ("keyboard", p.owner.wid) in grabs
-              and listed and not fallbacks,
-              f"prompt {p and p.name}, fallbacks {fallbacks}, rows "
-              f"{[r['title'] for r in p.rows] if p and p.rows else None}, at {placed}")
-        owner = p.owner if p is not None else None
-        if p is not None:
-            p.close("escape")
-        return proc, owner
-
-    try:
-        d.open("test-top-bar", placement=Placement(past.x + past.width // 2, past.y + 100))
-        if not check("the test's top bar below the screen's bottom edge (X's place of it)",
-                     below("test-top-bar"), f"y {placed}, the screen {root_h} high"):
-            return
-        flux1, first = await first_window("new-flux.log", (), "the shell running")
-        if flux1 is None:
-            return
-        # A second invocation with no URL: a new window in the running Flux,
-        # focused a moment after the shell hears of it.
-        focus_delay[0] = 0.3
-        n = len(events)
-        second = await start_flux("new-flux-2.log")
-        exited = second is not None and await until(lambda: second.poll() is not None, 30, 0.05)
-        p2 = await opened_for((first,))
-        fallbacks = [e for w, e in events[n:] if e.get("type") == "fallback"]
-        check("a second invocation with no URL: a new window in the running browser, focused a "
-              "moment after its announce: its address input open in the bar once it has focus "
-              "(the open waited for it); no fallback", bool(exited) and second.returncode == 0
-              and p2 is not None and p2.name == "address" and p2.owner is not first
-              and p2.owner.view.box is p2.box and not fallbacks,
-              f"exit {second and second.returncode}, prompt {p2 and p2.name}, "
-              f"fallbacks {fallbacks}")
-        if p2 is not None:
-            p2.close("escape")
-        flux1.send_signal(signal.SIGINT)
-        quit_ = await until(lambda: flux1.poll() is not None, 15, 0.05)
-        dropped = await until(lambda: not fluxes(), 5)
-        check("that browser quits (exit 0), its windows dropped by the service",
-              bool(quit_) and flux1.returncode == 0 and bool(dropped), f"exit {flux1.returncode}")
-
-        # MOD+D's launcher, opened and closed just before Flux starts.
-        focus_delay[0] = 0.0
-        d.open("test-launcher", placement=Placement(past.x + past.width // 2, past.y + 300))
-        await until(lambda: d.instances.get("test-launcher") is not None
-                    and d.instances["test-launcher"].mapped, 5)
-        ours = below("test-launcher")
-        d.close("test-launcher")
-        if not check("the test's launcher below the screen's bottom edge (X's place of it), "
-                     "closed", ours, f"y {placed}"):
-            return
-        await first_window("new-flux-3.log", (first, p2 and p2.owner), "the launcher just closed")
-        said = [e for w, e in events if e.get("type") == "closed"]
-        check("... each closed by Escape: `closed` to the browser",
-              len(said) >= 3 and all(e.get("by") == "escape" for e in said[-3:]), f"{said}")
-        await asyncio.gather(*group.tasks)
-        for proc in procs:
-            if proc.poll() is None:
-                proc.send_signal(signal.SIGINT)
-        gone = await until(lambda: all(proc.poll() is not None for proc in procs), 15, 0.05)
-        released = await group.release()
-        after = await group.windows()
-        left = None if after is None else {w for w, g in after if g == TEST_GROUP} - before_ours
-        check(f"every browser window was on qtile group {TEST_GROUP} (qtile's group of each, "
-              "read back as the shell heard of it); the browsers quit, our rules removed, the "
-              "group left as it was", len(group.seen) >= 3
-              and all(g == TEST_GROUP for _w, g in group.seen) and bool(gone) and released
-              and left == set(),
-              f"{[(hex(w), g) for w, g in group.seen]}, left {left}")
-    finally:
-        AppWindow.send_event = real_send
-        for proc in procs:
-            if proc.poll() is None:
-                proc.send_signal(signal.SIGINT)
-                try:
-                    proc.wait(15)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(5)
-        for task in group.tasks:
-            task.cancel()
-        await group.release()
-        service.stop()
-        for w in list(d.instances.values()) + list(d._parked.values()) + list(d._dying):
-            w.destroy()
-        d.instances.clear()
-        d._parked.clear()
-        daemon_mod._DAEMON = None
-        loop.remove_reader(display.fd)
-        display.close()
-        for path in (sock, isock, isock + ".lock"):
-            if os.path.exists(path):
-                os.unlink(path)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--off-screen", action="store_true",
-                        help="all but section 8 (the one that shows a browser window)")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()
     scratch = Path(tempfile.mkdtemp(prefix=f"{APP}-topbar-test-"))
@@ -3320,18 +1805,13 @@ def main() -> int:
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     t0 = time.monotonic()
     try:
-        test_display()
-        test_xlib_guard(scratch)
         test_desktop(scratch)
         test_content(scratch)
         test_mouse(scratch)
         asyncio.run(test_service(scratch))
-        test_grabs(scratch)
+        test_prompts(scratch)
         test_placement()
         test_spec(scratch)
-        if not args.off_screen:
-            asyncio.run(on_screen(scratch))
-        asyncio.run(new_windows(scratch))
     except Exception:
         FAILED.append("aborted")
         print("\nABORTED:\n" + traceback.format_exc(), flush=True)

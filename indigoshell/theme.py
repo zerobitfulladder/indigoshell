@@ -114,7 +114,7 @@ STATUS_FG               = MAGENTA_DIM
 WORKSPACE_CURRENT_FG    = MAGENTA_BRIGHT
 WORKSPACE_OCCUPIED_FG   = YELLOW_DIM
 WORKSPACE_EMPTY_FG      = MAGENTA_DIM
-WORKSPACE_URGENT_FG     = ERROR   # window set _NET_WM_STATE_DEMANDS_ATTENTION
+WORKSPACE_URGENT_FG     = ERROR   # a window there asks for attention (urgent)
 # Ring pattern: (ms, visible) frames. Two short pulses with a gap, then a
 # longer pause — like a phone ring. None/[] disables blinking.
 WORKSPACE_URGENT_RING   = [

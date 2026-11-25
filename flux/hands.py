@@ -77,7 +77,7 @@ is no sandbox: the code acts as the page, signed in as the user).
 
 No PySide6 here, nothing from flux/qt, and of the shell only its pure
 modules (control.py, protocol.py, profiles.py, core's naming, paths and
-hands): a machine with none of xcffib, skia, dbus-fast or psutil imports
+hands): a machine with none of skia, dbus-fast or psutil imports
 this (the hub's process). The hands are core/hands.py's
 `Hand`s and raise its `HandError`, as every hand lent to the hub does.
 """
@@ -138,8 +138,7 @@ class _Words:
     `flux` begins with where it shows, `unseen` is there for an
     unattended one."""
     flux: str = FLUX
-    windows: str = ("most recently used first; which one has the user's focus; the X window "
-                    "id that this machine's windows and focus hands use")
+    windows: str = "most recently used first; which one has the user's focus"
     watched: str = WATCHED
     alone: str = ALONE
     agent_window: str = ("your own window, made the first time on an empty workspace the user "
@@ -298,8 +297,6 @@ async def _tabs(call: Call) -> list[dict]:
             about.append("has the user's focus")
         if w.single:
             about.append("a page's popup: takes no tabs")
-        if w.xid:
-            about.append(f"X window {w.xid}")
         lines.append(f"window {w.window}" + (f" ({'; '.join(about)})" if about else "") + ":")
         for t in w.tabs:
             lines.append(f"  {'*' if t.current else ' '} tab {t.tab}: \"{t.title}\" at {t.url}"

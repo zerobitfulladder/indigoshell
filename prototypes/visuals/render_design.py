@@ -261,7 +261,7 @@ def holo_window(content: Widget, W: int, H: int, *, scan_at: float | None = None
 def over(back: skia.Image, top: skia.Image, blur: skia.Path | None = None,
          sigma: float = 9.0) -> skia.Image:
     """`top` composed over `back`; with `blur`, what is behind blurred
-    inside that shape first (picom's blur-behind, as render_call does)."""
+    inside that shape first (the compositor's blur-behind, as render_call does)."""
     s, c = surface(back.width(), back.height())
     c.drawImage(back, 0, 0)
     if blur is not None:

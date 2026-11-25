@@ -5,21 +5,13 @@ imports the daemon, and keeps config declarative. The daemon is looked up
 lazily inside the handler because config is imported before it exists.
 """
 
-import logging
 from typing import Callable
-
-log = logging.getLogger(__name__)
 
 
 def _handler(verb: str, name: str) -> Callable:
     def run(_source=None):
-        from .canvas import NotOnCanvas
         from .core.daemon import get_daemon
-        try:
-            getattr(get_daemon(), verb)(name)
-        except NotOnCanvas as e:
-            # Wayland, until the canvas draws that kind too.
-            log.info("%s", e)
+        getattr(get_daemon(), verb)(name)
 
     # Lets the daemon find which widget anchors which window.
     run._indigo_window = name

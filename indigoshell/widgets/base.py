@@ -9,7 +9,7 @@ Four methods, and everything else is built from them:
 
 Containers are widgets too, so a bar, a panel and a notification all hold
 the same type. This is also the plugin API, which is why it stays this
-small and why nothing in it mentions X11 or the window that hosts it.
+small and why nothing in it mentions Wayland or the window that hosts it.
 """
 
 from dataclasses import dataclass
@@ -291,9 +291,8 @@ class Widget:
 
     def key_release(self, ev: KeyEvent) -> bool:
         """Handle a key release; return True if consumed. Forwarded like
-        `key`. Only a grabbing window receives releases — X reports both
-        press and release to a keyboard grab regardless of event mask —
-        and only press-to-arm / release-to-fire widgets care."""
+        `key`. Only a window holding the keyboard receives releases, and
+        only press-to-arm / release-to-fire widgets care."""
         for child in self.children():
             if child.key_release(ev):
                 return True
@@ -338,8 +337,8 @@ class Widget:
 
         True holds the press: no `click` follows, and until that button
         comes up the widget gets every pointer `motion` and then its
-        `release`, wherever the pointer goes (X reports them to the window
-        that took the press until every button is up). False, the
+        `release`, wherever the pointer goes (the compositor keeps the
+        pointer for the press until every button is up). False, the
         default, leaves the press to `click` as ever.
         """
         return False

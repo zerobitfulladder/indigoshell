@@ -6,8 +6,8 @@ Pure Python: imported by the browser (Qt) and by the agent's side
 The shell. Flux is an indigoshell app: each window connects to the
 shell's app socket and speaks the app bar protocol
 (indigoshell/applink/PROTOCOL.md; its names and builders in
-indigoshell/applink/bar.py): it announces itself as a "flux" window,
-its own id for it and its X window (`announce`), then sends its section
+indigoshell/applink/bar.py): it announces itself as a "flux" window
+and its own id for it (`announce`), then sends its section
 of the top bar whole whenever it changes (`bar`, made of the window's
 state by bar.py: its tabs, the page's host (a `fixed` text), the
 `address`, `new_tab` and `find` inputs, the `actions` menu). A tab names
@@ -75,14 +75,12 @@ live. `switch` makes a tab current without raising its window, taking
 focus or changing the workspace; `open` and `tabs` work on any.
 
     tabs       {}
-               -> {"windows": [{"window": id, "xid": <X window, or null>,
-                                "single": bool, "focused": bool,
+               -> {"windows": [{"window": id, "single": bool, "focused": bool,
                                 "tabs": [TAB, ...]}, ...],
                    "focused": <the focused window's id, or null>,
                    "profile": <its name, or null for the default one>}
                `single`: a page's popup or the inspector (one page, takes
-               no tabs). `xid` is the window manager's id for the window
-               on X11; null on Wayland, where a client has no such id.
+               no tabs).
     open       {"url": str, "window"?: id | "agent", "background"?: bool}
                A new tab at the end of that window (a main one), or of
                the most recently used main window of the user's (one is
@@ -187,17 +185,15 @@ focus or changing the workspace; `open` and `tabs` work on any.
                page listing document.adoptedStyleSheets meanwhile would
                see it (Qt has no user style sheet to put it in). An inner
                box that scrolls by itself is shown as it stands.
-    look       {"window"?: id, "pid"?: int, "xid"?: int, "screenshot"?: bool,
-                "image"?: bool}
+    look       {"window"?: id, "pid"?: int, "screenshot"?: bool, "image"?: bool}
                What the user is looking at in the browser, changing
                nothing they see: the focused window, or with none the one
                that had focus last (or the window named). `pid`: the
                process the named `window` is in, as the shell knows it
-               (on Wayland the call names the window it saw focused by
-               its app bar id and its connection's process): a window of
-               another Flux's is not this one's to look at, and the look
-               goes on as if none was named. `xid` (X11): the X window
-               the call saw focused; on Wayland it fails (no X window).
+               (the call names the window it saw focused by its app bar
+               id and its connection's process): a window of another
+               Flux's is not this one's to look at, and the look goes on
+               as if none was named.
                -> TAB + {"focused": bool, "unfocused_for": <s, or null
                          while focused>, "selection": str,
                          "selection_in": "page" | "field" | "frame" | null,

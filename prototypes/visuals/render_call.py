@@ -1,7 +1,7 @@
 """The call overlay at 1x, from the real widgets, with faked agent state.
 
 Each state is painted over a stand-in desktop, with the plates' outline
-blurred the way picom blurs it live (`blur_shape()` clips a blurred copy
+blurred the way the compositor blurs it live (`blur_shape()` clips a blurred copy
 of the backdrop), so the frosted look can be judged here.
 
     PYTHONPATH=../.. ../../.venv/bin/python render_call.py

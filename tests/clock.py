@@ -13,7 +13,7 @@ import time
 import _live
 import skia
 
-from indigoshell.widgets.base import Insets, Size, Widget
+from indigoshell.widgets.base import Size, Widget
 from indigoshell.window import Anchor, Layer, WindowSpec
 
 FAILED: list[str] = []
@@ -102,20 +102,19 @@ class Strip(Widget):
                 box.paint(canvas)
 
 
-def window(display, boxes: list[Box], keep_alive: bool = False):
-    return _live.open_window(display, WindowSpec(
+def window(canvas, boxes: list[Box], keep_alive: bool = False):
+    return _live.open_window(canvas, WindowSpec(
         name="test-clock", layer=Layer.OVERLAY,
         anchor=Anchor.TOP | Anchor.RIGHT, size=(70 * len(boxes), 40),
-        margin=Insets(right=_live.OFFSCREEN), override_redirect=True,
-        focusable=False, keep_alive=keep_alive, content=Strip(boxes)))
+        keep_alive=keep_alive, content=Strip(boxes)))
 
 
 async def main() -> int:
-    display = _live.connect()
+    canvas = _live.canvas()
 
     print("each widget at its own rate")
     slow, mid, fx = Box(2), Box(12, 0xFF3060C0), Box(0, 0xFF206020)
-    win = window(display, [slow, mid, fx])
+    win = window(canvas, [slow, mid, fx])
     await asyncio.sleep(0.3)
     t0 = time.monotonic()
     fx.burst(1.0)
@@ -137,7 +136,7 @@ async def main() -> int:
 
     print("an effect starts at once, whatever the clock was doing")
     fx = Box(0)
-    win = window(display, [fx])
+    win = window(canvas, [fx])
     await asyncio.sleep(0.3)
     check("an idle window's clock is stopped",
           win._clock_fps == 0 and win._frame_handle is None)
@@ -154,7 +153,7 @@ async def main() -> int:
     win.destroy()
 
     slow, fx = Box(1), Box(0, 0xFF206020)
-    win = window(display, [slow, fx])
+    win = window(canvas, [slow, fx])
     await asyncio.sleep(0.35)               # between two 1fps ticks
     t0 = time.monotonic()
     fx.burst(0.4)
@@ -166,7 +165,7 @@ async def main() -> int:
     win.destroy()
 
     fx = Box(1)
-    win = window(display, [fx])
+    win = window(canvas, [fx])
     await asyncio.sleep(0.4)
     t0 = time.monotonic()
     fx.burst(0.4)
@@ -178,21 +177,21 @@ async def main() -> int:
 
     print("a stall that swallows the end of an effect")
     fx = Box(0)
-    win = window(display, [fx])
+    win = window(canvas, [fx])
     await asyncio.sleep(0.3)
     fx.burst(0.3)
     await asyncio.sleep(0.1)                # painted mid-effect...
     time.sleep(0.6)                         # ...and the loop blocks past its end
     await asyncio.sleep(0.15)
     n, box = _live.stale(win)
-    check("the widget at rest is what is on screen", n == 0,
+    check("the widget at rest is what is on the canvas", n == 0,
           f"{n}px {box or ''}")
     check("and the clock has stopped", win._clock_fps == 0)
     win.destroy()
 
     print("damage raised while the last frame paints")
     a, b = Box(0), Box(0, 0xFF303030)
-    win = window(display, [a, b])
+    win = window(canvas, [a, b])
     await asyncio.sleep(0.3)
     a.poke = b
     a.burst(0.2)
@@ -207,7 +206,7 @@ async def main() -> int:
     for where in ("fps", "animate", "paint"):
         good = Box(12)
         bad = Box(0 if where == "fps" else 12, raises=where)
-        win = window(display, [good, bad])
+        win = window(canvas, [good, bad])
         await asyncio.sleep(0.3)
         t0 = time.monotonic()
         await asyncio.sleep(1.0)
@@ -220,7 +219,7 @@ async def main() -> int:
 
     print("a window opened for the second time")
     fx = Box(12)
-    win = window(display, [fx], keep_alive=True)
+    win = window(canvas, [fx], keep_alive=True)
     await asyncio.sleep(2.5)                # the first open, a while
     await _live.reopen(win)
     t0 = time.monotonic()

@@ -1,35 +1,27 @@
 """The window-manager layer (indigoshell/wm) and what sits on it.
 
-    .venv/bin/python tests/wm.py            pure, then X11 + qtile read-only
+    .venv/bin/python tests/wm.py            pure
     .venv/bin/python tests/wm.py --niri     ... then a nested niri (half a
                                             minute; --shots DIR keeps two
                                             of its screenshots)
 
-1. Pure, X11 + qtile: the qtile commands each call sends and what comes
-   of their answers (workspaces, windows, focus, screenshots, the
-   clipboard, xrandr's outputs and the one-call "use alone", RandR
-   monitors, logging out), against a stand-in for the subprocesses; the
-   laptop hands' replies built from them.
-2. Pure, niri: requests in the shapes `niri msg` 26.04 sends (recorded
+1. Pure, niri: requests in the shapes `niri msg` 26.04 sends (recorded
    from it), against a stand-in niri socket answering in niri's shapes;
    workspace names, the bar's readout of one monitor (the spare empty
    workspace left out), the state kept from the event stream, outputs
-   and "use alone" as output changes, window screenshots (cut out,
-   whole monitor, not shown); the bar widget on a follower.
-3. Pure, Wayland: the wire's argument packing, frames turned upright.
-4. Pure, tiling: qtile's two columns as decisions on niri's windows.
-5. Live, X11 + qtile, read-only: the layer reads the running session as
-   qtile, EWMH and xrandr say it is (each read here too, directly). No
-   focus, window, workspace or clipboard changes, no screenshots.
-6. `--niri`: a nested niri of its own (a window on qtile group 8, put
-   there by a runtime qtile rule this removes again), with kitty windows
-   in it and the tiling helper on a bare python3 (-S: the standard
-   library only): workspaces and windows, focus, screenshots as PNG
-   (one compared with niri's own), the clipboard inside it, outputs,
-   the bar's readout following events, the laptop hands, the tiling
-   (1-4 windows, closing them, a resize by hand that stays), and quit.
-   Everything it starts is stopped; nothing touches the X session's
-   focus, clipboard or screen.
+   and "use alone" as output changes, the display menu's remembered
+   output, window screenshots (cut out, whole monitor, not shown); the
+   bar widget on a follower.
+2. Pure, Wayland: the wire's argument packing, frames turned upright.
+3. Pure, tiling: qtile's two columns as decisions on niri's windows.
+4. `--niri`: a nested niri of its own, out of sight (tests/_niri.py: a
+   client of a headless cage), with kitty windows in it and the tiling
+   helper on a bare python3 (-S: the standard library only): workspaces
+   and windows, focus, screenshots as PNG (one compared with niri's
+   own), the clipboard inside it, outputs, the bar's readout following
+   events, the laptop hands, the tiling (1-4 windows, closing them, a
+   resize by hand that stays), and quit. Everything it starts is
+   stopped; nothing reaches the session's screen, focus or clipboard.
 """
 
 import argparse
@@ -38,7 +30,6 @@ import contextlib
 import inspect
 import json
 import os
-import re
 import shutil
 import signal
 import struct
@@ -51,7 +42,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
 from indigoshell import wm  # noqa: E402
-from indigoshell.wm import niri as nirimod, tiling, wayland, x11  # noqa: E402
+from indigoshell.wm import niri as nirimod, tiling, wayland  # noqa: E402
 
 FAILED: list[str] = []
 
@@ -82,258 +73,7 @@ def use(backend) -> None:
     wm._current = backend
 
 
-# ── 1. X11 + qtile, pure ────────────────────────────────────────────────
-GROUPS = {"1": {"name": "1", "focus": "term", "windows": ["term", "notes"],
-                "screen": 0},
-          "2": {"name": "2", "focus": "web", "windows": ["web"],
-                "screen": None},
-          "3": {"name": "3", "focus": None, "windows": [], "screen": None}}
-WINDOWS = [{"id": 11, "name": "term", "group": "1",
-            "wm_class": ["kitty", "kitty"]},
-           {"id": 12, "name": "notes", "group": "1",
-            "wm_class": ["gedit", "Gedit"]},
-           {"id": 21, "name": "web", "group": "2",
-            "wm_class": ["Navigator", "firefox"]}]
-SCREENS = [{"index": 0, "x": 0, "y": 0, "width": 1920, "height": 1080},
-           {"index": 1, "x": 1920, "y": 0, "width": 2560, "height": 1440}]
-XRANDR = """\
-Screen 0: minimum 8 x 8, current 2560 x 1440, maximum 32767 x 32767
-eDP-1 connected (normal left inverted right x axis y axis)
-   1920x1080     60.02 +  59.93    48.00
-   1680x1050     59.88
-HDMI-1 connected primary 2560x1440+0+0 (normal left inverted right x axis y axis) 597mm x 336mm
-   2560x1440     59.95 + 143.97*
-   1920x1080i    60.00    50.00
-DP-1 disconnected (normal left inverted right x axis y axis)
-DP-2 disconnected 1920x1080+2560+0 (normal left inverted right x axis y axis) 0mm x 0mm
-"""
-MONITORS = """Monitors: 2
- 0: +*HDMI-1 2560/597x1440/336+0+0  HDMI-1
- 1: braindance 1920/309x1080/174+2560+0  DP-2
-"""
-
-
-class FakeRun:
-    """Stands in for wm.run: records argv, answers from a table."""
-
-    def __init__(self, answers=None) -> None:
-        self.calls: list[list[str]] = []
-        self.answers = answers or {}
-
-    async def __call__(self, argv, *, data=None, timeout=15.0):
-        argv = list(argv)
-        self.calls.append(argv)
-        key = " ".join(argv)
-        for prefix, answer in self.answers.items():
-            if key.startswith(prefix):
-                rc, out, err = answer if isinstance(answer, tuple) \
-                    else (0, answer, "")
-                if not isinstance(out, bytes):
-                    out = (out if isinstance(out, str)
-                           else json.dumps(out)).encode()
-                return rc, out, err
-        return 1, b"", f"unexpected {key}"
-
-
-def qtile_answers(**extra):
-    q = "qtile cmd-obj"
-    answers = {f"{q} -o root -f get_groups": GROUPS,
-               f"{q} -o root -f windows": WINDOWS,
-               f"{q} -o group -f info": GROUPS["1"],
-               f"{q} -o root -f get_screens": SCREENS,
-               f"{q} -o screen -f info": {"index": 1},
-               f"{q} -o window -f info": {**WINDOWS[0], "x": 10, "y": 20,
-                                          "width": 800, "height": 600},
-               f"{q} -o window 21 -f info": {**WINDOWS[2], "x": 1920,
-                                             "y": 0, "width": 1280,
-                                             "height": 1440},
-               f"{q} -o window 99 -f info": (1, b"", "No object window 99"),
-               f"{q} -o group 2 -f toscreen": "",
-               f"{q} -o window 21 -f focus": "",
-               f"{q} -o cmd -f shutdown": "",
-               "import ": b"\x89PNG fake",
-               "xclip -selection primary -o": "highlighted",
-               "xclip -selection clipboard -o": (1, b"", ""),
-               "xrandr --query": XRANDR,
-               "xrandr --listmonitors": MONITORS,
-               "xrandr --output": ""}
-    answers.update(extra)
-    return answers
-
-
-async def test_x11_pure() -> None:
-    from indigoshell.agent import laptop
-    section("1. X11 + qtile, pure")
-    run = FakeRun(qtile_answers())
-    x = x11.X11(run=run)
-    use(x)
-
-    spaces = await x.workspaces()
-    check("workspaces: qtile's groups in order, the current one shown",
-          [(s.name, s.shown) for s in spaces]
-          == [("1", True), ("2", False), ("3", False)], str(spaces))
-    wins = await x.windows()
-    check("windows: id, class (the last WM_CLASS), title, group, the group's "
-          "focus as `active`",
-          [(w.id, w.app, w.title, w.workspace, w.active) for w in wins]
-          == [(11, "kitty", "term", "1", True), (12, "Gedit", "notes", "1", False),
-              (21, "firefox", "web", "2", True)], str(wins))
-    reply = texts(await laptop._windows(call("windows")))
-    check("laptop_windows: the reply as before",
-          reply == "workspace 1 (shown)\n  [11] kitty: term\n  [12] Gedit: notes\n"
-                   "workspace 2\n  [21] firefox: web\nworkspace 3", repr(reply))
-    check("... its description names no qtile", "qtile" not in laptop.WINDOWS.description)
-
-    run.calls.clear()
-    reply = texts(await laptop._focus(call("focus", window_id=21)))
-    check("laptop_focus a window: info, its group to the screen, focus",
-          run.calls == [["qtile", "cmd-obj", "-o", "window", "21", "-f", "info"],
-                        ["qtile", "cmd-obj", "-o", "group", "2", "-f", "toscreen"],
-                        ["qtile", "cmd-obj", "-o", "window", "21", "-f", "focus"]]
-          and reply == "Focused web, on workspace 2.", f"{run.calls} {reply!r}")
-    run.calls.clear()
-    reply = texts(await laptop._focus(call("focus", workspace="2")))
-    check("laptop_focus a workspace: toscreen",
-          run.calls == [["qtile", "cmd-obj", "-o", "group", "2", "-f", "toscreen"]]
-          and reply == "Workspace 2 is shown.", f"{run.calls} {reply!r}")
-    from indigoshell.core.hands import HandError
-    try:
-        await laptop._focus(call("focus", window_id=99))
-        said = None
-    except HandError as e:
-        said = str(e)
-    check("... a window that isn't there: qtile's words", said
-          == "can't focus it: No object window 99", repr(said))
-
-    async def shot(**kw):
-        run.calls.clear()
-        try:
-            s = await x.screenshot(**kw)
-            return s.what, run.calls[-1]
-        except wm.WMError as e:
-            return str(e), None
-
-    imp = ["import", "-silent", "-window", "root"]
-    check("screenshot, screen: the root window as PNG",
-          await shot() == ("the whole screen", imp + ["png:-"]))
-    check("screenshot, the monitor in use (qtile's screen info): cropped",
-          await shot(target="monitor") == (
-              "monitor 1", imp + ["-crop", "2560x1440+1920+0", "+repage", "png:-"]))
-    check("screenshot, monitor 0 by number",
-          (await shot(target="monitor", monitor=0))[1]
-          == imp + ["-crop", "1920x1080+0+0", "+repage", "png:-"])
-    check("screenshot, monitor 5: there is none, said as before",
-          (await shot(target="monitor", monitor=5))[0]
-          == "no monitor 5; there are 2 (0 to 1)")
-    check("screenshot, window 21: cropped to it, named",
-          await shot(target="window", window=21) == (
-              "window 21 (firefox: web)",
-              imp + ["-crop", "1280x1440+1920+0", "+repage", "png:-"]))
-    check("screenshot, the focused window (no id)",
-          (await shot(target="window"))[0] == "window 11 (kitty: term)")
-    check("screenshot, window 99: can't find what to capture",
-          (await shot(target="window", window=99))[0]
-          == "can't find what to capture: No object window 99")
-    bad = x11.X11(run=FakeRun(qtile_answers(**{"import ": (1, b"", "no display")})))
-    try:
-        await bad.screenshot()
-        said = None
-    except wm.WMError as e:
-        said = str(e)
-    check("screenshot failing: the screenshot failed, and why",
-          said == "the screenshot failed: no display", repr(said))
-
-    served = []
-    real = x11.serve
-    x11.serve = lambda argv, value, what: served.append((argv, value))
-    try:
-        ok = x.copy("hello", "primary") and x.copy("there")
-        empty = x.copy("")
-    finally:
-        x11.serve = real
-    check("copy: xclip -in on the selection, served in the background",
-          ok and not empty and served == [
-              (["xclip", "-selection", "primary", "-in"], "hello"),
-              (["xclip", "-selection", "clipboard", "-in"], "there")], str(served))
-    check("paste: xclip -o", await x.paste("primary") == "highlighted")
-    try:
-        await x.paste()
-        said = None
-    except wm.WMError as e:
-        said = str(e)
-    check("paste of nothing: the clipboard is empty or not text",
-          said == "the clipboard is empty or not text", repr(said))
-    reply = texts(await laptop._read_clipboard(call("read_clipboard",
-                                                    selection="primary")))
-    check("laptop_read_clipboard through it", reply == "highlighted", repr(reply))
-
-    outs = await x.outputs()
-    check("xrandr: outputs, connection, primary, lit, modes, the current one",
-          [(o.name, o.connected, o.primary, o.active, o.current) for o in outs] == [
-              ("eDP-1", True, False, False, None),
-              ("HDMI-1", True, True, True, (2560, 1440, 143.97)),
-              ("DP-1", False, False, False, None),
-              ("DP-2", False, False, True, None)]
-          and outs[0].modes == ((1920, 1080, 60.02), (1920, 1080, 59.93),
-                                (1920, 1080, 48.0), (1680, 1050, 59.88))
-          and (1920, 1080, 50.0) in outs[1].modes, str(outs))
-    check("use alone: one xrandr call, primary at the mode, the rest off",
-          x11.use_only_argv("eDP-1", wm.Mode(1920, 1080, 60.02), ["HDMI-1", "DP-2"])
-          == ["xrandr", "--output", "eDP-1", "--primary", "--mode", "1920x1080",
-              "--rate", "60.02", "--output", "HDMI-1", "--off",
-              "--output", "DP-2", "--off"])
-    check("... with no mode table: --auto",
-          x11.use_only_argv("eDP-1", None, [])
-          == ["xrandr", "--output", "eDP-1", "--primary", "--auto"])
-    check("RandR monitors by name (braindance marks its session)",
-          await x.virtual_monitors() == ["HDMI-1", "braindance"])
-
-    from indigoshell.plugins import display
-    held = [o for o in outs if o.name != "DP-2"]
-    check("display: HDMI-1 alone, primary, at its best mode: in sole use",
-          display._is_sole(held, "HDMI-1") and not display._is_sole(held, "eDP-1"))
-    check("... not while an unplugged DP-2 still holds a place",
-          not display._is_sole(outs, "HDMI-1"))
-    state = {}
-    real_set = display.state.set
-    display.state.set = lambda k, v: state.update({k: v})
-    run.calls.clear()
-    try:
-        await display._use_only("eDP-1")
-    finally:
-        display.state.set = real_set
-    check("display: use eDP-1 alone: the xrandr call as before, remembered",
-          run.calls[-1] == ["xrandr", "--output", "eDP-1", "--primary", "--mode",
-                            "1920x1080", "--rate", "60.02", "--output", "HDMI-1",
-                            "--off", "--output", "DP-2", "--off"]
-          and state == {"display.output": "eDP-1"}, str(run.calls[-1:]))
-    check("display: braindance running (its RandR monitor)",
-          await display._braindance_running())
-
-    from indigoshell.plugins import system
-    real_active = system._active_layout
-
-    async def active():
-        return "tr"
-    system._active_layout = active
-    try:
-        items = await system._layout_items()
-    finally:
-        system._active_layout = real_active
-    check("layout menu on X: setxkbmap's, as before",
-          [(i.label, list(i.run), i.active) for i in items]
-          == [("US", ["setxkbmap", "us", "-option", "caps:escape"], False),
-              ("TR", ["setxkbmap", "tr", "-option", "caps:escape"], True)], str(items))
-
-    run.calls.clear()
-    x.logout()
-    await asyncio.sleep(0.05)
-    check("logout: qtile's shutdown",
-          run.calls == [["qtile", "cmd-obj", "-o", "cmd", "-f", "shutdown"]],
-          str(run.calls))
-
-
-# ── 2. niri, pure ───────────────────────────────────────────────────────
+# ── 1. niri, pure ───────────────────────────────────────────────────────
 # What `niri msg` 26.04 writes to the socket for these commands, recorded
 # from it (a stand-in socket printing what it was sent).
 NIRI_MSG = {
@@ -479,7 +219,7 @@ def decoded(png: bytes):
 
 async def test_niri_pure() -> None:
     from indigoshell.agent import laptop
-    section("2. niri, pure")
+    section("1. niri, pure")
     sent = {}
     async with FakeNiri(ONE) as fake:
         n = nirimod.Niri(fake.path)
@@ -510,15 +250,13 @@ async def test_niri_pure() -> None:
     check("log out: Quit, skipping niri's confirmation (niri msg's shape)",
           sent[-1] == NIRI_MSG["action quit --skip-confirmation"], str(sent[-1]))
 
-    # X's pick (its HDMI-0 is niri's HDMI-A-1) is not niri's: niri's
-    # screen is left as it is, with niri's own pick remembered apart.
+    # The output remembered: used alone while it is connected; unplugged,
+    # the laptop panel meanwhile, the choice kept.
     from indigoshell.plugins import display
     big, panel = wm.Mode(2560, 1440, 59.951), wm.Mode(1920, 1080, 300.009)
-    outs = [wm.Output("HDMI-A-1", connected=True, active=True, primary=False,
-                      modes=(big,), current=big),
-            wm.Output("eDP-1", connected=True, active=True, primary=False,
-                      modes=(panel,), current=panel)]
-    saved = {"display.output": "HDMI-0"}
+    outs = [wm.Output("HDMI-A-1", connected=True, active=True, modes=(big,), current=big),
+            wm.Output("eDP-1", connected=True, active=True, modes=(panel,), current=panel)]
+    saved = {"display.output": "HDMI-A-1"}
     used = []
 
     class Quiet(nirimod.Niri):
@@ -533,15 +271,21 @@ async def test_niri_pure() -> None:
     use(Quiet("/nonexistent"))
     try:
         await display.restore()
-        left_alone = not used
-        await display._use_only("HDMI-A-1")
+        remembered = list(used)
+        saved["display.output"] = "DP-9"
+        used.clear()
+        await display.restore()
+        unplugged = list(used)
+        used.clear()
+        await display._use_only("eDP-1")
     finally:
         display.state.get, display.state.set = real_get, real_set
-    check("display on niri: X's remembered HDMI-0 leaves both outputs on",
-          left_alone, str(used))
-    check("... a pick from the menu is niri's own, X's kept",
-          used == [("HDMI-A-1", ["eDP-1"])]
-          and saved == {"display.output": "HDMI-0", "display.output.niri": "HDMI-A-1"},
+    check("display: the remembered output, connected, used alone",
+          remembered == [("HDMI-A-1", ["eDP-1"])], str(remembered))
+    check("... unplugged: the laptop panel meanwhile, the choice kept",
+          unplugged == [("eDP-1", ["HDMI-A-1"])], str(unplugged))
+    check("... a pick from the menu used alone and remembered",
+          used == [("eDP-1", ["HDMI-A-1"])] and saved == {"display.output": "eDP-1"},
           str((used, saved)))
 
     async with FakeNiri(ONE) as fake:
@@ -564,10 +308,9 @@ async def test_niri_pure() -> None:
           [(s.name, s.shown) for s in spaces]
           == [("1", True), ("2", False), ("3", False), ("4", False)], str(spaces))
     check("windows: app id, title, workspace name, the workspace's active one",
-          [(w.id, w.app, w.title, w.workspace, w.active, w.classes) for w in wins]
-          == [(3, "kitty", "term", "1", True, ("kitty",)),
-              (4, "firefox", "web", "1", False, ("firefox",)),
-              (5, "gedit", "notes", "2", True, ("gedit",))], str(wins))
+          [(w.id, w.app, w.title, w.workspace, w.active) for w in wins]
+          == [(3, "kitty", "term", "1", True), (4, "firefox", "web", "1", False),
+              (5, "gedit", "notes", "2", True)], str(wins))
     check("laptop_windows on niri",
           reply == "workspace 1 (shown)\n  [3] kitty: term\n  [4] firefox: web\n"
                    "workspace 2\n  [5] gedit: notes\nworkspace 3\nworkspace 4", repr(reply))
@@ -636,15 +379,15 @@ async def test_niri_pure() -> None:
     outs = nirimod.output_list({"HDMI-A-1": output("HDMI-A-1", 1920, 0, 2560, 1440),
                                 "eDP-1": output("eDP-1", 0, 0, 1920, 1080),
                                 "DP-3": output("DP-3", 0, 0, 1920, 1080, on=False)})
-    check("outputs: left to right, the dark one last; no primary; Hz from mHz",
-          [(o.name, o.active, o.primary, o.current) for o in outs]
-          == [("eDP-1", True, False, (1920, 1080, 60.0)),
-              ("HDMI-A-1", True, False, (2560, 1440, 60.0)), ("DP-3", False, False, None)]
+    check("outputs: left to right, the dark one last; Hz from mHz",
+          [(o.name, o.active, o.current) for o in outs]
+          == [("eDP-1", True, (1920, 1080, 60.0)),
+              ("HDMI-A-1", True, (2560, 1440, 60.0)), ("DP-3", False, None)]
           and outs[0].modes[1] == (1280, 720, 59.94), str(outs))
     from indigoshell.plugins import display
     alone = nirimod.output_list({"eDP-1": output("eDP-1", 0, 0, 1920, 1080),
                                  "DP-3": output("DP-3", 0, 0, 1920, 1080, on=False)})
-    check("display: in sole use without a primary (niri has none)",
+    check("display: in sole use",
           display._is_sole(alone, "eDP-1") and not display._is_sole(alone, "DP-3"))
 
     # Screenshots, with frames standing in for screencopy's.
@@ -734,9 +477,9 @@ async def test_niri_pure() -> None:
           and follower_gone, str(asked_focus))
 
 
-# ── 3. Wayland, pure ────────────────────────────────────────────────────
+# ── 2. Wayland, pure ────────────────────────────────────────────────────
 def test_wayland_pure() -> None:
-    section("3. Wayland, pure")
+    section("2. Wayland, pure")
     body, fds = wayland._pack("usuh", [7, "wl_shm", 1, 42])
     check("pack: uint, a string NUL-ended and padded to 4, an fd beside",
           body == struct.pack("<I", 7) + struct.pack("<I", 7) + b"wl_shm\0\0"
@@ -755,9 +498,9 @@ def test_wayland_pure() -> None:
     check("upright, y-inverted: flipped top to bottom", pixel(img, 0, 1) == (255, 0, 0))
 
 
-# ── 4. tiling, pure ─────────────────────────────────────────────────────
+# ── 3. tiling, pure ─────────────────────────────────────────────────────
 def test_tiling_pure() -> None:
-    section("4. tiling, pure")
+    section("3. tiling, pure")
     lay = tiling.Layout()
     W = 50.0
 
@@ -865,107 +608,7 @@ def test_tiling_pure() -> None:
           str(reqs))
 
 
-# ── 5. X11 + qtile, live and read-only ──────────────────────────────────
-def qtile_raw(*args):
-    out = subprocess.run(["qtile", "cmd-obj", *args], capture_output=True,
-                         text=True, timeout=10)
-    return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else None
-
-
-async def test_x11_live() -> None:
-    from indigoshell.agent import laptop
-    section("5. X11 + qtile, live and read-only")
-    if os.environ.get("NIRI_SOCKET") or not os.environ.get("DISPLAY") \
-            or qtile_raw("-o", "root", "-f", "get_groups") is None:
-        print("  (skipped: no X session with qtile here)")
-        return
-    x = x11.X11()
-    use(x)
-    groups = qtile_raw("-o", "root", "-f", "get_groups")
-    wins = qtile_raw("-o", "root", "-f", "windows")
-    current = qtile_raw("-o", "group", "-f", "info")
-    # The reply as the hand always built it, from qtile's own answers.
-    by = {}
-    for w in wins:
-        by.setdefault(str(w.get("group")), []).append(w)
-    lines = []
-    for name in groups:
-        lines.append(f"workspace {name}" + (" (shown)" if current.get("name") == name else ""))
-        for w in by.get(name, []):
-            lines.append(f"  [{w['id']}] {(w.get('wm_class') or ['?'])[-1]}: {w.get('name', '')}")
-    reply = texts(await laptop._windows(call("windows")))
-    check(f"laptop_windows: qtile's {len(groups)} groups and {len(wins)} windows, "
-          "as the hand put them before", reply == "\n".join(lines))
-    mine = await x.windows()
-    check("windows: each group's focus is its active window",
-          [w.active for w in mine]
-          == [(groups.get(str(w.get("group"))) or {}).get("focus") == w.get("name")
-              for w in wins])
-
-    # The bar's readout, against EWMH read on a connection of this test's.
-    import xcffib
-    import xcffib.xproto as xp
-    from indigoshell.backend.x11 import Display
-    from indigoshell.widgets.workspaces import Workspaces
-    conn = xcffib.connect()
-    root = conn.get_setup().roots[0].root
-
-    def atom(name):
-        return conn.core.InternAtom(False, len(name), name).reply().atom
-
-    def ints(wid, name, n=512):
-        r = conn.core.GetProperty(False, wid, atom(name), xp.GetPropertyType.Any,
-                                  0, n).reply()
-        raw = bytes(r.value.buf())
-        return list(struct.unpack(f"<{len(raw) // 4}I", raw)) if r.format == 32 else []
-
-    count = (ints(root, b"_NET_NUMBER_OF_DESKTOPS") or [0])[0]
-    cur = (ints(root, b"_NET_CURRENT_DESKTOP") or [0])[0]
-    per, urgent = [0] * count, [False] * count
-    demands = atom(b"_NET_WM_STATE_DEMANDS_ATTENTION")
-    for xid in ints(root, b"_NET_CLIENT_LIST"):
-        desk = ints(xid, b"_NET_WM_DESKTOP", 1)
-        if desk and 0 <= desk[0] < count:
-            per[desk[0]] += 1
-            urgent[desk[0]] |= demands in ints(xid, b"_NET_WM_STATE", 32)
-    conn.disconnect()
-    d = Display()
-
-    class Bar:
-        display = d
-
-        def damage(self, *_a, **_k):
-            pass
-
-    bar = Workspaces()
-    bar.attach(Bar())
-    seen = (bar._count, bar._current, bar._per_desktop, bar._urgent)
-    bar.detach()
-    d.close()
-    check(f"the bar's readout: {count} workspaces, the current one, windows on "
-          "each, urgency, as EWMH says", seen == (count, cur, per, urgent),
-          f"{seen} vs {(count, cur, per, urgent)}")
-
-    raw = subprocess.run(["xrandr", "--query"], capture_output=True, text=True).stdout
-    outs = await x.outputs()
-    names = re.findall(r"^(\S+) (?:connected|disconnected)", raw, re.M)
-    primary = re.findall(r"^(\S+) connected primary", raw, re.M)
-    stars = len(re.findall(r"\d\*", raw))
-    check(f"outputs: xrandr's {len(names)}, the primary, the modes in use",
-          [o.name for o in outs] == names
-          and [o.name for o in outs if o.primary] == primary
-          and sum(o.current is not None for o in outs) == stars)
-    raw = subprocess.run(["xrandr", "--listmonitors"], capture_output=True, text=True).stdout
-    check("RandR monitors: xrandr's", len(await x.virtual_monitors())
-          == len(re.findall(r"^\s*\d+: ", raw, re.M)))
-
-
-# ── 6. a nested niri ────────────────────────────────────────────────────
-QTILE_RULE = ("from libqtile.command.client import InteractiveCommandClient as C; "
-              "import sys; c = C(); "
-              "print(c.add_rule({'wm_class': 'niri'}, {'group': '8'}) "
-              "if sys.argv[1] == 'add' else c.remove_rule(int(sys.argv[1])))")
-
+# ── 4. a nested niri ────────────────────────────────────────────────────
 NIRI_CONFIG = """\
 // The user's niri settings that bear on the layout, and nothing to start.
 input {{
@@ -1003,74 +646,35 @@ xwayland-satellite {{
 
 
 class Nested:
-    """A nested niri on qtile group 8 and what runs in it."""
+    """A nested niri, out of sight (tests/_niri.py), and what runs in it."""
 
     def __init__(self) -> None:
-        self.tmp = tempfile.mkdtemp(prefix="wm-niri-")
-        self.run = os.path.join(self.tmp, "run")
+        # Short: unix socket paths are, and niri's live in it.
+        self.tmp = tempfile.mkdtemp(prefix="wm-niri-", dir="/tmp")
         self.shots = os.path.join(self.tmp, "shots")
-        os.makedirs(self.run, mode=0o700)
         os.makedirs(self.shots)
-        self.rule = None
-        self.niri = None
+        self.hidden = None
         self.procs: list[subprocess.Popen] = []
         self.env = None
-        self.user_env = dict(os.environ)
-
-    def qtile_rule(self, arg) -> str:
-        return subprocess.run(["python3", "-c", QTILE_RULE, str(arg)], env=self.user_env,
-                              capture_output=True, text=True, timeout=10).stdout.strip()
-
-    def where(self) -> str | None:
-        """qtile's group of our niri's X window, found by its pid."""
-        for w in qtile_raw("-o", "root", "-f", "windows") or []:
-            out = subprocess.run(["xprop", "-id", str(w["id"]), "_NET_WM_PID"],
-                                 capture_output=True, text=True).stdout.split()
-            if out and out[-1] == str(self.niri.pid):
-                return str(w.get("group"))
-        return None
 
     def start(self) -> bool:
+        import _niri
         config = os.path.join(self.tmp, "niri.kdl")
         with open(config, "w") as f:
             f.write(NIRI_CONFIG.format(shots=self.shots, workspaces="\n".join(
                 f'workspace "{i}"' for i in range(1, 10))))
-        self.rule = self.qtile_rule("add")
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("WAYLAND_DISPLAY", "NIRI_SOCKET", "WAYLAND_SOCKET")}
-        # A unix socket's path must be short; the temp dir's may not be.
-        # niri runs in it, and everyone reaches it through /proc/<pid>/cwd.
-        env.update(XDG_RUNTIME_DIR="/proc/self/cwd/run",
+        env = dict(os.environ,
                    DBUS_SESSION_BUS_ADDRESS=f"unix:path={self.tmp}/no-bus",
                    XDG_DATA_HOME=os.path.join(self.tmp, "data"),
                    XDG_CACHE_HOME=os.path.join(self.tmp, "cache"),
-                   XDG_STATE_HOME=os.path.join(self.tmp, "state"),
-                   TMPDIR=self.tmp)
-        self.niri = subprocess.Popen(["niri", "-c", config], cwd=self.tmp, env=env,
-                                     stdout=open(os.path.join(self.tmp, "niri.log"), "w"),
-                                     stderr=subprocess.STDOUT, start_new_session=True)
-        group = None
-        for _ in range(100):
-            time.sleep(0.1)
-            group = self.where()
-            if group is not None or self.niri.poll() is not None:
-                break
-        if not check(f"the nested niri's window is on qtile group 8 (rule {self.rule})",
-                     group == "8", f"group {group}"):
-            self.niri.kill()
+                   XDG_STATE_HOME=os.path.join(self.tmp, "state"))
+        self.hidden = _niri.Hidden(self.tmp, env, ["niri", "-c", config],
+                                   os.path.join(self.tmp, "niri.log"))
+        if not check("the nested niri up, out of sight (a headless cage's client)",
+                     self.hidden.start(), self.hidden.note):
+            self.hidden.stop()
             return False
-        sock = None
-        for _ in range(50):
-            sock = next((n for n in os.listdir(self.run) if n.startswith("niri.")), None)
-            if sock and os.path.exists(os.path.join(self.run, "wayland-1")):
-                break
-            time.sleep(0.1)
-        base = f"/proc/{self.niri.pid}/cwd/run"
-        wl = next(n for n in os.listdir(self.run)
-                  if n.startswith("wayland-") and not n.endswith(".lock"))
-        self.env = dict(env, XDG_RUNTIME_DIR=base, WAYLAND_DISPLAY=f"{base}/{wl}",
-                        NIRI_SOCKET=f"{base}/{sock}")
-        self.env.pop("DISPLAY", None)
+        self.env = self.hidden.env
         return True
 
     def spawn(self, argv, log) -> subprocess.Popen:
@@ -1098,13 +702,8 @@ class Nested:
         for p in self.procs:
             with contextlib.suppress(subprocess.TimeoutExpired):
                 p.wait(3)
-        if self.niri is not None and self.niri.poll() is None:
-            self.niri.kill()
-            self.niri.wait(5)
-        if self.rule:
-            removed = self.qtile_rule(self.rule)
-            check(f"our qtile rule {self.rule} removed", removed in ("True", "None", ""),
-                  removed)
+        if self.hidden is not None:
+            self.hidden.stop()
 
 
 async def wait_for(test, timeout=8.0, step=0.1):
@@ -1130,19 +729,19 @@ def columns_of(nested, ws_id):
 
 async def test_niri_live(keep_shots: str | None) -> None:
     from indigoshell.agent import laptop
-    section("6. a nested niri (qtile group 8)")
-    if shutil.which("niri") is None or shutil.which("kitty") is None:
-        print("  (skipped: needs niri and kitty)")
+    import _niri
+    section("4. a nested niri, out of sight")
+    missing = _niri.missing() + [t for t in ("kitty",) if shutil.which(t) is None]
+    if missing:
+        print(f"  (skipped: needs {', '.join(missing)})")
         return
     nested = Nested()
     saved = {k: os.environ.get(k) for k in ("WAYLAND_DISPLAY", "NIRI_SOCKET",
-                                            "XDG_RUNTIME_DIR", "DISPLAY")}
+                                            "XDG_RUNTIME_DIR")}
     try:
         if not nested.start():
             return
-        os.environ.update({k: nested.env[k] for k in
-                           ("WAYLAND_DISPLAY", "NIRI_SOCKET", "XDG_RUNTIME_DIR")})
-        os.environ.pop("DISPLAY", None)
+        os.environ.update({k: nested.env[k] for k in saved})
         wm._current = None
         n = wm.get()
         check("$NIRI_SOCKET set: the niri backend", isinstance(n, nirimod.Niri))
@@ -1319,7 +918,7 @@ async def test_niri_live(keep_shots: str | None) -> None:
         await asyncio.sleep(0.5)
         check("clipboard: the primary selection", await n.paste("primary") == "primary text")
 
-        # Keyboard layouts (the nested niri's own; X's are untouched).
+        # Keyboard layouts (the nested niri's own).
         layouts = await n.keyboard_layouts()
         await n.switch_keyboard_layout(1)
         switched = nested.msg("keyboard-layouts")
@@ -1334,7 +933,7 @@ async def test_niri_live(keep_shots: str | None) -> None:
         outs = await n.outputs()
         check("outputs: the nested one, lit, its mode current",
               [o.name for o in outs] == ["winit"] and outs[0].active
-              and outs[0].current is not None and not outs[0].primary, str(outs))
+              and outs[0].current is not None, str(outs))
         await n.use_only("winit", outs[0].current, [])
         check("use winit alone: applied, still lit",
               (await n.outputs())[0].active)
@@ -1355,7 +954,7 @@ async def test_niri_live(keep_shots: str | None) -> None:
 
         # Last: log out (niri's quit, no confirmation).
         n.logout()
-        gone = await wait_for(lambda: nested.niri.poll() is not None, 10)
+        gone = await wait_for(lambda: not nested.hidden.alive(), 10)
         check("log out: niri quits", bool(gone))
         await asyncio.sleep(0.5)
         check("... and the tiling helper ends with its stream", tiler.poll() is not None)
@@ -1375,12 +974,10 @@ async def test_niri_live(keep_shots: str | None) -> None:
 async def main_async(args) -> None:
     saved = wm._current
     try:
-        await test_x11_pure()
         await test_niri_pure()
         test_wayland_pure()
         test_tiling_pure()
         wm._current = None
-        await test_x11_live()
         if args.niri:
             await test_niri_live(args.shots)
     finally:
@@ -1390,7 +987,7 @@ async def main_async(args) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--niri", action="store_true",
-                        help="also run a nested niri on qtile group 8")
+                        help="also run a nested niri, out of sight")
     parser.add_argument("--shots", metavar="DIR",
                         help="keep a couple of the nested niri's screenshots here")
     args = parser.parse_args()

@@ -1,14 +1,15 @@
 """The shell in a nested niri: tests/wayland.py's section 4 (`--nested`).
 
-Everything runs inside a niri of its own, a window of the X session on
-qtile group 8 (or 7 with `--full`), put there by a runtime qtile rule
-that is removed at the end:
+Everything runs inside a niri of its own, out of sight: niri's winit
+backend as the client of a cage on wlroots' headless backend
+(tests/_niri.py), its output about 2560x1440.
 
 - niri: its config the user's own, read at run time, minus what it
   starts (spawn-at-startup), its screenshots into the test's scratch
   directory, no Xwayland; under dbus-run-session (its notifications and
-  portals stay off the session bus).
-- the shell: DISPLAY unset, the nested niri's socket by absolute path,
+  portals stay off the session bus). The tiling helper
+  (indigoshell/wm/tiling.py) runs in it, as the user's config starts it.
+- the shell: no DISPLAY, the nested niri's socket by absolute path,
   its own runtime, config, state, data and cache directories, a D-Bus
   of its own (dbus-run-session), no sound server, and a config.py of
   the user's shape (config_default's, plus a probe widget on the top
@@ -33,7 +34,7 @@ that is removed at the end:
   does for the key (`niri msg action spawn`).
 - input only through niri's own virtual pointer and keyboard
   (zwlr_virtual_pointer, zwp_virtual_keyboard: prototypes/wayland/
-  poke.py's way, in this process), so nothing reaches the X session;
+  poke.py's way, in this process), so nothing reaches the session;
   screenshots only by niri's own action, into the scratch directory.
 """
 
@@ -50,22 +51,6 @@ import tempfile
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-QTILE = r"""
-import json, sys
-from libqtile.command.client import InteractiveCommandClient as C
-c = C()
-cmd = sys.argv[1]
-if cmd == "add":
-    print(c.add_rule({"wm_class": "niri"}, {"group": sys.argv[2]}))
-elif cmd == "remove":
-    print(c.remove_rule(int(sys.argv[2])))
-elif cmd == "group":
-    print(json.dumps(c.group[sys.argv[2]].info()["windows"]))
-elif cmd == "fullscreen":
-    c.window[int(sys.argv[2])].enable_fullscreen()
-    print("ok")
-"""
 
 # The probe and the focus hook, in a config of the user's shape.
 TEST_CONFIG = r'''
@@ -581,44 +566,17 @@ class Poker:
 
 
 class Nested:
-    def __init__(self, user_env: dict, group: str) -> None:
+    def __init__(self, user_env: dict) -> None:
         self.user_env = user_env
-        self.group = group
         # Short: unix socket paths are, and the shell's sockets live here.
         self.tmp = tempfile.mkdtemp(prefix="wl-niri-", dir="/tmp")
-        self.run = os.path.join(self.tmp, "run")
         self.shots = os.path.join(self.tmp, "shots")
-        os.makedirs(self.run, mode=0o700)
         os.makedirs(self.shots)
         self.launcher_key = os.path.join(self.tmp, "launcher-key.sh")
         self.call_key = os.path.join(self.tmp, "call-key.sh")
-        self.rule = None
-        self.wrapper = None             # dbus-run-session
-        self.niri_pid = None
+        self.hidden = None              # tests/_niri.py's
         self.env: dict = {}
         self.procs: list[subprocess.Popen] = []
-
-    # qtile, through its own client, on the user's session (read-mostly:
-    # a rule of ours, added and removed)
-    def qtile(self, *args) -> str:
-        return subprocess.run([shutil.which("python3") or "python3", "-c", QTILE, *args],
-                              env=self.user_env, capture_output=True, text=True,
-                              timeout=10).stdout.strip()
-
-    def where(self) -> tuple[str | None, int | None]:
-        """qtile's group of our niri's X window, and the window."""
-        out = subprocess.run(["qtile", "cmd-obj", "-o", "root", "-f", "windows"],
-                             env=self.user_env, capture_output=True, text=True, timeout=10)
-        try:
-            windows = json.loads(out.stdout)
-        except ValueError:
-            return None, None
-        for w in windows:
-            prop = subprocess.run(["xprop", "-id", str(w["id"]), "_NET_WM_PID"],
-                                  env=self.user_env, capture_output=True, text=True).stdout.split()
-            if prop and prop[-1] == str(self.niri_pid):
-                return str(w.get("group")), w["id"]
-        return None, None
 
     def config(self) -> str:
         """The user's niri config as niri reads it, minus what it starts;
@@ -660,65 +618,34 @@ class Nested:
         return cfg
 
     def start(self, check) -> bool:
+        import _niri
         cfg = self.config()
         ok = subprocess.run(["niri", "validate", "-c", cfg], capture_output=True, text=True)
         if not check("the nested niri's config (the user's, minus what it starts) is valid",
                      ok.returncode == 0, ok.stderr[-400:]):
             return False
-        self.rule = self.qtile("add", self.group)
-        env = {k: v for k, v in self.user_env.items()
-               if k not in ("WAYLAND_DISPLAY", "NIRI_SOCKET", "WAYLAND_SOCKET",
-                            "DBUS_SESSION_BUS_ADDRESS")}
-        env.update(XDG_RUNTIME_DIR="/proc/self/cwd/run",
-                   XDG_DATA_HOME=os.path.join(self.tmp, "niri-data"),
+        env = {k: v for k, v in self.user_env.items() if k != "DBUS_SESSION_BUS_ADDRESS"}
+        env.update(XDG_DATA_HOME=os.path.join(self.tmp, "niri-data"),
                    XDG_CACHE_HOME=os.path.join(self.tmp, "niri-cache"),
-                   XDG_STATE_HOME=os.path.join(self.tmp, "niri-state"),
-                   TMPDIR=self.tmp)
-        self.wrapper = subprocess.Popen(
-            ["dbus-run-session", "--", "niri", "-c", cfg], cwd=self.tmp, env=env,
-            stdout=open(os.path.join(self.tmp, "niri.log"), "w"), stderr=subprocess.STDOUT,
-            start_new_session=True)
-        group = wid = None
-        for _ in range(150):
-            time.sleep(0.1)
-            if self.niri_pid is None:
-                kids = subprocess.run(["pgrep", "-P", str(self.wrapper.pid), "-x", "niri"],
-                                      capture_output=True, text=True).stdout.split()
-                self.niri_pid = int(kids[0]) if kids else None
-            if self.niri_pid is not None:
-                group, wid = self.where()
-            if group is not None or self.wrapper.poll() is not None:
-                break
-        if not check(f"the nested niri's window is on qtile group {self.group} "
-                     f"(rule {self.rule})", group == self.group, f"group {group}"):
-            self.kill_niri()
+                   XDG_STATE_HOME=os.path.join(self.tmp, "niri-state"))
+        self.hidden = _niri.Hidden(self.tmp, env, ["dbus-run-session", "--", "niri", "-c", cfg],
+                                   os.path.join(self.tmp, "niri.log"))
+        if not check("the nested niri up, out of sight (a headless cage's client)",
+                     self.hidden.start(), self.hidden.note):
+            self.hidden.stop()
             return False
-        self.wid = wid
-        base = f"/proc/{self.niri_pid}/cwd/run"
-        sock = None
-        for _ in range(50):
-            names = os.listdir(self.run)
-            sock = next((n for n in names if n.startswith("niri.") and n.endswith(".sock")),
-                        None)
-            wl = next((n for n in names if n.startswith("wayland-")
-                       and not n.endswith(".lock")), None)
-            if sock and wl:
-                break
-            time.sleep(0.1)
-        self.env = dict(env, XDG_RUNTIME_DIR=base, WAYLAND_DISPLAY=f"{base}/{wl}",
-                        NIRI_SOCKET=f"{base}/{sock}")
-        self.env.pop("DISPLAY", None)
+        self.env = self.hidden.env
+        # The tiling helper, which the user's config starts with niri: two
+        # windows side by side, not one full width hiding the other.
+        self.spawn([sys.executable, "-B", "-m", "indigoshell.wm.tiling"], "tiling.log",
+                   env=dict(self.env, PYTHONPATH=REPO))
         return True
 
     def output_size(self) -> tuple[int, int]:
-        """The nested output's logical size now: it follows the niri
-        window, which qtile lays out anew when its group is shown."""
+        """The nested output's logical size."""
         out = next(iter((self.msg("outputs") or {}).values()), {})
         return (out.get("logical", {}).get("width", 0),
                 out.get("logical", {}).get("height", 0))
-
-    def fullscreen_in_qtile(self) -> None:
-        self.qtile("fullscreen", str(self.wid))
 
     def msg(self, *args):
         out = subprocess.run(["niri", "msg", "--json", *args], env=self.env,
@@ -786,18 +713,7 @@ class Nested:
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.kill(int(pid), signal.SIGTERM)
 
-    def kill_niri(self) -> None:
-        if self.wrapper is not None and self.wrapper.poll() is None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(self.wrapper.pid, signal.SIGTERM)
-            try:
-                self.wrapper.wait(5)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(self.wrapper.pid, signal.SIGKILL)
-                self.wrapper.wait(5)
-
-    def stop(self, check) -> None:
+    def stop(self) -> None:
         for p in self.procs:
             if p.poll() is None:
                 with contextlib.suppress(ProcessLookupError):
@@ -808,13 +724,8 @@ class Nested:
             except subprocess.TimeoutExpired:
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(p.pid, signal.SIGKILL)
-        self.kill_niri()
-        if self.rule:
-            removed = self.qtile("remove", self.rule)
-            check(f"our qtile rule {self.rule} removed", removed in ("True", "None", ""),
-                  removed)
-        left = self.qtile("group", self.group)
-        check(f"qtile group {self.group} empty again", left in ("[]", ""), left)
+        if self.hidden is not None:
+            self.hidden.stop()
 
 
 class Shell:
@@ -838,7 +749,6 @@ class Shell:
         env.update(PYTHONPATH=REPO, PULSE_SERVER=f"unix:{nested.tmp}/no-pulse",
                    INDIGOSHELL_TEST_DUMP=self.dump, PYTHONDONTWRITEBYTECODE="1",
                    INDIGOSHELL_TEST_STAND_IN_PID=str(os.getpid()))
-        env.pop("DISPLAY", None)
         if raster:
             env["INDIGOSHELL_GPU"] = "0"
         self.env = env
@@ -1131,7 +1041,7 @@ def _frames(log: str) -> list[tuple[float, int, int]]:
 
 def _paints(log: str, name: str) -> list[tuple[float, int]]:
     return [(float(m[1]), int(m[2])) for m in re.finditer(
-        rf"region {re.escape(name)} painted in ([\d.]+) ms \((\d+) px\)", log)]
+        rf"(?:^|\s){re.escape(name)} painted in ([\d.]+) ms \((\d+) px\)", log, re.M)]
 
 
 def _median(values):
@@ -1142,19 +1052,14 @@ def _median(values):
 def run(args, check, section, user_env) -> None:
     from indigoshell import theme
 
-    group = "7" if args.full else "8"
-    section(f"4. the shell in a nested niri (qtile group {group})")
-    missing = [t for t in ("niri", "kitty", "dbus-run-session", "qtile", "xprop", "pgrep")
-               if shutil.which(t) is None]
-    if missing or not user_env.get("DISPLAY"):
-        print(f"  (skipped: needs an X session with qtile, and {missing or 'DISPLAY'})")
+    import _niri
+    section("4. the shell in a nested niri, out of sight")
+    missing = _niri.missing() + [t for t in ("kitty", "dbus-run-session", "pgrep")
+                                 if shutil.which(t) is None]
+    if missing:
+        print(f"  (skipped: needs {', '.join(missing)})")
         return
-    nested = Nested(user_env, group)
-    if group == "7":
-        left = nested.qtile("group", "7")
-        if left not in ("[]", ""):
-            print(f"  (skipped: qtile group 7 is not empty: {left})")
-            return
+    nested = Nested(user_env)
     shell = poker = app = None
     keep = args.shots
     if keep:
@@ -1162,8 +1067,6 @@ def run(args, check, section, user_env) -> None:
     try:
         if not nested.start(check):
             return
-        if args.full:
-            nested.fullscreen_in_qtile()
         time.sleep(1.0)
         W, H = nested.output_size()
         print(f"  (the nested output: {W}x{H})", flush=True)
@@ -1203,12 +1106,6 @@ def run(args, check, section, user_env) -> None:
             check("drawn by the GPU, not a software rasteriser", renderer.startswith("GPU")
                   and not re.search(r"llvmpipe|softpipe|swrast", renderer, re.I), renderer)
             print(f"  ({renderer})", flush=True)
-        line = re.search(r"canvas draws (.*); not on Wayland yet: (.*)$", log, re.M)
-        check("one line names what the canvas draws: the bars, the panels, the chord menu, "
-              "the launcher, the drop-down, the call; nothing left out",
-              line is not None and set(line[1].split(", ")) == {
-                  "bar", "topbar", "system", "hardware", "network", "menu", "launcher",
-                  "dropdown", "call"} and line[2] == "none", line[0] if line else "")
         warmed = re.search(r"canvas: (\d+) effect chain\(s\) and the hologram warmed on the "
                            r"GPU in (\d+) ms", log)
         if not args.raster:
@@ -1310,7 +1207,7 @@ def run(args, check, section, user_env) -> None:
             mark = len(shell.log())
             poker.move(px, py)
             poker.wheel(-1)
-            check("the wheel on the probe: a click of button 4 (X's scroll up)",
+            check("the wheel on the probe: a click of button 4 (scroll up)",
                   shell.wait_log(r"probe: click 4", 3, mark) is not None,
                   shell.log()[mark:][-400:])
         else:
@@ -1356,6 +1253,12 @@ def run(args, check, section, user_env) -> None:
                 break
             time.sleep(0.1)
         time.sleep(0.8)
+        # Both in view: the tiling helper halved the two columns, and niri
+        # scrolls back to the left one once it has the focus.
+        nested.action("focus-column-left")
+        time.sleep(0.3)
+        nested.action("focus-column-right")
+        time.sleep(0.3)
 
         def focused_app():
             return (nested.msg("focused-window") or {}).get("app_id")
@@ -1422,11 +1325,6 @@ def run(args, check, section, user_env) -> None:
         check("no errors or tracebacks after the call, the chip and the tray",
               "Traceback" not in log and " ERROR " not in log,
               "\n".join(ln for ln in log.splitlines() if "ERROR" in ln or "Trace" in ln)[:800])
-        if nested.output_size() != (W, H):
-            W, H = nested.output_size()
-            print(f"  (the nested output is {W}x{H} now: qtile laid its window out anew)",
-                  flush=True)
-            time.sleep(1.0)
 
         # A fullscreen window takes the canvas away; it comes back after.
         poker.click(W * 0.75, H / 2)
@@ -1529,7 +1427,7 @@ def run(args, check, section, user_env) -> None:
             cpu = (c1 - c0) / hz / (t1 - t0) * 100
             print(f"  (idle 10 s at log level info: {cpu:.1f}% of a core)", flush=True)
             # Most of it is the widgets' own: the frame clock's tick and
-            # their paint at INDIGO's 12 fps pulse, as on X11.
+            # their paint at INDIGO's 12 fps pulse.
             check("idle at log level info: well under a fifth of a core", cpu < 15, f"{cpu:.1f}%")
     finally:
         if app is not None:
@@ -1545,7 +1443,7 @@ def run(args, check, section, user_env) -> None:
             if keep:
                 shutil.copy(shell.log_path, os.path.join(keep, "shell.log"))
         nested.reap_launched()
-        nested.stop(check)
+        nested.stop()
         if keep:
             with contextlib.suppress(OSError):
                 shutil.copy(os.path.join(nested.tmp, "niri.log"), os.path.join(keep, "niri.log"))
@@ -1634,11 +1532,6 @@ def overlays(ctx) -> None:
         x = max(box["cx"] + box["cw"] + 20, W * 0.8)
         return min(x, W - 10), H / 2
 
-    if nested.output_size() != (W, H):
-        W, H = nested.output_size()         # qtile laid the niri window out anew
-        print(f"  (the nested output is {W}x{H} now)", flush=True)
-        time.sleep(1.0)
-    ctx["W"], ctx["H"] = W, H
     poker.keyboard("us")
     # Kitty b (the recorder) has the focus: everything it gets is kept.
     poker.click(W * 0.75, H / 2)
@@ -1780,8 +1673,8 @@ def overlays(ctx) -> None:
         if n == 1:
             img, path = nested.screenshot("system-panel", keep)
             shots["system-panel"] = path
-            check("the system panel opens bottom left over the bar, as on X (margin: the "
-                  "bar's height and the popup gap), and takes the keyboard",
+            check("the system panel opens bottom left over the bar (margin: the bar's height "
+                  "and the popup gap), and takes the keyboard",
                   bool(win) and win["cx"] == theme.BAR_MARGIN
                   and win["cy"] + win["ch"] == H - bh - theme.POPUP_GAP
                   and kb_is("Exclusive") == "Exclusive",
@@ -1797,7 +1690,7 @@ def overlays(ctx) -> None:
         win = idle("hardware")
         layers = nested.msg("layers") or []
         check("a click on the bar's meters opens the hardware panel bottom right; it takes no "
-              "keyboard (none on X either)", bool(win) and kb() == "None"
+              "keyboard", bool(win) and kb() == "None"
               and win["cx"] + win["cw"] == W - theme.BAR_MARGIN,
               f"{win and (win['cx'], win['cw'])} kb {kb()}")
         before = len(got())
@@ -2008,8 +1901,7 @@ def calls(ctx) -> None:
     nested, shell, poker = ctx["nested"], ctx["shell"], ctx["poker"]
     check, keep, shots, timings = ctx["check"], ctx["keep"], ctx["shots"], ctx["timings"]
     look = _Look(ctx)
-    W, H = nested.output_size()
-    ctx["W"], ctx["H"] = W, H
+    W, H = ctx["W"], ctx["H"]
 
     def mod_a():
         nested.action("spawn", "--", nested.call_key)
@@ -2067,8 +1959,8 @@ def calls(ctx) -> None:
         flat = behind
         print(f"  (the agent's plate over the busy window: edges {behind:.1f} behind it, "
               f"{sharp:.2f} through the plate unblurred, {blurred:.2f} blurred)", flush=True)
-        check("niri's screenshot: behind the plates the busy window is blurred (frosted, as "
-              "picom does), not merely showing through: its edges through the plate at most "
+        check("niri's screenshot: behind the plates the busy window is blurred (frosted), "
+              "not merely showing through: its edges through the plate at most "
               "half what they are with the canvas's blur off",
               flat > 3 and sharp > 0.4 and blurred < 0.5 * sharp,
               f"behind {flat:.1f}, unblurred {sharp:.2f}, blurred {blurred:.2f} ({path})")
@@ -2228,12 +2120,12 @@ def tray(ctx) -> None:
             poker.click(st["x"] + st["w"] / 2, st["y"] + st["h"] / 2)
         else:
             # The bottom bar's row is wider than a small output: the
-            # indicator is past its edge (as on X at that width).
+            # indicator is past its edge.
             how = "the indicator's toggle (it is past the edge of this small output)"
             look.do(tray="toggle")
         panel = look.idle("systray-panel")
         check(f"{how}: the tray's panel opens bottom right on the canvas's output, above the "
-              "bar, as on X (anchored, its margins), keyboard taken",
+              "bar (anchored, its margins), keyboard taken",
               bool(panel) and panel["cx"] + panel["cw"] == W - theme.BAR_MARGIN
               and panel["cy"] + panel["ch"] == H - theme.BAR_HEIGHT - theme.POPUP_GAP
               and look.kb_is("Exclusive") == "Exclusive",
@@ -2419,7 +2311,7 @@ def flux(ctx) -> None:
     nested, shell, poker = ctx["nested"], ctx["shell"], ctx["poker"]
     check, keep, shots = ctx["check"], ctx["keep"], ctx["shots"]
     look = _Look(ctx)
-    W, H = nested.output_size()
+    W, H = ctx["W"], ctx["H"]
     if ctx.get("app") is not None:
         ctx["app"].close()                  # the stand-in: no longer taken as focused
         ctx["app"] = None
@@ -2485,7 +2377,7 @@ def flux(ctx) -> None:
         win = _wait(lambda: next(iter(flux_windows()), None), 20)
         ids = _wait(lambda: tab_ids() == [1, 2, 3] and tab_ids(), 15)
         check("Flux on Qt's Wayland platform: its window a Wayland client of niri's (app id "
-              "indigoshell-browser) whose pid is the app connection's (no X handle)",
+              "indigoshell-browser) whose pid is the app connection's",
               m is not None and win is not None and win.get("pid") == int(m[2]),
               f"{m and m[0]} {win}")
         check("the top bar follows niri's focus: Flux's window focused, its three tabs on the "
@@ -2528,7 +2420,7 @@ def flux(ctx) -> None:
               bool(alpha) and bool(moved) and bool(home), f"{focused_title()} {tab_ids()}")
 
         # The pointer parked on the top bar: niri's focus follows the mouse
-        # (the user's config), and qtile may lay the nested niri out anew.
+        # (the user's config).
         def flux_focused():
             poker.move(W / 2, 3)
             if win is not None:
@@ -2643,7 +2535,7 @@ def flux(ctx) -> None:
         said = _wait(lambda: any("In Flux" in a for a in look.agent().get("attached", [])), 8)
         attached = (look.agent().get("attached") or [""])[-1]
         check("the call over Flux, Ctrl+L (Look) and a line: what Flux shows goes with it, the "
-              "window named by its app bar id and pid (no X window on Wayland)",
+              "window named by its app bar id and pid",
               bool(call) and bool(said) and "Gamma" in attached, attached[:300])
         look.do(do="end")                           # the stand-in hub's turn over, unrung
         time.sleep(0.5)
@@ -2657,11 +2549,10 @@ def flux(ctx) -> None:
                             "c = await control.click(tab, x=200, y=200)\n"
                             "await asyncio.sleep(1.5)\n"
                             "return {'png': len(s.get('png') or ''), 'w': s.get('width'), "
-                            "'clicked': bool(c), 'xid': [w.xid for w in t]}")
+                            "'clicked': bool(c)}")
         log = flux_log()
-        check("Flux's screenshot of a tab under Wayland (the view grabbed): a PNG; `tabs` gives "
-              "no X window (xid null)", isinstance(res, dict) and res.get("png", 0) > 1000
-              and all(x is None for x in res.get("xid") or [0]), str(res)[:400])
+        check("Flux's screenshot of a tab under Wayland (the view grabbed): a PNG",
+              isinstance(res, dict) and res.get("png", 0) > 1000, str(res)[:400])
         check("the agent clicking in the tab: the Watch locks it and its effects run on Qt "
               "Quick under Wayland (none turned off, no traceback in Flux's log)",
               isinstance(res, dict) and res.get("clicked") and "effects are off" not in log

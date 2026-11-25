@@ -2,8 +2,6 @@
 (flux/control.py) and the agent's hands (flux/hands.py).
 
     .venv/bin/python tests/browser_control.py              off screen, about a minute
-    .venv/bin/python tests/browser_control.py --on-screen  one test window,
-                                                           a few seconds
 
 Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. pure parts: the messages; the client against a stand-in browser
@@ -26,8 +24,8 @@ Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
      refs the same across reads and kinds within a page load, new after
      a reload, and nothing of them visible to the page (its globals, its
      DOM, a MutationObserver); screenshot (the size bound, a page changed
-     just before it); look (the focused window, the window focused last,
-     one named by its X window; a selection in the page, in a text field,
+     just before it); look (the focused window, the window focused last;
+     a selection in the page, in a text field,
      in a password field (never read), in a frame; the image in the
      selection and under the pointer; the screenshot; nothing the user
      sees changed); cancel; ids that are no int, twice, unknown types;
@@ -40,12 +38,6 @@ Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
      with one running does nothing, `look` never starts one; then that
      browser is ended with SIGTERM (its pid from its lock file, checked
      to be the test's).
-
---on-screen: the browser in this process on the real display, its
-window an unattended one (`--unattended`: nothing asks, muted):
-screenshots after the page changed, shown, then with the window
-moved to an empty workspace (a _NET_WM_DESKTOP request for the test's
-own window only; the user's workspace is never switched) and back.
 
 Everything runs in a scratch directory with sockets of its own; the
 user's profile, history, bookmarks, browser and shell are never touched.
@@ -77,8 +69,7 @@ sys.path.insert(0, str(REPO / "tests"))
 
 import _cage                    # noqa: E402
 
-if "--on-screen" not in sys.argv[1:]:
-    _cage.inside()              # out of sight: this test runs as a hidden cage's client
+_cage.inside()                  # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
@@ -307,7 +298,7 @@ def test_pure() -> None:
         kind, rid = msg.get("type"), msg.get("id")
         if kind == "tabs":
             return [protocol.result(rid, windows=[{
-                "window": 1, "xid": 99, "single": False, "focused": True,
+                "window": 1, "single": False, "focused": True,
                 "tabs": [{"tab": 5, "window": 1, "index": 0, "title": "T", "url": "u",
                           "loading": False, "current": True}]}], focused=1)]
         if kind == "read":
@@ -380,7 +371,7 @@ def test_pure() -> None:
         fake.close()
     w = out["tabs"][0] if out.get("tabs") else None
     check("client: results as Python values (WindowInfo, TabInfo)",
-          w is not None and w.window == 1 and w.focused and w.xid == 99
+          w is not None and w.window == 1 and w.focused
           and w.tabs[0].tab == 5 and w.current().title == "T", f"{out.get('tabs')}")
     check("client: Flux's refusal raised as ControlError with Flux's words",
           out.get("refused") == "tab 5 is not showing in its window; switch to it first")
@@ -524,7 +515,7 @@ def decode_png(data: str):
     return image
 
 
-def test_in_process(on_screen: bool = False) -> None:
+def test_in_process() -> None:
     import logging
 
     import shiboken6
@@ -606,12 +597,11 @@ def test_in_process(on_screen: bool = False) -> None:
     _cage.focus(w1)
     windows, _ = J(flux.tabs())
     ids = [(w.window, [t.tab for t in w.tabs]) for w in windows or []]
-    check("tabs: every window (most recently used first) and tab, the focused window, no X "
-          "window ids (Wayland), titles, addresses, which tab is current",
+    check("tabs: every window (most recently used first) and tab, the focused window, "
+          "titles, addresses, which tab is current",
           windows and windows[0].window == w1.id and windows[0].focused
           and not windows[1].focused and windows[1].window == w2.id
           and [t.tab for t in windows[0].tabs] == [t1.tab, t2.tab, t3.tab]
-          and windows[0].xid is None and windows[1].xid is None
           and windows[0].tabs[2].title == "Three" and windows[0].tabs[2].url == url("/page/Three")
           and [t.current for t in windows[0].tabs] == [False, True, False], f"{ids}")
     all_ids = [t.tab for w in windows for t in w.tabs]
@@ -935,9 +925,6 @@ def test_in_process(on_screen: bool = False) -> None:
     check("look with no browser window focused: the one focused last, and for how long it "
           "has not been", last is not None and last["window"] == w1.id and not last["focused"]
           and last["unfocused_for"] is not None and last["unfocused_for"] >= 0.2, f"{last} {err}")
-    named, err = J(flux.look(xid=int(w2.internalWinId())))
-    check("look at a window named by an X window: refused on Wayland, saying so",
-          named is None and err == "Flux is on Wayland: its windows have no X window", f"{err}")
     other.close()
     _cage.focus(w1)
     for path, want, where in (("/field", "words", "field"), ("/framesel", "FRAME-WORDS", "frame")):
@@ -1230,96 +1217,8 @@ def test_not_running() -> None:
         check("and the socket answers no more: NotRunning", asyncio.run(after()))
 
 
-# ── --on-screen ─────────────────────────────────────────────────────────
-def test_on_screen() -> None:
-    import shiboken6
-    import xcffib
-    import xcffib.xproto as xp
-    from PySide6.QtCore import QUrl
-    from PySide6.QtTest import QTest
-
-    from flux import control
-    from flux.qt import app as browser_app
-    from flux.qt import instance, startup
-    from flux.qt.profile import make_profile
-
-    section("on screen: one test window")
-    Log()
-    startup.apply_flags()
-    app = browser_app.make_application()
-    profile = make_profile()
-    lock = instance.try_lock()
-    browser = browser_app.Browser(profile, unattended=True)
-    browser.listen(SOCK["browser"])
-    window = browser.new_window()
-    tab = window.add_tab(QUrl(url("/color#gray")))
-    window.show()
-    client = Client(QTest.qWait)
-    flux = client.run(control.connect())
-    client.run(flux.wait(tab.id, timeout=15), 20)
-
-    c = xcffib.connect()
-    root = c.get_setup().roots[0].root
-
-    def atom(name: str) -> int:
-        return c.core.InternAtom(False, len(name), name).reply().atom
-
-    def card(win: int, name: str) -> list[int]:
-        r = c.core.GetProperty(False, win, atom(name), xp.Atom.CARDINAL, 0, 64).reply()
-        return list(r.value.to_atoms()) if r.value_len else []
-
-    wid = int(window.winId())
-    current = card(root, "_NET_CURRENT_DESKTOP")[0]
-    clients = c.core.GetProperty(False, root, atom("_NET_CLIENT_LIST"), xp.Atom.WINDOW, 0,
-                                 1024).reply().value.to_atoms()
-    used = {card(x, "_NET_WM_DESKTOP")[0] for x in clients if card(x, "_NET_WM_DESKTOP")}
-    count = card(root, "_NET_NUMBER_OF_DESKTOPS")[0]
-    empty = next((d for d in range(count - 1, -1, -1) if d not in used and d != current), None)
-
-    def to_desktop(d: int) -> None:
-        ev = struct.pack("=BBHII5I", 33, 32, 0, wid, atom("_NET_WM_DESKTOP"), d, 2, 0, 0, 0)
-        c.core.SendEvent(False, root, xp.EventMask.SubstructureRedirect
-                         | xp.EventMask.SubstructureNotify, ev)
-        c.flush()
-
-    def shot_colour(colour: str) -> tuple:
-        client.run(flux.go(tab.id, url(f"/color#{colour}")))
-        s = client.run(flux.screenshot(tab.id))
-        im = decode_png(s["png"])
-        px = im.pixelColor(im.width() // 2, im.height() // 2)
-        return (px.red(), px.green(), px.blue())
-
-    shown = [shot_colour("blue"), shot_colour("red")]
-    check("shown: each screenshot has the colour the page just changed to",
-          shown == [(0, 0, 255), (255, 0, 0)], f"{shown}")
-    if empty is None:
-        check("an empty workspace to move the test window to", False, f"{count} desktops, all used")
-    else:
-        to_desktop(empty)
-        QTest.qWait(1200)
-        mapped = c.core.GetWindowAttributes(wid).reply().map_state
-        hidden = [shot_colour("lime"), shot_colour("blue")]
-        to_desktop(current)
-        QTest.qWait(800)
-        back = shot_colour("red")
-        user_desktop = card(root, "_NET_CURRENT_DESKTOP")[0]
-        check("on a hidden workspace (the window unmapped): screenshots still fresh",
-              mapped != xp.MapState.Viewable and hidden == [(0, 255, 0), (0, 0, 255)],
-              f"map_state {mapped}, {hidden}")
-        check("back on the user's workspace: fresh; the user's workspace never switched",
-              back == (255, 0, 0) and user_desktop == current, f"{back}, desktop {user_desktop}")
-    client.run(flux.close())
-    browser.shutdown()
-    shiboken6.delete(browser)
-    shiboken6.delete(profile)
-    os.close(lock)
-    del app
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--on-screen", action="store_true",
-                        help="only the on-screen check: screenshots on a hidden workspace")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()
     print(f"scratch {SCRATCH}", flush=True)
@@ -1332,12 +1231,9 @@ def main() -> int:
     os.dup2(stream.fileno(), 2)         # Chromium and Qt talk on fd 2
     t0 = time.monotonic()
     try:
-        if args.on_screen:
-            test_on_screen()
-        else:
-            test_pure()
-            test_in_process()
-            test_not_running()
+        test_pure()
+        test_in_process()
+        test_not_running()
     except Exception:
         FAILED.append("aborted")
         print("\nABORTED:\n" + traceback.format_exc(), flush=True)

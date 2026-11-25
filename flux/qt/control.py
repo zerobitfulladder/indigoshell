@@ -100,7 +100,7 @@ from urllib.parse import urlsplit
 
 import shiboken6
 from PySide6.QtCore import QObject, QPoint, QPointF, Qt, QTimer, QUrl
-from PySide6.QtGui import QCursor, QGuiApplication
+from PySide6.QtGui import QCursor
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWebEngineCore import QWebEnginePage
@@ -610,13 +610,6 @@ class Requests:
         log.info("agent: %s%s", " ".join(parts), f" ({host})" if host else "")
 
     # ── the requests ────────────────────────────────────────────────────
-    def xid(self, window) -> int | None:
-        """The window's X window; None on Wayland (Qt's numbers there are
-        its own)."""
-        if QGuiApplication.platformName().startswith("wayland"):
-            return None
-        return int(window.internalWinId()) or None
-
     async def quit(self, job: Job, msg: dict) -> dict:
         """Flux ends right after this answer (protocol.py, "Quit")."""
         self.browser.quit("a quit request")
@@ -626,9 +619,8 @@ class Requests:
         focused = self.focused()
         out = []
         for w in self.windows():
-            out.append({"window": w.id, "xid": self.xid(w),
-                        "single": w.single, "focused": w is focused, "agent": w.agent,
-                        "tabs": [self.tab(w, t) for t in w.tabs]})
+            out.append({"window": w.id, "single": w.single, "focused": w is focused,
+                        "agent": w.agent, "tabs": [self.tab(w, t) for t in w.tabs]})
         return {"windows": out, "focused": focused.id if focused is not None else None,
                 "profile": self.browser.profile_name}
 
@@ -866,14 +858,6 @@ class Requests:
         theirs = pid is not None and _int(msg, "pid") != os.getpid()
         if msg.get("window") is not None and not theirs:
             return self.window(_int(msg, "window"))
-        if msg.get("xid") is not None:
-            xid = _int(msg, "xid")
-            if QGuiApplication.platformName().startswith("wayland"):
-                raise RequestError("Flux is on Wayland: its windows have no X window")
-            for w in self.windows():
-                if int(w.internalWinId()) == xid:
-                    return w
-            raise RequestError(f"no browser window is X window {xid}")
         window = self.focused()
         if window is None:
             last = [w for w in self.windows() if w.unfocused_at is not None]

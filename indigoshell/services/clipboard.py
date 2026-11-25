@@ -3,9 +3,8 @@
 Owning a selection means answering every request for it for as long as
 we hold it, which a window that parks and unparks is badly placed to do
 — so the text is handed to a tool that forks and serves it until
-something else takes the selection: xclip on X, wl-copy on Wayland (the
-window manager's choice, indigoshell/wm). PRIMARY is what a middle click
-pastes; CLIPBOARD is Ctrl+V.
+something else takes the selection: wl-copy (indigoshell/wm). PRIMARY is
+what a middle click pastes; CLIPBOARD is Ctrl+V.
 """
 
 from .. import wm

@@ -7,21 +7,16 @@ first web engine object is made, so all of this runs first.
 
 The platform (`settle_platform`, from __main__'s flags):
 
-- On a Wayland session ($WAYLAND_DISPLAY set, as niri sets it for what
-  it starts) Qt's Wayland platform, xcb only if that fails
-  (`QT_QPA_PLATFORM=wayland;xcb`), whatever $XDG_SESSION_TYPE says:
-  the shell then knows the window as a Wayland client (the app bar
-  protocol's "On Wayland"); under Xwayland niri would know it only as
-  Xwayland's. A platform the environment names stays.
-- `--software-gl`: a window on a screen, drawn without the GPU: no
-  OpenGL from the X server at all (`QT_XCB_GL_INTEGRATION=none`), Qt
+- Qt's Wayland platform (`QT_QPA_PLATFORM=wayland`), whatever
+  $XDG_SESSION_TYPE says (niri started from a tty leaves it `tty`): the
+  shell knows the window as a Wayland client of the app's process (the
+  app bar protocol's "Identity"). A platform the environment names
+  stays.
+- `--software-gl`: a window on a screen, drawn without the GPU: Qt
   Quick's software scene graph (`QT_QUICK_BACKEND=software`) and
-  Chromium's `--disable-gpu`. For a window shown over `ssh -X`, where
-  the X server is another machine's and GLX either fails or is not
-  offered. Qt finds by itself that MIT-SHM does not reach a remote X
-  server and does without it. It leaves a variable the environment
-  already set as it is, and turns off the page effects (they need a GPU
-  scene graph).
+  Chromium's `--disable-gpu`, for a machine whose GPU is missing or not
+  to be used. It leaves a variable the environment already set as it
+  is, and turns off the page effects (they need a GPU scene graph).
 
 Flux always runs on a screen: a bare compositor with nothing else on it
 (cage, as on a machine that lends the agent its Flux) is one too.
@@ -161,12 +156,10 @@ def resolve_widevine(own_dir: Path | None = None,
 
 
 def settle_platform(*, software: bool = False) -> None:
-    """The platform's variables: Wayland's on a Wayland session, and
-    those for `--software-gl` (the module docstring)."""
-    if os.environ.get("WAYLAND_DISPLAY"):
-        os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+    """The platform's variables: Wayland's, and those for `--software-gl`
+    (the module docstring)."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
     if software:
-        os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
         os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 

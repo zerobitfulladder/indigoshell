@@ -5,9 +5,8 @@ windows on that desktop (capped at four). The current desktop uses a
 different pair of colours, and a workspace holding a window that wants
 attention blinks in a ring pattern.
 
-Event-driven, no polling: the window manager's follower (EWMH root
-properties on X, niri's event stream) calls `_apply` with the readout
-whenever it may have changed.
+Event-driven, no polling: the window manager's follower (niri's event
+stream) calls `_apply` with the readout whenever it may have changed.
 """
 
 import logging

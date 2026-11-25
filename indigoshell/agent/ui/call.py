@@ -200,8 +200,7 @@ class CallHost(Widget):
         self._chip_look: tuple | None = None
         self._close_handle: asyncio.TimerHandle | None = None
         self._look: _Look | None = None
-        self._look_xid: int | None = None   # focused as the call opened
-        self._look_app: tuple | None = None     # ... on Wayland: (Flux's window id, pid)
+        self._look_app: tuple | None = None     # focused as the call opened: (Flux's id, pid)
 
     def children(self):
         # The projection last: it paints over the surfaces it scans.
@@ -244,27 +243,19 @@ class CallHost(Widget):
         self._was_busy = self.agent.busy
         self._nudge_t0 = 0.0
         # The window that had focus as the call opened: Look asks Flux
-        # about that one. The call takes no focus (it grabs the keyboard),
-        # so this is still the window the user was in.
-        self._look_xid, self._look_app = None, None
-        d = window.display
-        if hasattr(d, "get_int"):
-            try:
-                self._look_xid = d.get_int(d.root, "_NET_ACTIVE_WINDOW") or None
-            except Exception:
-                self._look_xid = None
-        else:
-            # Wayland has no window id the call could hand Flux: the app
-            # bar's focused window says which one, by Flux's own id for it
-            # and its process (applink/service.py).
-            from ...applink.service import AppService
-            apps = AppService.current
-            focused = apps.focused if apps is not None else None
-            if focused is not None and focused.kind == "flux" and focused.app_id is not None:
-                self._look_app = (focused.app_id, focused.link.pid)
+        # about that one. The call takes no focus (it holds the keyboard),
+        # so this is still the window the user was in: the app bar's
+        # focused window says which one, by Flux's own id for it and its
+        # process (applink/service.py).
+        from ...applink.service import AppService
+        apps = AppService.current
+        focused = apps.focused if apps is not None else None
+        self._look_app = None
+        if focused is not None and focused.kind == "flux" and focused.app_id is not None:
+            self._look_app = (focused.app_id, focused.link.pid)
         self._unsub = self.agent.subscribe(self._on_agent)
         self.agent.set_call_open(True)
-        mon = window.display.primary_monitor()
+        mon = window.scene.primary_monitor()
         self._avail_h = max(2 * CHIP + ROW_GAP,
                             mon.height - window.spec.margin.top - BOTTOM_CLEAR)
         self._natural_h = self._natural()
@@ -424,7 +415,7 @@ class CallHost(Widget):
             try:
                 window, pid = self._look_app or (None, None)
                 blocks = await flux_look(screenshot=look.screenshot, image=True,
-                                         xid=self._look_xid, window=window, pid=pid)
+                                         window=window, pid=pid)
             except Exception:
                 log.exception("look failed")
                 blocks = []

@@ -1,18 +1,17 @@
 """A browser window's line to the shell.
 
-The window says it is a Flux window, its own id for it and its X window
-(`announce`, the app bar protocol: indigoshell/applink/PROTOCOL.md; on
-Wayland no handle at all: the connection is the window), whether it has
-the keyboard focus (`active`, sent after the announce and whenever it
-changes: how the shell knows the focused window on Wayland), then sends
-its section of the top bar whole whenever it differs from the last
-(`push`, a `bar`), and whatever else it has to say (`send`: an
-`answer`, an `open`, forwarded `keys`). The shell answers that it has
-the window (`attached`, with the agent's name and colour, which Flux
-adopts: indigoshell/core/persona.py; and on Wayland `chords: "app"`:
-the window catches its bar's chords itself, `app_chords`) and sends the
-bar's events (a tab clicked, an input's query, a submit, a pick,
-`closed`, `fallback`), handed on as the `event` signal.
+The window says it is a Flux window and its own id for it (`announce`,
+the app bar protocol: indigoshell/applink/PROTOCOL.md; the connection is
+the window), whether it has the keyboard focus (`active`, sent after the
+announce and whenever it changes: how the shell knows the focused
+window), then sends its section of the top bar whole whenever it differs
+from the last (`push`, a `bar`), and whatever else it has to say
+(`send`: an `answer`, an `open`, forwarded `keys`). The shell answers
+that it has the window (`attached`, with the agent's name and colour,
+which Flux adopts: indigoshell/core/persona.py; from then on the window
+catches its bar's chords itself) and sends the bar's events (a tab
+clicked, an input's query, a submit, a pick, `closed`, `fallback`),
+handed on as the `event` signal.
 
 The pages' icons go apart from the bar (PROTOCOL.md, "Images"): `push`
 is given the PNGs its tabs name, by id, and before a bar goes, each it
@@ -44,15 +43,14 @@ workspace index or None. The window waits for it at most applink's
 PLACE_WAIT_S and then shows anyway: a shell restarting, or one too old
 to answer. With no shell listening at all (a bare compositor, as cage
 on a machine that lends the agent its Flux) a connection that fails
-answers None at once: nothing waits for a shell that is not there. On
-niri the shell answers at once and moves the window to that workspace
-once it maps.
+answers None at once: nothing waits for a shell that is not there. The
+shell answers at once and moves the window to that workspace once it
+maps.
 """
 
 import logging
 
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalSocket
 
 from indigoshell.applink import bar as B
@@ -75,16 +73,10 @@ class ShellLink(QObject):
     down = Signal()             # a connection attempt failed, or the line dropped
     placed = Signal(object)     # the answer to `place`: a workspace index, or None
 
-    def __init__(self, wid_of, window_id: int, parent=None) -> None:
+    def __init__(self, window_id: int, parent=None) -> None:
         super().__init__(parent)
-        self.wid_of = wid_of        # asked at connect time, once the window exists
         self.window_id = window_id  # Flux's own id for the window (control.py's)
         self._place: dict | None = None     # a `place` not yet answered
-        self.wid: int | None = None         # the X window last announced
-        # The window's handle is its native window id (X11's), but none on Wayland:
-        # there the connection itself is the window, and the window says
-        # whether it has the focus (`active`; PROTOCOL.md "On Wayland").
-        self.x11 = not QGuiApplication.platformName().startswith("wayland")
         self.bar: dict | None = None        # the latest bar, sent or not
         self.images: dict[str, bytes] = {}  # ... the PNGs its tabs name, by id
         self._sent: dict | None = None      # what this connection last carried
@@ -92,13 +84,11 @@ class ShellLink(QObject):
         self.sent_images = 0                # for the tests: images actually written
         self.active = False                 # the window has the keyboard focus
         self._active_sent: bool | None = None   # ... as this connection last said it
-        self.app_chords = False             # the shell takes no keys: we catch our chords
         self.attached = False
         self.fallback = False               # no shell shows the window's state
         self.restarting = False             # the shell said it will be back
         self.sent_bars = 0                  # for the tests: bars actually written
         self._started = self._closing = False
-        self._moving = False                # dropping the line to announce a new window
         self.sock = QLocalSocket(self)
         self.sock.connected.connect(self._on_connected)
         self.sock.readyRead.connect(self._on_ready_read)
@@ -140,25 +130,8 @@ class ShellLink(QObject):
             self._send_active()
 
     def _send_active(self) -> None:
-        if self.x11:
-            return                      # the shell follows X's focus itself
         self._active_sent = self.active
         self._send(B.active(self.active))
-
-    def follow(self, wid: int) -> None:
-        """The window's X window is `wid` now. If the shell was told
-        another, start over on a new connection at once (not at the next
-        retry), so it moves to this one. Nothing on Wayland: no handle."""
-        if (not self.x11 or self.wid is None or wid == self.wid or not self._started
-                or self._closing):
-            return
-        log.debug("X window 0x%x replaced by 0x%x: announcing again", self.wid, wid)
-        self.wid = None
-        self.retry.stop()
-        self._moving = True
-        self.sock.abort()
-        self._moving = False
-        self._connect()
 
     def send(self, msg: dict) -> None:
         """A one-off message (an answer, an input to open)."""
@@ -206,10 +179,9 @@ class ShellLink(QObject):
             self._sent = None
             self.held = set()
             self._active_sent = None
-            self.app_chords = False
             self._set_attached(False)
             self._again()
-            if not (self._closing or self._moving):
+            if not self._closing:
                 if self._place is not None:
                     # Nobody listens: no shell to place the window.
                     self._place = None
@@ -222,8 +194,7 @@ class ShellLink(QObject):
         log.debug("connected to the shell")
         self._sent = None
         self.held = set()
-        self.wid = int(self.wid_of()) if self.x11 else None
-        self._send(B.announce(protocol.KIND, self.window_id, self.wid))
+        self._send(B.announce(protocol.KIND, self.window_id))
         self._send_active()
         if self._place is not None:
             self._send(self._place)
@@ -257,7 +228,6 @@ class ShellLink(QObject):
                 if persona.adopt(msg.get("agent")):
                     log.info("the agent is %s in %s, as the shell says", persona.name(),
                              persona.color())
-                self.app_chords = msg.get(B.CHORDS) == B.CHORDS_APP
                 self._set_attached(True)
             elif kind == protocol.RESTARTING:
                 log.info("the shell is restarting; waiting up to %d s for it",

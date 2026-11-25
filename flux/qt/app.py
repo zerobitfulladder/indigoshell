@@ -6,10 +6,10 @@
    before any web engine object exists.
 2. The QApplication. Child widgets never become native windows
    (AA_DontCreateNativeWidgetSiblings: a web view turned native would
-   be another X window inside ours). Its argv[0] and name make
+   be another native window, a subsurface, inside ours). Its argv[0] and name make
    the window class `<APP>-browser`. Only the browser's own windows are
    GPU-composed, each from its creation (window.py), so a web view
-   appearing in one does not make Qt replace its X window, and menus
+   appearing in one does not make Qt replace its native window, and menus
    and tooltips stay quick to show.
 3. The profile, the per-site identity, the history and bookmarks
    (flux/places.py), the control socket (control.py: later
@@ -262,8 +262,8 @@ class Browser(QObject):
         new window of the user's, its page as it is (`move_tab`), the
         size of the one it left, shown and focused like any window the
         user opens; `at`, the root point where they let go, is where its
-        top left goes if the window manager lets it (qtile tiles it
-        wherever its layout says). None, and nothing done, for a
+        top left goes if the window manager lets it (niri puts it where
+        its layout says). None, and nothing done, for a
         window's last tab and a single window's."""
         src = self.window_of(tab.page)
         if src is None or src.single or len(src.tabs) < 2:

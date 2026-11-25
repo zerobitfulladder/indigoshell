@@ -21,7 +21,7 @@ status.RING_FOR_S = 1.2         # a ring that goes "missed" within the test
 
 
 async def main() -> int:
-    display = _live.connect()
+    canvas = _live.canvas()
     agent = _live.ScriptedAgent()
     agent.dial()
     widget = CallStatus(agent)
@@ -33,11 +33,10 @@ async def main() -> int:
     for label in ("first open", "opened again"):
         agent.say("update the deck")    # the call is closed: it works on
         if win is None:
-            win = _live.open_window(display, _live.offscreen(spec))
+            win = _live.open_window(canvas, spec)
         else:
             win.unpark()
             win.show()
-            display.pump()
         await asyncio.sleep(0.5)
         widget.frames = widget.chip.frames = 0
         for i in range(3):

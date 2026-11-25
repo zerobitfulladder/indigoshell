@@ -1,7 +1,7 @@
 """The desktop, for what the shell does there on the agent's behalf and
-the user's: running a program, asking the window manager (indigoshell/wm:
-qtile on X, niri on Wayland), opening a link or a file in its usual app
-and bringing that window forward on its workspace.
+the user's: asking the window manager (indigoshell/wm), opening a link
+or a file in its usual app and bringing that window forward on its
+workspace.
 
 laptop.py's hands use these (the hub's agent acting on the laptop), and
 the call opens a link clicked in a reply with `open_target`.
@@ -15,12 +15,9 @@ import skia
 
 from .. import wm
 from ..services import proc
-# A subprocess's (exit code, stdout, stderr), and `qtile cmd-obj` — kept
-# here under their old names for the callers that use them.
 from ..wm import run
-from ..wm.x11 import qtile
 
-__all__ = ["run", "qtile", "decode", "bring_forward", "open_target"]
+__all__ = ["decode", "bring_forward", "open_target"]
 
 
 def decode(data: bytes) -> skia.Image | None:
@@ -35,8 +32,7 @@ async def bring_forward(desktop_id: str) -> str:
     """Show the window of the app behind `desktop_id` (what xdg-open
     just handed something to) on its workspace, and focus it.
 
-    Matched by class (X) or app id (Wayland) against the desktop id's
-    name ("firefox" from firefox.desktop, "celluloid" from
+    Matched by app id against the desktop id's name ("firefox" from firefox.desktop, "celluloid" from
     io.github…Celluloid.desktop). A browser opens a link as a tab in its
     last window, which is the focused window of its workspace; an app
     that was not running yet maps its window on the current workspace,
@@ -53,8 +49,7 @@ async def bring_forward(desktop_id: str) -> str:
             wins = await wm.get().windows()
         except RuntimeError:
             return ""
-        matches = [w for w in wins
-                   if names & {c.lower() for c in w.classes}]
+        matches = [w for w in wins if w.app.lower() in names]
         if matches:
             break
     if not matches:

@@ -11,8 +11,8 @@ Beside it in this checkout is Flux, the shell's own web browser, a
 process of its own on PySide6 and QtWebEngine, on Qt's Wayland
 platform, with its tabs on the shell's top bar ([Running](#running)).
 
-X11 is no longer supported. The shell began there, on qtile; the X
-backend still in the tree is what is left of that, and unmaintained.
+It began on X11, under qtile, and is Wayland-only now: X is not
+supported, and none of its code is left.
 
 <p align="center">
   <img src="docs/media/hero.png" width="100%"
@@ -207,7 +207,7 @@ input, recorded at 1440p60 and cut by the scripts in
 [`prototypes/showcase/`](prototypes/showcase/), and its closing reel is
 the bar's own widget classes rendered on the GPU at several times their
 size, cut to the song's beats. It was recorded on X11 with qtile, before
-the move to Wayland, and those scripts still drive X.
+the move to Wayland; those scripts drove X and no longer run.
 
 ## What it does
 
@@ -372,10 +372,12 @@ QtWebEngine, from the distro ([Dependencies](#dependencies)).
 indigoshell/
   app.py            ─ entry point: client mode vs daemon mode, config load
   api.py            ─ open/close/toggle handlers for config files
-  window.py         ─ WindowSpec + the live window: layers, anchors,
-                      reservations, frame clock, damage, effect chain
-  canvas.py         ─ a WindowSpec as a region of the one overlay
-                      canvas; damage, z-order, input region, reservations,
+  window.py         ─ WindowSpec + the live window, a region of the
+                      canvas: layers, anchors, reservations, frame clock,
+                      damage, effect chain, the keyboard taken, outside
+                      clicks caught
+  canvas.py         ─ the one overlay canvas (Scene): the windows on it,
+                      damage, z-order, input region, reservations,
                       the pointer's and keyboard's routing, outside clicks
                       (pure)
   theme.py          ─ palette, semantic tokens, per-widget presets
@@ -429,7 +431,6 @@ indigoshell/
     wayland.py      ─ wl-clipboard, and screenshots over wlr-screencopy
     tiling.py       ─ qtile's two columns on niri (python3 -m
                       indigoshell.wm.tiling, standard library only)
-    x11.py          ─ X11 + qtile (no longer supported)
   backend/
     wayland.py      ─ the canvas surface on layer-shell, the bars'
                       reservations, the pointer, the keyboard
@@ -440,8 +441,6 @@ indigoshell/
     egl_wayland.py  ─ EGL on the Wayland platform for the canvas
     wlproto.py      ─ pywayland bindings generated at run time from the
                       system's protocol XML, into the cache
-    x11.py, gl.py   ─ the xcffib connection and EGL on X (no longer
-                      supported)
   core/
     daemon.py       ─ the loop: windows, services, IPC, signals, reload
     ipc.py          ─ control socket (line-delimited JSON over AF_UNIX)
@@ -497,8 +496,9 @@ flux/               ─ Flux, the browser (see Flux, above): its own process
                       tabs, keys, the agent's requests, the line to the shell
 prototypes/
   visuals/          ─ offline design sheets and GIFs, from the real widgets
-  showcase/         ─ the scripted demo (on X11): XTEST input, staging,
-                      recording, the GPU-rendered widget reel, the ffmpeg cut
+  showcase/         ─ the scripted demo, made on X11 and kept as it was
+                      (it no longer runs): XTEST input, staging, recording,
+                      the GPU-rendered widget reel, the ffmpeg cut
 ```
 
 ### Conventions
@@ -690,9 +690,8 @@ outputs and keyboard layouts.
 
 Python (declared in `pyproject.toml`, needs 3.14+): `skia-python`,
 `dbus-fast`, `psutil`, `watchdog`; and, for the call only, `websockets`
-(the `call` extra), the line to the hub. (`xcffib` is still declared,
-for the X backend.) Flux needs none of these, only PySide6 with
-QtWebEngine (below).
+(the `call` extra), the line to the hub. Flux needs none of these,
+only PySide6 with QtWebEngine (below).
 
 From the distro, like aubio (below): Python `pywayland`, with
 `wayland-protocols` and `wlr-protocols` for the XML its bindings are

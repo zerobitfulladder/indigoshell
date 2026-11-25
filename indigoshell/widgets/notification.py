@@ -431,8 +431,6 @@ class NotificationManager:
             # _reposition pushes the older ones up.
             margin=Insets(right=theme.NOTIF_OFFSET_X,
                           bottom=theme.NOTIF_OFFSET_Y),
-            override_redirect=True,
-            focusable=False,
             background="#00000000",
             effects=self.effects,
             effect_scale=self.effect_scale,
@@ -441,18 +439,10 @@ class NotificationManager:
         )
         self._toasts[notif.id] = toast
         self._order.append(notif.id)
-        from ..canvas import NotOnCanvas
         try:
             d.open(name)
-        except Exception as e:
-            if isinstance(e, NotOnCanvas):
-                # Wayland, until the canvas has toasts: said once.
-                if not getattr(self, "_said_no_canvas", False):
-                    self._said_no_canvas = True
-                    log.info("notifications: toasts are not on the Wayland "
-                             "canvas yet; not shown")
-            else:
-                log.exception("failed to open toast window")
+        except Exception:
+            log.exception("failed to open toast window")
             self._toasts.pop(notif.id, None)
             self._order.remove(notif.id)
             d.kinds.pop(name, None)

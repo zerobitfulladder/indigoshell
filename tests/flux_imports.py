@@ -7,8 +7,8 @@
      persona, applink.protocol and applink.bar, fuzzy and services.proc
      (read from the source, so flux/qt is checked without loading
      PySide6);
-  2. Flux's pure modules import with xcffib, skia, dbus_fast, psutil and
-     PySide6 blocked (as on a machine with none of them), and load no
+  2. Flux's pure modules import with skia, dbus_fast, psutil and PySide6
+     blocked (as on a machine with none of them), and load no
      other shell module than those;
   3. the shell never imports flux.qt.
 
@@ -29,7 +29,7 @@ ALLOWED = {
     "indigoshell.services",
     "indigoshell.services.proc",
 }
-BLOCKED = ("xcffib", "skia", "dbus_fast", "psutil", "PySide6")
+BLOCKED = ("skia", "dbus_fast", "psutil", "PySide6")
 PURE = ("flux", "flux.protocol", "flux.places", "flux.profiles", "flux.uploads",
         "flux.desktop", "flux.control", "flux.hands", "flux.bar")
 

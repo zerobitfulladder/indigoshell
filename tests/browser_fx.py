@@ -1,19 +1,16 @@
 """The agent's page effects in Flux (flux/qt/effects.py): the shell's
 glitch, her tint and the panels' scanlines over a page she drives.
 
-    .venv/bin/python tests/browser_fx.py              a small floating test window (and the
-                                                      agent's, as small) in the bottom-right
-                                                      corner, never focused; about a minute
-    .venv/bin/python tests/browser_fx.py --off-screen only the parts that need no display
+    .venv/bin/python tests/browser_fx.py              about a minute, in a hidden cage
 
-Off screen:
+Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. the shaders: a fresh qsb build compared byte for byte with the
      committed .qsb files (skipped, saying so, where there is no qsb);
      their serialization format (9: what Qt 6.8 reads too).
 
-On screen (this process, the real display; the test's own windows,
-560x380, floating, focus-refusing, in the bottom-right corner; their
-pixels read from their own composite pixmaps, never the root):
+The browser in this process, its windows the cage's; their pixels as
+Qt composes them (`QWidget.grab`: the page's and the overlay's Qt Quick
+widgets drawn into one image in this process):
   3. the triggers, through the control socket as the agent drives:
      a lock starts with the glitch in (about 14 frames in 0.22 s), and
      the click that started it lands only once the glitch is over; the
@@ -38,9 +35,7 @@ pixels read from their own composite pixmaps, never the root):
      drawn, the page as it was).
 
 Never touched: the user's profile, history, bookmarks, Downloads, browser
-and shell; no real input is injected into the display (Qt's own events in
-this process only), no popup is shown, no workspace is switched and no
-window but the test's own is moved.
+and shell; input is Qt's own events in this process only.
 """
 
 import argparse
@@ -61,6 +56,11 @@ from urllib.parse import urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "tests"))
+
+import _cage                    # noqa: E402
+
+_cage.inside()                  # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
@@ -71,7 +71,6 @@ SCRATCH = Path("/nonexistent")          # made in main
 TAG = f"{APP}-fx-{os.getpid()}"
 SOCK = {name: os.path.join(runtime_dir(), f"{TAG}-{name}.sock") for name in ("browser", "apps")}
 PORT = 0
-WIN_W, WIN_H = 560, 380                 # the test's windows: small, in the corner
 NO_REPEATS = (600.0, 600.0)
 
 
@@ -217,25 +216,6 @@ class Log:
         return sum(words in r.getMessage() for r in self.records)
 
 
-def small_corner(browser_app) -> None:
-    """The test's windows: floating (dialogs to the window manager), never
-    focused, small, in the bottom-right corner."""
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QGuiApplication
-    made = browser_app.Browser.new_window
-
-    def new_window(self, *, single: bool = False, dialog: bool = False, **kw):
-        offset = 40 * len(self.windows)
-        window = made(self, single=single, dialog=dialog or not single, **kw)
-        window.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus)
-        window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        area = QGuiApplication.primaryScreen().availableGeometry()
-        window.resize(WIN_W, WIN_H)
-        window.move(area.right() - WIN_W - 12 - offset, area.bottom() - WIN_H - 12 - offset)
-        return window
-    browser_app.Browser.new_window = new_window
-
-
 def start_browser(unattended: bool):
     from PySide6.QtTest import QTest
 
@@ -243,7 +223,6 @@ def start_browser(unattended: bool):
     from flux.qt import app as browser_app
     from flux.qt import instance, startup
     from flux.qt.profile import make_profile
-    small_corner(browser_app)
     startup.apply_flags()
     app = browser_app.make_application()
     profile = make_profile()
@@ -287,65 +266,24 @@ def test_shaders() -> None:
           set(versions.values()) == {9}, f"{versions}")
 
 
-# ── on screen ───────────────────────────────────────────────────────────
+# ── the effects, in the cage ────────────────────────────────────────────
 class Reader:
-    """A connection of the test's own, reading its own windows' pixels
-    (their composite pixmaps), as tests/browser_act.py does."""
+    """The test's own windows' pixels, as Qt composes them in this
+    process (`QWidget.grab`): nothing is read from the compositor."""
 
-    def __init__(self) -> None:
-        import xcffib
-        import xcffib.composite
-        self.conn = xcffib.connect()
-        self.screen = self.conn.get_setup().roots[0]
-        self.composite = self.conn(xcffib.composite.key)
-        self.composite.QueryVersion(0, 4).reply()
-
-    def region(self, wid: int, x: int, y: int, w: int, h: int):
+    def region(self, window, x: int, y: int, w: int, h: int):
         import numpy as np
-        import xcffib.xproto as xp
-        core = self.conn.core
-        try:
-            at = core.GetGeometry(wid).reply().border_width
-            pix = self.conn.generate_id()
-            self.composite.NameWindowPixmap(wid, pix)
-            try:
-                img = core.GetImage(xp.ImageFormat.ZPixmap, pix, at + x, at + y, w, h,
-                                    0xFFFFFFFF).reply()
-            finally:
-                core.FreePixmap(pix)
-                self.conn.flush()
-        except (xp.DrawableError, xp.MatchError, xp.WindowError):
+        from PySide6.QtCore import QRect
+        from PySide6.QtGui import QImage
+        img = window.grab(QRect(x, y, w, h)).toImage().convertToFormat(
+            QImage.Format.Format_RGB888)
+        if img.isNull() or (img.width(), img.height()) != (w, h):
             return None
-        a = np.frombuffer(bytes(img.data.buf()), np.uint8)[:w * h * 4]
-        return a.reshape(h, w, 4)[..., [2, 1, 0]].astype(np.int16)
-
-    def cardinal(self, wid: int, name: str) -> int | None:
-        import xcffib.xproto as xp
-        atom = self.conn.core.InternAtom(False, len(name), name.encode()).reply().atom
-        try:
-            r = self.conn.core.GetProperty(False, wid, atom, xp.Atom.CARDINAL, 0, 1).reply()
-        except Exception:       # noqa: BLE001
-            return None
-        return r.value.to_atoms()[0] if r.value_len else None
-
-    def to_current_desktop(self, wid: int) -> None:
-        """The test's own window, asked onto the workspace shown when the
-        window manager put it elsewhere; the workspaces left as they are."""
-        import xcffib.xproto as xp
-        current = self.cardinal(self.screen.root, "_NET_CURRENT_DESKTOP")
-        mine = self.cardinal(wid, "_NET_WM_DESKTOP")
-        if current is None or mine is None or mine in (current, 0xFFFFFFFF):
-            return
-        atom = self.conn.core.InternAtom(False, 15, b"_NET_WM_DESKTOP").reply().atom
-        data = xp.ClientMessageData.synthetic([current, 1, 0, 0, 0], "I" * 5)
-        event = xp.ClientMessageEvent.synthetic(32, wid, atom, data)
-        self.conn.core.SendEvent(False, self.screen.root,
-                                 xp.EventMask.SubstructureRedirect
-                                 | xp.EventMask.SubstructureNotify, event.pack())
-        self.conn.flush()
+        a = np.frombuffer(img.constBits(), np.uint8, img.sizeInBytes())
+        return a.reshape(h, img.bytesPerLine())[:, :w * 3].reshape(h, w, 3).astype(np.int16)
 
 
-def test_on_screen() -> None:
+def test_effects() -> None:
     import numpy as np
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
@@ -353,15 +291,20 @@ def test_on_screen() -> None:
     from flux import protocol
     from flux.qt import effects
 
-    logs = Log("browser-on-screen.log")
+    logs = Log("browser-effects.log")
     stamps: dict[int, list[float]] = {}     # fx id -> its frames' times
+    drawn: dict[int, float] = {}            # fx id -> the band's head in its last frame
     real_make = effects.make
 
     def make(window, acting=None):
         fx = real_make(window, acting)
         if fx is not None:
             got = stamps.setdefault(id(fx), [])
-            fx.widget.quickWindow().afterRendering.connect(lambda: got.append(time.monotonic()))
+
+            def rendered(fx=fx, got=got):
+                got.append(time.monotonic())
+                drawn[id(fx)] = float(fx.holo.property("head") or 0.0)
+            fx.widget.quickWindow().afterRendering.connect(rendered)
         return fx
     effects.make = make
     effects.REPEAT_S = NO_REPEATS
@@ -396,14 +339,13 @@ def test_on_screen() -> None:
     w = browser.windows[0]
     reader = Reader()
     wid = int(w.winId())
-    reader.to_current_desktop(wid)
     QTest.qWait(800)
     check("the stand-in shell has the window (no fallback line to move the page)",
           w.line.isHidden(), "")
     st = w.stack.geometry()
     inner = st.adjusted(2, 2, -2, -2)
-    plain = reader.region(wid, inner.x(), inner.y(), inner.width(), inner.height())
-    check("on screen: the test's window shows the page (white beside its heading)",
+    plain = reader.region(w, inner.x(), inner.y(), inner.width(), inner.height())
+    check("the test's window shows the page (white beside its heading)",
           plain is not None and int(plain[200, 400].min()) >= 250,
           f"{plain[200, 400].tolist() if plain is not None else None}")
 
@@ -416,7 +358,7 @@ def test_on_screen() -> None:
         QTest.qWait(4)
         fx = watch.effects.get(w.id)
         if fx is not None and fx.phase == "in":
-            got = reader.region(wid, inner.x(), inner.y(), inner.width(), inner.height())
+            got = reader.region(w, inner.x(), inner.y(), inner.width(), inner.height())
             if got is not None:
                 shots.append(got)
     done = future.result() if future.done() else None
@@ -432,7 +374,7 @@ def test_on_screen() -> None:
           and len(frames) >= 10,
           f"{len(frames)} frames in {(in_end - lock_t) * 1000 if in_end and lock_t else 0:.0f} ms, "
           f"gaps median {np.median(gaps):.1f} max {gaps.max():.1f} ms")
-    check("... the window keeps its X window (Qt made no new native window for the overlay)",
+    check("... the window keeps its native window (Qt made no new one for the overlay)",
           int(w.winId()) == wid, f"{wid:#x} -> {int(w.winId()):#x}")
     check("... and the click lands on the page only once the glitch is over",
           bool(injected) and in_end is not None and injected[0] >= in_end - 0.005
@@ -440,7 +382,7 @@ def test_on_screen() -> None:
           f"landed {(injected[0] - lock_t) * 1000 if injected and lock_t else -1:.0f} ms after "
           f"the lock, glitch over at {(in_end - lock_t) * 1000 if in_end and lock_t else -1:.0f}")
     torn = 0.0
-    tinted_now = reader.region(wid, inner.x(), inner.y(), inner.width(), inner.height())
+    tinted_now = reader.region(w, inner.x(), inner.y(), inner.width(), inner.height())
     if shots and tinted_now is not None:
         torn = max(float((np.abs(s - plain).max(-1) > 40).mean()) for s in shots)
         torn_vs_tint = max(float((np.abs(s - tinted_now).max(-1) > 40).mean()) for s in shots)
@@ -468,7 +410,7 @@ def test_on_screen() -> None:
     lined = np.array([round(c * 255 + (1 - line_rgb.w()) * v) for c, v in
                       zip((line_rgb.x(), line_rgb.y(), line_rgb.z()), tinted)])
     fy = fx.widget.geometry().y()
-    reg = reader.region(wid, inner.x() + 300, inner.y() + 150, 40, 9)
+    reg = reader.region(w, inner.x() + 300, inner.y() + 150, 40, 9)
     rows_ok, worst = True, 0
     for i in range(9):
         y = inner.y() + 150 + i - fy
@@ -499,21 +441,22 @@ def test_on_screen() -> None:
           f"under the pointer {type(w.childAt(pt)).__name__}")
     overlay = watch.overlays[w.id]
     mg = overlay.mark.geometry()
-    mark_on = reader.region(wid, mg.x(), mg.y(), mg.width(), mg.height())
-    edge_on = reader.region(wid, st.x(), st.y() + 100, 2, 50)
+    mark_on = reader.region(w, mg.x(), mg.y(), mg.width(), mg.height())
+    edge_on = reader.region(w, st.x(), st.y() + 100, 2, 50)
     fx.widget.hide()
     QTest.qWait(150)
-    mark_off = reader.region(wid, mg.x(), mg.y(), mg.width(), mg.height())
-    edge_off = reader.region(wid, st.x(), st.y() + 100, 2, 50)
+    mark_off = reader.region(w, mg.x(), mg.y(), mg.width(), mg.height())
+    edge_off = reader.region(w, st.x(), st.y() + 100, 2, 50)
     fx.widget.show()
+    fx._read(force=True)                              # the page as it is now, in its strip
     h = fx.holo                                       # a band posed across the mark
     for name, value in (("stripTop", 0.0), ("stripH", float(fx.widget.height())),
                         ("texTop", 0.0), ("texH", float(fx.widget.height())),
                         ("head", float(mg.center().y() - fy)), ("scanning", 1.0)):
         h.setProperty(name, value)
     QTest.qWait(150)
-    mark_band = reader.region(wid, mg.x(), mg.y(), mg.width(), mg.height())
-    beside = reader.region(wid, inner.x() + 4, mg.center().y(), min(60, mg.x() - inner.x() - 8), 1)
+    mark_band = reader.region(w, mg.x(), mg.y(), mg.width(), mg.height())
+    beside = reader.region(w, inner.x() + 4, mg.center().y(), min(60, mg.x() - inner.x() - 8), 1)
     h.setProperty("scanning", 0.0)
     same = (mark_on is not None and np.array_equal(mark_on, mark_off),
             mark_band is not None and np.array_equal(mark_on, mark_band),
@@ -528,18 +471,22 @@ def test_on_screen() -> None:
     wait(lambda: fx._y is not None and 40 < fx._y < 120, 9)
 
     def band_at():
-        col = reader.region(wid, inner.x() + 300, inner.y(), 60, inner.height())
+        # Against the head of the overlay's frame the read shows: its
+        # last one drawn when the read is done.
+        col = reader.region(w, inner.x() + 300, inner.y(), 60, inner.height())
         g = np.median(col[..., 1], axis=1)
         rows = [y for y in range(len(g)) if (y + inner.y() - fy) % 3 and g[y] >= 250]
-        return (float(np.mean(rows)) if rows else None), fx._y, time.monotonic()
+        return (float(np.mean(rows)) if rows else None), drawn[id(fx)], stamps[id(fx)][-1]
     b1, y1, s1 = band_at()
     QTest.qWait(350)
     b2, y2, s2 = band_at()
     moved = (b2 - b1) if b1 is not None and b2 is not None else None
     want = effects.SCAN_SPEED * (s2 - s1)
+    # The lit rows' middle trails the head: the wake above it is lit too
+    # (holo.frag), less of it while the head is near the top.
     check("the band runs down the page at the shell's 170 px/s, where the shader says it is",
           moved is not None and abs(moved - want) <= 25
-          and abs(b1 - y1) <= 14 and abs(b2 - y2) <= 14,
+          and abs(b1 - y1) <= 18 and abs(b2 - y2) <= 18,
           f"band at {b1} then {b2} (head {y1:.0f}, {y2:.0f}): moved {moved} in "
           f"{(s2 - s1) * 1000:.0f} ms, {want:.0f} expected")
 
@@ -693,8 +640,6 @@ def test_on_screen() -> None:
     her = next((x for x in browser.windows if x.agent), None)
     hfx = watch.effects.get(her.id) if her is not None else None
     wait(lambda: hfx is not None and any(e == "in-end" for e, _ in hfx.events), 4)
-    if her is not None:
-        reader.to_current_desktop(int(her.winId()))
     hev = [e for e, _ in hfx.events] if hfx else []
     check("borrowed while driven: the effects vanish from the user's window, and in the "
           "agent's the lock starts, its glitch owed until the window shows, then played",
@@ -717,6 +662,7 @@ def test_on_screen() -> None:
     old = watch.effects.pop(w.id)
     old.close()
     effects._off = None
+    real_qml, real_shaders = effects.QML, effects.SHADERS
     effects.QML = broken / "effects.qml"
     said0 = logs.said("page effects are off")
     done, err = J(flux.click(T, x=300, y=200))
@@ -730,7 +676,7 @@ def test_on_screen() -> None:
           f"off: {effects.off_reason()!r}")
     J(flux.release(T))
     QTest.qWait(300)
-    effects.QML = REPO / "indigoshell" / "browser" / "qt" / "effects.qml"
+    effects.QML = real_qml
     bad = SCRATCH / "badshaders"
     bad.mkdir()
     for name in effects.SOURCES:
@@ -740,7 +686,7 @@ def test_on_screen() -> None:
     done, err = J(flux.click(T, x=300, y=200))
     QTest.qWait(400)
     dead = watch.effects.get(w.id)
-    now = reader.region(wid, inner.x(), inner.y(), inner.width(), inner.height())
+    now = reader.region(w, inner.x(), inner.y(), inner.width(), inner.height())
     away = (slice(130, 260), slice(150, 400))
     check("shaders that fail on the overlay's first frame: the effects go (nothing drawn, the "
           "page as it was), why said once, the lock and the mark as ever",
@@ -752,7 +698,7 @@ def test_on_screen() -> None:
           f"off: {effects.off_reason()!r}, page diff "
           f"{int(np.abs(now[away] - plain[away]).max()) if now is not None else None}")
     J(flux.release(T))
-    effects.SHADERS = REPO / "indigoshell" / "browser" / "qt" / "shaders"
+    effects.SHADERS = real_shaders
     effects.make = real_make
     stop_browser(*parts)
     shell.close()
@@ -760,8 +706,6 @@ def test_on_screen() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--off-screen", action="store_true",
-                        help="only the parts that need no display")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()
     global PORT, SCRATCH
@@ -790,8 +734,7 @@ def main() -> int:
     t0 = time.monotonic()
     try:
         test_shaders()
-        if not args.off_screen:
-            test_on_screen()
+        test_effects()
     except Exception:
         FAILED.append("aborted")
         print("\nABORTED:\n" + traceback.format_exc(), flush=True)

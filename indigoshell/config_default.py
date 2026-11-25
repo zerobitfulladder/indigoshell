@@ -76,7 +76,7 @@ SCREEN = _plugins.screen
 # window supplies t/appear/seed), so sharing it is safe and compiles the
 # SkSL once instead of once per panel.
 #
-# `tear` is the parameter that costs: it sets `bleed`, which grows the X
+# `tear` is the parameter that costs: it sets `bleed`, which grows the
 # window on every side. At 0.10 it is smaller than the ColorSplit it
 # replaced, so the panels' windows shrank. On the GPU the pass itself is
 # ~0.08ms, so nothing else here is a performance trade.
@@ -245,7 +245,6 @@ def top_bar(*widgets, apps: AppService = APPS) -> WindowSpec:
         anchor=Anchor.TOP,
         size=(None, theme.TOP_BAR_HEIGHT),
         exclusive=True,
-        focusable=False,
         background=theme.BAR_BG,
         padding=Insets.xy(theme.BAR_MARGIN, 0),
         autostart=True,
@@ -264,7 +263,6 @@ WINDOWS = [
         anchor=Anchor.BOTTOM,
         size=(None, theme.BAR_HEIGHT),
         exclusive=True,
-        focusable=False,
         background=theme.BAR_BG,
         padding=Insets.xy(theme.BAR_MARGIN, 0),
         autostart=True,
@@ -301,8 +299,6 @@ WINDOWS = [
         size=(600, 580),
         margin=Insets(left=theme.BAR_MARGIN,
                       bottom=theme.BAR_HEIGHT + theme.POPUP_GAP),
-        override_redirect=True,
-        focusable=False,
         dismiss_on_outside_click=True,
         keep_alive=True,
         # Nothing in here binds a key, but the grab is what makes Escape
@@ -330,8 +326,6 @@ WINDOWS = [
         size=(600, 520),
         margin=Insets(right=theme.BAR_MARGIN,
                       bottom=theme.BAR_HEIGHT + theme.POPUP_GAP),
-        override_redirect=True,
-        focusable=False,
         dismiss_on_outside_click=True,
         keep_alive=True,
         background="#00000000",
@@ -359,8 +353,6 @@ WINDOWS = [
         size=(600, 470),
         margin=Insets(right=theme.BAR_MARGIN,
                       bottom=theme.BAR_HEIGHT + theme.POPUP_GAP),
-        override_redirect=True,
-        focusable=False,
         dismiss_on_outside_click=True,
         keep_alive=True,
         background="#00000000",
@@ -389,8 +381,6 @@ WINDOWS = [
         size=(1, 1),                 # placeholder; content-sized on attach
         margin=Insets(right=theme.BAR_MARGIN + 8,
                       bottom=theme.BAR_HEIGHT + theme.BAR_MARGIN + 6),
-        override_redirect=True,
-        focusable=False,
         dismiss_on_outside_click=True,
         grab_keyboard=True,
         keep_alive=True,
@@ -412,8 +402,6 @@ WINDOWS = [
         name=LAUNCHER,
         layer=Layer.OVERLAY,
         size=(1, 1),                 # placeholder; content-sized on attach
-        override_redirect=True,
-        focusable=False,
         dismiss_on_outside_click=True,
         grab_keyboard=True,
         keep_alive=True,
@@ -432,8 +420,6 @@ WINDOWS = [
         name=DROP_WINDOW,
         layer=Layer.OVERLAY,
         size=(1, 1),                 # placeholder; content-sized
-        override_redirect=True,
-        focusable=False,
         keep_alive=True,
         background=theme.BAR_BG,
         content=DropList(),
@@ -458,11 +444,9 @@ def call(hub) -> tuple[WindowSpec, list]:
         anchor=Anchor.TOP | Anchor.RIGHT,
         size=(1, 1),                 # placeholder; content-sized
         margin=Insets(top=theme.TOP_BAR_HEIGHT + 16, right=theme.BAR_MARGIN + 12),
-        override_redirect=True,
-        focusable=False,
         dismiss_on_outside_click=True,
         grab_keyboard=True,
-        close_keys=("super+a",),     # qtile's MOD+A, hidden from it by the grab
+        close_keys=("super+a",),     # its own Mod+A: niri never sees it while the call has the keyboard
         keep_alive=True,
         background="#00000000",
         blur=True,

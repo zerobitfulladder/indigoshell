@@ -3,9 +3,10 @@ key, click or loss of focus that closes it (PROTOCOL.md, section 4).
 
 A `Prompt` is one open INPUT or MENU of an app window's bar (or the
 shell's own: MOD+D's launcher, launcher.py, `local` rows of its own).
-While it is open it has the keyboard (the app service holds it:
-service.py; the launcher's window grabs it), and every key typed
-reaches `key` in the order typed, whichever window X reported it on.
+While it is open it has the keyboard (the app service takes the
+canvas's: service.py; the launcher's window holds it), and every key
+typed reaches `key` in the order typed, whichever line it came by (the
+canvas's, or the app forwarding what its window got first).
 For an app's input it shows in two places (the launcher frames the same
 two as its own panel):
 

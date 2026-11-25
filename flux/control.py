@@ -1,6 +1,6 @@
 """The agent's line to Flux: the control socket's client.
 
-Pure Python on asyncio (no PySide6, no xcffib, no skia), so the daemon
+Pure Python on asyncio (no PySide6, no skia), so the daemon
 imports it. Flux listens at `protocol.control_socket_path()`, one socket
 per browser process; protocol.py documents every request and result.
 
@@ -57,8 +57,8 @@ changes nothing on screen.
 profile, made again when it dropped.
 
 Pure means more than no Qt here: this module and hands.py import on a
-machine with PySide6 and none of the shell's own dependencies (xcffib,
-skia, dbus-fast, psutil), a hub lending Flux's hands.
+machine with PySide6 and none of the shell's own dependencies (skia,
+dbus-fast, psutil), a hub lending Flux's hands.
 """
 
 import asyncio
@@ -117,7 +117,6 @@ class TabInfo:
 @dataclass(frozen=True)
 class WindowInfo:
     window: int
-    xid: int | None                     # None on Wayland
     single: bool
     focused: bool
     tabs: tuple[TabInfo, ...]
@@ -125,7 +124,7 @@ class WindowInfo:
 
     @classmethod
     def of(cls, d: dict) -> "WindowInfo":
-        return cls(int(d["window"]), d.get("xid"), bool(d.get("single")),
+        return cls(int(d["window"]), bool(d.get("single")),
                    bool(d.get("focused")), tuple(TabInfo.of(t) for t in d.get("tabs") or ()),
                    bool(d.get("agent")))
 
@@ -270,10 +269,10 @@ class Control:
         return await self.request("screenshot", {"tab": tab, "full": full or None},
                                   within=within)
 
-    async def look(self, *, window: int | None = None, xid: int | None = None,
-                   pid: int | None = None, screenshot: bool = False, image: bool = False,
+    async def look(self, *, window: int | None = None, pid: int | None = None,
+                   screenshot: bool = False, image: bool = False,
                    within: float = LOOK_S) -> dict:
-        return await self.request("look", {"window": window, "xid": xid, "pid": pid,
+        return await self.request("look", {"window": window, "pid": pid,
                                            "screenshot": screenshot or None,
                                            "image": image or None}, within=within)
 
@@ -511,7 +510,7 @@ def look_blocks(result: dict) -> list[dict]:
     return blocks
 
 
-async def look(*, screenshot: bool = False, image: bool = False, xid: int | None = None,
+async def look(*, screenshot: bool = False, image: bool = False,
                window: int | None = None, pid: int | None = None,
                timeout: float = LOOK_S) -> list[dict]:
     """What the user is looking at in Flux, as content blocks for the
@@ -519,11 +518,10 @@ async def look(*, screenshot: bool = False, image: bool = False, xid: int | None
     window has had focus, or it does not answer within `timeout`.
     Never starts Flux; changes nothing on screen.
 
-    `xid`: the X window the call saw focused, to look at that Flux
-    window (the focused one, else the one focused last, without it). On
-    Wayland, where there is no such id, `window` and `pid`: the Flux
-    window the call saw focused, by its id on the app bar (Flux's own,
-    the control socket's too) and its connection's process.
+    `window` and `pid`: the Flux window the call saw focused, by its id
+    on the app bar (Flux's own, the control socket's too) and its
+    connection's process (without them: the focused one, else the one
+    focused last).
     `screenshot`: the tab as shown; `image`: the image in the user's
     selection, else under the mouse pointer."""
     try:
@@ -531,7 +529,7 @@ async def look(*, screenshot: bool = False, image: bool = False, xid: int | None
     except NotRunning:
         return []
     try:
-        result = await control.look(xid=xid, window=window, pid=pid, screenshot=screenshot,
+        result = await control.look(window=window, pid=pid, screenshot=screenshot,
                                     image=image, within=timeout)
     except ControlError as e:
         log.debug("look: %s", e)

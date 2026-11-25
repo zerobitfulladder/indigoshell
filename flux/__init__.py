@@ -3,8 +3,8 @@ in this checkout, on PySide6 and QtWebEngine (Chromium).
 
     python -m flux [url ...]          (or `indigoshell browser [url ...]`)
 
-It owns its top-level windows (X11's, or Wayland's under niri, where Qt
-runs on its Wayland platform: qt/startup.py): one window holds many
+It owns its top-level windows (Wayland's, under niri; Qt on its Wayland
+platform: qt/startup.py): one window holds many
 pages (tabs), each page from the window's top edge. It is a single instance per
 profile: a second invocation hands its URLs to the running one.
 `desktop.py` installs its desktop entry, Flux (`python -m flux
@@ -13,15 +13,14 @@ profile: a second invocation hands its URLs to the running one.
 The shell integrates it, as it will its other apps: Flux is an
 indigoshell app (indigoshell/applink/PROTOCOL.md, the app bar protocol).
 Each window connects to the shell's app socket, announces itself (the
-app, its own id, its X window; on Wayland no handle, and it says
-whether it has the focus) and sends its section of the shell's top
-bar whole whenever it changes: `bar.py` makes it of the window's state
-(its tabs, the page's host, the `address`, `new_tab` and `find` inputs,
-the `actions` menu). The shell draws it with its own look, takes the
-inputs' and menu's chords (Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M) from the
-window (on Wayland the window catches them and hands them over, with
-what is typed before the shell has the keyboard), and sends back what
-the user does, by id: a tab selected,
+app, its own id), says whether it has the focus and sends its section of
+the shell's top bar whole whenever it changes: `bar.py` makes it of the
+window's state (its tabs, the page's host, the `address`, `new_tab` and
+`find` inputs, the `actions` menu). The shell draws it with its own
+look, opens the inputs and the menu when the window catches their
+chords (Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M) and hands them over, with what
+is typed before the shell has the keyboard, and sends back what the
+user does, by id: a tab selected,
 closed, moved or torn out, an input's query (answered from Flux's places
 by `addresses.py`, or with find's count), a submit, a pick, an input
 closed. Nothing of Flux's is in the shell. Either side can start, stop
@@ -66,7 +65,7 @@ imports only its pure modules: `indigoshell.core`'s (naming, paths,
 log, hands, persona), `indigoshell.applink.protocol` and
 `indigoshell.applink.bar`, `indigoshell.fuzzy` and
 `indigoshell.services.proc` (to start Flux detached). So it runs where
-none of the shell's own dependencies (xcffib, skia, dbus-fast, psutil)
+none of the shell's own dependencies (skia, dbus-fast, psutil)
 are installed. Nothing outside `qt/` imports PySide6, and nothing in
 the shell imports `flux.qt`: the shell takes `control` and `hands`
 from here (the agent's), both pure, and nothing else of Flux's.

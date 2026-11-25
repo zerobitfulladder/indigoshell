@@ -45,11 +45,9 @@ launcher's parts the bar's: one component, two frames.
 - **Whole state, sent when it changes**; the shell diffs by id for motion.
 - **No platform in it.** Windows are named by the app's own ids, chords
   by name ("ctrl+t", never keycodes), and where anything shows is the
-  shell's, never coordinates from an app. The X window id is only the
-  announce's platform handle, for the shell to follow focus and place
-  windows on X11; on Wayland the window is known by its connection's
-  process and the app's own word on which of its windows has focus
-  ("On Wayland", section 3).
+  shell's, never coordinates from an app. The window is known by its
+  connection's process and the app's own word on which of its windows
+  has focus ("Identity", section 3).
 - **Any language.** Plain JSON over the existing apps socket, one object
   per line, each with its `type`; a side ignores types, kinds and keys it
   does not know. No version fields and no compatibility branches: the
@@ -145,18 +143,17 @@ An unknown name draws nothing (one debug line); an unknown role draws `fg`.
 
 | type | fields | when |
 |---|---|---|
-| `announce` | `app`, `window`: the app's id for it, `handle`: {`x11`: X window id} on X11, {} on Wayland | first on each connection; `app` no longer picks a class |
-| `active` | `active`: bool | where the announce has no handle (Wayland): right after it, then whenever it changes. The window, or a dialog or popup of it, has the keyboard focus, as the app's toolkit has it: how the shell knows the focused window there ("On Wayland"). With an X handle the shell follows X and an app need not send it |
-| `place` | `with`?: another of its windows (of the same process), by the app's id | as now, but no X id in it; on Wayland answered at once ("On Wayland") |
+| `announce` | `app`, `window`: the app's id for it | first on each connection; `app` no longer picks a class |
+| `active` | `active`: bool | right after the announce, then whenever it changes. The window, or a dialog or popup of it, has the keyboard focus, as the app's toolkit has it: how the shell knows the focused window ("Focus") |
+| `place` | `with`?: another of its windows (of the same process), by the app's id | before the window is first shown; answered at once ("Placing") |
 | `bar` | `start`, `end`, `inputs`, `menus` | right after the announce, then whenever it differs; replaces the last whole |
 | `answer` | `input`, `seq`, `rows`?, `selected`?: row id, `total`?: int, `count`?: {`text`, `color`} | to a `query` |
-| `open` | `input` or `menu`, `chord`?: the chord pressed | open one now: no key pressed (Flux's new window with no address), or, with `chord`, a chord of its bar the app caught itself because the shell cannot take it (`attached`'s `chords`) |
+| `open` | `input` or `menu`, `chord`?: the chord pressed | open one now: no key pressed (Flux's new window with no address), or, with `chord`, a chord of its bar the app caught (section 4) |
 | `keys` | `keys`: [KEY], `last`?: bool | after an `open` with `chord`: what the window got before the shell had the keyboard, in the order typed, none of it given to the window's content; `last` once the window has lost the keyboard, or the input or menu closed, or `fallback` came (section 4) |
 | `image` | `id`, `png`: base64 | an image for tabs to name (a page's icon), before the first `bar` that names it ("Images", below) |
 
 KEY: `{"keysym": int, "text"?: str, "mods"?: [modifier]}`, one key press
-as typed: its keysym (XKB's numbers, the same on X11 and Wayland:
-0xff0d Return, 0x61 `a`), the text it types (none under Ctrl, Alt or
+as typed: its keysym (XKB's numbers: 0xff0d Return, 0x61 `a`), the text it types (none under Ctrl, Alt or
 Super), the modifiers held (`ctrl`, `shift`, `alt`, `super`). A keysym,
 not a keycode: the layout has had its say, as it has for the shell's
 own keys, and every toolkit gives it (Qt's `nativeVirtualKey`, GDK's
@@ -182,11 +179,11 @@ that broke its shape or bounds, or did not decode). At most `IMAGES_MAX`
 
 | type | fields | means |
 |---|---|---|
-| `attached` | `agent`: {`name`, `color`}, `chords`?: `"app"` | the shell has the window; the agent's name and colour (section 5). `chords: "app"` (Wayland): the shell takes no keys from the window, so the app catches its bar's chords and sends `open` with the `chord`; absent, the shell takes them itself (X11's grabs) |
+| `attached` | `agent`: {`name`, `color`} | the shell has the window; the agent's name and colour (section 5). From now on the app catches its bar's chords and sends `open` with the `chord` (section 4) |
 | `restarting`, `placed` | | unchanged |
 | `select`, `close` | `item`, `tab` | a left or right press on a tab; a middle click |
 | `move` | `item`, `tab`, `before`: tab id or null | dropped before that tab (null: the end) |
-| `detach` | `item`, `tab` | torn off the bar: a window of its own, wherever the window manager puts it (today's `x`, `y` hint goes; qtile ignores it) |
+| `detach` | `item`, `tab` | torn off the bar: a window of its own, wherever the window manager puts it (no coordinates) |
 | `press` | `item`, `input`? | a `text` or `button` that opens nothing; a toggle in an open input |
 | `query` | `input`, `seq`, `text` | an input with `query` has new text |
 | `submit` | `input`, `text`, `row`: id or null, `shift`: bool | Enter (the selected row) or Shift+Enter (`row` null: the text itself) |
@@ -222,92 +219,76 @@ dialog transient for an app window shows that window's bar. A single
 window sends what fits it: one tab, `can: []`, no chords.
 
 **Either side restarting.** The shell keeps nothing. An app that
-connects (first time, after a shell restart, or when its platform window
-is replaced) sends its `bar` whole after the announce, without waiting
-for `attached`. When a connection closes the shell drops that window's bar,
-its key grabs, an input or menu open for it, and any query pending.
+connects (first time, or after a shell restart) sends its `bar` whole
+after the announce, without waiting for `attached`. When a connection
+closes the shell drops that window's bar, an input or menu open for it,
+and any query pending.
 `restarting` is sent as now, so an app waits longer before showing its
 own fallback (Flux's line over the page).
 
-**On Wayland** (niri) the kinds, events and the bar stay as they are.
-What changes is how the shell knows the window and takes its keys: one
-Wayland client can neither name another's toplevel nor grab its keys.
+**Identity.** One compositor client can neither name another's toplevel
+nor grab its keys, so the window is known by its connection: the app's
+process (the socket's peer, SO_PEERCRED), which the compositor also
+gives for each of its windows (niri's IPC: a window's `pid`, beside its
+`id`, `app_id` and `title`), and the app's own word on which of its
+windows has the focus (`active`), which its toolkit knows exactly
+(xdg_toplevel's `activated`, Qt's focus window). Not the title: it
+changes with the page and repeats across windows. Not the app id: it is
+the whole program's (Qt sets one per process; niri's window rules match
+it). Not an xdg-foreign handle: it names a toplevel for parenting a
+dialog only, and no compositor lists its windows by it. The process
+tells apps apart (and most app processes have one window); `active`
+tells a process's windows apart.
 
-- *Identity.* The announce's `handle` is `{}`. The window is known by
-  its connection: the app's process (the socket's peer, SO_PEERCRED),
-  which the compositor also gives for each of its windows (niri's IPC:
-  a window's `pid`, beside its `id`, `app_id` and `title`), and the
-  app's own word on which of its windows has the focus (`active`), which
-  its toolkit knows exactly (xdg_toplevel's `activated`, Qt's focus
-  window). Not the title: it changes with the page and repeats across
-  windows. Not the app id: it is the whole program's (Qt sets one per
-  process; niri's window rules match it). Not an xdg-foreign handle:
-  it names a toplevel for parenting a dialog only, and no compositor
-  lists its windows by it. The process tells apps apart (and most app
-  processes have one window); `active` tells a process's windows apart.
-- *Focus.* The shell follows the compositor's focused window
-  (indigoshell.wm: niri's event stream). Its app window is the one of
-  that window's process that says `active` (the newest to say so); a
-  process with one app window that never sent `active` counts as saying
-  so. A focused window of no app's process shows nothing. While the
-  shell's canvas has the keyboard (an input, the launcher, the call:
-  layer-shell's `exclusive`), niri reports no focused window and the
-  app's window says it is not active; neither moves the focus: the
-  window keeps its bar until the compositor names another window (or
-  half a second after the canvas lets the keyboard go, while the
-  compositor focuses the window again). With no focus from the window
-  manager (another compositor), the apps' `active` alone decides.
-- *Chords.* `attached` says `"chords": "app"`. The app catches the
-  chords of its own bar before its content sees them (as any key, they
-  reach its window first) and sends `open` with the `chord`; the shell
-  opens that input or menu as if it had taken the key itself, and takes
-  the keyboard at once. Until the compositor has moved it, the app
-  forwards what its window gets as `keys` (section 4).
-- *Placing.* A window exists for the compositor only once it maps, and
-  niri has no "map it there" a client can ask for. The shell answers
-  `place` at once (`desktop`: the workspace it chose, its index among
-  the bar's workspaces of the focused monitor), the app maps the window
-  at once, and the shell moves it there without focusing it (niri's
-  MoveWindowToWorkspace) as soon as the compositor lists it: the first
-  window of the app's process that appears after the `place`. `with`
-  goes to the workspace its sibling is on. A window rule `open-focused
-  false` for the agent's title keeps it from taking the focus in that
-  moment (docs/niri.kdl).
-- The drop-down is a region of the shell's one canvas, under the bar.
+**Focus.** The shell follows the compositor's focused window
+(indigoshell.wm: niri's event stream). Its app window is the one of that
+window's process that says `active` (the newest to say so); a process
+with one app window that never sent `active` counts as saying so. A
+focused window of no app's process shows nothing. While the shell's
+canvas has the keyboard (an input, the launcher, the call: layer-shell's
+`exclusive`), niri reports no focused window and the app's window says
+it is not active; neither moves the focus: the window keeps its bar
+until the compositor names another window (or half a second after the
+canvas lets the keyboard go, while the compositor focuses the window
+again). With no focus from the window manager (another compositor), the
+apps' `active` alone decides.
+
+**Placing.** A window exists for the compositor only once it maps, and
+niri has no "map it there" a client can ask for. The shell answers
+`place` at once (`desktop`: the workspace it chose, its index among the
+bar's workspaces of the focused monitor), the app maps the window at
+once, and the shell moves it there without focusing it (niri's
+MoveWindowToWorkspace) as soon as the compositor lists it: the first
+window of the app's process that appears after the `place`. `with` goes
+to the workspace its sibling is on. A window rule `open-focused false`
+for the agent's title keeps it from taking the focus in that moment
+(docs/niri.kdl).
+
+The drop-down is a region of the shell's one canvas, under the bar.
 
 ## 4. Inputs and menus
 
-**Chords.** The chords of a bar's inputs and menus are the keys the shell
-takes from that window, a chord being `ctrl`, `shift`, `alt`, `super` and
-one letter or digit, as now. How is the shell's: on X11 a passive grab
-on the window as `grab_keys` does now (every lock combination, by the
-keymap, made again on MappingNotify and when the chords change; a
-BadAccess said once and the key left to the app). A key the window
-manager binds wins (X checks grabs from the root down), so an app cannot
-take qtile's keys. On Wayland the app takes them (`attached`'s `chords:
-"app"`): a press of one of its bar's chords, seen before its content
-sees it (Flux filters its QWindow's keys), becomes `open` with that
-`chord` and goes no further. The compositor's bindings win there too:
-niri never hands a client a key it binds.
+**Chords.** The chords of a bar's inputs and menus open them, a chord
+being `ctrl`, `shift`, `alt`, `super` and one letter or digit, as now.
+The app catches them once the shell has said `attached`: a press of one
+of its bar's chords, seen before its content sees it (Flux filters its
+QWindow's keys), becomes `open` with that `chord` and goes no further.
+The compositor's bindings win: niri never hands a client a key it binds.
 
-**Opening an input.** On the press the shell takes the keyboard (on X11
-`hold_keyboard`: an active grab on the app's window, made while the
-chord's passive grab still holds it and kept for as long as the input is
-open, so no key falls between two grabs), and at the next frame the
-app's section becomes the text box: the icon, the input's `text`
-(selected when `select`, so the first key replaces it), the caret, the
-count, the toggles. Every key typed meanwhile arrives on the app's
-window, in the order typed, and goes into the box (`on_typed`); the
-pointer is held too (on the bar's window, owner events on, so the bar
-and the list keep their clicks) for a click elsewhere to close it. The shell edits the text
+**Opening an input.** At the `open` with `chord` the shell takes the
+keyboard (the canvas's `exclusive`), and at its next frame the app's
+section becomes the text box: the icon, the input's `text` (selected
+when `select`, so the first key replaces it), the caret, the count, the
+toggles. Every key typed goes into the box in the order typed; the
+canvas catches clicks outside the bar and its list (the bar and the list
+keep theirs) for a click elsewhere to close it. The shell edits the text
 itself (`TextInput`'s keys: words, selection, paste), so every key shows
 at once with no round trip. Escape, or a click outside the bar and its
 list, closes it, and the section shows the app's items again. It also
 closes when its window loses focus or goes.
 
-**Type-ahead on Wayland.** At the `open` with `chord` the shell asks for
-the keyboard (the canvas's `exclusive`), and the box shows at its next
-frame. Until the compositor has moved the keyboard (a frame or two),
+**Type-ahead.** The box shows at the canvas's next frame after the
+`open`. Until the compositor has moved the keyboard (a frame or two),
 keys still reach the app's window: the app sends each one as it comes,
 in `keys`, gives none of them to its content and swallows their
 releases, and sends `last` once its window has lost the keyboard (or
@@ -371,10 +352,10 @@ taken: the app handles its own Ctrl+S.
 
 **Opening without a key.** `open` is honoured once that window or its
 dialog has focus and its bar has that input or menu, waiting up to
-`OPEN_WAIT_S` (0.5 s; `OPEN_WAIT_WAYLAND_S`, 2 s, on Wayland, where a
-window has the focus only once its first frame shows) for both: a new window sends it as soon as it is
-shown, a moment before the window manager gives it focus, and an app may
-send it before its first bar (it should send the bar first). Otherwise,
+`OPEN_WAIT_S` (2 s: a window has the focus only once its first frame
+shows) for both: a new window sends it as soon as it is shown, a moment
+before the window manager gives it focus, and an app may send it before
+its first bar (it should send the bar first). Otherwise,
 or with no top bar over the window, the shell answers `fallback` and
 gives the keyboard back: an `open` is never dropped unanswered.
 
@@ -467,11 +448,16 @@ click `{"type": "close", "item": "tabs", "tab": 40}`; a drag `{"type":
 
 Ctrl+L, then "yo" typed fast, then Return:
 
-1. X11 hands the press to the shell, which holds the keyboard; the section
-   becomes the box, the address selected. `query` seq 1, the address.
-2. "y" and "o" (on Flux's window, under the shell's grab) go into the
-   box, "y" replacing the selection. Both show at once; seq 1 is still
-   out, so "yo" waits.
+1. Flux's window gets the press first and sends `{"type": "open",
+   "input": "address", "chord": "ctrl+l"}`; the page never sees it. The
+   shell takes the keyboard, the section becomes the box, the address
+   selected. `query` seq 1, the address.
+2. "y" still reaches Flux's window: `{"type": "keys", "keys":
+   [{"keysym": 121, "text": "y"}]}`, then, the keyboard gone to the
+   shell, `{"type": "keys", "keys": [], "last": true}`. "o" comes to
+   the shell itself, held until that `last`, and goes in after "y",
+   which replaced the selection. Both show at once; seq 1 is still out,
+   so "yo" waits.
 3. Flux answers seq 1 and the list drops. `query` seq 2 "yo"; Flux
    answers the typed row and YouTube, selected.
 4. Return: `{"type": "submit", "input": "address", "text": "yo", "row":
@@ -480,16 +466,6 @@ Ctrl+L, then "yo" typed fast, then Return:
 5. Shift+Delete on a bookmark's row instead: `{"type": "act", "input":
    "address", "action": "remove", "row": "<its address>", "text": "yo"}`,
    the row gone at once, `query` seq 3 "yo" again.
-
-The same on Wayland, where steps 1 and 2 go so (3 to 5 as above):
-
-1. Flux's window gets the press first and sends `{"type": "open",
-   "input": "address", "chord": "ctrl+l"}`; the page never sees it. The
-   shell asks for the keyboard, the section becomes the box, `query` seq 1.
-2. "y" still reaches Flux's window: `{"type": "keys", "keys":
-   [{"keysym": 121, "text": "y"}]}`, then, the keyboard gone to the
-   shell, `{"type": "keys", "keys": [], "last": true}`. "o" comes to
-   the shell itself, held until that `last`, and goes in after "y".
 
 Find: Flux answers each query with a count only, `"count": {"text":
 "3/12"}` (`"no matches"` in `error`), while it highlights the page
@@ -544,7 +520,7 @@ Shift+Enter all, both `submit`. Ctrl+S never reaches the shell.
 | Flux's own find keys in the page | the `find` input |
 | the agent's names and colours (flux/protocol.py) | `indigoshell/core/persona.py` (since 2026-11-25 one agent: her name and colour) |
 | Flux's `state`, `launcher`, `download`; the shell's commands to Flux | `bar`, `open`, `answer`; the events (`download`, only logged today, goes) |
-| the announce's `wid`, `place`'s X `with`, `detach`'s `x`, `y` | `window` (Flux's window ids, as its control socket gives them) and `handle`; `with` by window id; no coordinates |
+| the announce's `wid`, `place`'s `with` by window, `detach`'s `x`, `y` | `window` (Flux's window ids, as its control socket gives them); `with` by that id; no coordinates |
 | `AppService(kinds={"flux": FluxWindow})` | `AppService()` |
 
 Steps, each one working:
@@ -563,13 +539,12 @@ Steps, each one working:
    dropped, Enter waiting, a dropping action, menus filtered and
    stepped); its first-frame check becomes the box within a frame.
 4. **The switch**, one commit on both sides: the generic `AppWindow`
-   (`bar`, `open` in; events out; grabs from the chords); Flux sends what
+   (`bar`, `open` in; events out; the chords caught); Flux sends what
    `flux/bar.py` makes of `window.state()`, answers with
    `flux/addresses.py` and its find; `FluxWindow`, `kinds`, the stand-ins
    and Flux's old messages go. `tests/topbar.py` 5 and 5b drive a fake
    app over the socket (a bar shown and replaced, a bad one keeping the
-   last good, chords regrabbed when they change, all dropped with the
-   connection); `tests/browser_launcher.py` 2 and 5 test
+   last good, all dropped with the connection); `tests/browser_launcher.py` 2 and 5 test
    `flux/addresses.py` and `flux/bar.py`, pure; `tests/browser.py`
    follows; `tests/flux_imports.py` allows `indigoshell.core.persona`.
 5. **MOD+D** onto the same component, the app catalog as its source:

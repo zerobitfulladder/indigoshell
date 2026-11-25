@@ -64,16 +64,15 @@ def raster_checks(win) -> tuple[bool, str]:
 
 
 async def main() -> int:
-    display = _live.connect()
+    canvas = _live.canvas()
     spec = WindowSpec(name="holo", layer=Layer.OVERLAY, size=(W, H),
-                      override_redirect=True, focusable=False,
                       background="#00000000", effects=(PANEL_SPAWN,),
                       holo=True, content=panel())
     win = None
     bad = 0
     for label in ("first open", "opened again"):
         if win is None:
-            win = _live.open_window(display, _live.offscreen(spec))
+            win = _live.open_window(canvas, spec)
             _live.count_frames(win.holo)
         else:
             await _live.reopen(win)

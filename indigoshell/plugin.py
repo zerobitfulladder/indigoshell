@@ -23,7 +23,7 @@ What an action may be, and what the shell does with what it returns:
 
 `items` may be a list, or a callable (sync or async) that produces one
 when the stage is about to show — for lists that only exist once a tool
-has been asked, like outputs from xrandr. The shell resolves it before
+has been asked, like the sinks pactl reports. The shell resolves it before
 the stage appears, so the wait for a slow tool lands on the keypress.
 """
 
@@ -60,8 +60,8 @@ class Menu:
 
 # ── read helper ─────────────────────────────────────────────────────────
 def field(cmd: Sequence[str], key: str, *, sep: str = ":"):
-    """Async reader for `key` out of `key: value` output — setxkbmap
-    -query, tuned-adm active, optimus-manager --print-mode. The usual way
+    """Async reader for `key` out of `key: value` output — tuned-adm
+    active, optimus-manager --print-mode. The usual way
     to find out which item is `active`."""
     async def read():
         out = await proc.run(list(cmd))

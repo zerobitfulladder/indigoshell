@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 # ── clipboard ───────────────────────────────────────────────────────────
 def copy(value: str, selection: str = "clipboard") -> bool:
     """wl-copy forks and serves the text until something else takes the
-    selection, like xclip does on X."""
+    selection."""
     if not value or shutil.which("wl-copy") is None:
         if value:
             log.warning("cannot copy: wl-copy is not installed")

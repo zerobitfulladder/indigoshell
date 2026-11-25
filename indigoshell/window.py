@@ -1,20 +1,24 @@
-"""Windows.
+"""Windows: a `WindowSpec`, and the live `Window` it becomes on the canvas.
 
 There is no Bar class. A bar is a `WindowSpec` whose layer is DOCK, whose
 anchor is an edge, and which reserves space; a notification is the same
 type with a different layer and no reservation; a chord menu is the same
-type with override-redirect and a seat grab. The differences are X11
-properties, not Python subclasses.
+type that takes the keyboard. The differences are fields, not Python
+subclasses. The vocabulary — anchor, layer, exclusive zone — is
+layer-shell's, which is what the canvas speaks (backend/wayland.py).
 
-The vocabulary is borrowed from Wayland's layer-shell — anchor, layer,
-exclusive zone — because it is the clearest description of what these
-windows are, and it maps onto EWMH without loss.
+A live `Window` is a region of the one canvas (canvas.py `Scene`): its
+box is placed by its anchor, margins and size on the canvas, its pixels
+are a surface of its own (persistent between frames), and the canvas
+composes them where its damage says. Everything else — the frame clock,
+damage, the widget tree, painting, the effects, the pointer's
+press/motion/release/hold routing, the keyboard taken while it is open,
+the clicks outside it caught — is here.
 """
 
 import asyncio
 import logging
 import math
-import os
 import random
 import sys
 import time
@@ -22,11 +26,8 @@ from dataclasses import dataclass, field
 from enum import Enum, Flag, auto
 
 import skia
-import xcffib.shape
 
 from . import theme
-from .backend.gl import backend as gl_backend
-from .backend.x11 import Display, Monitor, keysym_text, shape_ext, xp
 from .widgets.base import Insets, KeyEvent, Size, Widget
 from .widgets.holo import Projection, raster
 
@@ -39,40 +40,17 @@ COALESCE_FPS = 20
 # intervals. A dropped frame passes unnoticed; a real stall holds the
 # effect where it was instead of skipping it — see `_advance_phase`.
 MAX_PHASE_STEP = 2.0
-# A refused pointer or keyboard grab is tried again this often, for this
-# long — see `_grab`.
-GRAB_RETRY_S = 0.01
-GRAB_GIVE_UP_S = 2.0
-# While a widget holds a press (`Widget.press`), the pointer's buttons are
-# looked at this often: a release that never reached the window (another
-# window of ours had the pointer grabbed when the press came, and the
-# release went to it) still ends the hold, and the keyboard it took.
-HOLD_CHECK_S = 0.25
 _ESCAPE = 0xFF1B
 
 
 class Layer(Enum):
-    """Stacking role. Maps to _NET_WM_WINDOW_TYPE plus _NET_WM_STATE."""
+    """Stacking role among the shell's windows on the canvas."""
 
     DESKTOP = "desktop"    # wallpaper level
     BOTTOM = "bottom"      # below normal windows
     NORMAL = "normal"
     DOCK = "dock"          # bars and panels, above normal windows
     OVERLAY = "overlay"    # notifications, above everything
-
-
-_LAYER_TYPE = {
-    Layer.DESKTOP: "_NET_WM_WINDOW_TYPE_DESKTOP",
-    Layer.BOTTOM:  "_NET_WM_WINDOW_TYPE_NORMAL",
-    Layer.NORMAL:  "_NET_WM_WINDOW_TYPE_NORMAL",
-    Layer.DOCK:    "_NET_WM_WINDOW_TYPE_DOCK",
-    Layer.OVERLAY: "_NET_WM_WINDOW_TYPE_NOTIFICATION",
-}
-_LAYER_STATE = {
-    Layer.BOTTOM:  ("_NET_WM_STATE_BELOW",),
-    Layer.DOCK:    ("_NET_WM_STATE_ABOVE",),
-    Layer.OVERLAY: ("_NET_WM_STATE_ABOVE",),
-}
 
 
 class Anchor(Flag):
@@ -96,14 +74,9 @@ class WindowSpec:
     size: tuple[int | None, int | None] = (None, None)
     margin: Insets = field(default_factory=Insets)
 
-    # Reserve screen space so maximised windows don't overlap us. This is
-    # the single flag that turns a floating window into a bar.
+    # Reserve screen space so the compositor tiles windows clear of us.
+    # This is the single flag that turns a floating window into a bar.
     exclusive: bool = False
-    # Bypass the window manager entirely — for menus and popups that must
-    # appear exactly where they're put.
-    override_redirect: bool = False
-    focusable: bool = True
-    sticky: bool = True          # visible on every desktop
 
     background: str = theme.BG
     # Accent rule along the edge that faces the screen interior. Window
@@ -124,29 +97,28 @@ class WindowSpec:
     # 4x saving, and a 160ms glitch hides the softness.
     effect_scale: float = 1.0
 
-    # Close when a click lands outside. Needs a pointer grab, so it only
-    # makes sense for transient windows.
+    # Close when a click lands outside. The canvas catches every click
+    # while it is open, so it only makes sense for transient windows.
     dismiss_on_outside_click: bool = False
     # Take the keyboard while open, like a chord menu. Implies the window
-    # is transient — a grab held forever locks the session.
+    # is transient — a keyboard held forever locks the session.
     grab_keyboard: bool = False
-    # Chords that close a grabbing window, besides Escape: its own
-    # keybinding. With the keyboard held here the window manager never
+    # Chords that close a window holding the keyboard, besides Escape: its
+    # own keybinding. With the keyboard held here the compositor never
     # sees the second press, so the window has to know it. Written like
     # "super+a": modifiers (super, ctrl, alt, shift), then one key.
     close_keys: tuple[str, ...] = ()
 
     # Ask the compositor to blur whatever is behind the window, so a
-    # translucent plate reads as frosted glass. picom here only blurs
-    # windows that carry _KDE_NET_WM_BLUR_BEHIND_REGION (the exclude rule
-    # in its config), and it blurs the window's whole *bounding shape* —
-    # for a plate that is not the window's full rectangle, the content
-    # should provide `blur_shape() -> skia.Path` in window coordinates.
-    # The window then cuts its SHAPE bounding region to that path, or the
-    # transparent margin around the plates would show as a blurred box.
-    # The cut clips drawing too, so it is only in force while the window
-    # is still: the spawn and despawn run uncut and unblurred, since their
-    # tear reaches past the plates into the bleed margin.
+    # translucent plate reads as frosted glass. For a plate that is not
+    # the window's full rectangle, the content should provide
+    # `blur_shape() -> skia.Path` in window coordinates: the blur goes
+    # behind that path, rasterised to whole pixels, or the transparent
+    # margin around the plates would show as a blurred box. A click in
+    # the window's rectangle outside the path is outside the window. The
+    # blur is only in force while the window is still: the spawn and
+    # despawn run unblurred, since their tear reaches past the plates
+    # into the bleed margin.
     blur: bool = False
 
     # Project the window as a hologram, the way the call is drawn
@@ -159,34 +131,23 @@ class WindowSpec:
 
     autostart: bool = False
     singleton: bool = True
-    # Keep the X window, its GL surface and its warmed-up GPU state
-    # between opens: a close parks the window unmapped instead of
-    # destroying it, and the next open maps it again. Opening then costs
-    # a repaint, ~20ms, instead of ~130ms of setup that blocked the loop
-    # and froze the bar. For panels that are opened repeatedly; one-shot
-    # windows like toasts, and kinds whose spec is rebuilt per open, do
-    # not benefit and are never parked.
+    # Keep the window, its surface and its attached content between
+    # opens: a close parks the window off the canvas instead of
+    # destroying it, and the next open puts it back. Opening then costs a
+    # repaint instead of the setup and the content's first layout. For
+    # panels that are opened repeatedly; one-shot windows like toasts,
+    # and kinds whose spec is rebuilt per open, do not benefit and are
+    # never parked.
     keep_alive: bool = False
-
-    @property
-    def keep_above(self) -> bool:
-        """Whether we must hold ourselves on top (`Display.keep_above`).
-
-        An override-redirect window is invisible to the window manager, so
-        _NET_WM_STATE_ABOVE is ignored for it and stacking falls back to
-        raw X order — whatever was raised last wins. Managed windows (the
-        bar) get their layer honoured and need none of this.
-        """
-        return self.override_redirect and self.layer in (Layer.DOCK, Layer.OVERLAY)
 
 
 @dataclass(frozen=True)
 class Placement:
     """Where one open of a window goes instead of where its anchor puts
-    it: the content's top edge at `y`, centred on `x` (root coordinates),
-    kept inside the monitor that holds that point. Given to
-    `Daemon.open`, kept while the window is open, and forgotten when it
-    closes, so the next open goes by the anchor again.
+    it: the content's top edge at `y`, centred on `x` (canvas
+    coordinates), kept inside the canvas. Given to `Daemon.open`, kept
+    while the window is open, and forgotten when it closes, so the next
+    open goes by the anchor again.
 
     `below(x, y, w, h)` drops the window from a rect: centred under it,
     its top at the rect's bottom edge."""
@@ -199,18 +160,36 @@ class Placement:
         return cls(x + w // 2, y + h)
 
 
-def key_event(display: Display, ev) -> KeyEvent:
-    """An X key press or release as a KeyEvent, through the keymap."""
-    state = ev.state
-    keysym = display.keysym(ev.detail, state)
-    ctrl = bool(state & xp.KeyButMask.Control)
-    alt = bool(state & display.mod_mask("alt"))
-    sup = bool(state & display.mod_mask("super"))
-    return KeyEvent(
-        keysym=keysym,
-        text="" if (ctrl or alt or sup) else keysym_text(keysym),
-        shift=bool(state & xp.KeyButMask.Shift),
-        ctrl=ctrl, alt=alt, super=sup)
+@dataclass(frozen=True)
+class Monitor:
+    """A box windows are placed in: the canvas, as the output it covers."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+    primary: bool = False
+    name: str = ""
+
+
+def rects(region: skia.Region) -> list[skia.IRect]:
+    """A region's rectangles."""
+    out = []
+    it = skia.Region.Iterator(region)
+    while not it.done():
+        out.append(it.rect())
+        it.next()
+    return out
+
+
+def pixel_rects(path: skia.Path, clip: skia.IRect, dx: int = 0,
+                dy: int = 0) -> tuple[tuple[int, int, int, int], ...]:
+    """`path` as whole pixels inside `clip` (aliased: a 45° bevel becomes
+    one thin rect per pixel row), as (x, y, w, h) rects moved by (dx,
+    dy)."""
+    region = skia.Region()
+    region.setPath(path, skia.Region(clip))
+    return tuple((r.left() + dx, r.top() + dy, r.width(), r.height()) for r in rects(region))
 
 
 def _chord_is(key: KeyEvent, chord: str) -> bool:
@@ -223,20 +202,23 @@ def _chord_is(key: KeyEvent, chord: str) -> bool:
 
 
 class Window:
-    """A live X11 window with a Skia surface behind it."""
+    """A WindowSpec live on the canvas. See the module docstring.
 
-    def __init__(self, display: Display, spec: WindowSpec,
+    `x`, `y`, `width`, `height` are its box on the canvas, bleed
+    included. Its pixels are its own surface (`surface`, persistent
+    between frames), composed onto the canvas where it was damaged.
+    """
+
+    def __init__(self, scene, spec: WindowSpec,
                  loop: asyncio.AbstractEventLoop | None = None) -> None:
-        self.display = display
+        self.scene = scene              # canvas.Scene
         self.spec = spec
         self.loop = loop
+        # The scene's number for it while it exists (`create` to
+        # `destroy`); None before and after.
         self.wid: int | None = None
-        self.gc: int | None = None
         self.x = self.y = 0
         self.width = self.height = 0
-        # An X screen's; a canvas region (canvas.py) has no screen.
-        screen = getattr(display, "screen", None)
-        self.depth = screen.root_depth if screen is not None else 32
         self.surface: skia.Surface | None = None
         self.mapped = False
         self.content = spec.content
@@ -244,10 +226,10 @@ class Window:
         # the content tree, attached, laid out, ticked and painted with it.
         self.holo = Projection() if spec.holo else None
         # Effects that displace pixels draw past the content's edge, so the
-        # X window is grown by `bleed` on every side and the content is
-        # inset by it. `content_rect` is that inset area in window-local
-        # coordinates; `content_root` is the same rect in root coordinates,
-        # which is what struts and placement care about.
+        # box is grown by `bleed` on every side and the content is inset
+        # by it. `content_rect` is that inset area in window-local
+        # coordinates; `content_root` is the same rect on the canvas,
+        # which is what the reservations and placement care about.
         self.bleed = 0
         self.content_rect = skia.Rect.MakeEmpty()
         self.content_root = (0, 0, 0, 0)
@@ -278,20 +260,18 @@ class Window:
         self._dragging: Widget | None = None
         self._drag_xy: tuple[float, float] = (0.0, 0.0)
         # A press a widget holds (`Widget.press`) and its button; whether
-        # the keyboard is ours for it (`hold_keyboard`); the timer that
-        # looks for a release that never came (HOLD_CHECK_S).
+        # the keyboard is ours for it (`hold_keyboard`).
         self._held: Widget | None = None
         self._held_button = 0
         self._held_keys = False
-        self._hold_check: asyncio.TimerHandle | None = None
         self._shown_sent = False
         # Hidden between opens with its content detached — see park().
         self._parked = False
         # This open's place, when it is not the anchor's — see Placement.
         self.placement: Placement | None = None
 
-        self.gl = None               # backend.gl.Backend, or None for raster
-        self.gl_surface = None
+        # The canvas's GPU context (canvas.GpuScratch), or None: raster.
+        self.gl = scene.gpu
         self.effects = tuple(spec.effects)
         self._transition = max((e.duration for e in self.effects), default=0.0)
         self._appear = 1.0
@@ -305,18 +285,28 @@ class Window:
         self._sampling = skia.SamplingOptions()
         self._on_dismissed = None
         self._seed = 0.0
+        # Whether it catches the clicks outside it (`dismiss_on_outside_click`),
+        # and whether it holds the keyboard (`grab_keyboard`).
         self._grabbed = False
         self._kb_grabbed = False
-        # Grabs still being retried, by "pointer" / "keyboard".
-        self._grab_retry: dict[str, asyncio.TimerHandle] = {}
         # Failures already logged — see `_complain`.
         self._complained: set[tuple] = set()
-        # Last bounding shape sent to the server, so a relayout that
-        # leaves the plates where they were costs no request.
-        self._bounding: tuple | None = None
-        # Whether the blur and the cut to `blur_shape()` are in force —
-        # off during transitions, see `WindowSpec.blur`.
+        # Whether the blur is in force — off during transitions, see
+        # `WindowSpec.blur` — and the plates it is behind, (x, y, w, h) on
+        # the canvas; empty while it is off.
         self._blur_on = False
+        self._blur_rects: tuple = ()
+        # What the canvas shows of it: an Image (a frozen or effected
+        # frame) or its Surface; None until the first frame.
+        self._picture = None
+        # The damage the frame being drawn covers, window coordinates.
+        self._dirty_local: skia.Region | None = None
+        # Not shown for now (`suspend`): no canvas surface, or a
+        # fullscreen window over a bar.
+        self._suspended = False
+        self._painted = 0               # pixels the frame drew, for the stats
+        self._said: set[str] = set()
+        self._z = 0                     # its place in the scene's stack (Scene.add)
 
     # ── geometry ────────────────────────────────────────────────────────
     def _compute_geometry(
@@ -349,13 +339,11 @@ class Window:
 
     def _placed(self, w: int, h: int) -> tuple[int, int, int, int]:
         """`placement`'s box: centred on its x, its top at its y, moved
-        back inside the monitor that holds the point. Only the content
-        is kept inside; the bleed around it may run off the edge, as it
-        does for an anchored window at the screen's edge."""
+        back inside the canvas. Only the content is kept inside; the
+        bleed around it may run off the edge, as it does for an anchored
+        window at the screen's edge."""
         p = self.placement
-        monitors = self.display.monitors()
-        mon = next((m for m in monitors if m.x <= p.x < m.x + m.width
-                    and m.y <= p.y < m.y + m.height), monitors[0])
+        mon = self.scene.primary_monitor()
         x = min(max(p.x - w // 2, mon.x), mon.x + max(0, mon.width - w))
         y = min(max(p.y, mon.y), mon.y + max(0, mon.height - h))
         return x, y, w, h
@@ -368,7 +356,7 @@ class Window:
             return
         _cx, _cy, cw, ch = self.content_root
         self._apply_geometry(*self._compute_geometry(
-            self.display.primary_monitor(), size=(cw, ch)))
+            self.scene.primary_monitor(), size=(cw, ch)))
 
     def _compute_bleed(self, w: float, h: float) -> int:
         if not self.effects:
@@ -376,85 +364,36 @@ class Window:
         return int(math.ceil(max(e.bleed(w, h) for e in self.effects)))
 
     # ── creation ────────────────────────────────────────────────────────
+    def box(self) -> skia.IRect:
+        """Its box on the canvas, bleed included."""
+        return skia.IRect.MakeXYWH(self.x, self.y, self.width, self.height)
+
+    def input_box(self) -> skia.IRect:
+        """Where it takes the pointer: its content, not the bleed."""
+        cx, cy, cw, ch = self.content_root
+        return skia.IRect.MakeXYWH(cx, cy, cw, ch)
+
+    def takes_input(self, x: float, y: float) -> bool:
+        return self.input_box().contains(int(x), int(y)) and self.content is not None
+
     def create(self, monitor: Monitor | None = None) -> None:
-        d = self.display
-        conn = d.conn
-        mon = monitor or d.primary_monitor()
+        mon = monitor or self.scene.primary_monitor()
         cx, cy, cw, ch = self._compute_geometry(mon)
-        self.bleed = self._compute_bleed(cw, ch)
-        b = self.bleed
+        self.bleed = b = self._compute_bleed(cw, ch)
         self.content_root = (cx, cy, cw, ch)
         self.content_rect = skia.Rect.MakeXYWH(b, b, cw, ch)
         self.x, self.y = cx - b, cy - b
         self.width, self.height = cw + 2 * b, ch + 2 * b
-
-        # A 32-bit visual is what makes per-pixel alpha real; without one
-        # the window is opaque whatever the compositor does. On the GPU
-        # path the visual is not ours to choose — it has to be the one
-        # EGL's config reports, or creating the window surface is a
-        # BadMatch.
-        self.gl = gl_backend(d)
-        visual = d.screen.root_visual
-        argb = d.argb_visual()
-        if argb is not None:
-            self.depth, visual = argb
-        if self.gl is not None:
-            visual, self.depth = self.gl.visual_id, 32
-
-        self.wid = conn.generate_id()
-        cmap = conn.generate_id()
-        conn.core.CreateColormap(xp.ColormapAlloc._None, cmap, d.root, visual)
-
-        events = (xp.EventMask.Exposure | xp.EventMask.StructureNotify)
-        if self.content is not None:
-            # Motion and Leave drive hover; without them a widget can
-            # never learn the pointer left it and stays lit forever.
-            events |= (xp.EventMask.ButtonPress | xp.EventMask.ButtonRelease
-                       | xp.EventMask.PointerMotion | xp.EventMask.LeaveWindow)
-        if self.spec.grab_keyboard:
-            events |= xp.EventMask.KeyPress
-        # BackPixel *and* BorderPixel are both required on a depth-32
-        # window: without an explicit border pixel the server inherits
-        # the parent's, whose depth doesn't match, and CreateWindow
-        # fails with BadMatch.
-        conn.core.CreateWindow(
-            self.depth, self.wid, d.root,
-            self.x, self.y, self.width, self.height, 0,
-            xp.WindowClass.InputOutput, visual,
-            xp.CW.BackPixel | xp.CW.BorderPixel | xp.CW.OverrideRedirect
-            | xp.CW.EventMask | xp.CW.Colormap,
-            [0, 0, int(self.spec.override_redirect), events, cmap],
-        )
-        self.gc = conn.generate_id()
-        conn.core.CreateGC(self.gc, self.wid, 0, [])
-
-        self._set_properties()
-        self._set_input_shape()
-        d.on(self.wid, self._on_event)
-
-        if self.gl is not None:
-            # EGL looks the window up over its own connection, so the
-            # server must have processed CreateWindow before we ask. A
-            # round-trip is the cheapest way to be sure.
-            conn.core.GetInputFocus().reply()
-            try:
-                self.gl_surface = self.gl.create(self.wid, self.width,
-                                                 self.height)
-            except Exception:
-                log.exception("GL surface failed for %s; using raster",
-                              self.spec.name)
-                self.gl_surface = None
-            if self.gl_surface is None:
-                self.gl = None
+        self.wid = self.scene.next_id()
         self.surface = self._make_surface(self.width, self.height)
         if self.content is not None:
             self.content.attach(self)
             if self.holo is not None:
                 self.holo.attach(self)
             self._layout_content()
-        log.info("created %s 0x%x %dx%d+%d+%d depth %d on %s%s",
-                 self.spec.name, self.wid, self.width, self.height,
-                 self.x, self.y, self.depth, mon.name or "screen",
+        log.info("created %s on the canvas %dx%d+%d+%d (%s)%s", self.spec.name,
+                 self.width, self.height, self.x, self.y,
+                 "GPU" if self.gl is not None else "raster",
                  f" (+{self.bleed}px bleed)" if self.bleed else "")
 
     def _layout_content(self) -> None:
@@ -465,256 +404,107 @@ class Window:
         self.content.arrange(inner)
         if self.holo is not None:
             self.holo.arrange(self.content.rect)
-        self._set_bounding_shape()
+        self._set_blur_shape()
 
-    def _set_bounding_shape(self) -> None:
-        """Cut the window to its content's `blur_shape()` — see
-        `WindowSpec.blur`. Runs after every layout, since that is when
-        the plates move; a shape that comes out the same is not resent.
-
-        The path is rasterised into a `skia.Region` (aliased, so it
-        covers whole pixels the way SHAPE does) and sent as its
-        rectangles: a 45° bevel becomes one thin rect per pixel row,
-        a few dozen per plate.
-        """
+    # ── blur: the compositor's, behind the plates ───────────────────────
+    def _set_blur_shape(self) -> None:
+        """The plates the compositor blurs behind (Scene.blur_rects),
+        sent with the canvas's next commit: the content's `blur_shape()`
+        as whole pixels, or its whole box — see `WindowSpec.blur`. Runs
+        after every layout and move; the same plates are not sent
+        again."""
         if not self.spec.blur or self.wid is None or self.content is None:
             return
-        shape_of = getattr(self.content, "blur_shape", None)
-        path = shape_of() if (shape_of is not None and self._blur_on) \
-            else None
-        ext = shape_ext(self.display.conn)
-        if ext is None:
+        out: tuple = ()
+        if self._blur_on:
+            clip = skia.IRect.MakeWH(self.width, self.height)
+            shape_of = getattr(self.content, "blur_shape", None)
+            if shape_of is not None:
+                out = pixel_rects(shape_of(), clip, self.x, self.y)
+            else:
+                cx, cy, cw, ch = self.content_root
+                out = ((cx, cy, cw, ch),)
+        if out == self._blur_rects:
             return
-        if path is None:
-            rects: tuple = ((0, 0, self.width, self.height),)
-        else:
-            region = skia.Region()
-            region.setPath(path, skia.Region(
-                skia.IRect.MakeWH(self.width, self.height)))
-            out = []
-            it = skia.Region.Iterator(region)
-            while not it.done():
-                r = it.rect()
-                out.append((r.left(), r.top(), r.width(), r.height()))
-                it.next()
-            rects = tuple(out) or ((0, 0, 1, 1),)
-        if rects == self._bounding:
-            return
-        self._bounding = rects
-        xrects = [xp.RECTANGLE.synthetic(*r) for r in rects]
-        ext.Rectangles(
-            xcffib.shape.SO.Set, xcffib.shape.SK.Bounding,
-            xp.ClipOrdering.Unsorted, self.wid, 0, 0, len(xrects), xrects)
-        self.display.flush()
+        self._blur_rects = out
+        self.scene.blur_changed(self)
 
     def _set_blur(self, on: bool) -> None:
-        """Put the blur and the cut into force, or lift both.
-
-        picom only tests that _KDE_NET_WM_BLUR_BEHIND_REGION exists — and
-        a property with zero items does not count, so the empty region
-        KWin reads as "whole window" would leave picom's opt-in rule
-        excluding us. One rect (x, y, w, h) spanning the window satisfies
-        both. picom re-reads the rule when the property changes, so this
-        can follow the transitions. Ordered so the blur never covers the
-        uncut window: cut, then blur on; blur off, then uncut.
-        """
+        """The blur in force, or lifted (the spawn and despawn run
+        unblurred, their tear reaching past the plates)."""
         if not self.spec.blur or self.wid is None or on == self._blur_on:
             return
-        d = self.display
-        atom = "_KDE_NET_WM_BLUR_BEHIND_REGION"
         self._blur_on = on
-        if on:
-            self._set_bounding_shape()
-            d.set_prop(self.wid, atom, xp.Atom.CARDINAL,
-                       [0, 0, self.width, self.height])
-        else:
-            d.conn.core.DeleteProperty(self.wid, d.atom(atom))
-            self._set_bounding_shape()
-        d.flush()
+        self._set_blur_shape()
+
+    def blur_rects(self) -> tuple:
+        """The plates to blur behind, (x, y, w, h) on the canvas."""
+        return self._blur_rects
 
     def reshape(self) -> None:
-        """Re-cut the window to its content's `blur_shape()` after the
-        content moved its pieces itself, without a window relayout — the
-        call overlay, which re-arranges its plates inside a window that
-        keeps its size."""
-        self._set_bounding_shape()
-
-    def _set_properties(self) -> None:
-        d, spec, wid = self.display, self.spec, self.wid
-        assert wid is not None
-
-        d.set_text_prop(wid, xp.Atom.WM_NAME, xp.Atom.STRING, spec.name)
-        d.set_text_prop(wid, d.atom("_NET_WM_NAME"), d.atom("UTF8_STRING"),
-                        spec.name)
-        # Window-manager rules match on WM_CLASS, so the instance is the
-        # window's own name and the class is the app.
-        d.set_wm_class(wid, spec.name, _wm_class_name())
-        d.set_prop(wid, "_NET_WM_PID", xp.Atom.CARDINAL, [os.getpid()])
-
-        d.set_prop(wid, "_NET_WM_WINDOW_TYPE", xp.Atom.ATOM,
-                   [d.atom(_LAYER_TYPE[spec.layer])])
-
-        states = list(_LAYER_STATE.get(spec.layer, ()))
-        if spec.sticky:
-            states.append("_NET_WM_STATE_STICKY")
-        if not spec.focusable:
-            states += ["_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"]
-        if states:
-            d.set_prop(wid, "_NET_WM_STATE", xp.Atom.ATOM,
-                       [d.atom(s) for s in states])
-        if spec.sticky:
-            # 0xFFFFFFFF is EWMH's "all desktops".
-            d.set_prop(wid, "_NET_WM_DESKTOP", xp.Atom.CARDINAL, [0xFFFFFFFF])
-
-        if spec.exclusive:
-            self._set_struts()
-
-    def _set_input_shape(self) -> None:
-        """Confine input to the content rect.
-
-        The bleed margin is transparent, but an X window swallows clicks
-        across its whole rectangle regardless of what it painted — so an
-        override-redirect popup above everything would eat clicks in a
-        50px invisible halo. SHAPE's input region is the only way to say
-        "these pixels aren't mine".
-        """
-        if self.bleed <= 0 or self.wid is None:
-            return
-        ext = shape_ext(self.display.conn)
-        if ext is None:
-            log.warning("no SHAPE extension; %s will swallow clicks in its "
-                        "%dpx bleed margin", self.spec.name, self.bleed)
-            return
-        _, _, cw, ch = self.content_root
-        rects = [xp.RECTANGLE.synthetic(self.bleed, self.bleed, cw, ch)]
-        # rectangles_len is an explicit argument, like PutImage's data_len.
-        ext.Rectangles(
-            xcffib.shape.SO.Set, xcffib.shape.SK.Input,
-            xp.ClipOrdering.Unsorted, self.wid, 0, 0, len(rects), rects)
-        log.debug("%s input shape confined to %dx%d+%d+%d",
-                  self.spec.name, cw, ch, self.bleed, self.bleed)
-
-    def _set_struts(self) -> None:
-        """Reserve our slice of the screen.
-
-        Values are relative to the whole X screen, not the monitor — on a
-        stacked multi-head layout a bar on the primary monitor's bottom
-        edge may have another monitor below it, and reserving
-        `bar_height` there would carve space out of the wrong screen row.
-        """
-        d, wid = self.display, self.wid
-        assert wid is not None
-        screen_w, screen_h = d.geometry()
-        left = right = top = bottom = 0
-        strut = [0] * 12  # l, r, t, b, then per-edge start/end pairs
-        # Reserve the content, not the window: the bleed margin is a
-        # transparent drawing allowance, and reserving it would push
-        # tiled windows away by an invisible extra 50px.
-        cx, cy, cw, ch = self.content_root
-
-        a = self.spec.anchor
-        if Anchor.TOP in a and Anchor.BOTTOM not in a:
-            top = cy + ch
-            strut[8], strut[9] = cx, cx + cw - 1
-        elif Anchor.BOTTOM in a and Anchor.TOP not in a:
-            bottom = screen_h - cy
-            strut[10], strut[11] = cx, cx + cw - 1
-        elif Anchor.LEFT in a and Anchor.RIGHT not in a:
-            left = cx + cw
-            strut[4], strut[5] = cy, cy + ch - 1
-        elif Anchor.RIGHT in a and Anchor.LEFT not in a:
-            right = screen_w - cx
-            strut[6], strut[7] = cy, cy + ch - 1
-        else:
-            log.warning("%s is exclusive but not anchored to a single edge; "
-                        "reserving nothing", self.spec.name)
-            return
-
-        strut[0], strut[1], strut[2], strut[3] = left, right, top, bottom
-        d.set_prop(wid, "_NET_WM_STRUT_PARTIAL", xp.Atom.CARDINAL, strut)
-        d.set_prop(wid, "_NET_WM_STRUT", xp.Atom.CARDINAL, strut[:4])
-        log.debug("%s struts l/r/t/b = %d/%d/%d/%d",
-                  self.spec.name, left, right, top, bottom)
-
+        """Send the plates again after the content moved its pieces
+        itself, without a window relayout — the call overlay, which
+        re-arranges its plates inside a window that keeps its size."""
+        self._set_blur_shape()
     def _adopt_size(self, width: int, height: int) -> None:
-        """Take on a new window size: surface, content rect, layout.
-
-        Shared by the ConfigureNotify handler and `resize_content`, which
-        has to apply it immediately rather than wait for the notify — see
-        there.
-        """
+        """Take on a new window size: surface, content rect, layout."""
         self.width, self.height = width, height
         b = self.bleed
         self.content_rect = skia.Rect.MakeXYWH(
             b, b, max(1, self.width - 2 * b), max(1, self.height - 2 * b))
         self.surface = self._make_surface(self.width, self.height)
-        if self.gl_surface is not None:
-            # The framebuffer follows the window, but the Skia render
-            # target wrapping it carries the old size.
-            self.gl.make_current(self.gl_surface)
-            self.gl_surface.resize(self.width, self.height)
         self._layout_content()
         # A fresh surface holds nothing, so a partial repaint would leave
-        # uninitialised pixels everywhere it skipped. And nothing else
-        # will ask for the frame: the ConfigureNotify this provokes finds
-        # the size already adopted.
+        # uninitialised pixels everywhere it skipped.
         self.damage(None)
 
     def resize_content(self, cw: int, ch: int) -> None:
         """Resize to a new content size, re-anchored per the spec.
 
-        For windows whose content set changes while mapped (the tray
-        panel gaining a row) or is only known once measured (the network
-        panel, which sizes itself to its interface list).
-
-        The new size is adopted *immediately*, not on the ConfigureNotify
-        it provokes. Waiting leaves the content laid out for the old size
-        for however long the round trip takes — and when this is called
-        from `attach()`, that is the whole of the first frame, so the
-        panel maps with its content arranged for a taller window and
-        visibly snaps once the notify lands.
+        For windows whose content set changes while open (the tray panel
+        gaining a row) or is only known once measured (the network
+        panel, which sizes itself to its interface list). Adopted at
+        once: called from `attach()`, the first frame is already laid
+        out for the new size.
         """
         if self.wid is None:
             return
         cw, ch = max(1, int(cw)), max(1, int(ch))
         cx, cy, cw, ch = self._compute_geometry(
-            self.display.primary_monitor(), size=(cw, ch))
+            self.scene.primary_monitor(), size=(cw, ch))
         self._apply_geometry(cx, cy, cw, ch)
 
     def _apply_geometry(self, cx: int, cy: int, cw: int, ch: int) -> None:
         """Move/resize the live window to a new content box, if it differs."""
         if (cx, cy, cw, ch) == self.content_root:
             return
+        old = self.box()
         self.bleed = b = self._compute_bleed(cw, ch)
         self.content_root = (cx, cy, cw, ch)
         self.x, self.y = cx - b, cy - b
-        self.display.conn.core.ConfigureWindow(
-            self.wid,
-            xp.ConfigWindow.X | xp.ConfigWindow.Y
-            | xp.ConfigWindow.Width | xp.ConfigWindow.Height,
-            [self.x, self.y, cw + 2 * b, ch + 2 * b])
-        self._set_input_shape()
-        self.display.flush()
         self._adopt_size(cw + 2 * b, ch + 2 * b)
+        self._picture = None            # the old size's, until the next frame
+        self.scene.moved(self, old)
 
     # ── lifecycle ───────────────────────────────────────────────────────
     def show(self) -> None:
         assert self.wid is not None
+        self._suspended = False
         self._t0 = time.monotonic()
         self._seed = random.random() * 997.0
         if self._transition > 0:
             self._appear = 0.0
             self._begin_phase("enter")
 
-        # Paint and freeze the content *before* mapping.
+        # Paint and freeze the content *before* it goes on the canvas.
         #
         # The widget tree paint is the expensive half of a frame — tens
         # of ms for a large panel, plus the first shader compile — and
-        # doing it after MapWindow leaves an empty window on screen for
-        # exactly that long. The animation then started against a window
-        # the user had already seen appear, so its opening frames were
-        # effectively spent before anything was drawn. Painting first
-        # means the map and the first animated frame land together.
+        # doing it after leaves an empty window on screen for exactly
+        # that long. The animation then started against a window the user
+        # had already seen appear, so its opening frames were effectively
+        # spent before anything was drawn. Painting first means the
+        # window and the first animated frame land together.
         #
         # Freezing is the same trick dismiss() uses for the despawn: the
         # transition is a per-pixel pass over a still image, so
@@ -729,45 +519,25 @@ class Window:
             if self._phase == "enter":
                 self._frozen = self.surface.makeImageSnapshot()
 
-        self._map()
+        self.scene.add(self)
         self.mapped = True
         if self._phase != "enter":
             self._set_blur(True)
-        self._raise()
 
         # The spawn's own time starts with its first frame on the clock,
         # not here: this frame draws it at zero, which for the panels'
         # effect is a transparent window, and nothing that happens between
         # the two is charged to it — see `_advance_phase`.
         self.redraw()
-        # Grabs after the first frame is out, not before: each grab waits
-        # on a server reply, and with the compositor busy that wait was
-        # measured at up to 16ms — time the window spent mapped but not
-        # yet painted. A click landing in that gap is not worth it.
         if self.spec.dismiss_on_outside_click:
-            self._grab_pointer()
+            self._grab("pointer")
         if self.spec.grab_keyboard:
-            self._grab_keyboard()
+            self._grab("keyboard")
         self._pace()
         if self._phase != "enter":
             self._notify_shown()
-
-    def _map(self) -> None:
-        """Put the window on screen (`show`); a canvas region adds
-        itself to the canvas instead (canvas.py)."""
-        self.display.conn.core.MapWindow(self.wid)
-        self.display.flush()
-
-    def _raise(self) -> None:
-        """Hold an override-redirect window on top, after `_map`."""
-        if self.spec.keep_above:
-            self.display.keep_above(self.wid)
-
-    def _unmap(self) -> None:
-        """Take the window off screen (`hide`)."""
-        self.display.keep_above(self.wid, False)
-        self.display.conn.core.UnmapWindow(self.wid)
-        self.display.flush()
+        if not self.scene.shows(self):
+            self.suspend()
 
     def _notify_shown(self) -> None:
         """Tell the content it is visible and idle — once per open."""
@@ -802,8 +572,8 @@ class Window:
             self._finish_dismiss()
             return
         self._end_hold(cancel=True)
-        self._ungrab_pointer()
-        self._ungrab_keyboard()
+        self._ungrab("pointer")
+        self._ungrab("keyboard")
         self._set_blur(False)
         self._seed = random.random() * 997.0
         self._frozen = self.surface.makeImageSnapshot()
@@ -812,108 +582,49 @@ class Window:
         self._stop_clock()
         self._pace()
 
-    # ── grabs ───────────────────────────────────────────────────────────
-    def _grab_pointer(self) -> None:
-        """Grab the pointer so clicks anywhere else reach us.
-
-        owner_events=True keeps clicks on our *own* windows going to those
-        windows, so the bar stays usable while a panel is open — the
-        trade-off is that the panel never sees them, and the window that
-        did has to dismiss us on our behalf (Daemon.dismiss_others).
-        """
-        self._grab("pointer")
-
-    def _grab_keyboard(self) -> None:
-        """Take the keyboard, so keys reach a window that has no focus."""
-        self._grab("keyboard")
-
-    def _grab(self, what: str, since: float | None = None) -> None:
-        """Take the pointer or the keyboard, trying again for a while if
-        something else holds it.
-
-        Something usually does. A window opened from a keybinding is
-        shown while that key is still down, and the window manager's own
-        grab on the key lasts until it comes up — a tenth of a second or
-        more, during which ours is refused. The retries are timers, not
-        sleeps: the window is on screen and animating meanwhile. Sleeping
-        through them (10, 20, 30… ms) froze the whole shell for that
-        long, and since the spawn was already counting, a panel opened
-        from the keyboard was first seen with most of its spawn played.
-        """
-        self._grab_retry.pop(what, None)
+    # ── the keyboard taken, the clicks outside caught ───────────────────
+    def _grab(self, what: str) -> None:
+        """Take the keyboard ("keyboard": the canvas asks the compositor
+        for it while anyone holds it), or catch the clicks outside
+        ("pointer": the canvas's input region is the whole canvas
+        meanwhile, and a click outside every window closes this one)."""
         if self.wid is None or not self.mapped or self._dismissing():
             return
-        core = self.display.conn.core
-        try:
-            if what == "pointer":
-                reply = core.GrabPointer(
-                    True, self.wid,
-                    xp.EventMask.ButtonPress | xp.EventMask.ButtonRelease,
-                    xp.GrabMode.Async, xp.GrabMode.Async,
-                    xp.Atom._None, xp.Atom._None, xp.Time.CurrentTime).reply()
-            else:
-                reply = core.GrabKeyboard(
-                    False, self.wid, xp.Time.CurrentTime,
-                    xp.GrabMode.Async, xp.GrabMode.Async).reply()
-        except Exception:
-            log.debug("%s %s grab errored", self.spec.name, what,
-                      exc_info=True)
-            return
-        # The reply may have pulled events off the wire behind the fd.
-        self.display.wake()
-        if reply.status == xp.GrabStatus.Success:
-            if what == "pointer":
-                self._grabbed = True
-            else:
-                self._kb_grabbed = True
-                # Keys only reach us under a grab, so re-reading the
-                # keymap here covers every layout switch since the last
-                # one. MappingNotify alone is not enough: once a client
-                # has initialised XKB (detectable auto-repeat) the server
-                # may send it XKB notifies instead, which we do not
-                # select. The reload is lazy — one round trip on the
-                # first key press.
-                self.display.invalidate_keymap()
-            log.debug("%s grabbed the %s", self.spec.name, what)
-            return
-        now = time.monotonic()
-        since = now if since is None else since
-        if self.loop is None or now - since > GRAB_GIVE_UP_S:
-            log.warning("%s could not grab the %s%s", self.spec.name, what,
-                        "; outside clicks will not dismiss it"
-                        if what == "pointer" else "")
-            return
-        self._grab_retry[what] = self.loop.call_later(
-            GRAB_RETRY_S, self._grab, what, since)
+        if what == "pointer":
+            self.scene.catch_outside(self, self._outside_click, self)
+            self._grabbed = True
+        else:
+            if not self.scene.keyboard.available:
+                self._say_once("keyboard", "%s: no keymap library (python-xkbcommon); "
+                               "no keyboard on the canvas", self.spec.name)
+                return
+            self.scene.keyboard.take(self, self)
+            self._kb_grabbed = True
+        log.debug("%s took the %s", self.spec.name,
+                  "outside clicks" if what == "pointer" else "keyboard")
+
+    def _ungrab(self, what: str) -> None:
+        if what == "pointer":
+            if self._grabbed:
+                self._grabbed = False
+                self.scene.release_outside(self)
+        elif self._kb_grabbed:
+            self._kb_grabbed = False
+            self.scene.keyboard.give_back(self)
 
     @property
     def keyboard_grabbed(self) -> bool:
         return self._kb_grabbed
 
-    def _ungrab(self, what: str) -> None:
-        retry = self._grab_retry.pop(what, None)
-        if retry is not None:
-            retry.cancel()
-        held = self._grabbed if what == "pointer" else self._kb_grabbed
-        if not held:
-            return
-        core = self.display.conn.core
-        try:
-            if what == "pointer":
-                self._grabbed = False
-                core.UngrabPointer(xp.Time.CurrentTime)
-            else:
-                self._kb_grabbed = False
-                core.UngrabKeyboard(xp.Time.CurrentTime)
-            self.display.flush()
-        except Exception:
-            log.debug("%s ungrab failed", what, exc_info=True)
+    def _outside_click(self) -> None:
+        if self._phase not in ("exit", "gone") and self.mapped:
+            log.debug("%s dismissed by outside click", self.spec.name)
+            self._request_close()
 
-    def _ungrab_keyboard(self) -> None:
-        self._ungrab("keyboard")
-
-    def _ungrab_pointer(self) -> None:
-        self._ungrab("pointer")
+    def _say_once(self, what: str, message: str, *args) -> None:
+        if what not in self._said:
+            self._said.add(what)
+            log.info(message, *args)
 
     def _finish_dismiss(self) -> None:
         callback, self._on_dismissed = self._on_dismissed, None
@@ -922,20 +633,42 @@ class Window:
             callback()
 
     def hide(self) -> None:
-        if self.wid is None or not self.mapped:
+        if self.wid is None:
             return
         self._stop_clock()
-        self._unmap()
+        self.scene.remove(self)
         self.mapped = False
+        self._suspended = False
+
+    def suspend(self) -> bool:
+        """Not shown for now (the canvas went away, or a fullscreen
+        window hides this bar): stop painting until `resume`. Changes
+        meanwhile are damage. True when it was showing."""
+        if self._suspended or not self.mapped:
+            return False
+        self._suspended = True
+        self._end_hold(cancel=True)
+        self._set_hover(None)
+        self._stop_clock()
+        self.mapped = False
+        return True
+
+    def resume(self) -> bool:
+        if not self._suspended:
+            return False
+        self._suspended = False
+        self.mapped = True
+        self.damage(None)
+        return True
 
     def relocate(self) -> None:
-        """Re-place on the current primary monitor after the screen
-        changed — a display switched, a resolution set.
+        """Re-place on the canvas after the screen changed — a display
+        switched, a resolution set.
 
         Dimensions the spec leaves to the monitor (the bar's width) are
         recomputed; fixed ones keep the size the window has, which for a
         content-sized window is what `resize_content` gave it, not the
-        spec's placeholder. Struts follow, since they are positions.
+        spec's placeholder. The reservations follow (Scene.moved).
         """
         if self.wid is None:
             return
@@ -944,18 +677,13 @@ class Window:
         size = (cw if want_w is not None else None,
                 ch if want_h is not None else None)
         cx, cy, cw, ch = self._compute_geometry(
-            self.display.primary_monitor(), size=size)
-        if (cx, cy, cw, ch) == self.content_root:
-            return
+            self.scene.primary_monitor(), size=size)
         self._apply_geometry(cx, cy, cw, ch)     # repaints, too
-        if self.spec.exclusive:
-            self._set_struts()
-
     def park(self) -> None:
         """Hide, and keep everything expensive for the next `show()`.
 
-        What a closed panel pays to come back is the window, the EGL
-        surface and the GPU's first-use costs, so those stay. The content
+        What a closed panel pays to come back is the window, its surface
+        and the content's first layout, so those stay. The content
         is detached exactly as `destroy()` would, so a parked panel's
         widgets run no subscriptions or samplers while it is out of
         sight, and `unpark()` re-attaches them just as a fresh `create()`
@@ -965,8 +693,8 @@ class Window:
         """
         self.hide()
         self._end_hold(cancel=True)
-        self._ungrab_pointer()
-        self._ungrab_keyboard()
+        self._ungrab("pointer")
+        self._ungrab("keyboard")
         self._set_blur(False)
         self._frozen = None
         self._phase = "idle"
@@ -1001,7 +729,7 @@ class Window:
         # content-sized window is only a placeholder.
         _cx, _cy, cw, ch = self.content_root
         cx, cy, cw, ch = self._compute_geometry(
-            self.display.primary_monitor(), size=(cw, ch))
+            self.scene.primary_monitor(), size=(cw, ch))
         self._apply_geometry(cx, cy, cw, ch)
         # No layout here: park() left `_relayout_queued` set, and show()
         # lays out once before it paints. Doing it here as well cost the
@@ -1012,19 +740,14 @@ class Window:
         if self.wid is None:
             return
         self._end_hold(cancel=True)
-        self._ungrab_pointer()
-        self._ungrab_keyboard()
+        self._ungrab("pointer")
+        self._ungrab("keyboard")
         self._stop_clock()
-        if self.gl_surface is not None:
-            # Drop every GPU-backed surface while this window's context is
-            # still current, so their textures are released against the
-            # right context rather than lingering in the shared cache.
-            self.gl.make_current(self.gl_surface)
-            self.surface = self._frozen = self._out = None
-            self._small_in = self._small_out = None
-            self.gl_surface.destroy()
-            self.gl_surface = None
-            self.gl = None
+        self.scene.remove(self)
+        self.surface = self._frozen = self._out = None
+        self._small_in = self._small_out = None
+        self._picture = None
+        self._blur_on, self._blur_rects = False, ()
         if self.content is not None and not self._parked:
             try:
                 self.content.detach()
@@ -1032,18 +755,10 @@ class Window:
                 log.exception("detach failed for %s", self.spec.name)
             if self.holo is not None:
                 self.holo.detach()
-        self.display.off(self.wid)
-        self.display.keep_above(self.wid, False)
-        try:
-            self.display.conn.core.DestroyWindow(self.wid)
-            self.display.flush()
-        except Exception:
-            log.debug("destroy failed for 0x%x", self.wid, exc_info=True)
-        log.info("destroyed %s 0x%x", self.spec.name, self.wid)
+        log.info("destroyed %s on the canvas", self.spec.name)
         self.wid = None
-        self.surface = None
         self.mapped = False
-
+        self._suspended = False
     # ── painting ────────────────────────────────────────────────────────
     def paint(self, canvas: skia.Canvas, w: int, h: int,
               dirty: "skia.Region | None" = None) -> None:
@@ -1143,9 +858,20 @@ class Window:
         canvas.drawRect(rect, crisp)
 
     def redraw(self) -> None:
-        """Paint what is dirty and present it. Frames call this; nothing
-        else should, or it paints widgets no tick has looked at — see
-        `_tick_widgets`."""
+        """Paint what is dirty and hand it to the canvas. Frames call
+        this; nothing else should, or it paints widgets no tick has
+        looked at — see `_tick_widgets`."""
+        t0 = time.perf_counter()
+        self._painted = 0
+        self._redraw()
+        if self._painted:
+            ms = (time.perf_counter() - t0) * 1000
+            self.scene.stats.paint(self.spec.name, ms)
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug("%s painted in %.2f ms (%d px)", self.spec.name, ms,
+                          self._painted)
+
+    def _redraw(self) -> None:
         if self.surface is None or self.wid is None or not self.mapped:
             return
 
@@ -1161,7 +887,7 @@ class Window:
             return
 
         if self.gl is not None:
-            self.gl.make_current(self.gl_surface)
+            self.gl.make_current()
 
         if self._frozen is not None:
             frame = self._frozen
@@ -1172,9 +898,11 @@ class Window:
                 self._damage_all = True     # layout can move anything
             dirty = self._take_damage()
             if dirty is not None and not dirty.isEmpty():
+                # No submit of its own: the canvas's present submits the
+                # one context's work, this paint with it (a submit per
+                # window per frame cost 0.8 ms on the GPU for nothing).
                 self.paint(self.surface.getCanvas(), self.width, self.height,
                            dirty)
-                self._flush_paint()
             frame = self.surface.makeImageSnapshot()
 
         passes = [e for e in self.effects if e.active(self._appear)]
@@ -1238,34 +966,40 @@ class Window:
             out.getCanvas().drawPaint(paint)
         self._show_out(out)
 
-    def _flush_paint(self) -> None:
-        """Submit what `redraw` just painted into `self.surface`."""
-        self.surface.flushAndSubmit()
-
     def _show_frame(self, frame: skia.Image) -> None:
-        """Put a frame no pass touched on screen (`redraw`)."""
-        if self.gl_surface is not None:
-            # Straight to the window's framebuffer, then swap.
-            canvas = self.gl_surface.skia_surface.getCanvas()
-            canvas.clear(skia.ColorSetARGB(0, 0, 0, 0))
-            canvas.drawImage(frame, 0, 0, self._sampling)
-            self.gl_surface.swap()
-        else:
-            self._present(frame.tobytes())
+        """Hand the canvas a frame no pass touched (`redraw`): the
+        surface itself, damaged where the paint was, or a frozen frame
+        whole."""
+        dirty, self._dirty_local = self._dirty_local, None
+        if self._frozen is not None:
+            self._picture = frame
+            self._painted = self.width * self.height
+            self.scene.update(self, None)
+            return
+        self._picture = self.surface
+        if dirty is None or dirty.isEmpty():
+            return
+        self._painted = sum(r.width() * r.height() for r in rects(dirty))
+        self.scene.update(self, dirty)
 
     def _show_out(self, out: skia.Surface) -> None:
-        """Put the effect chain's output, `_out_surface()`, on screen."""
-        if self.gl_surface is not None:
-            # `out` is already the window's framebuffer — swap, don't
-            # read back. This is the whole saving: no tobytes(), no
-            # 2.3MB of PutImage, no 40 X requests per frame.
-            self.gl_surface.swap()
-            return
-        out.flushAndSubmit()
-        self._present(out.makeImageSnapshot().tobytes())
+        """Hand the canvas the effect chain's output, `_out_surface()`."""
+        self._dirty_local = None
+        self._picture = out
+        self._painted = self.width * self.height
+        self.scene.update(self, None)
+
+    def picture(self) -> skia.Image | None:
+        """What the canvas shows of this window now."""
+        p = self._picture
+        if p is None:
+            return None
+        if isinstance(p, skia.Surface):
+            return p.makeImageSnapshot()
+        return p
 
     def _make_surface(self, w: int, h: int) -> skia.Surface:
-        """An offscreen surface on whichever backend this window uses."""
+        """An offscreen surface on whichever backend the canvas uses."""
         if self.gl is not None:
             return self.gl.offscreen(w, h)
         return skia.Surface(w, h)
@@ -1278,15 +1012,10 @@ class Window:
         return surface
 
     def _out_surface(self) -> skia.Surface:
-        # On the GPU path the window's own framebuffer *is* the output —
-        # there is nothing to composite into and nothing to read back.
-        if self.gl_surface is not None:
-            return self.gl_surface.skia_surface
         if self._out is None or self._out.width() != self.width \
                 or self._out.height() != self.height:
-            self._out = skia.Surface(self.width, self.height)
+            self._out = self._make_surface(self.width, self.height)
         return self._out
-
     # ── damage ──────────────────────────────────────────────────────────
     def damage(self, widget=None, *, layout: bool = False) -> None:
         """Mark a region dirty. Coalesced — a burst of widget changes in
@@ -1352,14 +1081,16 @@ class Window:
         self._frame_soon()
 
     def _take_damage(self) -> "skia.Region | None":
-        """The region to repaint this frame, or None if nothing is dirty."""
+        """The region to repaint this frame, or None if nothing is dirty;
+        kept as what the frame hands the canvas (`_show_frame`)."""
         if self._damage_all:
             self._damage_all = False
             self._damage = None
-            full = skia.Region()
-            full.setRect(skia.IRect.MakeWH(self.width, self.height))
-            return full
-        region, self._damage = self._damage, None
+            region = skia.Region()
+            region.setRect(skia.IRect.MakeWH(self.width, self.height))
+        else:
+            region, self._damage = self._damage, None
+        self._dirty_local = skia.Region(region) if region is not None else None
         return region
 
     # ── frames ──────────────────────────────────────────────────────────
@@ -1668,57 +1399,43 @@ class Window:
         self._frame_handle = self.loop.call_later(
             self._next_frame_at - now, self._on_frame)
 
-    def _present(self, pixels: bytes) -> None:
-        """Upload the frame.
+    # ── the keyboard, from the canvas's KeyboardRouter ──────────────────
+    def key_press(self, key: KeyEvent) -> None:
+        if not self._suspended:
+            self._on_key(key)
 
-        skia's N32 is BGRA premultiplied on little-endian, which is
-        exactly what X expects for ZPixmap at depth 24 and 32 — so the
-        buffer goes up untouched. Rows are chunked because a single
-        PutImage has to fit inside one X request.
-        """
-        assert self.wid is not None and self.gc is not None
-        conn = self.display.conn
-        stride = self.width * 4
-        rows_per_chunk = max(1, 60000 // stride)
-        for y0 in range(0, self.height, rows_per_chunk):
-            rows = min(rows_per_chunk, self.height - y0)
-            chunk = pixels[y0 * stride:(y0 + rows) * stride]
-            conn.core.PutImage(
-                xp.ImageFormat.ZPixmap, self.wid, self.gc,
-                self.width, rows, 0, y0, 0, self.depth, len(chunk), chunk)
-        self.display.flush()
+    def key_release(self, key: KeyEvent) -> None:
+        if not self._suspended:
+            self._on_key_release(key)
+
+    # ── the pointer, from the canvas's PointerRouter ────────────────────
+    def pointer_motion(self, x: float, y: float) -> None:
+        if not self._suspended:
+            self._motion(x, y)
+
+    def pointer_leave(self) -> None:
+        self._set_hover(None)
+
+    def pointer_button(self, button: int, pressed: bool, x: float, y: float) -> None:
+        if self._suspended:
+            return
+        if pressed:
+            self._on_press(button, x, y)
+        else:
+            self._on_release(button, x, y)
+
+    def pointer_lost(self) -> None:
+        """The press's release will not come (the compositor broke the
+        pointer's implicit grab): let go of everything it started."""
+        if self._held is not None:
+            log.info("%s: the press's grab was broken; its hold let go", self.spec.name)
+            self._end_hold(cancel=True)
+        if self._dragging is not None:
+            self._deliver_drag(*self._drag_xy, commit=True)
+            self._dragging = None
+        self._unpress()
 
     # ── events ──────────────────────────────────────────────────────────
-    def _on_event(self, ev) -> None:
-        if isinstance(ev, xp.ExposeEvent):
-            # Expose means the server wants content it no longer has, so
-            # this is one of the few genuine whole-window repaints — the
-            # damage region says what *we* changed, not what was lost.
-            # Coalesced: only the last rectangle of a burst needs it.
-            if ev.count == 0:
-                self.damage(None)
-        elif isinstance(ev, xp.ConfigureNotifyEvent):
-            if (ev.width, ev.height) != (self.width, self.height):
-                log.debug("%s resized %dx%d -> %dx%d", self.spec.name,
-                          self.width, self.height, ev.width, ev.height)
-                self._adopt_size(ev.width, ev.height)
-            self.x, self.y = ev.x, ev.y
-        elif isinstance(ev, xp.ButtonPressEvent):
-            self._on_press(ev)
-        elif isinstance(ev, xp.ButtonReleaseEvent):
-            self._on_release(ev)
-        elif isinstance(ev, xp.MotionNotifyEvent):
-            self._motion(ev.event_x, ev.event_y)
-        elif (ev.response_type & 0x7F) == 3:
-            # KeyRelease. Checked by opcode, ahead of the press branch:
-            # xcffib gives releases the KeyPressEvent shape, and a grab
-            # delivers both whatever the window's event mask says.
-            self._on_key_release(ev)
-        elif isinstance(ev, xp.KeyPressEvent):
-            self._on_key(ev)
-        elif isinstance(ev, xp.LeaveNotifyEvent):
-            self._set_hover(None)
-
     def _motion(self, x: float, y: float) -> None:
         """The pointer moved to (x, y), window coordinates."""
         # A drag owns the pointer until release: motion goes to the
@@ -1733,9 +1450,6 @@ class Window:
             self._set_hover(self._pick(x, y))
             self._hover_motion(x, y)
 
-    def _key_event(self, ev) -> KeyEvent:
-        return key_event(self.display, ev)
-
     def _dismissing(self) -> bool:
         # Keys are dropped only while dismissing: the exit pass runs over
         # a still image and the widget tree may already belong to a
@@ -1746,40 +1460,39 @@ class Window:
         # entrance unfreezes, which re-lays out and repaints everything.
         return self._phase in ("exit", "gone")
 
-    def _on_key(self, ev) -> None:
+    def _on_key(self, key: KeyEvent) -> None:
         if self._held_keys:
-            self._held_key(self._key_event(ev))
+            self._held_key(key)
             return
         if not self.spec.grab_keyboard:
-            # Only a held press's grab brings keys to a window that does
-            # not take the keyboard (`hold_keyboard`); one typed as it
-            # ended is late, and must not reach the Escape below, which
-            # would close the window (the top bar).
+            # Only a held press brings keys to a window that does not take
+            # the keyboard (`hold_keyboard`); one typed as it ended is
+            # late, and must not reach the Escape below, which would close
+            # the window (the top bar).
             log.debug("%s: a key after its hold ended, dropped", self.spec.name)
             return
         if self.content is None or self._dismissing():
             return
-        key = self._key_event(ev)
         if any(_chord_is(key, chord) for chord in self.spec.close_keys):
             self._request_close()
             return
         try:
             if not self.content.key(key):
-                # Escape always closes a grabbing window, even if nothing
-                # in the tree wanted it — otherwise a grab with no exit
-                # is a locked session.
-                if key.keysym == 0xFF1B:
+                # Escape always closes a window holding the keyboard, even
+                # if nothing in the tree wanted it — otherwise a keyboard
+                # held with no exit is a locked session.
+                if key.keysym == _ESCAPE:
                     self._request_close()
         except Exception:
             log.exception("key handler failed in %s", self.spec.name)
 
-    def _on_key_release(self, ev) -> None:
+    def _on_key_release(self, key: KeyEvent) -> None:
         if self._held_keys or not self.spec.grab_keyboard:
             return              # a held press's keyboard: releases are nobody's
         if self.content is None or self._dismissing():
             return
         try:
-            self.content.key_release(self._key_event(ev))
+            self.content.key_release(key)
         except Exception:
             log.exception("key release handler failed in %s", self.spec.name)
 
@@ -1799,46 +1512,41 @@ class Window:
         if widget is not None:
             widget.set_hovered(True)
 
-    def _on_press(self, ev) -> None:
+    def _on_press(self, button: int, x: float, y: float) -> None:
         if self._held is not None:
             # Another button while a press is held: the held one decides.
             return
-        if self.spec.dismiss_on_outside_click and self._phase not in ("exit", "gone"):
-            # Under the grab, clicks anywhere else in the session arrive
-            # here with coordinates relative to us — so "outside" is just
-            # a rect test.
-            inside = self.content_rect.contains(ev.event_x, ev.event_y)
-            # A window cut to its plates (`blur`) is only as big as they
-            # are: a click in the cut-away part of its rect is outside.
+        if (self.spec.dismiss_on_outside_click and self.spec.blur
+                and self._phase not in ("exit", "gone")):
+            # A window that blurs behind its plates is only as big as they
+            # are: a click in the rest of its rect is outside it.
             shape_of = getattr(self.content, "blur_shape", None)
-            if inside and self.spec.blur and shape_of is not None:
-                inside = shape_of().contains(ev.event_x, ev.event_y)
-            if not inside:
+            if shape_of is not None and not shape_of().contains(x, y):
                 log.debug("%s dismissed by outside click", self.spec.name)
                 self._request_close()
                 return
 
-        widget = self._pick(ev.event_x, ev.event_y)
+        widget = self._pick(x, y)
         if widget is None:
             # A click that hit nothing in a window that stays open still
-            # has to dismiss any panel that's listening for outside clicks,
-            # because the grab never showed it to them.
+            # dismisses the panels listening for outside clicks: it landed
+            # on a window of ours, so the canvas did not count it as one.
             self._dismiss_others()
             return
         # Scroll arrives as buttons 4-7, not as a separate event type.
-        if ev.detail in (1, 2, 3):
+        if button in (1, 2, 3):
             self._pressed = widget
             widget.pressed = True
             widget.invalidate()
-            if self._offer_press(widget, ev):
+            if self._offer_press(widget, button, x, y):
                 return
-        if ev.detail == 1 and widget.on_drag is not None:
+        if button == 1 and widget.on_drag is not None:
             self._dragging = widget
-            self._deliver_drag(ev.event_x, ev.event_y, commit=False)
+            self._deliver_drag(x, y, commit=False)
             return          # a drag press is not also a click
-        log.debug("button %d on %s", ev.detail, type(widget).__name__)
+        log.debug("button %d on %s", button, type(widget).__name__)
         try:
-            widget.click(ev.detail, ev.event_x, ev.event_y)
+            widget.click(button, x, y)
         except Exception:
             log.exception("click handler failed on %s", type(widget).__name__)
 
@@ -1862,14 +1570,14 @@ class Window:
         except Exception:
             log.exception("drag handler failed in %s", self.spec.name)
 
-    def _on_release(self, ev) -> None:
+    def _on_release(self, button: int, x: float, y: float) -> None:
         if self._held is not None:
-            if ev.detail != self._held_button:
+            if button != self._held_button:
                 return          # another button's, while the held one is down
             # Let go of everything first: the widget's answer may fail.
             widget = self._end_hold()
             try:
-                widget.release(ev.detail, ev.event_x, ev.event_y)
+                widget.release(button, x, y)
             except Exception:
                 log.exception("release handler failed on %s", type(widget).__name__)
             self._unpress()
@@ -1891,29 +1599,26 @@ class Window:
 
     # ── a held press (`Widget.press`) ───────────────────────────────────
     # From the press to its button's release the widget gets the motion
-    # and the release wherever the pointer goes. That needs no grab of
-    # ours: X keeps the pointer for the window a press went to until every
-    # button is up (the automatic grab), and its motion and release are
-    # reported to that window, below its edge too. An explicit
-    # GrabPointer would turn that into a grab that outlives the release
-    # until ungrabbed, the one way a drag could keep the desktop's
-    # pointer; none is made. The keyboard is taken only when the widget
-    # asks (`hold_keyboard`, for Escape), and given back on every way out
-    # of the hold: its release, Escape, the release never seen
-    # (`_check_hold`), the widget leaving the window, an exception in
-    # its handlers, the window parked, dismissed or destroyed.
-    def _offer_press(self, widget: Widget, ev) -> bool:
+    # and the release wherever the pointer goes: the compositor keeps the
+    # pointer for the surface a press went to until every button is up
+    # (the implicit grab), and the canvas's PointerRouter sends that
+    # surface's motion and release to the window the press went to. If
+    # the compositor breaks it, `pointer_lost` lets go. The keyboard is
+    # taken only when the widget asks (`hold_keyboard`, for Escape), and
+    # given back on every way out of the hold: its release, Escape, the
+    # grab broken, the widget leaving the window, an exception in its
+    # handlers, the window parked, dismissed or destroyed.
+    def _offer_press(self, widget: Widget, button: int, x: float, y: float) -> bool:
         """Whether `widget` holds the press (no click then)."""
         try:
-            taken = widget.press(ev.detail, ev.event_x, ev.event_y)
+            taken = widget.press(button, x, y)
         except Exception:
             log.exception("press handler failed on %s", type(widget).__name__)
             return True         # neither a hold nor a click after a half-done press
         if not taken:
             return False
-        self._held, self._held_button = widget, ev.detail
-        log.debug("button %d held by %s", ev.detail, type(widget).__name__)
-        self._watch_hold()
+        self._held, self._held_button = widget, button
+        log.debug("button %d held by %s", button, type(widget).__name__)
         # As a press on the bar's empty part always did: open panels go.
         self._dismiss_others()
         return True
@@ -1921,21 +1626,16 @@ class Window:
     def hold_keyboard(self, widget: Widget) -> bool:
         """Take the keyboard while `widget` holds a press, so that Escape
         can cancel it (`Widget.cancel`); the other keys typed meanwhile go
-        to its `key` and no further. Once, no retries: refused (another
-        client has the keyboard, or a window of ours does, whose grab
-        this would replace), the hold goes on without Escape. Given back
-        when the hold ends, however it ends."""
+        to its `key` and no further. Taken on top of whoever has it, and
+        given back when the hold ends, however it ends. False without a
+        keyboard on the canvas: the hold goes on without Escape."""
         if widget is not self._held or self.wid is None:
             return False
         if self._held_keys:
             return True
-        if self._keyboard_taken_here():
-            log.debug("%s: a window of ours has the keyboard; no Escape for this hold",
-                      self.spec.name)
+        if not self.scene.keyboard.available:
             return False
-        if not self.display.grab_keyboard(self.wid):
-            log.debug("%s: keyboard refused; no Escape for this hold", self.spec.name)
-            return False
+        self.scene.keyboard.take(("hold", self), self)
         self._held_keys = True
         return True
 
@@ -1949,32 +1649,14 @@ class Window:
     def holding(self) -> Widget | None:
         return self._held
 
-    def _keyboard_taken_here(self) -> bool:
-        """Whether another window of this shell holds the keyboard (a
-        grab of ours on this one would take it from it)."""
-        try:
-            from .core.daemon import get_daemon
-            windows = list(get_daemon().instances.values())
-        except RuntimeError:            # no daemon: a test's own window
-            return False
-        return any(w is not self and (w._kb_grabbed or "keyboard" in w._grab_retry)
-                   for w in windows)
-
     def _end_hold(self, *, cancel: bool = False) -> Widget | None:
-        """The hold over: the keyboard given back, the check stopped;
-        with `cancel` the widget told (`Widget.cancel`). The widget that
-        held it, or None."""
+        """The hold over: the keyboard given back; with `cancel` the
+        widget told (`Widget.cancel`). The widget that held it, or None."""
         widget, self._held = self._held, None
         self._held_button = 0
-        if self._hold_check is not None:
-            self._hold_check.cancel()
-            self._hold_check = None
         if self._held_keys:
             self._held_keys = False
-            try:
-                self.display.ungrab_keyboard()
-            except Exception:
-                log.debug("%s: keyboard ungrab failed", self.spec.name, exc_info=True)
+            self.scene.keyboard.give_back(("hold", self))
         if cancel and widget is not None:
             log.debug("%s's held press cancelled", type(widget).__name__)
             try:
@@ -2015,35 +1697,3 @@ class Window:
             widget.motion(x, y)
         except Exception:
             log.exception("motion handler failed on %s", type(widget).__name__)
-
-    def _watch_hold(self) -> None:
-        if self.loop is not None and self._held is not None:
-            self._hold_check = self.loop.call_later(HOLD_CHECK_S, self._check_hold)
-
-    def _check_hold(self) -> None:
-        """The held button still down, or the hold over: a release read
-        off the wire along with the answer is dispatched first, so a
-        release that did come is never taken for a lost one."""
-        self._hold_check = None
-        if self._held is None:
-            return
-        d = self.display
-        try:
-            mask = d.conn.core.QueryPointer(d.root).reply().mask
-        except Exception:
-            log.debug("%s: pointer query failed", self.spec.name, exc_info=True)
-            mask = 0                    # no way to know: let go rather than hold on
-        d.pump()
-        if self._held is None:
-            return
-        if not mask & (1 << (7 + self._held_button)):
-            log.info("%s: button %d came up unseen; its hold let go", self.spec.name,
-                     self._held_button)
-            self._end_hold(cancel=True)
-            return
-        self._watch_hold()
-
-
-def _wm_class_name() -> str:
-    from .core.naming import APP
-    return APP

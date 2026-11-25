@@ -256,8 +256,8 @@ call has heard it, and in an app with no shell, she is Lilac in
   raster stays lit 100 px behind it and fades. In the gaps between surfaces
   nothing shows.
 - **Blur only where the compositor gives it**: the call's plates are
-  translucent and picom blurs what is behind them, cut to the plates'
-  outline, live. No other surface is frosted.
+  translucent and the compositor (niri) blurs what is behind them, to the
+  plates' outline, live. No other surface is frosted.
 - **No drop shadows. Ever.** Captured-snapshot "refraction", a patched
   compositor, an own compositor, frosted rims and blurred halos were all
   tried or proposed and turned down: real live effects or nothing.

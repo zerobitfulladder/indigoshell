@@ -9,8 +9,8 @@ run time by wlproto.py):
 | `indigoshell-reserve-<edge>` | bottom | the edge + both perpendicular | the bars' reach | 1x1 transparent wl_shm, stretched by wp_viewporter | empty |
 
 The canvas surface also carries ext-background-effect's blur region:
-the plates of the `blur` regions shown (the call's), where the
-compositor blurs what is behind them, frosted as picom does on X. For a
+the plates of the `blur` windows shown (the call's), where the
+compositor blurs what is behind them, frosted. For a
 layer surface niri blurs only the wallpaper unless the layer rule
 `background-effect { xray false; }` matches the namespace (the user's
 niri config has it); without the protocol the plates are not frosted.
@@ -51,8 +51,7 @@ parked on a 1x1 surface of its own, and so do the regions' pixels in it.
 An output going away closes the canvas too; it is made again on
 whatever output there is.
 
-The event pump is loop-agnostic like backend/x11.py's: `fd` is wired
-into the daemon's loop, `on_readable` reads and dispatches, `flush`
+The event pump is loop-agnostic: `fd` is wired into the daemon's loop, `on_readable` reads and dispatches, `flush`
 sends. EGL reads the same socket inside a swap, so events for the
 default queue can land there with the fd left quiet; every present
 queues a `drain` for that.
@@ -67,10 +66,10 @@ import time
 
 import skia
 
-from ..canvas import AxisSteps, DamageHistory, GpuScratch, Scene, button_of, rects
+from ..canvas import AxisSteps, DamageHistory, GpuScratch, Scene, button_of
+from ..window import rects
 from ..core.naming import APP, env
 from .wlkeys import Keys, Repeat
-from .x11 import DisplayError
 
 log = logging.getLogger(__name__)
 
@@ -93,21 +92,12 @@ SEAT_POINTER, SEAT_KEYBOARD = 1, 2
 KEYMAP_XKB_V1 = 1
 
 
+class DisplayError(RuntimeError):
+    """No canvas: no Wayland display, or it went away."""
+
+
 class NoLayerShell(DisplayError):
     """The compositor offers no zwlr_layer_shell_v1."""
-
-
-def backend_order(environ) -> list[str]:
-    """Which display servers to try, in order. $INDIGOSHELL_BACKEND
-    ("x11" or "wayland") forces one; otherwise Wayland first when
-    $WAYLAND_DISPLAY is set (it is used only if its compositor offers
-    layer-shell), else X11."""
-    forced = (environ.get(env("BACKEND")) or "").strip().lower()
-    if forced in ("x11", "wayland"):
-        return [forced]
-    if environ.get("WAYLAND_DISPLAY"):
-        return ["wayland", "x11"]
-    return ["x11"]
 
 
 def parse_states(raw) -> set[int]:
@@ -1134,23 +1124,9 @@ class Canvas:
         self.disconnect()
 
 
-def connect(environ, loop=None) -> Canvas | None:
-    """The canvas when the shell should draw on Wayland, else None (X11).
-    See `backend_order`."""
-    order = backend_order(environ)
-    if order[0] != "wayland":
-        return None
+def connect(loop=None) -> Canvas:
+    """The canvas, connected to $WAYLAND_DISPLAY's compositor. Raises
+    DisplayError (NoLayerShell when it offers no layer-shell)."""
     canvas = Canvas(loop)
-    try:
-        canvas.connect()
-    except NoLayerShell as e:
-        if len(order) == 1:
-            raise
-        log.info("%s; using X11", e)
-        return None
-    except DisplayError as e:
-        if len(order) == 1 or not environ.get("DISPLAY"):
-            raise
-        log.warning("%s; using X11", e)
-        return None
+    canvas.connect()
     return canvas

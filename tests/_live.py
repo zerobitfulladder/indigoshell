@@ -1,23 +1,27 @@
 """Shared by the live tests: the real `Window` and the real widgets, on
-an X window placed off the screen.
+a canvas of their own.
 
-These are scripts, not a test suite to collect: they need the X display
-and the GPU the shell itself runs on, and are run by hand —
+These are scripts, not a test suite to collect, run by hand —
 
     .venv/bin/python tests/clock.py           the frame clock alone
     .venv/bin/python tests/call.py            the call overlay, fuzzed
     .venv/bin/python tests/call_status.py     the hung-up status chip
     .venv/bin/python tests/call_progress.py   progress bars on the call
-    .venv/bin/python tests/spawn.py           spawn timing (shows a panel)
+    .venv/bin/python tests/spawn.py           how much of a spawn is seen
 
 Each prints what it checked and exits non-zero if something failed.
-`tests/progress.py` needs no display: it runs yt-dlp, ffmpeg, curl and
+`tests/progress.py` needs no window: it runs yt-dlp, ffmpeg, curl and
 rsync through the progress shims.
-Nothing appears on screen, `spawn.py` aside: the windows are
-override-redirect, past the right edge of the screen, and take no grabs.
-The shell can be running meanwhile. The tests never touch its socket,
-its windows or its saved state — `XDG_STATE_HOME` points at a temporary
-directory before anything of the shell's is imported.
+
+**The canvas** is the shell's own `canvas.Scene` with no compositor
+under it (`Canvas`): the windows are placed on it, keep their frame
+clocks and paint as they do on screen, in CPU raster, and what they
+damage is composed onto a surface of the test's own the way the
+Wayland backend presents it. Nothing is shown anywhere and nothing
+needs a display, so the shell can be running meanwhile. The tests never
+touch its socket, its windows or its saved state — `XDG_STATE_HOME`
+points at a temporary directory before anything of the shell's is
+imported.
 
 **Why they run in one long-lived process.** The bug that froze the
 call's effects only existed on a window opened for the second time: the
@@ -30,7 +34,10 @@ So the tests that matter here open, close, park and open again
 has ended, what is in the window's surface must be exactly what a forced
 full repaint draws. Any pixel that differs was left over from a frame
 that should have been painted over — a reply half decoded, a blink
-caught dim, a glow nobody cleared.
+caught dim, a glow nobody cleared. Exactly, short of one thing: on the
+CPU, Skia anti-aliases a curve's edge a little differently under a
+damage clip than whole, so a pixel on an edge may differ by as much as
+the edge's own contrast (`AA_LEVELS` at most) and still count as clean.
 """
 
 import asyncio
@@ -54,49 +61,71 @@ from indigoshell.agent.activity import (Activity,       # noqa: E402
 from indigoshell.agent.progress import Job, Jobs, runs_command  # noqa: E402
 from indigoshell.agent.remote import (CLIENT, PROTOCOL,  # noqa: E402
                                       RemoteAgent)
-from indigoshell.backend.x11 import Display             # noqa: E402
+from indigoshell.canvas import Scene                    # noqa: E402
 from indigoshell.widgets.base import Insets             # noqa: E402
 from indigoshell.window import Anchor, Layer, Window, WindowSpec  # noqa: E402
 
-# Far enough right that the widest window here is wholly off the screen.
-OFFSCREEN = -1400
+# The canvas's size: a 1440p screen, room for the widest window here.
+SIZE = (2560, 1440)
 
 _shots: str | None = None       # where `stale()` saves what it found
 
 
-def connect() -> Display:
-    """The X display, pumped by the running loop as the daemon does."""
-    loop = asyncio.get_running_loop()
-    display = Display()
-    display.attach_loop(loop)
+class Canvas:
+    """A `Scene` presented as the Wayland backend presents it, onto a
+    raster surface of its own: its damage composed once the loop comes
+    round. `on_present(composed)` hears each present."""
 
-    def pump() -> None:
-        while display.pump():
-            pass
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.scene = Scene(loop)
+        self.scene.keyboard.available = True    # a keymap, as live
+        self.scene.resize(*SIZE)
+        self.scene.take_damage()
+        self.surface = skia.Surface(*SIZE)
+        self.on_present = None
+        self._queued = False
+        self.scene.on_damage = self._present_soon
 
-    loop.add_reader(display.fd, pump)
-    return display
+    def _present_soon(self) -> None:
+        if not self._queued:
+            self._queued = True
+            self.loop.call_soon(self._present)
+
+    def _present(self) -> None:
+        self._queued = False
+        damage = self.scene.take_damage()
+        if damage.isEmpty():
+            return
+        self.scene.compose(self.surface.getCanvas(), damage)
+        if self.on_present is not None:
+            self.on_present(self)
+
+    def pixels(self, box: skia.IRect | None = None) -> np.ndarray:
+        """The composed canvas as it stands, RGBA rows; `box` of it."""
+        image = self.surface.makeImageSnapshot()
+        if box is not None:
+            image = image.makeSubset(box)
+        return np.array(image.toarray(), copy=True)
 
 
-def offscreen(spec: WindowSpec, **changes) -> WindowSpec:
-    """`spec` as a test window: off the screen, no grabs."""
-    margin = Insets(top=spec.margin.top, right=OFFSCREEN)
-    return dataclasses.replace(
-        spec, name=f"test-{spec.name}", margin=margin,
-        grab_keyboard=False, dismiss_on_outside_click=False, **changes)
+def canvas() -> Canvas:
+    return Canvas(asyncio.get_running_loop())
 
 
-def open_window(display: Display, spec: WindowSpec) -> Window:
-    win = Window(display, spec, asyncio.get_running_loop())
+def open_window(canvas: Canvas, spec: WindowSpec, **changes) -> Window:
+    """`spec` (with `changes`) created and shown on `canvas`."""
+    if changes:
+        spec = dataclasses.replace(spec, **changes)
+    win = Window(canvas.scene, spec, canvas.loop)
     win.create()
     win.show()
-    display.pump()
     return win
 
 
 async def reopen(win: Window, closed_for: float = 0.2) -> None:
     """What the daemon does with a keep-alive window: despawn it, park
-    it, then map the same window and the same widgets again."""
+    it, then show the same window and the same widgets again."""
     done = asyncio.Event()
     win.dismiss(done.set)
     await done.wait()
@@ -104,15 +133,27 @@ async def reopen(win: Window, closed_for: float = 0.2) -> None:
     await asyncio.sleep(closed_for)
     win.unpark()
     win.show()
-    win.display.pump()
 
 
 def pixels(win: Window) -> np.ndarray:
     """The window's surface as it stands, RGBA rows."""
-    if win.gl is not None:
-        win.gl.make_current(win.gl_surface)
-    image = win.surface.makeImageSnapshot().makeRasterImage()
-    return np.array(image.toarray(), copy=True)
+    return np.array(win.surface.makeImageSnapshot().toarray(), copy=True)
+
+
+# Skia's CPU raster anti-aliases a curve's edge a little differently when
+# it is drawn under a clip (a damaged region) than whole: up to ~40 levels
+# on an edge pixel, never more than the edge's own contrast. A pixel that
+# close to its repaint, on an edge, is that, not something left over.
+AA_LEVELS = 48
+
+
+def _contrast(image: np.ndarray) -> np.ndarray:
+    """The most any channel of `image` varies over each pixel's 3x3
+    neighbourhood."""
+    padded = np.pad(image[..., :3].astype(int), ((1, 1), (1, 1), (0, 0)), mode="edge")
+    h, w = image.shape[:2]
+    near = [padded[dy:dy + h, dx:dx + w] for dy in range(3) for dx in range(3)]
+    return (np.max(near, axis=0) - np.min(near, axis=0)).max(axis=2)
 
 
 def stale(win: Window, tag: str = "") -> tuple[int, tuple | None]:
@@ -124,7 +165,8 @@ def stale(win: Window, tag: str = "") -> tuple[int, tuple | None]:
     win._damage_all = True
     win.redraw()
     after = pixels(win)
-    differs = np.abs(before.astype(int) - after.astype(int)).max(axis=2) > 10
+    diff = np.abs(before.astype(int) - after.astype(int)).max(axis=2)
+    differs = (diff > 10) & ~((diff <= AA_LEVELS) & (diff <= _contrast(after)))
     count = int(differs.sum())
     if not count:
         return 0, None
@@ -133,7 +175,7 @@ def stale(win: Window, tag: str = "") -> tuple[int, tuple | None]:
     if tag:
         if _shots is None:
             _shots = tempfile.mkdtemp(prefix="indigoshell-test-shots-")
-            print(f"    (what was left on screen, and its repaint: {_shots})")
+            print(f"    (what was left over, and its repaint: {_shots})")
         pad = 12
         x0, y0 = max(0, box[0] - pad), max(0, box[1] - pad)
         x1 = min(before.shape[1], box[2] + pad)
@@ -157,8 +199,6 @@ def count_frames(widget) -> None:
     widget.animate = counted
 
 
-
-
 def status_spec(content) -> WindowSpec:
     """The hung-up call's corner plate (`CallStatus`, agent/ui/status.py)
     as a config places it; the default config has none any more, since
@@ -170,7 +210,7 @@ def status_spec(content) -> WindowSpec:
         name=STATUS_WINDOW, layer=Layer.OVERLAY,
         anchor=Anchor.TOP | Anchor.RIGHT, size=(1, 1),
         margin=Insets(top=theme.TOP_BAR_HEIGHT + 16, right=theme.BAR_MARGIN + 12),
-        override_redirect=True, focusable=False, keep_alive=True,
+        keep_alive=True,
         background="#00000000", blur=True, effects=(PANEL_SPAWN,),
         effect_scale=0.35, content=content)
 

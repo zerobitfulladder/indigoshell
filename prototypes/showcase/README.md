@@ -1,5 +1,10 @@
 # Showcase
 
+Made on X11 with qtile: the take drives the desktop through XTEST and
+qtile's command client. It no longer runs since the shell became
+Wayland-only (niri); the code is kept as the record of how the demo
+video was made.
+
 A scripted, recorded tour of the shell: the launcher opening Neovim,
 the music player fetched from another workspace and floated, the song
 resumed and the bar coming alive, the panels, the tray, notifications

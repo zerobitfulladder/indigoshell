@@ -234,7 +234,7 @@ class ScanLock(Effect):
         #
         # This is the effect's price tag, not just its look. Sampling
         # past the content edge is what makes the tear visible outside
-        # the panel, so `bleed()` grows the X window by it on all sides,
+        # the panel, so `bleed()` grows the window by it on all sides,
         # and the shader then runs over that larger surface. At the
         # braindance default of 0.6 a 620x440 panel becomes a 1030x850
         # window and the pass costs 31ms/frame on CPU raster — three

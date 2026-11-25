@@ -17,7 +17,7 @@
 4b. Images: `image` built and read back, its PNG's size read from the
    header alone, what breaks one (no id, not base64, too many bytes, no
    PNG, past IMAGE_SIDE), the images a bar names.
-5. Pure: imports with xcffib, skia and PySide6 blocked.
+5. Pure: imports with skia and PySide6 blocked.
 
 No display, no processes but one; a second or so.
 """
@@ -96,10 +96,8 @@ a = B.answer("address", 3, [B.row("typed", "yo", tag="SEARCH")], selected="typed
 check("an answer", a == {"type": "answer", "input": "address", "seq": 3,
                          "rows": [{"id": "typed", "title": "yo", "tag": "SEARCH"}],
                          "selected": "typed", "total": 5321} and B.answer_problems(a) == [])
-check("an announce: app, the app's id for the window, its handle",
-      B.announce("flux", 3, 0x400001) == {"type": "announce", "app": "flux", "window": 3,
-                                          "handle": {"x11": 0x400001}}
-      and B.announce("flux", 3)["handle"] == {})
+check("an announce: app, the app's id for the window",
+      B.announce("flux", 3) == {"type": "announce", "app": "flux", "window": 3})
 t2 = B.tab(7, "Inbox", image="5c1e07a2d39b4f61")
 check("a tab with its image's id, or its letter while it has none",
       t2 == {"id": 7, "title": "Inbox", "image": "5c1e07a2d39b4f61"}
@@ -226,7 +224,7 @@ check("a count only (find's) is fine", B.answer_problems(
 check("chords parsed: modifiers and a key, lower-cased; named keys only where the shell has "
       "the keyboard", B.parse_chord("Ctrl+Shift+P") == (frozenset({"ctrl", "shift"}), "p")
       and B.parse_chord("shift+delete") == (frozenset({"shift"}), "delete")
-      and B.parse_chord("shift+delete", grab=True) is None
+      and B.parse_chord("shift+delete", opener=True) is None
       and B.parse_chord("n") == (frozenset(), "n")
       and B.parse_chord("ctrl+ctrl+a") is None and B.parse_chord("hyper+a") is None
       and B.parse_chord("ctrl+") is None and B.parse_chord(3) is None)
@@ -266,7 +264,7 @@ probe = """
 import sys
 class Block:
     def find_spec(self, name, path=None, target=None):
-        if name.split(".")[0] in ("xcffib", "skia", "PySide6", "dbus_fast", "psutil"):
+        if name.split(".")[0] in ("skia", "PySide6", "dbus_fast", "psutil"):
             raise ImportError(name)
 sys.meta_path.insert(0, Block())
 import indigoshell.applink.bar

@@ -34,7 +34,7 @@ Modules, in the order a start runs through them:
     link       a window's line to the shell (applink), which shows it in
                its top bar
 
-Import rule: nothing in this package imports xcffib, skia, or a shell
+Import rule: nothing in this package imports skia, or a shell
 module that does (`indigoshell.theme` imports skia). Only the pure
 `indigoshell.core` modules (naming, paths, log, persona),
 `indigoshell.fuzzy` (through places), `indigoshell.applink.protocol` and

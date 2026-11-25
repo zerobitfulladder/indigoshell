@@ -2,9 +2,6 @@
 uploads, the sites kept from it, and the hands for them.
 
     .venv/bin/python tests/browser_alone.py              off screen, about a minute
-    .venv/bin/python tests/browser_alone.py --on-screen  a bare X window of the test's own,
-                                                         then one Flux window, each placed on
-                                                         an empty workspace; a few seconds
 
 Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. pure parts: the refused upload places (flux/uploads.py) against a
@@ -23,9 +20,8 @@ Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
      placed before it is
      shown and not shown until the answer, its title and role, shown
      without activating and never raised or activated by Flux (the
-     hidden cage focuses whatever it shows: the window manager's part
-     is checked on screen); `open` with no window still the
-     user's);
+     hidden cage focuses whatever it shows); `open` with no window still
+     the user's);
      borrow (a tab that is not showing: its typed form, scroll, script
      state and cookie kept, gone from the user's window and the bar
      the shell gets, the user's view unchanged; current in the agent's
@@ -53,23 +49,10 @@ Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
      `release` still fine); every new hand run against it; the log
      (requests named, no uploaded file's name).
   3. the shell's side (a child process, so skia and Qt stay apart): the
-     workspace rule (applink.service.pick_desktop) case by case; the top
-     bar for the agent's own window, her name first in her colour;
-     `place` with no X display answered with why.
-
---on-screen, on the real display; the user's current workspace and
-focused window are read before and after each part and traced between:
-  A. the shell's side with a real X window of the test's own: the
-     app service (a child process, its own X connection, a socket of the
-     test's) places the not-yet-mapped window; its _NET_WM_DESKTOP read
-     back before the map; mapped, qtile keeps it on that workspace,
-     unmapped, never focused; a second window placed `with` the first
-     lands beside it. Both destroyed.
-  B. one Flux window of the agent's (not the test kind: shown without
-     activating, nothing else), placed by that app service before it
-     maps: never mapped, never active, its role and title on the X
-     window, its page live (timers, animation frames, visibility, a
-     screenshot), then closed with its tab. Skipped when A failed.
+     top bar for the agent's own window, her name first in her colour;
+     `place` with no window manager answered with why. (Where niri puts
+     the window: tests/wayland.py, its spare workspace and the service's
+     placing.)
 
 Never touched: the user's profile, history, bookmarks, Downloads, browser
 and shell; no real input is injected into the display, no Qt dialog or
@@ -99,8 +82,7 @@ sys.path.insert(0, str(REPO / "tests"))
 
 import _cage                    # noqa: E402
 
-if "--on-screen" not in sys.argv[1:]:
-    _cage.inside()              # out of sight: this test runs as a hidden cage's client
+_cage.inside()                  # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
@@ -116,7 +98,6 @@ SOCK = {name: os.path.join(runtime_dir(), f"{TAG}-{name}.sock") for name in ("br
 PORT = 0
 PLACED_ON = 6                           # what the stand-in shell answers `place` with
 PLACE_DELAY_S = 0.4                     # ... this late
-REAL_CACHE_ENV = "ALONE_TEST_REAL_CACHE"    # the user's cache dir, for qtile's socket only
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -421,9 +402,8 @@ class FakeShell:
             pass
 
     def of(self, window: int) -> list[dict]:
-        """What the connection that announced Flux's window `window` (its
-        own id: on Wayland, as in the hidden cage, there is no X window)
-        sent, in order."""
+        """What the connection that announced Flux's window `window` (by
+        its own id) sent, in order."""
         conns = {n for n, _, m in self.msgs if m.get("type") == "announce"
                  and m.get("window") == window}
         return [m for n, _, m in self.msgs if n in conns]
@@ -633,9 +613,9 @@ def test_in_process(files: dict) -> None:
           and her.windowRole() == protocol.AGENT_ROLE
           and QApplication.applicationName() == f"{APP}-browser", f"{her.windowTitle()!r}")
     # The hidden cage gives every window it shows the focus, this one too;
-    # whether the window manager does is the on-screen part's check.
-    check("... never raised or activated by Flux: shown without activating (its QWindow says so, "
-          "which X11 hears as user time 0), no raise_ or activateWindow",
+    # niri does not (its `open-focused false` rule: docs/niri.kdl).
+    check("... never raised or activated by Flux: shown without activating (its QWindow says "
+          "so), no raise_ or activateWindow",
           not calls and her.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
           and her.windowHandle().property("_q_showWithoutActivating") is True, f"{calls}")
     plain, _ = J(flux.open(url("/page/Plain")))
@@ -1014,27 +994,16 @@ def shell_side() -> None:
 
     from indigoshell import theme
     from indigoshell.applink import bar as B
-    from indigoshell.applink.service import AppService, AppWindow, pick_desktop
+    from indigoshell.applink.service import AppService, AppWindow
     from flux import bar as fb
     from indigoshell.core import persona
     from indigoshell.widgets.base import Size
 
     out = {}
-    U = 0xFFFFFFFF
-    zero = [0] * 18
-    out["rule"] = {
-        "highest empty": pick_desktop(9, 1, zero, [(0, True), (1, True), (2, False), (3, False),
-                                                   (7, False), (8, False)]),
-        "one placed already": pick_desktop(9, 1, zero, [(0, True), (1, True)], {8}),
-        "another monitor": pick_desktop(9, 1, zero[:16] + [1920, 0], [(1, True)]),
-        "a mapped window shows it": pick_desktop(6, 0, [0] * 12, [(5, True)]),
-        "sticky ignored": pick_desktop(3, 0, [0] * 6, [(U, True)]),
-        "none empty": pick_desktop(3, 0, [0] * 6, [(1, False), (2, False)]),
-        "all shown": pick_desktop(2, 0, [0, 0, 1920, 0], []),
-        "no workspaces": pick_desktop(0, None, [], []),
-    }
 
     class Line:
+        pid = os.getpid()
+
         def __init__(self, service):
             self.service, self.out = service, []
 
@@ -1060,8 +1029,8 @@ def shell_side() -> None:
     lilac = np.array([int(persona.color()[i:i + 2], 16) for i in (1, 3, 5)])
     state = fb.state([fb.tab("Alpha", "x.org", False, id_=1)], 0, 100, True,
                      url="https://x.org/", bookmarked=False)
-    for name, wid, agent in (("hers", 0x400001, True), ("users", 0x400002, False)):
-        j = AppWindow(Line(service), wid, B.announce("flux", wid, wid))
+    for name, wid, agent in (("hers", 1, True), ("users", 2, False)):
+        j = AppWindow(Line(service), B.announce("flux", wid))
         j.content.attach(Host())
         j.on_message(fb.bar_of(state, agent=agent))
         img = paint(j.content, 900, theme.TOP_BAR_HEIGHT)
@@ -1071,31 +1040,20 @@ def shell_side() -> None:
                      "lilac_before_tabs": int((np.abs(lead - lilac).max(-1) <= 10).sum()),
                      "owner": j.view.item("owner").layout()[0]["text"]
                      if j.view.item("owner") else None}
-    j = AppWindow(Line(service), 0x400003, B.announce("flux", 3, 0x400003))
+    j = AppWindow(Line(service), B.announce("flux", 3))
     service.place(j, {"type": "place"})
-    out["no_display"] = j.link.out[-1] if j.link.out else None
+    out["no_wm"] = j.link.out[-1] if j.link.out else None
     print(json.dumps(out))
 
 
 def test_shell_side() -> None:
-    section("3. the shell's side (a child process): the workspace rule, the top bar")
+    section("3. the shell's side (a child process): the top bar, placing")
     proc = subprocess.run([PY, "-B", __file__, "--shell-side"], capture_output=True, text=True,
                           timeout=120)
     if proc.returncode != 0:
         check("the shell-side child ran", False, proc.stderr.strip()[-400:])
         return
     out = json.loads(proc.stdout.strip().splitlines()[-1])
-    r = {k: tuple(v) for k, v in out["rule"].items()}
-    check("the workspace rule: the highest-numbered empty one no screen shows; one placed already "
-          "counts as used; another monitor's and one with a mapped window count as shown; a "
-          "window on every workspace counts for none",
-          r["highest empty"][0] == 6 and r["one placed already"][0] == 7
-          and r["another monitor"][0] == 7 and r["a mapped window shows it"][0] == 4
-          and r["sticky ignored"][0] == 2, f"{out['rule']}")
-    check("... none empty: the highest-numbered hidden one; every one shown, or none named: no "
-          "workspace, with why", r["none empty"][0] == 2 and "no workspace is empty" in
-          r["none empty"][1] and r["all shown"] == (None, "every workspace is shown")
-          and r["no workspaces"][0] is None, f"{r['none empty']} {r['all shown']}")
     check("the top bar for the agent's own window: \"Lilac\" first, in Lilac's colour, the tabs "
           "after it; the user's window as ever",
           out["hers"]["owner"] == "Lilac"
@@ -1103,342 +1061,20 @@ def test_shell_side() -> None:
           and out["users"]["lilac_before_tabs"] == 0
           and out["hers"]["first_tab_x"] > out["users"]["first_tab_x"] + 20,
           f"{out['hers']} {out['users']}")
-    check("place with no X display: answered placed null, saying why",
-          out["no_display"] == {"type": "placed", "desktop": None, "why": "no X display"},
-          f"{out['no_display']}")
-
-
-# ── --on-screen ─────────────────────────────────────────────────────────
-class Desk:
-    """The test's own X connection: the root's workspace properties, its
-    own windows' state; never anything of the user's but reading."""
-
-    def __init__(self) -> None:
-        import xcffib
-        import xcffib.xproto  # noqa: F401  (the core protocol, before connecting)
-        self.conn = xcffib.connect()
-        self.screen = self.conn.get_setup().roots[0]
-        self.root = self.screen.root
-        self._atoms = {}
-        self.trace: list[tuple] = []
-
-    def atom(self, name: str) -> int:
-        if name not in self._atoms:
-            self._atoms[name] = self.conn.core.InternAtom(False, len(name),
-                                                          name.encode()).reply().atom
-        return self._atoms[name]
-
-    def ints(self, wid: int, name: str, length: int = 1024) -> list[int]:
-        import struct
-
-        import xcffib.xproto as xp
-        try:
-            r = self.conn.core.GetProperty(False, wid, self.atom(name), xp.GetPropertyType.Any,
-                                           0, length).reply()
-        except Exception:       # noqa: BLE001
-            return []
-        raw = bytes(r.value.buf())
-        return list(struct.unpack(f"<{len(raw) // 4}I", raw)) if r.format == 32 and raw else []
-
-    def one(self, wid: int, name: str):
-        v = self.ints(wid, name, 1)
-        return v[0] if v else None
-
-    def text(self, wid: int, name: str) -> bytes:
-        import xcffib.xproto as xp
-        try:
-            r = self.conn.core.GetProperty(False, wid, self.atom(name), xp.GetPropertyType.Any,
-                                           0, 256).reply()
-        except Exception:       # noqa: BLE001
-            return b""
-        return bytes(r.value.buf())
-
-    def user(self) -> tuple:
-        """(current workspace, active window): the user's, read."""
-        now = (self.one(self.root, "_NET_CURRENT_DESKTOP"), self.one(self.root, "_NET_ACTIVE_WINDOW"))
-        self.trace.append((round(time.monotonic(), 2), *now))
-        return now
-
-    def mapped(self, wid: int) -> int | None:
-        try:
-            return self.conn.core.GetWindowAttributes(wid).reply().map_state
-        except Exception:       # noqa: BLE001
-            return None
-
-
-def placement_child(sock: str) -> None:
-    """Run as `--placement SOCK`: the app service on its own X connection
-    and socket; a bare window of this process's, not mapped, asks to be
-    placed; then mapped, watched, destroyed. Prints one JSON line."""
-    import struct
-
-    import xcffib.xproto as xp
-
-    from indigoshell.applink import bar as B
-    from indigoshell.applink import protocol as link
-    from indigoshell.applink.service import AppService
-    from indigoshell.backend.x11 import Display
-
-    desk = Desk()
-    app = desk.conn                     # the "app": a connection of its own
-    out = {"before": desk.user()}
-
-    def make() -> int:
-        wid = app.generate_id()
-        s = desk.screen
-        app.core.CreateWindow(s.root_depth, wid, desk.root, 0, 0, 240, 160, 0,
-                              xp.WindowClass.InputOutput, s.root_visual, xp.CW.BackPixel,
-                              [s.black_pixel])
-        raw = b"indigoshell\0indigoshell\0"      # floats, by the user's qtile rules
-        app.core.ChangeProperty(xp.PropMode.Replace, wid, xp.Atom.WM_CLASS, xp.Atom.STRING, 8,
-                                len(raw), raw)
-        app.core.ChangeProperty(xp.PropMode.Replace, wid, xp.Atom.WM_HINTS, xp.Atom.WM_HINTS, 32,
-                                9, struct.pack("<9I", 1, 0, 0, 0, 0, 0, 0, 0, 0))   # no input
-        app.core.ChangeProperty(xp.PropMode.Replace, wid, desk.atom("_NET_WM_USER_TIME"),
-                                xp.Atom.CARDINAL, 32, 1, struct.pack("<I", 0))
-        app.flush()
-        return wid
-
-    async def ask(wid: int, near: int | None = None) -> dict:
-        reader, writer = await asyncio.open_unix_connection(sock)
-        writer.write(link.encode(B.announce("probe", wid, wid)) + link.encode(link.place(near)))
-        await writer.drain()
-        answer = {}
-        while True:
-            line = await asyncio.wait_for(reader.readline(), 3)
-            msg = link.decode(line)
-            if msg and msg["type"] == link.PLACED:
-                answer = msg
-                break
-        answer["_writer"] = writer
-        return answer
-
-    async def main():
-        service = AppService(path=sock, display=Display())
-        service.start()
-        await asyncio.sleep(0.2)
-        wid = make()
-        out["wid"] = wid
-        placed = await ask(wid)
-        out["placed"] = placed.get("desktop")
-        out["why"] = placed.get("why")
-        out["before_map"] = {"desktop": desk.one(wid, "_NET_WM_DESKTOP"), "map": desk.mapped(wid)}
-        out["samples"] = []
-        if out["placed"] is not None:
-            app.core.MapWindow(wid)
-            app.flush()
-            t0 = time.monotonic()
-            while time.monotonic() - t0 < 1.5:
-                await asyncio.sleep(0.05)
-                sample = (desk.one(wid, "_NET_WM_DESKTOP"), desk.mapped(wid), *desk.user())
-                out["samples"].append(sample)
-                if sample[1] == xp.MapState.Viewable or sample[3] == wid:
-                    break               # on the user's screen: away at once
-            # qtile's own word (read only); its socket is under the real cache dir.
-            info = subprocess.run(["qtile", "cmd-obj", "-o", "window", str(wid), "-f", "info"],
-                                  capture_output=True, text=True, timeout=5,
-                                  env={**os.environ, "XDG_CACHE_HOME": os.environ.get(
-                                      REAL_CACHE_ENV, "")}).stdout
-            try:
-                out["qtile"] = {k: json.loads(info).get(k) for k in ("group", "floating")}
-            except ValueError:
-                out["qtile"] = None
-            second = make()
-            beside = await ask(second, wid)
-            out["beside"] = {"placed": beside.get("desktop"),
-                             "desktop": desk.one(second, "_NET_WM_DESKTOP")}
-            app.core.DestroyWindow(second)
-            beside["_writer"].close()
-        app.core.DestroyWindow(wid)
-        app.flush()
-        placed["_writer"].close()
-        await asyncio.sleep(0.4)
-        service.stop()
-
-    asyncio.run(main())
-    out["after"] = desk.user()
-    out["trace"] = desk.trace
-    print(json.dumps(out))
-
-
-def serve_apps(sock: str) -> None:
-    """Run as `--serve-apps SOCK`: the app service on its own X connection
-    until stdin closes; a JSON line for each window placed."""
-    from indigoshell.applink.service import AppService
-    from indigoshell.backend.x11 import Display
-
-    async def main():
-        service = AppService(path=sock, display=Display())
-        place = service.place
-
-        def placing(window, msg):
-            place(window, msg)
-            print(json.dumps({"wid": window.wid, "placed": window.placed,
-                              "owner": ((window.bar or {}).get("start") or [{}])[0].get("text")}),
-                  flush=True)
-        service.place = placing
-        service.start()
-        print(json.dumps({"ready": True}), flush=True)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, sys.stdin.read)
-        service.stop()
-
-    asyncio.run(main())
-
-
-def test_on_screen() -> None:
-    section("on screen A: the shell places a bare X window of the test's own before it maps")
-    proc = subprocess.run([PY, "-B", __file__, "--placement", SOCK["apps"]], capture_output=True,
-                          text=True, timeout=60)
-    if proc.returncode != 0:
-        check("the placement child ran", False, proc.stderr.strip()[-600:])
-        return
-    a = json.loads(proc.stdout.strip().splitlines()[-1])
-    print(f"  the user's (workspace, active window): before {a['before']}, after {a['after']}; "
-          f"trace {a['trace']}", flush=True)
-    seen = {tuple(s[:2]) for s in a["samples"]}
-    current = a["before"][0]
-    ok_a = check("placed before the map: _NET_WM_DESKTOP set and read back while the window was "
-                 "still unmapped", a["placed"] is not None and a["placed"] != current
-                 and a["before_map"] == {"desktop": a["placed"], "map": 0},
-                 f"placed {a['placed']} ({a['why']}); before map {a['before_map']}")
-    ok_a &= check("mapped: qtile keeps it on that workspace (its group), unmapped, never focused; "
-                  "the user's workspace never switched to it",
-                  seen == {(a["placed"], 0)} and all(s[2] != a["placed"] for s in a["samples"])
-                  and all(s[3] != a.get("wid") for s in a["samples"])
-                  and (a.get("qtile") or {}).get("group") == str(a["placed"] + 1),
-                  f"samples {sorted(seen)}; qtile {a.get('qtile')}")
-    check("a second window placed `with` the first: on the same workspace",
-          a.get("beside") == {"placed": a["placed"], "desktop": a["placed"]}, f"{a.get('beside')}")
-    check("the user's workspace and focused window the same after as before (a change between "
-          "is the user's own: see the trace)", a["after"] == a["before"],
-          f"{a['before']} -> {a['after']}")
-    if not ok_a:
-        print("  B skipped: the placement did not hold", flush=True)
-        return
-
-    section("on screen B: the agent's own Flux window, placed before it maps")
-    service = subprocess.Popen([PY, "-B", __file__, "--serve-apps", SOCK["apps"]],
-                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    try:
-        _agent_window_on_screen(service)
-    finally:
-        if service.poll() is None:
-            service.stdin.close()
-            service.wait(10)
-
-
-def _agent_window_on_screen(service) -> None:
-    import shiboken6
-    from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
-
-    from flux import control, protocol
-    from flux.qt import app as browser_app
-    from flux.qt import instance, startup
-    from flux.qt.profile import make_profile
-
-    ready = service.stdout.readline()
-    if '"ready"' not in ready:
-        check("the app service child started", False, ready)
-        return
-    desk = Desk()
-    before = desk.user()
-    Log()
-    startup.apply_flags()
-    app = browser_app.make_application()
-    profile = make_profile()
-    lock = instance.try_lock()
-    browser = browser_app.Browser(profile, unattended=False)
-    browser.listen(SOCK["browser"])
-    client = Client(QTest.qWait)
-    flux = client.run(control.connect())
-    tab = client.run(flux.open(url("/live"), window="agent"))
-    her = next(w for w in browser.windows if w.agent)
-    wid = int(her.winId())
-    client.run(flux.wait(tab.tab, timeout=15), 20)
-    samples = []
-    t0 = time.monotonic()
-    while time.monotonic() - t0 < 2.0:
-        QTest.qWait(100)
-        samples.append((desk.one(wid, "_NET_WM_DESKTOP"), desk.mapped(wid), *desk.user()))
-        if samples[-1][1] == 2 or samples[-1][3] == wid:
-            her.close()                 # on the user's screen: away at once
-            QTest.qWait(200)
-            check("her window stayed off the user's screen", False, f"{samples[-1]}")
-            browser.shutdown()
-            os.close(lock)
-            return
-
-    def ticks():
-        box = []
-        her.current_tab().page.runJavaScript(
-            "JSON.stringify({t: ticks, vis: document.visibilityState})", 0, box.append)
-        end = time.monotonic() + 5
-        while not box and time.monotonic() < end:
-            QTest.qWait(20)
-        return json.loads(box[0]) if box else None
-    t1 = ticks()
-    QTest.qWait(1500)
-    t2 = ticks()
-    shot = client.run(flux.screenshot(tab.tab))
-    role, title = desk.text(wid, "WM_WINDOW_ROLE"), desk.text(wid, "_NET_WM_NAME")
-    client.run(flux.close_tab(tab.tab))
-    QTest.qWait(300)
-    after = desk.user()
-    service.stdin.close()
-    lines = [json.loads(x) for x in service.stdout.read().splitlines() if x.strip()]
-    service.wait(10)
-    placed = next((x for x in lines if x.get("wid") == wid), None)
-    print(f"  the user's (workspace, active window): before {before}, after {after}; "
-          f"trace {desk.trace}", flush=True)
-    check("the app service placed her window (her name first in its bar) on an empty "
-          "workspace before it mapped", placed is not None and placed["owner"] == "Lilac"
-          and placed["placed"] is not None and placed["placed"] != before[0]
-          and her.placed_on == placed["placed"], f"{placed} {lines}")
-    check("never mapped, never active, never the shown workspace while it lived",
-          samples and all(s[0] == placed["placed"] and s[1] == 0 for s in samples)
-          and all(s[3] != wid and s[2] != placed["placed"] for s in samples)
-          and QApplication.activeWindow() is None, f"{samples[-3:]}")
-    rate = ((t2["t"]["raf"] - t1["t"]["raf"]) / 1.5) if t1 and t2 else 0
-    check("its page live there: visible to itself, timers and animation frames running, a "
-          "screenshot of it", t2 is not None and t2["vis"] == "visible" and rate > 20
-          and t2["t"]["timer"] > t1["t"]["timer"] and shot["width"] > 100,
-          f"rAF {rate:.0f}/s {t2}")
-    check("its X window: role and title the agent's",
-          role == protocol.AGENT_ROLE.encode() and title.startswith("Lilac · Flux".encode()),
-          f"{role} {title}")
-    check("the user's workspace and focused window the same after as before (a change between "
-          "is the user's own: see the trace)", after == before, f"{before} -> {after}")
-    client.run(flux.close())
-    browser.shutdown()
-    shiboken6.delete(browser)
-    shiboken6.delete(profile)
-    os.close(lock)
-    del app
+    check("place with no window manager to place it with: answered placed null, saying why",
+          out["no_wm"] == {"type": "placed", "desktop": None,
+                           "why": "no window manager to place it with"}, f"{out['no_wm']}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--on-screen", action="store_true",
-                        help="only the on-screen checks: placing on an empty workspace")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     parser.add_argument("--shell-side", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--placement", help=argparse.SUPPRESS)
-    parser.add_argument("--serve-apps", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.shell_side:
         shell_side()
         return 0
-    if args.placement:
-        placement_child(args.placement)
-        return 0
-    if args.serve_apps:
-        serve_apps(args.serve_apps)
-        return 0
     global PORT, SCRATCH, HOME
-    os.environ[REAL_CACHE_ENV] = (os.environ.get("XDG_CACHE_HOME")
-                                  or os.path.expanduser("~/.cache"))
     SCRATCH = Path(tempfile.mkdtemp(prefix=f"{APP}-alone-test-"))
     HOME = SCRATCH / "home"
     os.environ.update({
@@ -1466,13 +1102,10 @@ def main() -> int:
     os.dup2(stream.fileno(), 2)         # Chromium and Qt talk on fd 2
     t0 = time.monotonic()
     try:
-        if args.on_screen:
-            test_on_screen()
-        else:
-            files = make_home()
-            test_pure(files)
-            test_in_process(files)
-            test_shell_side()
+        files = make_home()
+        test_pure(files)
+        test_in_process(files)
+        test_shell_side()
     except Exception:
         FAILED.append("aborted")
         print("\nABORTED:\n" + traceback.format_exc(), flush=True)

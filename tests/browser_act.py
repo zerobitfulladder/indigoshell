@@ -1,7 +1,6 @@
 """The agent acting in Flux: the acting requests, the Watch, the hands.
 
     .venv/bin/python tests/browser_act.py              off screen, about a minute
-    .venv/bin/python tests/browser_act.py --on-screen  one test window, a few seconds
 
 Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. pure parts: the agent's name and colour (core/persona.py: what it
@@ -54,14 +53,6 @@ Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
      bar; the window's actions with "Let Lilac drive again" only while
      a tab is paused, picking it sending a `pick` naming the tab.
 
---on-screen: the browser in this process on the real display, its
-window an unattended one (`--unattended`: nothing asks, muted). The
-agent clicks in it (Qt events in this process,
-nothing injected into the display) and the overlay is read back from
-that window's own pixels (its composite pixmap; never the root, never
-the screen): the frame and the mark in her colour over the GPU-
-composed page, gone once the agent lets go; a screenshot without them.
-
 Never touched: the user's profile, history, bookmarks, browser and
 shell; no real input is injected into the display, no popup is ever
 shown, and every dialog the page opens either goes to the agent or to a
@@ -91,8 +82,7 @@ sys.path.insert(0, str(REPO / "tests"))
 
 import _cage                    # noqa: E402
 
-if "--on-screen" not in sys.argv[1:]:
-    _cage.inside()              # out of sight: this test runs as a hidden cage's client
+_cage.inside()                  # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
@@ -136,6 +126,8 @@ def shell_side(path: str) -> None:
     given = json.loads(Path(path).read_text())
 
     class Line:
+        pid = os.getpid()               # the app's process, as the socket would say
+
         def __init__(self, service):
             self.service, self.out = service, []
 
@@ -166,7 +158,7 @@ def shell_side(path: str) -> None:
 
     service = AppService(path="/nonexistent")
     out = {}
-    j = AppWindow(Line(service), 0x400001, B.announce("flux", 1, 0x400001))
+    j = AppWindow(Line(service), B.announce("flux", 1))
     host = Host()
     j.content.attach(host)
     W, H = 1200, theme.TOP_BAR_HEIGHT
@@ -1009,7 +1001,7 @@ def test_in_process() -> None:
     still = watch.driving(T)
     J(flux.click(T, R['button "Press"']))
     agent_clicks = events("click")
-    check("locked: the user's clicks (through the window, as X gives them, and straight at the "
+    check("locked: the user's clicks (through the window, as they come, and straight at the "
           "view) and moves reach nothing; the mark flashes; Shift alone is swallowed and takes "
           "nothing over", user_events == [] and flashed and still, f"{user_events[:3]} {flashed}")
     check("... the agent's click still reaches the page, trusted; told apart at the view: the "
@@ -1386,140 +1378,8 @@ def test_shell_side() -> None:
           and out["picked"] is None)
 
 
-# ── --on-screen ─────────────────────────────────────────────────────────
-class Reader:
-    """A connection of the test's own, reading its own window's pixels
-    (the window's composite pixmap), as tests/topbar.py does."""
-
-    def __init__(self) -> None:
-        import xcffib
-        import xcffib.composite
-        self.conn = xcffib.connect()
-        self.screen = self.conn.get_setup().roots[0]
-        self.composite = self.conn(xcffib.composite.key)
-        self.composite.QueryVersion(0, 4).reply()
-
-    def region(self, wid: int, x: int, y: int, w: int, h: int):
-        import numpy as np
-        import xcffib.xproto as xp
-        core = self.conn.core
-        try:
-            at = core.GetGeometry(wid).reply().border_width
-            pix = self.conn.generate_id()
-            self.composite.NameWindowPixmap(wid, pix)
-            try:
-                img = core.GetImage(xp.ImageFormat.ZPixmap, pix, at + x, at + y, w, h,
-                                    0xFFFFFFFF).reply()
-            finally:
-                core.FreePixmap(pix)
-                self.conn.flush()
-        except (xp.DrawableError, xp.MatchError, xp.WindowError):
-            return None
-        a = np.frombuffer(bytes(img.data.buf()), np.uint8)[:w * h * 4]
-        return a.reshape(h, w, 4)[..., [2, 1, 0]].astype(np.int16)
-
-    def cardinal(self, wid: int, name: str) -> int | None:
-        import xcffib.xproto as xp
-        atom = self.conn.core.InternAtom(False, len(name), name.encode()).reply().atom
-        try:
-            r = self.conn.core.GetProperty(False, wid, atom, xp.Atom.CARDINAL, 0, 1).reply()
-        except Exception:       # noqa: BLE001
-            return None
-        return r.value.to_atoms()[0] if r.value_len else None
-
-    def to_current_desktop(self, wid: int) -> None:
-        """The test's own window, asked onto the workspace shown when the
-        window manager put it elsewhere; the workspaces left as they are."""
-        import xcffib.xproto as xp
-        current = self.cardinal(self.screen.root, "_NET_CURRENT_DESKTOP")
-        mine = self.cardinal(wid, "_NET_WM_DESKTOP")
-        if current is None or mine is None or mine in (current, 0xFFFFFFFF):
-            return
-        atom = self.conn.core.InternAtom(False, 15, b"_NET_WM_DESKTOP").reply().atom
-        data = xp.ClientMessageData.synthetic([current, 1, 0, 0, 0], "I" * 5)
-        event = xp.ClientMessageEvent.synthetic(32, wid, atom, data)
-        self.conn.core.SendEvent(False, self.screen.root,
-                                 xp.EventMask.SubstructureRedirect
-                                 | xp.EventMask.SubstructureNotify, event.pack())
-        self.conn.flush()
-
-
-def test_on_screen() -> None:
-    import numpy as np
-    import shiboken6
-    from PySide6.QtTest import QTest
-
-    from flux import control
-    from flux.qt import app as browser_app
-    from flux.qt import instance, startup
-    from flux.qt.profile import make_profile
-    from indigoshell.core import persona
-
-    section("on screen: one test window")
-    Log()
-    startup.apply_flags()
-    app = browser_app.make_application()
-    profile = make_profile()
-    lock = instance.try_lock()
-    browser = browser_app.Browser(profile, unattended=True)
-    browser.listen(SOCK["browser"])
-    client = Client(QTest.qWait)
-    flux = client.run(control.connect())
-    tab = client.run(flux.open(url("/act")))
-    client.run(flux.wait(tab.tab, timeout=15), 20)
-    w = browser.windows[0]
-    reader = Reader()
-    wid = int(w.winId())
-    reader.to_current_desktop(wid)
-    QTest.qWait(800)
-    lilac = np.array(hex_rgb(persona.color()))
-
-    def pixels():
-        g = w.stack.geometry()
-        frame = reader.region(wid, g.x(), g.y() + g.height() // 2, 2, 1)
-        overlay = browser.watch.overlays.get(w.id)
-        mg = overlay.mark.geometry() if overlay is not None else None
-        mark = reader.region(wid, mg.x(), mg.y(), mg.width(), mg.height()) if mg else None
-        return frame, mark
-
-    before, _ = pixels()
-    done = client.run(flux.click(tab.tab, x=80, y=40))
-    QTest.qWait(500)
-    frame, mark = pixels()
-    lilac_px = int((np.abs(mark - lilac).max(-1) <= 40).sum()) if mark is not None else 0
-    dark_px = int((np.abs(mark - np.array((5, 3, 16))).max(-1) <= 8).sum()) \
-        if mark is not None else 0
-    check("on screen: the window's own pixels show the frame in Lilac's colour over the page, "
-          "and the mark (Lilac text on the bar's dark) at the bottom right",
-          done["agent"] == "driving" and frame is not None
-          and np.abs(frame - lilac).max() <= 12 and lilac_px > 30
-          and dark_px > mark.shape[0] * mark.shape[1] * 0.4,
-          f"frame {frame.tolist() if frame is not None else None}, mark lilac {lilac_px} "
-          f"dark {dark_px}")
-    shot = client.run(flux.screenshot(tab.tab))
-    simg = decode_png(shot["png"])
-    edge = rgb(simg.pixelColor(0, simg.height() // 2))
-    check("... and a screenshot taken meanwhile has neither (the page's white at that edge)",
-          near(edge, (255, 255, 255), 3), f"{edge}")
-    client.run(flux.release(tab.tab))
-    QTest.qWait(500)
-    after, _ = pixels()
-    check("released: the frame gone from the window's pixels (the page's white again)",
-          before is not None and after is not None and np.abs(after - 255).max() <= 3,
-          f"before {before.tolist() if before is not None else None}, "
-          f"after {after.tolist() if after is not None else None}")
-    client.run(flux.close())
-    browser.shutdown()
-    shiboken6.delete(browser)
-    shiboken6.delete(profile)
-    os.close(lock)
-    del app
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--on-screen", action="store_true",
-                        help="only the on-screen check: the overlay in the window's own pixels")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     parser.add_argument("--shell-side", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -1551,12 +1411,9 @@ def main() -> int:
     os.dup2(stream.fileno(), 2)         # Chromium and Qt talk on fd 2
     t0 = time.monotonic()
     try:
-        if args.on_screen:
-            test_on_screen()
-        else:
-            test_pure()
-            test_in_process()
-            test_shell_side()
+        test_pure()
+        test_in_process()
+        test_shell_side()
     except Exception:
         FAILED.append("aborted")
         print("\nABORTED:\n" + traceback.format_exc(), flush=True)

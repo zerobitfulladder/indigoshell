@@ -1,17 +1,17 @@
 """EGL on the Wayland platform, for Skia's GPU backend: the canvas's GPU
 target (backend/wayland.py).
 
-backend/gl.py moved to Wayland: the EGL display is made from the
-client's own `wl_display *` (pywayland's), and the native window is a
-`wl_egl_window` from libwayland-egl wrapped around the canvas's
-`wl_surface *`. Skia draws into FBO 0 of that window surface, as on X11.
+The EGL display is made from the client's own `wl_display *`
+(pywayland's), and the native window is a `wl_egl_window` from
+libwayland-egl wrapped around the canvas's `wl_surface *`. Skia draws
+into FBO 0 of that window surface.
 There is one context, current for the life of the process: on the
 canvas's window surface while there is one (`attach`), on a 1x1 surface
 of its own otherwise (`start`, `detach`). The regions' offscreen
 surfaces (`offscreen`) live in that same GrDirectContext, so they
 survive the canvas going away and coming back.
 
-The traps carried over from X11:
+The traps:
 
 - A silent software fallback. EGL initialises fine on llvmpipe and says
   nothing; only GL_RENDERER tells. It is read, logged, and `software`
@@ -198,8 +198,7 @@ class WaylandGL:
         takes it away, an output going away closes it), but the regions'
         pixels are textures in this context, which must outlive it and
         stay current meanwhile: releasing it leaves Skia without a live
-        context (gl.py parks on a pbuffer for the same reason). A
-        role-less wl_surface's EGL window surface works on any driver,
+        context. A role-less wl_surface's EGL window surface works on any driver,
         where pbuffers and surfaceless contexts are optional."""
         lib = self.lib
         self._idle_window = lib.wlegl.wl_egl_window_create(

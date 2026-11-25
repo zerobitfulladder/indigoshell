@@ -1,17 +1,15 @@
-"""The daemon: one asyncio loop, one thread, one display connection.
+"""The daemon: one asyncio loop, one thread, one Wayland connection.
 
-Everything the shell waits on is an fd or a timer on this loop — X or
-Wayland events, IPC clients, D-Bus (dbus-fast), subprocesses, and the
-per-window frame clocks. There is no second main loop, no worker
-thread, and no cross-thread queue; the only thread that ever runs is the
-optional `--watch` file observer, and it only pokes the loop through
+Everything the shell waits on is an fd or a timer on this loop — Wayland
+events, IPC clients, D-Bus (dbus-fast), subprocesses, and the per-window
+frame clocks. There is no second main loop, no worker thread, and no
+cross-thread queue; the only thread that ever runs is the optional
+`--watch` file observer, and it only pokes the loop through
 `call_soon_threadsafe`.
 
-The display is chosen at start (backend/wayland.py `backend_order`):
-on a Wayland compositor with layer-shell the shell draws on one canvas
-(canvas.py) and a window kind is a region of it; otherwise X11, one X
-window per kind (window.py). `display` is the X connection, None on
-Wayland; `canvas` the Wayland one, None on X.
+The shell draws on one canvas on the compositor's layer-shell
+(backend/wayland.py, canvas.py), and every live window is a region of
+it (window.py).
 """
 
 import asyncio
@@ -21,9 +19,9 @@ import signal
 import sys
 from typing import Any
 
-import skia
-
-from ..backend.x11 import Display, DisplayError
+from ..backend.wayland import DisplayError, connect
+from ..canvas import warm_shaders
+from ..window import Window
 from . import log as logsetup
 from .ipc import IPCServer
 from .paths import config_dir
@@ -69,8 +67,7 @@ class Daemon:
         _DAEMON = self
 
         self.config = config
-        self.display: Display | None = None
-        self.canvas: Any = None          # backend.wayland.Canvas, on Wayland
+        self.canvas: Any = None          # backend.wayland.Canvas
         self.loop: asyncio.AbstractEventLoop | None = None
 
         # name -> WindowSpec (declarative) and name -> Window (live).
@@ -129,12 +126,7 @@ class Daemon:
 
         self._lock_fd = acquire_lock()
         try:
-            from ..backend import wayland
-            canvas = wayland.connect(os.environ, self.loop)
-            if canvas is not None:
-                self._start_canvas(canvas)
-            else:
-                self._start_x()
+            self._start_canvas(connect(self.loop))
 
             for sig in (signal.SIGINT, signal.SIGTERM):
                 self.loop.add_signal_handler(sig, self._on_signal, sig)
@@ -145,13 +137,13 @@ class Daemon:
             if self._watch:
                 self._start_watcher()
 
-            # Anything the server queued while we were setting up.
-            self._pump(flush=True)
+            # What setting up queued for the compositor.
+            self._flush()
 
             # Plugin startup hooks first: one of them may reconfigure the
             # screen, and the bar should be created for the result.
             await self._run_startup()
-            self._pump()
+            self._flush()
 
             self._autostart()
             # Long-lived non-window services (notification daemon, ...).
@@ -204,14 +196,6 @@ class Daemon:
         if self._ipc is not None:
             await self._ipc.stop()
             self._ipc = None
-        if self.display is not None:
-            if self.loop is not None:
-                try:
-                    self.loop.remove_reader(self.display.fd)
-                except Exception:
-                    pass
-            self.display.close()
-            self.display = None
         if self.canvas is not None:
             if self.loop is not None:
                 try:
@@ -223,34 +207,16 @@ class Daemon:
         release_lock(self._lock_fd)
         self._lock_fd = None
 
-    def _start_x(self) -> None:
-        self.display = Display()
-        self.display.attach_loop(self.loop)
-        w, h = self.display.geometry()
-        argb = self.display.argb_visual()
-        log.info("X display %dx%d, root 0x%x, %s", w, h, self.display.root,
-                 f"ARGB visual depth {argb[0]}" if argb
-                 else "no ARGB visual (windows will be opaque)")
-
-        self.loop.add_reader(self.display.fd, self._on_x_readable)
-        self.display.add_screen_listener(self._on_screen_change)
-
     def _start_canvas(self, canvas) -> None:
-        """Wayland: the canvas made and sized, its events on the loop,
-        and the kinds it does not draw yet said once."""
-        from ..canvas import on_canvas
+        """The canvas made and sized, its events on the loop, and the
+        effects' shaders warmed on its GPU."""
         canvas.attach_loop(self.loop)
         canvas.start()
         canvas.on_resize = self._on_screen_change
         self.canvas = canvas
-        self.loop.add_reader(canvas.fd, self._on_wayland_readable)
-        drawn = [n for n, s in self.kinds.items() if on_canvas(s)]
-        skipped = [n for n, s in self.kinds.items() if not on_canvas(s)]
-        log.info("canvas draws %s; not on Wayland yet: %s",
-                 ", ".join(drawn) or "nothing", ", ".join(skipped) or "none")
+        self.loop.add_reader(canvas.fd, self._on_readable)
         if canvas.scene.gpu is not None:
             import time
-            from ..canvas import warm_shaders
             t0 = time.perf_counter()
             try:
                 n = warm_shaders(canvas.scene.gpu, list(self.kinds.values()))
@@ -271,7 +237,7 @@ class Daemon:
         import time
         for name, spec in self.kinds.items():
             warm = getattr(spec.content, "warm", None)
-            if warm is None or not self._drawable(spec):
+            if warm is None:
                 continue
             t0 = time.perf_counter()
             try:
@@ -281,45 +247,20 @@ class Daemon:
                 continue
             log.info("%s warmed: %d row(s) drawn ahead in %.0f ms", name, n,
                      (time.perf_counter() - t0) * 1000)
-        self._pump()
+        self._flush()
 
     def _gpu_scratch(self):
         """Something to draw on in the windows' GPU context, small and
         thrown away (canvas.py GpuScratch); None without the GPU."""
+        return self.canvas.scene.gpu if self.canvas is not None else None
+
+    def _flush(self) -> None:
+        """Send the compositor what is queued."""
         if self.canvas is not None:
-            return self.canvas.scene.gpu
-        if self.display is None:
-            return None
-        from ..backend.gl import backend as gl_backend
-        gl = gl_backend(self.display)
-        if gl is None or gl.context is None or not gl._idle:
-            return None                 # no pbuffer to draw with outside a window
-
-        class X11Scratch:
-            def make_current(self, _surface=None) -> bool:
-                gl.make_idle()          # the 1x1 pbuffer; a window rebinds its own
-                return True
-
-            def offscreen(self, width: int, height: int):
-                return gl.offscreen(width, height)
-
-            def finish(self) -> None:
-                gl.context.flushAndSubmit(skia.GrSyncCpu.kYes)
-
-        return X11Scratch()
-
-    def _pump(self, *, flush: bool = False) -> None:
-        """Dispatch what the X connection queued (and send what we did,
-        with `flush`); on Wayland, send it."""
-        if self.display is not None:
-            self.display.pump()
-            if flush:
-                self.display.flush()
-        elif self.canvas is not None:
             self.canvas.flush()
 
-    # A display switch arrives as a burst of ScreenChangeNotify; wait
-    # for it to settle before re-placing every window once.
+    # A display switch arrives as a burst of resizes; wait for it to
+    # settle before re-placing every window once.
     RELOCATE_DELAY = 0.3
     STARTUP_TIMEOUT = 15.0
 
@@ -343,7 +284,7 @@ class Daemon:
     async def _handle_screen_change(self) -> None:
         """Plugins first — one may reconfigure outputs (the display
         fallback) — then re-place the windows on the result. A hook's
-        own xrandr call raises another burst, which finds nothing left
+        own output change raises another burst, which finds nothing left
         to do."""
         try:
             hooks = list(self.config.get("screen", ()))
@@ -371,7 +312,7 @@ class Daemon:
                 win.relocate()
             except Exception:
                 log.exception("relocate failed for %s", win.spec.name)
-        self._pump(flush=True)
+        self._flush()
 
     async def _run_startup(self) -> None:
         hooks = list(self.config.get("startup", ()))
@@ -390,7 +331,7 @@ class Daemon:
 
     def _autostart(self) -> None:
         for name, spec in self.kinds.items():
-            if getattr(spec, "autostart", False) and self._drawable(spec):
+            if getattr(spec, "autostart", False):
                 try:
                     self.open(name)
                 except Exception:
@@ -415,25 +356,8 @@ class Daemon:
         be back in a moment."""
         return self._restart
 
-    # ── X event source ──────────────────────────────────────────────────
-    def _on_x_readable(self) -> None:
-        assert self.display is not None
-        try:
-            # Loop until a pass finds nothing: a handler may open a window,
-            # whose atom interning round-trips and pulls further events into
-            # libxcb's queue behind our back. Those must be dispatched now —
-            # waiting for the fd to wake again is what made a click only
-            # register once the pointer moved.
-            while self.display.pump():
-                pass
-            self.display.flush()
-        except DisplayError as e:
-            # The X server going away is terminal — there is nothing to
-            # draw on and no way to reconnect a live window tree.
-            log.error("%s", e)
-            self.quit()
-
-    def _on_wayland_readable(self) -> None:
+    # ── the compositor's events ─────────────────────────────────────────
+    def _on_readable(self) -> None:
         try:
             self.canvas.on_readable()
         except DisplayError as e:
@@ -441,28 +365,12 @@ class Daemon:
             self.quit()
 
     # ── window registry ─────────────────────────────────────────────────
-    def _drawable(self, spec) -> bool:
-        """Whether this display can show the kind: X every kind, the
-        Wayland canvas the ones it draws so far (canvas.on_canvas)."""
-        if self.canvas is None:
-            return True
-        from ..canvas import on_canvas
-        return on_canvas(spec)
-
     def primary_monitor(self):
-        """The monitor windows are placed on: X's primary one, or on
-        Wayland the canvas's output."""
-        if self.canvas is not None:
-            return self.canvas.scene.primary_monitor()
-        assert self.display is not None
-        return self.display.primary_monitor()
+        """The monitor windows are placed on: the canvas's output."""
+        return self.canvas.scene.primary_monitor()
 
     def _new_window(self, spec):
-        if self.canvas is not None:
-            from ..canvas import Region
-            return Region(self.canvas.scene, spec, self.loop)
-        from ..window import Window
-        return Window(self.display, spec, self.loop)
+        return Window(self.canvas.scene, spec, self.loop)
 
     def open(self, name: str, params: dict | None = None, *,
              placement=None) -> str:
@@ -476,11 +384,7 @@ class Daemon:
             if placement is not None:
                 self.instances[name].place(placement)
             return name
-        assert self.display is not None or self.canvas is not None
-        if not self._drawable(spec):
-            from ..canvas import NotOnCanvas
-            log.debug("%s is not on the Wayland canvas yet; not opened", name)
-            raise NotOnCanvas(f"{name} is not a kind the Wayland canvas draws")
+        assert self.canvas is not None
         win = self._parked.pop(name, None)
         if win is not None and win.spec is spec:
             win.placement = placement
@@ -495,27 +399,22 @@ class Daemon:
             win.create()
         win.show()
         self.instances[name] = win
-        # Creating a window round-trips (atom interning), and replies pull
-        # events off the wire into libxcb's queue without leaving the fd
-        # readable — drain them or the first Expose sits there unhandled.
-        self._pump()
+        self._flush()
         return name
 
     def prepare(self, name: str) -> None:
         """Make a keep_alive window of kind `name` and park it unshown, so
-        that its first open costs what a reopen does (the X window, its GL
-        surface and its first frame's setup made already)."""
+        that its first open costs what a reopen does (its surface, its
+        content attached and laid out already)."""
         spec = self.kinds.get(name)
-        if (spec is None or not spec.keep_alive
-                or (self.display is None and self.canvas is None)
-                or not self._drawable(spec)
+        if (spec is None or not spec.keep_alive or self.canvas is None
                 or name in self.instances or name in self._parked):
             return
         win = self._new_window(spec)
         win.create()
         win.park()
         self._parked[name] = win
-        self._pump()
+        self._flush()
 
     def close(self, name: str) -> bool:
         win = self.instances.pop(name, None)
@@ -525,7 +424,7 @@ class Daemon:
         # reopened, but kept alive until its despawn animation finishes.
         self._dying.add(win)
         win.dismiss(lambda w=win: self._reap(w))
-        self._pump()
+        self._flush()
         return True
 
     def _reap(self, win) -> None:
@@ -541,7 +440,7 @@ class Daemon:
             self._parked[name] = win
         else:
             win.destroy()
-        self._pump()
+        self._flush()
 
     def menu(self, name: str) -> None:
         """Open a plugin menu by name — see widgets/menu.py."""

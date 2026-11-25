@@ -3,10 +3,10 @@ what it is doing and the call's small square chip, and what `CallRouter`
 tells them.
 
     .venv/bin/python tests/agent_chip.py              all of it, ~20 s
-    .venv/bin/python tests/agent_chip.py --off-screen 1-3 only: no window
+    .venv/bin/python tests/agent_chip.py --no-window  1-3 only
 
 1. The state, from a stand-in agent through a real `CallRouter` on a
-   stub daemon (no X): idle (dimmed, her name and colour, no frames)
+   stub daemon (no window): idle (dimmed, her name and colour, no frames)
    before any turn; working (the step on the box, the square's arcs
    turning) while a turn runs, the call open or not, and while the hub
    compacts the chat (the box saying so, no step); idle again when the
@@ -27,17 +27,16 @@ tells them.
 3. Layout: with no router the chip takes no width and no gap in the
    bar's row (`collapsed`); with one, idle or not, one fixed width
    whatever the state and the text; whole pixels, centred in the bar;
-   hit on either piece, not in the gap or a cut corner; painted off
-   screen (raster): her colour working, yellow asking, red
+   hit on either piece, not in the gap or a cut corner; painted
+   (raster): her colour working, yellow asking, red
    ringing (lit and between flashes), dimmed idle, the call's stripes;
    the user's config.py (by its path, scratch XDG, no bytecode) has the
    chip at its top bar's right end and finds its router in SERVICES.
-4. The real `Window` and frame clock, on an X window off the screen
-   (override-redirect, no grab, never mapped where it shows), opened
-   twice: no frame over an idle second; the square's 30 frames a second
-   while its arcs turn, the box none; both at the ring's 20 while it
-   blinks; none once it goes missed or idle; and nothing left on screen
-   by any of it (`_live.stale`).
+4. The real `Window` and frame clock, on a canvas of the test's own
+   (`_live.Canvas`), opened twice: no frame over an idle second; the
+   square's 30 frames a second while its arcs turn, the box none; both
+   at the ring's 20 while it blinks; none once it goes missed or idle;
+   and nothing left on screen by any of it (`_live.stale`).
 
 Prints ok/FAIL lines and exits 1 if anything failed. Never touches the
 running shell: no socket, lock, state or window of its.
@@ -558,7 +557,7 @@ def test_layout(scratch: str) -> None:
 async def test_clock() -> None:
     from indigoshell.window import Anchor, Layer, WindowSpec
 
-    section("4. frames, on the real Window and clock (off screen, no grab)")
+    section("4. frames, on the real Window and clock")
     status.RING_FOR_S = 2.0             # a ring that goes "missed" within the test
     d = StubDaemon()
     daemon_mod._DAEMON = d
@@ -571,11 +570,9 @@ async def test_clock() -> None:
     _live.count_frames(chip.box)
     spec = WindowSpec(
         name="agent-chip", layer=Layer.OVERLAY, anchor=Anchor.TOP | Anchor.RIGHT,
-        size=(560, theme.TOP_BAR_HEIGHT), override_redirect=True, focusable=False,
-        background=theme.BAR_BG, keep_alive=True,
+        size=(560, theme.TOP_BAR_HEIGHT), background=theme.BAR_BG, keep_alive=True,
         content=Row([Label("flux"), chip], spacing=theme.BAR_SPACING, align=Align.CENTER))
-    display = _live.connect()
-    win = _live.open_window(display, _live.offscreen(spec))
+    win = _live.open_window(_live.canvas(), spec)
     frames = {"n": 0}
     run = win._run_frame
 
@@ -635,7 +632,7 @@ async def test_clock() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--off-screen", action="store_true", help="1-3 only: no window")
+    parser.add_argument("--no-window", action="store_true", help="1-3 only")
     args = parser.parse_args()
     scratch = tempfile.mkdtemp(prefix="indigoshell-agent-chip-test-")
     t0 = time.monotonic()
@@ -643,7 +640,7 @@ def main() -> int:
         test_state()
         test_words()
         test_layout(scratch)
-        if not args.off_screen:
+        if not args.no_window:
             asyncio.run(test_clock())
     except Exception:
         import traceback

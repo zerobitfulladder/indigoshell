@@ -42,9 +42,9 @@ def words(rng: random.Random, n: int) -> str:
     return " ".join(rng.choice(WORDS) for _ in range(n))
 
 
-def open_call(display, host: CallHost):
+def open_call(canvas, host: CallHost):
     spec, _services = config.call(host.agent)
-    return _live.open_window(display, _live.offscreen(spec, content=host))
+    return _live.open_window(canvas, spec, content=host)
 
 
 def pieces_at(host: CallHost, box: tuple) -> str:
@@ -58,10 +58,10 @@ def pieces_at(host: CallHost, box: tuple) -> str:
 
 
 # ── a re-opened call, the agent silent ──────────────────────────────────
-async def silent_tool(display) -> bool:
+async def silent_tool(canvas) -> bool:
     agent = _live.ScriptedAgent()
     host = CallHost(agent)
-    win = open_call(display, host)
+    win = open_call(canvas, host)
     moving = {"trace": host.agent_plate, "chip": host.agent_chip,
               "caret": host.you_plate.input}
     for widget in moving.values():
@@ -172,11 +172,11 @@ async def settle(agent) -> None:
     await asyncio.sleep(QUIET_S)
 
 
-async def fuzz(display, seed: int) -> bool:
+async def fuzz(canvas, seed: int) -> bool:
     rng = random.Random(seed)
     agent = _live.ScriptedAgent()
     host = CallHost(agent)
-    win = open_call(display, host)
+    win = open_call(canvas, host)
     await asyncio.sleep(0.5)
     fast = rng.random() < 0.7
     stall_p = rng.choice((0.0, 0.01, 0.03))
@@ -200,19 +200,18 @@ async def fuzz(display, seed: int) -> bool:
     for line in found:
         print("       " + line, flush=True)
     win.destroy()
-    display.pump()
     await asyncio.sleep(0.05)
     return not found
 
 
 async def main(args) -> int:
-    display = _live.connect()
+    canvas = _live.canvas()
     print("a call opened again, the agent running a tool in silence")
-    ok = await silent_tool(display)
+    ok = await silent_tool(canvas)
     print(f"fuzz, seeds {args.first}..{args.first + args.seeds - 1}")
     bad = 0
     for seed in range(args.first, args.first + args.seeds):
-        bad += not await fuzz(display, seed)
+        bad += not await fuzz(canvas, seed)
     print("FAILED" if bad or not ok else "all passed",
           f"({bad} of {args.seeds} seeds left something on screen)"
           if bad else "")

@@ -1,14 +1,10 @@
-"""The window manager and the display server, as the shell uses them
-outside its core: the bar's workspace readout, the clipboard, the hands
-the laptop lends the hub's agent (agent/laptop.py, agent/desk.py), the
-display menu, the keyboard layout menu and logging out.
+"""The window manager, as the shell uses it outside its core: the bar's
+workspace readout, the windows and the focus for the apps' line, the
+clipboard, the hands the laptop lends the hub's agent (agent/laptop.py,
+agent/desk.py), the display menu, the keyboard layout menu and logging
+out. `WM` says what the shell asks; niri is what answers, found by
+$NIRI_SOCKET (niri exports it to everything it starts).
 
-One choice per process, made once by `get()`: niri when $NIRI_SOCKET
-is set (niri exports it to everything it starts), else X11 with qtile.
-
-    x11.py       X11 and qtile: qtile's command interface (`qtile
-                 cmd-obj`), EWMH properties on the shell's own X
-                 connection, xclip, ImageMagick's `import`, xrandr
     niri.py      niri over its IPC socket, and Wayland for the rest
                  (wayland.py)
     wayland.py   what any Wayland compositor with the common protocols
@@ -45,8 +41,7 @@ class NotFound(WMError):
 
 
 class Unsupported(WMError):
-    """This window manager has no such thing (niri has no primary
-    monitor)."""
+    """The compositor has no such thing (no wlr-screencopy)."""
 
 
 @dataclass(frozen=True)
@@ -59,12 +54,11 @@ class Workspace:
 @dataclass(frozen=True)
 class Window:
     id: int                     # what `focus_window` and screenshots take
-    app: str                    # its class (X) or app id (Wayland)
+    app: str                    # its app id
     title: str
     workspace: str              # the Workspace.name it is on, or ""
-    classes: tuple[str, ...] = ()   # every class name it answers to
     active: bool = False        # the focused one of its workspace
-    pid: int | None = None      # its client's process, where the WM says (niri)
+    pid: int | None = None      # its client's process
 
 
 class Mode(NamedTuple):
@@ -78,7 +72,6 @@ class Output:
     name: str
     connected: bool
     active: bool                # lit, with a place on the screen
-    primary: bool
     modes: tuple[Mode, ...]
     current: Mode | None
 
@@ -111,8 +104,8 @@ class Follower:
 
 
 class WindowFollower:
-    """Follows the windows and the keyboard focus, for the apps' line on
-    Wayland (`WM.follow_windows`; applink/service.py): which window has
+    """Follows the windows and the keyboard focus, for the apps' line
+    (`WM.follow_windows`; applink/service.py): which window has
     the focus and whose process it is, which windows a process has, and
     the workspaces a window can be put on without the user seeing it."""
 
@@ -147,13 +140,11 @@ class WindowFollower:
 
 
 class WM:
-    """What the shell asks of the window manager and the display server
-    outside its core. Every coroutine raises WMError (or NotFound,
-    Unsupported) with a message fit for the agent."""
+    """What the shell asks of the window manager outside its core. Every
+    coroutine raises WMError (or NotFound, Unsupported) with a message
+    fit for the agent."""
 
     name = ""
-    # Whether outputs have a primary (X: RandR's; niri has none).
-    has_primary = False
     # The program `copy` hands text to, for "… is missing".
     clipboard_tool = ""
 
@@ -176,16 +167,15 @@ class WM:
                           on_change: Callable[[WorkspaceState], None]
                           ) -> Follower:
         """Call `on_change` with the readout now and whenever it may
-        have changed, for the bar in `window` (the shell's Window: X11
-        reads its display, niri the monitor under it)."""
+        have changed, for the bar in `window` (the shell's Window: the
+        monitor under it)."""
         raise NotImplementedError
 
     def follow_windows(self, on_change: Callable[["WindowFollower"], None]
-                       ) -> "WindowFollower | None":
+                       ) -> "WindowFollower":
         """Call `on_change(follower)` whenever the windows or the focus
-        may have changed; None where the window manager does not say
-        (X11: the apps' line follows EWMH itself)."""
-        return None
+        may have changed."""
+        raise NotImplementedError
 
     # ── screenshots ─────────────────────────────────────────────────────
     async def screenshot(self, target: str = "screen", *,
@@ -213,23 +203,16 @@ class WM:
     async def use_only(self, name: str, mode: Mode | None,
                        off: Sequence[str]) -> None:
         """Light `name` at `mode` (None: its own pick) as the one in
-        use (primary, where there is one) and turn `off` off."""
+        use and turn `off` off."""
         raise NotImplementedError
 
-    async def virtual_monitors(self) -> list[str]:
-        """The names of monitors a tool set up over the outputs (RandR's
-        `--setmonitor`; braindance marks its session with one). None on
-        niri."""
-        return []
-
     # ── keyboard ────────────────────────────────────────────────────────
-    async def keyboard_layouts(self) -> list[tuple[str, bool]] | None:
-        """The window manager's keyboard layouts as (name, in use), or
-        None where the shell sets the layout itself (X: setxkbmap)."""
-        return None
+    async def keyboard_layouts(self) -> list[tuple[str, bool]]:
+        """The window manager's keyboard layouts as (name, in use)."""
+        raise NotImplementedError
 
     async def switch_keyboard_layout(self, index: int) -> None:
-        raise Unsupported(f"{self.name} has no keyboard layouts of its own")
+        raise NotImplementedError
 
     # ── session ─────────────────────────────────────────────────────────
     def logout(self) -> None:
@@ -241,15 +224,15 @@ _current: WM | None = None
 
 
 def get() -> WM:
-    """This process's window manager, chosen on first use."""
+    """This process's window manager: niri, at $NIRI_SOCKET. Raises
+    WMError without it."""
     global _current
     if _current is None:
-        if os.environ.get("NIRI_SOCKET"):
-            from .niri import Niri
-            _current = Niri(os.environ["NIRI_SOCKET"])
-        else:
-            from .x11 import X11
-            _current = X11()
+        sock = os.environ.get("NIRI_SOCKET")
+        if not sock:
+            raise WMError("no niri here ($NIRI_SOCKET is not set)")
+        from .niri import Niri
+        _current = Niri(sock)
         log.debug("window manager: %s", _current.name)
     return _current
 

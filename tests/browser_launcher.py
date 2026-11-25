@@ -1,11 +1,7 @@
 """Flux's address inputs and actions in the top bar, the inputs and menus
 of any app's bar, and what they read and open.
 
-    .venv/bin/python tests/browser_launcher.py              all of it; a small
-                                                             list shows in the
-                                                             bottom-right corner
-                                                             for about a second
-    .venv/bin/python tests/browser_launcher.py --off-screen  1-6 only: nothing shows
+    .venv/bin/python tests/browser_launcher.py              all of it, off screen
 
 1. places (flux/places.py): what a typed line means, the history
    writer's rules and its pruning, the bookmarks file (atomic writes,
@@ -38,37 +34,19 @@ of any app's bar, and what they read and open.
    (Ctrl+M: the bookmark actions, "Let Lilac drive again"), a blank
    page, a single window's, the agent's own window's, Flux's own find,
    the size of a 30-tab bar.
-6. Placement (window.py): centred under a rect, clamped to the monitor
-   holding it, forgotten when the window parks; outside clicks.
-7. On screen: the real drop-down window spec, opened by the real
-   Daemon.open through the real AppService for a stand-in browser (an
-   unmapped window, announced, its bar sent and its queries answered
-   over the socket as Flux does) under a stand-in top bar in the screen's bottom-right
-   corner (no window with a strut is ever made here), on a Ctrl+L press
-   delivered to the service's handler as the X server would report it
-   once the key grab fired (nothing is typed into the display; the
-   keyboard and pointer grabs are recorded, never made): the box in the
-   section within the press's handling, the list flush under the bar at
-   the section's left and width, its own pixels read (never the root);
-   keys typed after the press into the box in order, an Escape among
-   them closing it and a key after that dropped; the time from the
-   answer to the list's first frame, cold and from parked; the
-   drop-down made ahead, parked unshown. Then MOD+D's launcher, a copy
-   of its spec taking no keyboard, pointer or focus, opened in the
-   corner: its apps listed and filtered, its centred place computed,
-   its first frame from parked.
+6. Placement (window.py): centred under a rect, kept inside the canvas,
+   forgotten when the window parks.
+The drop-down and the launcher on the real canvas, typed into through
+the compositor: tests/wayland.py (3b, and its --nested run).
 
 Nothing here touches the running shell or the real history and
 bookmarks: every XDG directory and socket is a scratch one.
 """
 
 import argparse
-import asyncio
-import dataclasses
 import json
 import os
 import shutil
-import socket
 import sys
 import tempfile
 import time
@@ -84,9 +62,6 @@ os.environ.update({"XDG_DATA_HOME": str(SCRATCH / "data"),
                    "XDG_CONFIG_HOME": str(SCRATCH / "config"),
                    "XDG_STATE_HOME": str(SCRATCH / "state"),
                    "XDG_CACHE_HOME": str(SCRATCH / "cache")})
-
-from indigoshell.core.naming import APP              # noqa: E402
-from indigoshell.core.paths import runtime_dir       # noqa: E402
 
 FAILED: list[str] = []
 NOW = 1_800_000_000.0
@@ -375,7 +350,7 @@ def test_addresses() -> None:
 # ── 3. the input and its list ───────────────────────────────────────────
 
 class FakeWindow:
-    """What a widget asks of its window, and no X."""
+    """What a widget asks of its window, and nothing more."""
 
     def __init__(self, name="launcher"):
         self.spec = types.SimpleNamespace(name=name)
@@ -964,369 +939,36 @@ def test_flux_bar() -> None:
 # ── 6. placement ────────────────────────────────────────────────────────
 
 def test_placement() -> None:
-    from indigoshell.backend.x11 import Monitor
+    from indigoshell.canvas import Scene
     from indigoshell.window import Placement, Window, WindowSpec
 
-    section("6. placement: centred under a rect, on its monitor, forgotten on park")
-
-    class Display:
-        screen = types.SimpleNamespace(root_depth=24)
-
-        def monitors(self):
-            return [Monitor(0, 0, 2560, 1440, True, "A"), Monitor(2560, 200, 1920, 1080, False, "B")]
-
-        def primary_monitor(self):
-            return self.monitors()[0]
-
+    section("6. placement: centred under a rect, inside the canvas, forgotten on park")
+    scene = Scene(None)
+    scene.resize(2560, 1440)
+    mon = scene.primary_monitor()
     spec = WindowSpec(name="t", size=(760, 560))
-    win = Window(Display(), spec)
-    centre = win._compute_geometry(Display().primary_monitor())
+    win = Window(scene, spec)
+    centre = win._compute_geometry(mon)
     win.placement = Placement.below(100, 300, 1000, 28)
-    under = win._compute_geometry(Display().primary_monitor())
-    win.placement = Placement.below(2560 + 1600, 900, 300, 28)
-    clamped = win._compute_geometry(Display().primary_monitor())
+    under = win._compute_geometry(mon)
+    win.placement = Placement.below(2560 - 100, 1200, 300, 28)
+    clamped = win._compute_geometry(mon)
     win.placement = Placement.below(-500, -300, 100, 28)
-    off = win._compute_geometry(Display().primary_monitor())
-    check("no placement: the anchor's place (centred on the primary)",
+    off = win._compute_geometry(mon)
+    check("no placement: the anchor's place (centred on the canvas)",
           centre == ((2560 - 760) // 2, (1440 - 560) // 2, 760, 560), f"{centre}")
     check("below a 28 px rect at (100, 300) 1000 px wide: centred on it, top at its bottom",
           under == (100 + 500 - 380, 328, 760, 560), f"{under}")
-    check("near the right edge of the second monitor: kept inside that monitor",
-          clamped == (2560 + 1920 - 760, 200 + 1080 - 560, 760, 560), f"{clamped}")
-    check("a point on no monitor: the primary, clamped", off == (0, 0, 760, 560), f"{off}")
+    check("near the canvas's bottom-right corner: kept inside it",
+          clamped == (2560 - 760, 1440 - 560, 760, 560), f"{clamped}")
+    check("a point off the canvas: clamped onto it", off == (0, 0, 760, 560), f"{off}")
     win.park()
     check("park() forgets it: the next open goes by the anchor", win.placement is None
-          and win._compute_geometry(Display().primary_monitor()) == centre)
-
-    # Outside clicks are tested against the content rect in the window's
-    # own coordinates, so where the window sits does not change them.
-    closes = []
-    dspec = WindowSpec(name="t2", size=(760, 560), dismiss_on_outside_click=True)
-    w2 = Window(Display(), dspec)
-    w2.placement = Placement(1000, 500)
-    import skia
-    w2.content_rect = skia.Rect.MakeXYWH(30, 30, 760, 560)
-    w2._request_close = lambda: closes.append(1)
-    w2._dismiss_others = lambda: None
-    w2._on_press(types.SimpleNamespace(event_x=10, event_y=40, detail=1))
-    w2._on_press(types.SimpleNamespace(event_x=400, event_y=300, detail=1))
-    check("a placed window: a press outside its content closes it, one inside does not",
-          closes == [1])
-
-
-# ── 7. on screen ────────────────────────────────────────────────────────
-
-class Fake:
-    """A stand-in browser on the shell's app socket."""
-
-    def __init__(self, path: str) -> None:
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(path)
-        self.sock.setblocking(False)
-        self.buf = b""
-
-    def send(self, msg: dict) -> None:
-        self.sock.sendall((json.dumps(msg) + "\n").encode())
-
-    def read(self) -> list[dict]:
-        try:
-            self.buf += self.sock.recv(65536)
-        except BlockingIOError:
-            pass
-        *lines, self.buf = self.buf.split(b"\n")
-        return [json.loads(x) for x in lines if x]
-
-    def close(self) -> None:
-        self.sock.close()
-
-
-async def until(pred, timeout=5.0, every=0.01):
-    deadline = time.monotonic() + timeout
-    while True:
-        value = pred()
-        if value or time.monotonic() >= deadline:
-            return value
-        await asyncio.sleep(every)
-
-
-async def on_screen() -> None:
-    import numpy as np
-    import skia
-    import xcffib
-    import xcffib.composite
-    import xcffib.xproto as xp
-
-    from indigoshell import config_default, theme
-    from indigoshell.applink import bar as B
-    from indigoshell.applink.drop import DROP_WINDOW
-    from indigoshell.applink.prompt import Prompt
-    from indigoshell.applink.service import AppService
-    from indigoshell.backend.x11 import Display
-    from indigoshell.core import daemon as daemon_mod
-    from indigoshell.applink.launcher import Launcher
-    from indigoshell.window import Placement, Window
-    from flux import bar as fb
-
-    section("7. on screen: the drop-down under a stand-in top bar, for a stand-in browser")
-    real = next(s_ for s_ in config_default.WINDOWS if s_.name == DROP_WINDOW)
-    check("the drop-down's spec takes no keyboard, no pointer, no focus (the open input holds "
-          "them), and has no effect around it", not real.grab_keyboard
-          and not real.dismiss_on_outside_click and not real.focusable
-          and real.override_redirect and real.effects == () and real.keep_alive)
-    # When a window is mapped with its first frame drawn: what show()
-    # does before it returns.
-    presented: dict[str, list[float]] = {}
-    original = Window.show
-
-    def show(self):
-        result = original(self)
-        presented.setdefault(self.spec.name, []).append(time.monotonic())
-        return result
-
-    Window.show = show
-    loop = asyncio.get_running_loop()
-    display = Display()
-    display.attach_loop(loop)
-    # Never the person's keyboard or pointer: both grabs recorded only.
-    grabs = []
-    display.grab_pointer = lambda wid: grabs.append(("pointer", wid)) or True
-    display.ungrab_pointer = lambda: grabs.append("pointer let go")
-
-    def pump():
-        while display.pump():
-            pass
-
-    loop.add_reader(display.fd, pump)
-    d = daemon_mod.Daemon({"windows": [real]})
-    d.display, d.loop = display, loop
-    sock = os.path.join(runtime_dir(), f"{APP}-blt-{os.getpid()}-apps.sock")
-    service = AppService(path=sock, display=display)
-    kb = []
-    service.hold_keyboard = lambda w: kb.append(("hold", w.wid)) or True
-    service.release_keyboard = lambda: kb.append("release")
-    service.start()
-    other = xcffib.connect()
-    screen = other.get_setup().roots[0]
-    composite = other(xcffib.composite.key)
-    composite.QueryVersion(0, 4).reply()
-    mon = display.primary_monitor()
-    # A stand-in top bar in the bottom-right corner (no window with a
-    # strut is ever made here), its app section 600 px wide; the list
-    # drops from its bottom edge, small, in that corner.
-    bar_x, bar_y = mon.x + mon.width - 700, mon.y + mon.height - 420
-    bar_win = types.SimpleNamespace(wid=1, x=bar_x, y=bar_y, width=680, height=42,
-                                    content_root=(bar_x, bar_y, 680, 42), damage=lambda *a, **k: None)
-    service.context = types.SimpleNamespace(window=bar_win, rect=skia.Rect.MakeXYWH(40, 0, 600, 42))
-    bx, by, bw, bh = mon.x + mon.width - 600, mon.y + mon.height - 360, 400, 300
-    stand = other.generate_id()
-    # Unmapped: the stand-in only has to exist and have a place.
-    other.core.CreateWindow(screen.root_depth, stand, screen.root, bx, by, bw, bh, 0,
-                            xp.WindowClass.InputOutput, screen.root_visual,
-                            xp.CW.BackPixel | xp.CW.OverrideRedirect, [0x00FF00, 1])
-    other.core.GetInputFocus().reply()
-    fake = None
-    real_answer = Prompt.answer
-    answering = None
-    try:
-        fake = Fake(sock)
-        fake.send(B.announce("flux", 1, stand))
-        fake.send(fb.bar_of(fb.state([fb.tab("Stand-in", "example.org", False, id_=1)], 0, 100,
-                                     True, url="https://example.org/", bookmarked=False)))
-        said: list[dict] = []
-
-        async def answer_queries():
-            """The stand-in browser answers each query as Flux would: what
-            was typed, as the row to open."""
-            while True:
-                for m in fake.read():
-                    said.append(m)
-                    if m.get("type") == "query":
-                        fake.send(B.answer(m["input"], m["seq"], [
-                            B.row("typed", m["text"] or "nothing", tag="OPEN")], total=0))
-                await asyncio.sleep(0.002)
-
-        answering = asyncio.ensure_future(answer_queries())
-        attached = await until(lambda: any(m.get("type") == "attached" for m in said), 5)
-        grabbed = await until(lambda: stand in service.grabs, 2)
-        jw = service.window_for(stand)
-        service.focused = jw
-        check("the stand-in browser attached, its keys grabbed on its window",
-              bool(attached) and bool(grabbed))
-
-        def press(sym, state=0):
-            """A key press as the X server reports one to the service while
-            its grab holds the keyboard: on the browser's window."""
-            ev = xp.KeyPressEvent.synthetic(display.keycodes(sym)[0], 0, display.root, stand,
-                                            0, 0, 0, 0, 0, state, 1)
-            ev.response_type = 2
-            display.dispatch(ev)
-
-        boxed_at = []
-        real_show_box = jw.view.show_box
-
-        def show_box(box):
-            if box is not None:
-                boxed_at.append(time.perf_counter())
-            real_show_box(box)
-
-        jw.view.show_box = show_box
-        answered_at = []
-
-        def answer(self, msg):
-            answered_at.append(time.monotonic())
-            real_answer(self, msg)
-
-        Prompt.answer = answer
-
-        async def ctrl_l():
-            presented.pop(DROP_WINDOW, None)
-            boxed_at.clear()
-            answered_at.clear()
-            t0 = time.perf_counter()
-            press(ord("l"), xp.ModMask.Control)
-            boxed = (boxed_at[0] - t0) * 1000 if boxed_at else None
-            ok = await until(lambda: presented.get(DROP_WINDOW), 5)
-            return boxed, (presented[DROP_WINDOW][0] - answered_at[0]) * 1000 \
-                if ok and answered_at else None
-
-        cold_box, cold = await ctrl_l()
-        win = d.instances.get(DROP_WINDOW)
-        cx, cy, cw, ch = win.content_root if win else (0, 0, 0, 0)
-        check("Ctrl+L: the box in the section at once, the press handled (the bar paints it at "
-              "its next frame); the keyboard held for it, the pointer too",
-              cold_box is not None and cold_box < 16 and kb[:1] == [("hold", stand)]
-              and grabs[:1] == [("pointer", 1)], f"{cold_box} ms; {kb} {grabs}")
-        check("the list, at the first answer: a window of its own, flush under the bar's bottom "
-              "edge at the section's left, the section's width, no bleed",
-              win is not None and (cx, cy, cw) == (bar_x + 40, bar_y + 42, 600) and win.bleed == 0,
-              f"content {cw}x{ch}+{cx}+{cy}")
-        await asyncio.sleep(0.25)
-        done = read_window(other, composite, win.wid, win.width, win.height)
-        save_png(SCRATCH / "on-screen-drop.png", done)
-        bg = np.array([int(theme.BAR_BG[i:i + 2], 16) for i in (1, 3, 5)])
-        edge = done[-6:, :, :3].astype(int)
-        share = float((np.abs(edge - bg).max(-1) <= 6).mean())
-        cyan = colour_px(done[..., :3].astype(int), theme.CYAN_BRIGHT, 90)
-        check("its own pixels: the bar's background round the rows, the typed row selected (the "
-              "cyan slab)", share > 0.95 and cyan > 100, f"background {share:.0%}, cyan px {cyan}")
-        press(ord("e"))
-        press(ord("x"))
-        typed_in = service.prompt.box.field.text if service.prompt else None
-        press(0xFF1B)
-        press(ord("q"))
-        parked = await until(lambda: DROP_WINDOW in d._parked, 3)
-        check("keys typed after the press, on the browser's window: into the box in order, "
-              "replacing the selected URL; Escape among them closes it (the list parked, the "
-              "keyboard and pointer given back), and a key after that goes nowhere",
-              typed_in == "ex" and bool(parked) and service.prompt is None
-              and kb[-1] == "release" and grabs[-1] == "pointer let go" and jw.view.box is None,
-              f"{typed_in!r}")
-        warm_box, warm = await ctrl_l()
-        press(0xFF1B)
-        await until(lambda: DROP_WINDOW in d._parked, 3)
-        print(f"  (timing) key press -> the box in the section: {cold_box:.2f} ms, "
-              f"{warm_box:.2f} ms; the first answer -> the list mapped with its first frame: "
-              f"{cold:.0f} ms cold (a new window), {warm:.0f} ms from parked", flush=True)
-        check("the list's first frame within 50 ms of the answer, from parked",
-              warm is not None and warm < 50, f"{warm:.0f} ms")
-
-        # Made ahead (what the service asks of the daemon after its start):
-        # parked unshown, nothing in it.
-        d._parked.pop(DROP_WINDOW).destroy()
-        n = len(grabs)
-        d.prepare(DROP_WINDOW)
-        check("the drop-down made ahead (Daemon.prepare): parked unshown, nothing opened, no "
-              "grab asked for", DROP_WINDOW in d._parked and DROP_WINDOW not in d.instances
-              and service.prompt is None and grabs[n:] == []
-              and not d._parked[DROP_WINDOW].mapped)
-
-        # MOD+D: `indigoshell toggle launcher`, the launcher as it was (a
-        # copy of its spec that takes no keyboard, no pointer, no focus,
-        # opened in the corner here: its centred place is checked as data).
-        real_launcher = next(s_ for s_ in config_default.WINDOWS
-                             if s_.name == config_default.LAUNCHER)
-        spec = dataclasses.replace(real_launcher, name="test-launcher", grab_keyboard=False,
-                                   dismiss_on_outside_click=False, focusable=False)
-        check("the launcher's spec as before: centred (no anchor), a grabbing panel with the "
-              "panels' spawn, kept alive; the copy takes no keyboard, pointer or focus",
-              real_launcher.name == "launcher" and real_launcher.grab_keyboard
-              and real_launcher.dismiss_on_outside_click and real_launcher.keep_alive
-              and real_launcher.effects and real_launcher.holo and not spec.grab_keyboard
-              and isinstance(real_launcher.content, Launcher))
-        d.kinds["test-launcher"] = spec
-        corner = Placement(mon.x + mon.width - 420, mon.y + mon.height - 760)
-        for round_ in ("cold", "parked"):
-            presented.pop("test-launcher", None)
-            t0 = time.monotonic()
-            d.open("test-launcher", placement=corner)
-            ok = await until(lambda: presented.get("test-launcher"), 5)
-            took = (presented["test-launcher"][0] - t0) * 1000 if ok else None
-            launcher = spec.content
-            listed = [r["title"] for r in launcher.prompt.rows] if ok else None
-            for ev in typed("bet"):
-                launcher.key(ev)
-            filtered = [r["title"] for r in launcher.prompt.rows]
-            win = d.instances.get("test-launcher")
-            cw, ch = win.content_root[2:] if win else (0, 0)
-            d.close("test-launcher")
-            await until(lambda: "test-launcher" in d._parked, 3)
-            print(f"  (timing) MOD+D's open -> the launcher mapped with its first frame: "
-                  f"{took:.0f} ms ({round_})", flush=True)
-        parked = d._parked["test-launcher"]
-        centred = parked._compute_geometry(mon, size=(cw, ch))
-        check("MOD+D: the launcher, its apps listed, typing filtering them; at its usual spot "
-              "(no placement: centred on the primary monitor); its first frame within 100 ms "
-              "of the open, from parked",
-              listed == ["Alpha Editor", "Beta Browser", "Gamma Terminal"]
-              and filtered == ["Beta Browser"]
-              and centred[:2] == (mon.x + (mon.width - cw) // 2, mon.y + (mon.height - ch) // 2)
-              and took is not None and took < 100, f"{listed} {filtered} {centred} {took}")
-    finally:
-        Window.show = original
-        Prompt.answer = real_answer
-        if answering is not None:
-            answering.cancel()
-        if fake is not None:
-            fake.close()
-        service.stop()
-        for w in list(d.instances.values()) + list(d._parked.values()) + list(d._dying):
-            w.destroy()
-        d.instances.clear()
-        d._parked.clear()
-        daemon_mod._DAEMON = None
-        other.core.DestroyWindow(stand)
-        other.flush()
-        other.disconnect()
-        loop.remove_reader(display.fd)
-        display.close()
-        if os.path.exists(sock):
-            os.unlink(sock)
-
-
-def read_window(conn, composite, wid, w, h):
-    """A window of ours, from its composite pixmap: RGBA."""
-    import numpy as np
-    import xcffib.xproto as xp
-    pix = conn.generate_id()
-    composite.NameWindowPixmap(wid, pix)
-    try:
-        img = conn.core.GetImage(xp.ImageFormat.ZPixmap, pix, 0, 0, w, h, 0xFFFFFFFF).reply()
-    finally:
-        conn.core.FreePixmap(pix)
-        conn.flush()
-    a = np.frombuffer(bytes(img.data.buf()), np.uint8)[:w * h * 4].reshape(h, w, 4)
-    return a[..., [2, 1, 0, 3]].copy()
-
-
-def save_png(path, rgba) -> None:
-    import numpy as np
-    import skia
-    skia.Image.fromarray(np.ascontiguousarray(rgba)).save(str(path), skia.kPNG)
+          and win._compute_geometry(mon) == centre)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--off-screen", action="store_true", help="sections 1-6 only")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()
     print(f"scratch {SCRATCH}", flush=True)
@@ -1342,8 +984,6 @@ def main() -> int:
         test_launcher()
         test_flux_bar()
         test_placement()
-        if not args.off_screen:
-            asyncio.run(on_screen())
     except Exception:
         FAILED.append("aborted")
         print("\nABORTED:\n" + traceback.format_exc(), flush=True)

@@ -7,7 +7,7 @@ cage (a kiosk Wayland compositor) with no shell.
 The whole test runs as a hidden cage's client (tests/_cage.py:
 `WLR_BACKENDS=headless cage -- ...`), and so does every Flux it starts.
 This process plays the hub's process: before anything of the shell's is
-imported, xcffib, skia, dbus_fast and psutil are blocked (None in
+imported, skia, dbus_fast and psutil are blocked (None in
 sys.modules), and PySide6 is never imported here. The agent's Hand,
 HandError and Call come from core/hands.py. Every Flux runs as a process
 of its own (`main.py browser ...`), in scratch XDG directories, with
@@ -27,7 +27,7 @@ as on the hub.
      nothing started.
   2. an unattended Flux, `--unattended --no-window --profile pi`,
      through browser_hands(profile="pi", where=..., unattended=True):
-     tabs (no windows, then no X window); open; read (outline refs); act
+     tabs (no windows, then one); open; read (outline refs); act
      (click, type, fill) and the page changing; a screenshot drawn (the
      page's colour in the PNG), its window showing no line of its own with
      no shell (the page alone); look (the screenshot, no image); a dialog outside the
@@ -59,7 +59,7 @@ import sys
 
 # The hub's process has none of these (and no PySide6): blocked before
 # anything of the shell's is imported.
-BLOCKED = ("xcffib", "skia", "dbus_fast", "psutil")
+BLOCKED = ("skia", "dbus_fast", "psutil")
 for _name in BLOCKED:
     sys.modules[_name] = None
 
@@ -358,8 +358,8 @@ def test_pure() -> None:
 
     from flux import hands as browser_hands_module
     loaded = sorted(m for m in sys.modules if m.split(".")[0] in BLOCKED and sys.modules[m])
-    check("imports: browser.control and browser.hands with xcffib, skia, dbus_fast and psutil "
-          "blocked", not loaded, f"{loaded}")
+    check("imports: browser.control and browser.hands with skia, dbus_fast and psutil blocked",
+          not loaded, f"{loaded}")
     check("... no PySide6 in this process", "PySide6" not in sys.modules)
     check("... nor the agent package", not any(m.startswith(f"{APP}.agent") for m in sys.modules),
           f"{[m for m in sys.modules if m.startswith(f'{APP}.agent')]}")
@@ -536,8 +536,7 @@ def test_unattended() -> None:
           "Flux is running with no windows" in t0[0], t0[0] or t0[2])
     check("open: the page loaded", "\"Form\"" in out.get("open", ("",))[0],
           out.get("open", ("", [], ""))[0][:200])
-    check("tabs: one window, no X window (Wayland)",
-          "1 window(s)" in t1[0] and "X window" not in t1[0], t1[0][:300])
+    check("tabs: one window", "1 window(s)" in t1[0], t1[0][:300])
     refs = out.get("refs", {})
     check("read: the outline's refs", len(refs) >= 6, f"{list(refs)[:8]}")
     values = out.get("values", ("", [], ""))[0]

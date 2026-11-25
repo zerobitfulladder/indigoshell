@@ -15,17 +15,17 @@ vocabulary in bar.py. This module has the rest:
 
 App -> shell, any time after the announce
     place       {"type": "place", "with"?: <the app's id for another of its windows>}
-                The window, made but not yet shown (mapped), wants a
-                workspace of the window manager's before it maps, so that
-                it never appears on the one the user is looking at: an
-                empty one no screen shows (applink/service.py has the
-                rule), or with `with` the one that other window (of the
-                same app process) is on: a popup of a window placed so.
-                The app maps the window once `placed` answers, or after
+                The window, made but not yet shown, wants a workspace of
+                the window manager's, so that it never appears on the one
+                the user is looking at: an empty one no monitor shows
+                (applink/service.py has the rule), or with `with` the one
+                that other window (of the same app process) is on: a
+                popup of a window placed so.
+                The app shows the window once `placed` answers, or after
                 PLACE_WAIT_S with no answer, or at once when no shell
-                listens: then wherever the window manager puts it. On
-                niri the shell answers at once and moves the window there
-                as soon as niri lists it (PROTOCOL.md, "On Wayland").
+                listens: then wherever the window manager puts it. The
+                shell answers at once and moves the window there as soon
+                as the compositor lists it (PROTOCOL.md, "Placing").
 
 Shell -> app
     attached    {"type": "attached", "agent": {"name", "color"}}
@@ -39,12 +39,10 @@ Shell -> app
                 a moment (a second or two), so an app can wait longer than
                 usual before it shows its state itself.
     placed      {"type": "placed", "desktop": <index> | null, "why"?: str}
-                The answer to `place`: the window's `_NET_WM_DESKTOP` is
-                set (and read back, so the X server has it before the app
-                maps), or null with why not (no workspace to put it on,
-                the window already shown, no X display). On niri: the
-                workspace it will be moved to once it maps, its index
-                among the bar's workspaces.
+                The answer to `place`: the workspace the window will be
+                moved to once it maps (its index among the bar's
+                workspaces), or null with why not (no window manager to
+                place it with, no workspace to put it on).
 """
 
 import json
@@ -89,12 +87,6 @@ def decode(line: bytes | str) -> dict | None:
 
 def message(type_: str, **fields) -> dict:
     return {TYPE: type_, **fields}
-
-
-def valid_wid(wid) -> bool:
-    """Whether an announced window id can be an X window at all (X
-    resource ids are 29 bits)."""
-    return isinstance(wid, int) and not isinstance(wid, bool) and 0 < wid < 1 << 29
 
 
 def place(with_window=None) -> dict:

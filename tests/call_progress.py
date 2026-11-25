@@ -71,7 +71,7 @@ def job_rows(plate, loose: bool) -> list:
 
 
 async def main() -> int:
-    display = _live.connect()
+    canvas = _live.canvas()
     agent = _live.ScriptedAgent()
     # Jobs of its own, on a socket of the test's own (the hub reports
     # none, so a RemoteAgent has no bars of its own to draw).
@@ -88,8 +88,7 @@ async def main() -> int:
     bad = 0
     for label in ("first open", "opened again"):
         if win is None:
-            win = _live.open_window(display,
-                                    _live.offscreen(spec, content=host))
+            win = _live.open_window(canvas, spec, content=host)
         else:
             await _live.reopen(win)
         await asyncio.sleep(0.4)
@@ -144,8 +143,7 @@ async def main() -> int:
     # The status plate: a job in its second line, then gone.
     widget = CallStatus(agent)
     _live.count_frames(widget)
-    swin = _live.open_window(display,
-                             _live.offscreen(_live.status_spec(widget)))
+    swin = _live.open_window(canvas, _live.status_spec(widget))
     await asyncio.sleep(0.4)
     proc = await start(agent, f"python3 {REPORTER} status.iso 2.0")
     await asyncio.sleep(1.0)

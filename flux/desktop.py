@@ -1,7 +1,7 @@
 """Flux: the browser's entry in the launcher, and installing it.
 
-Pure Python (no Qt, no X), so `indigoshell browser --install` never
-loads either.
+Pure Python (no Qt), so `indigoshell browser --install` never loads
+it.
 
 `flux.desktop`, next to this file, is the entry as the repository keeps
 it: no path, no user, `Exec=<CLI> browser %U`, the browser's window

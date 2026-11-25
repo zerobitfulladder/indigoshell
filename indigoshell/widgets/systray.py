@@ -126,8 +126,6 @@ class Systray(Widget):
             size=_measure_size(content),
             margin=Insets(right=theme.BAR_MARGIN,
                           bottom=theme.BAR_HEIGHT + theme.POPUP_GAP),
-            override_redirect=True,
-            focusable=False,
             dismiss_on_outside_click=True,
             grab_keyboard=True,          # Escape closes
             background="#00000000",
@@ -228,10 +226,9 @@ class TrayPanel(Column):
         content = _menu_box(TrayMenu(row.item.bus_name, nodes))
         w, h = _measure_size(content)
         win = self.window
-        # X's primary monitor, or the Wayland canvas's output.
         mon = d.primary_monitor()
         # The menu's top-right corner sits MENU_GAP left of the row's
-        # top-left, in root coordinates (the canvas's, on Wayland); a tall
+        # top-left, in canvas coordinates; a tall
         # one moves up, but never over the top bar.
         x = int(win.x + row.rect.left()) - self.MENU_GAP - w
         y = int(win.y + row.rect.top())
@@ -243,8 +240,6 @@ class TrayPanel(Column):
             anchor=Anchor.TOP | Anchor.LEFT,
             size=(w, h),
             margin=Insets(left=x - mon.x, top=y - mon.y),
-            override_redirect=True,
-            focusable=False,
             dismiss_on_outside_click=True,
             grab_keyboard=True,
             background="#00000000",
@@ -426,19 +421,6 @@ class TrayMenu(Column):
         get_broker().menu_event(self.bus_name, node.id)
         _close_menu_window()
 
-    def detach(self) -> None:
-        super().detach()
-        # One client holds one pointer/keyboard grab, so ours replaced
-        # the panel's when we opened and released it outright when we
-        # closed. Give the grabs back or the panel stops dismissing on
-        # outside clicks and stops seeing Escape.
-        from ..core.daemon import get_daemon
-        panel = get_daemon().instances.get(PANEL_WINDOW)
-        if panel is not None and panel.mapped:
-            if panel.spec.dismiss_on_outside_click:
-                panel._grab_pointer()
-            if panel.spec.grab_keyboard:
-                panel._grab_keyboard()
 
 
 class _MenuItemRow(Widget):
