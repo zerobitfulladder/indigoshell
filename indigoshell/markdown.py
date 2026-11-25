@@ -16,6 +16,8 @@ reply that puts a command on its own line means it.
 import re
 from dataclasses import dataclass, field
 
+BULLET = "•"        # an unordered item's mark; the call paints it as a square light
+
 _FENCE = re.compile(r"^\s*(```+|~~~+)\s*([\w+#.-]*)\s*$")
 _HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 _ITEM = re.compile(r"^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$")
@@ -39,7 +41,7 @@ class Block:
     text: str = ""
     spans: list[Span] = field(default_factory=list)
     level: int = 0      # heading level, or list nesting depth
-    bullet: str = ""    # "•" or "3." for list items
+    bullet: str = ""    # BULLET or "3." for list items
     lang: str = ""      # a code block's info string
 
 
@@ -79,7 +81,7 @@ def parse(source: str) -> list[Block]:
         elif (m := _ITEM.match(line)) is not None:
             depth = len(m.group(1)) // 2
             mark = m.group(2)
-            bullet = "•" if mark in "-*+" else mark.rstrip(")").rstrip(".") + "."
+            bullet = BULLET if mark in "-*+" else mark.rstrip(")").rstrip(".") + "."
             text, spans = inline(m.group(3))
             blocks.append(Block("li", text, spans, level=depth, bullet=bullet))
         elif (m := _QUOTE.match(line)) is not None:

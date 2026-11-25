@@ -454,7 +454,7 @@ class _MenuItemRow(Widget):
         if n.toggle_type == "checkmark":
             prefix = {1: "✓ ", -1: "− "}.get(n.toggle_state, "  ")
         elif n.toggle_type == "radio":
-            prefix = "● " if n.toggle_state == 1 else "○ "
+            prefix = "  "           # its cell holds a light (paint)
         return prefix + _strip_mnemonic(n.label)
 
     def measure(self, avail: Size) -> Size:
@@ -479,9 +479,13 @@ class _MenuItemRow(Widget):
         else:
             color = theme.CYAN_MID
         baseline = text.baseline_in(r, _MENU_FONT_SIZE)
-        text.draw(canvas, self._label(),
-                  r.left() + _MENU_ITEM_PAD_X + self.depth * _MENU_INDENT,
-                  baseline, _MENU_FONT_SIZE, theme.color(color))
+        x = r.left() + _MENU_ITEM_PAD_X + self.depth * _MENU_INDENT
+        if n.toggle_type == "radio":
+            # A square light, never a ● (the user's rule): lit when picked.
+            shapes.text_light(canvas, x, baseline, _MENU_FONT_SIZE,
+                              theme.color(color), on=n.toggle_state == 1)
+        text.draw(canvas, self._label(), x, baseline, _MENU_FONT_SIZE,
+                  theme.color(color))
         if n.has_submenu:
             arrow = "▾" if n.id in self.menu._expanded else "▸"
             arrow_w = text.measure(arrow, _MENU_FONT_SIZE)

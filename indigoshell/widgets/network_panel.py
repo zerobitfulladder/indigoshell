@@ -31,7 +31,7 @@ from .. import text, theme
 from ..services import proc
 from .base import Insets, Size, Widget
 from .hud import HudCard, key_label, meta_label, section_header
-from .label import Label
+from .label import Label, Light
 from .layout import Align, Box, Column, Row, Spacer
 from .meters import BarMeter
 from .tabs import TabBar
@@ -218,8 +218,8 @@ class NetworkPanel(Widget):
         self._firewall_acc = 0.0
 
         # ── network page ────────────────────────────────────────────────
-        self._dot = Label("●", size=BODY, bold=True,
-                          color=lambda: self._firewall_color())
+        self._dot = Light(size=BODY, color=lambda: self._firewall_color(),
+                          on=lambda: self._firewall[0] == "active")
         self._state = Label("unknown", size=BODY, bold=True, tracking=1.0,
                             color=lambda: self._firewall_color())
         self._service = meta_label()

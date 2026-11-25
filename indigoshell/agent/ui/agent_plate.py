@@ -775,9 +775,9 @@ class AgentPlate(Widget):
         when = ago(info.last_modified / 1000.0)
         tw = text.measure(when, ACT_SIZE)
         base = text.baseline_in(box, BODY_SIZE)
-        mark = "●" if current else " "
-        text.draw(canvas, mark, box.left(), base, BODY_SIZE,
-                  theme.color(accent), bold=True)
+        if current:                 # the line you are on: a lit square
+            shapes.text_light(canvas, box.left(), base, BODY_SIZE,
+                              theme.color(accent))
         x = box.left() + text.advance(BODY_SIZE) * 2
         title = " ".join((info.summary or info.first_prompt or "untitled").split())
         text.draw(canvas, text.ellipsize(title, BODY_SIZE,
@@ -794,7 +794,7 @@ class AgentPlate(Widget):
         return devices[index] if 0 <= index < len(devices) else None
 
     def _paint_device(self, canvas, box, index: int, accent) -> None:
-        """● laptop  this one                                  online"""
+        """■ laptop  this one                                  online"""
         d = self._device(index)
         if d is None:
             return
@@ -806,9 +806,9 @@ class AgentPlate(Widget):
             when, when_color = f"seen {ago(d['last_seen'])}", theme.BASE_MUTED
         else:
             when, when_color = "never seen", theme.BASE_MUTED
-        text.draw(canvas, "●" if online else "○", box.left(), base, BODY_SIZE,
-                  theme.color(theme.LIME_BRIGHT if online
-                              else theme.BASE_MUTED), bold=True)
+        shapes.text_light(canvas, box.left(), base, BODY_SIZE,
+                          theme.color(theme.LIME_BRIGHT if online
+                                      else theme.BASE_MUTED), on=online)
         x = box.left() + text.advance(BODY_SIZE) * 2
         name = d["name"]
         text.draw(canvas, name, x, base, BODY_SIZE,

@@ -4,7 +4,7 @@ from typing import Callable
 
 import skia
 
-from .. import text, theme
+from .. import shapes, text, theme
 from .base import Size, Widget
 
 
@@ -60,3 +60,31 @@ class Label(Widget):
         text.draw(canvas, value, x,
                   text.baseline_in(self.rect, self.size, self.bold),
                   self.size, theme.color(color), self.bold, self.tracking)
+
+
+class Light(Widget):
+    """The shell's square light in a line of text, where a ● glyph would
+    go: one text cell of `size` with the light centred in it
+    (`shapes.text_light`), filled while `on`, hollow when not. Lines up
+    with Labels of the same size on their baseline."""
+
+    def __init__(self, *, size: float = theme.FONT_SIZE,
+                 color: str | Callable[[], str] = theme.FG,
+                 on: bool | Callable[[], bool] = True, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.size = size
+        self.color = color
+        self.on = on
+
+    def measure(self, avail: Size) -> Size:
+        return Size(text.advance(self.size), text.line_height(self.size))
+
+    def baseline(self, size: Size) -> float:
+        return -text.font(self.size).getMetrics().fAscent
+
+    def paint(self, canvas: skia.Canvas) -> None:
+        color = self.color() if callable(self.color) else self.color
+        on = self.on() if callable(self.on) else self.on
+        shapes.text_light(canvas, self.rect.left(),
+                          text.baseline_in(self.rect, self.size), self.size,
+                          theme.color(color), on=on)

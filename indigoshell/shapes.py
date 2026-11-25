@@ -4,9 +4,16 @@ The beveled rectangle is the shell's signature outline — corners sliced
 at 45° rather than rounded. Returned as a `skia.Path` rather than
 stroked in place, so one path can stroke the border, clip the backdrop
 and hit-test the widget.
+
+The square light is the shell's only dot: never a circle (the user's
+rule). Wherever a dot says something — a state, a radio item, the
+newest sample, a list bullet — it is the network's light: a 5 px square,
+filled when on, its 1 px outline when off.
 """
 
 import skia
+
+from . import text
 
 Corners = tuple[str, ...]
 ALL_CORNERS: Corners = ("top-left", "top-right", "bottom-left", "bottom-right")
@@ -52,3 +59,34 @@ def beveled(x: float, y: float, w: float, h: float, *,
         path.lineTo(x0, y1)
     path.close()
     return path
+
+
+LIGHT = 5           # a light's side, px: the network's two lights
+
+
+def light(x: float, cy: float, side: int = LIGHT) -> skia.Rect:
+    """A light's square: `side` px, its left edge at `x`, centred on
+    `cy`, on whole pixels so its edges stay crisp."""
+    return skia.Rect.MakeXYWH(round(x), round(cy - side / 2), side, side)
+
+
+def paint_light(canvas: skia.Canvas, rect: skia.Rect, color: int, *,
+                on: bool = True) -> None:
+    """Fill a light's square when it is on; when off, its 1 px outline."""
+    paint = skia.Paint(AntiAlias=True, Color=color)
+    if on:
+        canvas.drawRect(rect, paint)
+        return
+    paint.setStyle(skia.Paint.kStroke_Style)
+    paint.setStrokeWidth(1.0)
+    canvas.drawRect(rect.makeInset(0.5, 0.5), paint)
+
+
+def text_light(canvas: skia.Canvas, x: float, baseline: float, size: float,
+               color: int, *, on: bool = True) -> None:
+    """A light where text would put a dot glyph (● ○ •): centred in the
+    text cell at `x`, half the cap height above `baseline` — where the
+    network's lights sit by their name."""
+    cell = text.advance(size)
+    paint_light(canvas, light(x + (cell - LIGHT) / 2, baseline - 0.35 * size),
+                color, on=on)
