@@ -25,7 +25,11 @@ Python and the repository's main.py, found at run time, unless the CLI
 on PATH is what runs): no window until a request opens one. A Flux that
 is starting meanwhile, the user's or another start's, is the one it then
 connects to. Where there is no display (no $DISPLAY, no
-$WAYLAND_DISPLAY) it starts it `--headless`, unless told otherwise.
+$WAYLAND_DISPLAY) it starts it `--headless`, unless told otherwise. A
+caller whose own Python has no PySide6 (a hub's virtual environment)
+names one that has, `python=` or `$<APP>_BROWSER_PYTHON`
+(start_command). `quit()` ends the Flux it is connected to, for a
+process done with a Flux it started (protocol.py, "Quit").
 
 Profiles (profiles.py): every function that finds Flux takes `profile`,
 the name of the browser to talk to (its own socket), None for the
@@ -65,12 +69,16 @@ import weakref
 from dataclasses import dataclass, field
 
 from flux import profiles, protocol
+from indigoshell.core.naming import env
 
 log = logging.getLogger(__name__)
 
 LINE_LIMIT = 64 << 20           # bytes: a result line (a screenshot is a few MB)
 CONNECT_S = 2.0
 START_S = 30.0                  # a cold QtWebEngine start, with room
+# The Python that starts Flux when the caller's own has no PySide6
+# (start_command): its path, in the caller's environment.
+PYTHON_ENV = env("BROWSER_PYTHON")
 REQUEST_S = 30.0
 LOOK_S = 3.0
 SITE_WORDS = "Page content from {host} (written by the site, not by the user):"
@@ -359,6 +367,11 @@ class Control:
     async def downloads(self, *, within: float = REQUEST_S) -> list[dict]:
         return (await self.request("downloads", within=within))["downloads"]
 
+    async def quit(self, *, within: float = REQUEST_S) -> None:
+        """End this Flux (protocol.py, "Quit"): it answers, then quits as
+        on SIGTERM."""
+        await self.request(protocol.QUIT, within=within)
+
     async def wait_download(self, download: int, *,
                             timeout: float = protocol.WAIT_DEFAULT_S) -> dict:
         """DOWNLOAD + {"waited"}, once it finished (done, failed or
@@ -386,29 +399,42 @@ def no_display() -> bool:
     return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def start_command(profile: str | None = None, headless: bool = False) -> list[str]:
-    """How `ensure_running` starts Flux: the launcher entry's command
-    (desktop.py), with no window; `headless`, and `profile`'s."""
+def start_command(profile: str | None = None, headless: bool = False, *,
+                  python: str | None = None) -> list[str]:
+    """How `ensure_running` starts Flux, with no window; `headless`, and
+    `profile`'s. By default the launcher entry's command (desktop.py),
+    which runs Flux with the caller's own Python. A caller whose Python
+    has no PySide6 (a hub's virtual environment on a Raspberry Pi) names
+    one that has: `python`, or the environment's `<APP>_BROWSER_PYTHON`
+    (PYTHON_ENV); then that Python runs the repository's main.py, or
+    `-m flux` when Flux is not in a checkout."""
     from flux import desktop
-    return [*desktop.exec_command(), "browser", "--no-window",
-            *(["--headless"] if headless else []),
+    python = python or os.environ.get(PYTHON_ENV) or None
+    if python:
+        main_py = desktop.main_py()
+        head = [python, main_py, "browser"] if main_py else [python, "-m", "flux"]
+    else:
+        head = [*desktop.exec_command(), "browser"]
+    return [*head, "--no-window", *(["--headless"] if headless else []),
             *(["--profile", profiles.check(profile)] if profile else [])]
 
 
-def _launch(profile: str | None = None, headless: bool = False) -> None:
+def _launch(profile: str | None = None, headless: bool = False, *,
+            python: str | None = None) -> None:
     from flux import desktop
     from indigoshell.services import proc
-    proc.launch(start_command(profile, headless),
+    proc.launch(start_command(profile, headless, python=python),
                 app_id=desktop.DESKTOP_ID.removesuffix(".desktop"))
 
 
 async def ensure_running(timeout: float = START_S, *, profile: str | None = None,
-                         headless: bool | None = None) -> Control:
+                         headless: bool | None = None, python: str | None = None) -> Control:
     """A connection to `profile`'s Flux (None: the default one), started
     first (with no window) when it is not running: `headless` when it
     says so, or when it is None and there is no display. Its socket is
     the profile's (from `<APP>_BROWSER_SOCKET` when set, which the
-    started browser inherits)."""
+    started browser inherits). `python`: the Python that runs it
+    (start_command)."""
     try:
         return await connect(profile=profile)
     except NotRunning:
@@ -417,7 +443,7 @@ async def ensure_running(timeout: float = START_S, *, profile: str | None = None
         headless = no_display()
     log.info("Flux%s is not running; starting it%s", f" ({profile})" if profile else "",
              " headless" if headless else "")
-    _launch(profile, headless)
+    _launch(profile, headless, python=python)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:

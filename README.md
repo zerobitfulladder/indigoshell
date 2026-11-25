@@ -642,6 +642,7 @@ uses both to restore the output you chose last.
 | `INDIGOSHELL_APPS_SOCKET` | where the shell listens for its apps (Flux) |
 | `INDIGOSHELL_BROWSER_SOCKET` | Flux's single-instance and control socket |
 | `INDIGOSHELL_BROWSER_WIDEVINE` | Flux: a `libwidevinecdm.so` to use, or `off` |
+| `INDIGOSHELL_BROWSER_PYTHON` | the Python that starts Flux for a caller whose own has no PySide6 (`flux.control.ensure_running`) |
 
 Runtime files: `$XDG_RUNTIME_DIR/indigoshell-$UID.{sock,lock}`, and
 beside them the apps' line (`indigoshell-apps-$UID.sock`) and Flux's

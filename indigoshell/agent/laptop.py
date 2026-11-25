@@ -142,7 +142,7 @@ SCREENSHOT = Hand(
     "screenshot",
     "Look at the screen. target: 'screen' (default: every monitor), "
     "'monitor' (one monitor: `monitor`, its number, or the one in use) or "
-    "'window' (`window_id` from laptop_windows, or the focused window). "
+    "'window' (`window_id` from the windows hand, or the focused window). "
     "Comes back as a PNG, scaled down to at most "
     f"{SHOT_MAX_SIDE} px on its long side; the reply says by how much.",
     _screenshot,
@@ -198,8 +198,8 @@ async def _windows(_call: Call) -> list[dict]:
 WINDOWS = Hand(
     "windows",
     "The workspaces, which one is shown, and the windows on each: "
-    "[window id] app: title. The ids are what laptop_focus and "
-    "laptop_screenshot take.",
+    "[window id] app: title. The ids are what the focus and screenshot "
+    "hands take.",
     _windows)
 
 
@@ -222,7 +222,7 @@ async def _focus(call: Call) -> list[dict]:
 
 FOCUS = Hand(
     "focus",
-    "Bring a window forward (window_id, from laptop_windows), switching to "
+    "Bring a window forward (window_id, from the windows hand), switching to "
     "its workspace; or show a workspace by name (workspace).",
     _focus,
     _schema({"window_id": {"type": "integer"},
@@ -307,7 +307,7 @@ def _shims() -> str:
     for name in ROOT:
         path = os.path.join(folder, name)
         script = (f'#!/bin/sh\necho "{name}: refused: root needs the '
-                  "user's OK; put it in the command given to laptop_run, so "
+                  "user's OK; put it in the command given to the run hand, so "
                   'the laptop asks them" >&2\nexit 126\n')
         try:
             with open(path) as f:
@@ -495,7 +495,7 @@ class Jobs:
         job = str(job or "").strip()
         if not re.fullmatch(r"[0-9a-f]{8}", job):
             raise HandError(f"no job {job!r}: a job is the 8-character id "
-                            "laptop_job_start answered")
+                            "job_start answered")
         path = os.path.join(self.folder, job)
         if not os.path.isdir(path):
             raise HandError(f"no job {job} on the laptop")
@@ -766,11 +766,11 @@ class Jobs:
             return _texts(self._describe(await self.cancel(info["job"])))
 
         job = {"job": {"type": "string",
-                       "description": "the id laptop_job_start answered"}}
+                       "description": "the id job_start answered"}}
         return [
             Hand("job_start",
                  "Start a long command on the laptop in the background, as "
-                 "the user (bash -lc, the same environment as laptop_run: "
+                 "the user (bash -lc, the same environment as the run hand: "
                  "its GPU, its files), in cwd (default: the home folder). "
                  "Answers at once, 'job <id> started'; the job keeps running "
                  "whatever happens to this conversation or the laptop's link "

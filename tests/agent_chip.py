@@ -351,6 +351,12 @@ def test_words() -> None:
     a.busy, a.phase = True, "thinking"
     check("thinking, no step yet: the word alone, not the thought",
           _doing(a, False) == ("thinking", ""), f"{_doing(a, False)}")
+    from indigoshell.agent.ui.agent_plate import think_line
+    a.turn_started = 0.0
+    lines = {think_line(a, 0.25 * k) for k in range(8)}
+    check("the call's thinking row: that it thinks, never the thought",
+          lines == {"thinking", "thinking.", "thinking..", "thinking..."}
+          and not any(SECRET in line for line in lines), f"{sorted(lines)}")
     a.phase = "speaking"
     check("speaking: the word alone, not the reply", _doing(a, False) == ("speaking", ""))
     a.activity.append(step("read ~/notes/plan.md"))

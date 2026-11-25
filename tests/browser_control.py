@@ -1062,8 +1062,9 @@ def test_in_process(on_screen: bool = False) -> None:
     lines = [r.getMessage() for r in logs.records if r.name.endswith("qt.control")]
     # Acting: browser_act.py; alone, show, downloads, upload: browser_alone.py;
     # the agent's scripts: browser_read.py.
+    # quit would end this Flux: tests/browser_headless.py covers it.
     looking = (set(protocol.REQUESTS) - set(protocol.ACTS)
-               - {"release", protocol.UPLOAD, protocol.JS} - set(protocol.ALONE))
+               - {"release", protocol.UPLOAD, protocol.JS, protocol.QUIT} - set(protocol.ALONE))
     kinds = {k for k in looking if any(m.startswith(f"agent: {k}") for m in lines)}
     leaks = [m for m in lines if any(s in m for s in (SECRET, "SELECTED-WORDS", "FRAME-WORDS",
                                                       "Your account", "MARKER", "#never"))]

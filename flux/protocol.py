@@ -430,6 +430,15 @@ folder, no question asked.
 An acting request's answer lists the downloads it started, when it did
 (`downloads`: [DOWNLOAD, ...]).
 
+**Quit.**
+    quit       {} -> {"quitting": true}
+               Flux ends right after this answer, as on SIGTERM: its
+               windows closed, the profile released, the socket gone; its
+               log says "ending: a quit request". For a process that
+               started a Flux of its own (a hub's headless one) and is done
+               with it. Not one of the agent's hands: the agent never
+               closes the user's browser.
+
 **Uploads.**
     upload     {"tab", "ref", "paths": [str, ...], "voice"?: str}
                An acting request: the files reach the page as from its
@@ -565,8 +574,9 @@ ACTS = ("click", "type", "key", "select", "scroll", "fill", "hover", "dialog")
 UPLOAD = "upload"               # acting too, with files
 ALONE = ("borrow", "return", "show", "downloads")
 JS = "js"                       # acting too: the agent's own script
+QUIT = "quit"
 REQUESTS = ("tabs", "open", "switch", "close", "go", "wait", "read", "screenshot", "look",
-            *ACTS, "release", UPLOAD, *ALONE, JS)
+            *ACTS, "release", UPLOAD, *ALONE, JS, QUIT)
 GO_ACTIONS = ("back", "forward", "reload")
 READS = ("text", "links", "forms", "outline", "article")
 
