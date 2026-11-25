@@ -19,7 +19,6 @@ from .applink.service import AppService
 from .widgets.clock import Clock
 from .widgets.fastfetch import Fastfetch
 from .widgets.hardware_panel import HardwarePanel
-from .widgets.launcher import LAUNCHER_WINDOW, Launcher
 from .widgets.layout import Align, Box, Brackets, Row, Spacer
 from .widgets.media import Media
 from .widgets.menu import MENU_WINDOW, MenuHost
@@ -37,7 +36,7 @@ from .window import Anchor, Layer, WindowSpec
 SYSTEM_PANEL = "system"
 HARDWARE_PANEL = "hardware"
 NETWORK_PANEL = "network"
-LAUNCHER = LAUNCHER_WINDOW       # also where Flux's Ctrl+L/T/M open it
+LAUNCHER = DROP_WINDOW           # MOD+D's `toggle launcher`: the top bar's drop-down
 TOP_BAR = "topbar"
 
 # Which MPRIS source the now-playing widgets follow. None watches every
@@ -402,40 +401,23 @@ WINDOWS = [
         content=MenuHost(),
     ),
 
-    # The app launcher — `indigoshell toggle launcher` from a keybinding.
-    # No anchor, so it opens centred, where rofi did. Content-sized on
-    # attach like the menu, but its size never changes after: the list
-    # has a fixed number of rows, so typing repaints and never resizes.
-    # `terminal` wraps the apps whose desktop entry says Terminal=true.
-    WindowSpec(
-        name=LAUNCHER,
-        layer=Layer.OVERLAY,
-        size=(1, 1),                 # placeholder; content-sized on attach
-        override_redirect=True,
-        focusable=False,
-        dismiss_on_outside_click=True,
-        grab_keyboard=True,
-        keep_alive=True,
-        background="#00000000",
-        effects=(PANEL_SPAWN,),
-        holo=True,                  # the call's hologram look
-        effect_scale=0.35,           # raster fallback only
-        content=Launcher(rows=12, width=760, terminal=("kitty",)),
-    ),
-
     # The top bar's drop-down: an open input's or menu's list, flush under
     # the bar on its background, as if the bar grew down (applink/drop.py).
     # Placed and sized by whoever opens it; no keyboard or pointer of its
-    # own (the open prompt holds them), no effect: it unrolls by itself.
+    # own (the open input holds them), no effect: it unrolls by itself.
+    # Opened by name (`indigoshell toggle launcher`, MOD+D) it is the app
+    # search: the top bar's app section its box, the installed apps its
+    # rows. `terminal` wraps the apps whose desktop entry says
+    # Terminal=true.
     WindowSpec(
-        name=DROP_WINDOW,
+        name=LAUNCHER,
         layer=Layer.OVERLAY,
         size=(1, 1),                 # placeholder; content-sized
         override_redirect=True,
         focusable=False,
         keep_alive=True,
         background=theme.BAR_BG,
-        content=DropList(),
+        content=DropList(terminal=("kitty",)),
     ),
 ]
 

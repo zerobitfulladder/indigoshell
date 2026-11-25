@@ -1044,7 +1044,8 @@ def test_mouse(scratch: Path) -> None:
     import types
     sent: list = []
     service = types.SimpleNamespace(focused=None, context=None, follow=lambda cb: None,
-                                    unfollow=lambda cb: None)
+                                    unfollow=lambda cb: None,
+                                    shown=lambda app: getattr(app, "content", None))
     j = types.SimpleNamespace(view=BarView(emit=sent.append))
     j.content = j.view
     service.focused = j
@@ -1709,7 +1710,9 @@ async def test_service(scratch: Path) -> None:
               and all(x_ == {"eof": True} for x_ in eofs)
               and not os.path.exists(sock) and not service.windows and ctx.shown is None
               and not service.grabs and not held_by_another(xw.conn, A, L, CTRL)
-              and not held_by_another(xw.conn, B, L, CTRL), f"{notes} {eofs}")
+              and not held_by_another(xw.conn, B, L, CTRL),
+              f"{notes} {eofs} sock {os.path.exists(sock)} windows {len(service.windows)} "
+              f"shown {ctx.shown} grabs {list(service.grabs)}")
         service.start()
         await until(lambda: service.listening, 2)
         b2 = await app(announce(B), flux_bar(["Gamma back"]))
@@ -1999,6 +2002,7 @@ def test_placement() -> None:
     jw = AppWindow(Line(service), P, announce(P))
     alone = service._cannot_show(jw)
     service.context = stand_in_bar(width=1800, left=12)
+    service.context.window.content_root = (0, 0, 2000, 42)    # less than the whole screen
     under = service._cannot_show(jw)
     menu = types.SimpleNamespace(anchor=None)
     item = types.SimpleNamespace(anchor=types.SimpleNamespace(
@@ -2007,8 +2011,14 @@ def test_placement() -> None:
     service.context.window.content_root = (2560, 0, 1920, 34)
     elsewhere = service._cannot_show(jw)
     service.context = stand_in_bar()
+    sw = display.geometry()[0]
+    service.context.window.content_root = (0, 0, sw, 42)
+    spans = service._cannot_show(jw)
+    service.context.window.content_root = (0, 0, 2000, 42)
     xw.destroy(P)
     gone = service._cannot_show(jw)
+    service.context.window.content_root = (0, 0, sw, 42)
+    gone_spanned = service._cannot_show(jw)
     check("no top bar: it cannot show (the app does without)", alone == "no top bar", f"{alone}")
     check("a top bar over the window: it can; the list drops at the section's left, under the "
           "bar's bottom edge, the section's width; a menu opened from an item, under the item",
@@ -2017,6 +2027,8 @@ def test_placement() -> None:
     check("the bar on another monitor, or the window gone: it cannot",
           elsewhere == "the top bar is on another monitor" and gone == "the window is gone",
           f"{elsewhere} {gone}")
+    check("a bar spanning the whole screen is over every window: no round trip asked (the "
+          "window, even gone, is not looked at)", spans is None and gone_spanned is None)
     xw.close()
     display.close()
 

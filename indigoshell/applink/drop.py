@@ -2,7 +2,8 @@
 as if the bar grew down (PROTOCOL.md, section 4).
 
 The bar is a dock of fixed height, so the list is a window of its own
-(DROP_WINDOW, config_default's WINDOWS), its top against the bar's
+(DROP_WINDOW, config_default's WINDOWS: "launcher", so that MOD+D's
+`indigoshell toggle launcher` opens it), its top against the bar's
 bottom edge and on the bar's background, with no edge between: the app
 section's width for an input (the box above it its header), its own for
 a menu, dropped under the item that opened it or at the section's left
@@ -22,6 +23,11 @@ typed into shows what is typed on a line at its top.
 
 Its spawn is the list unrolling from the bar, top down (UNROLL_S), the
 window's own motion: no effect pass, so no bleed around it either.
+
+Opened by name with nothing open (`indigoshell toggle launcher`, MOD+D)
+it asks the app service for the app search (catalog.py): the top bar's
+app section becomes its box, the installed apps its rows. Closed by name
+(the same toggle) it closes whatever it shows.
 """
 
 import logging
@@ -36,7 +42,7 @@ from .kinds.look import CHECK, SUBMENU, glyph
 
 log = logging.getLogger(__name__)
 
-DROP_WINDOW = "dropdown"
+DROP_WINDOW = "launcher"
 PAGE = 12                       # slots shown at once
 QUERY_SIZE = theme.FONT_SIZE
 NAME_SIZE = theme.FONT_SIZE - 2
@@ -106,16 +112,38 @@ class Column:
 
 
 class DropList(Widget):
-    """The drop-down window's content: the open prompt's list."""
+    """The drop-down window's content: the open prompt's list. `terminal`
+    wraps the apps whose desktop entry says Terminal=true (MOD+D's app
+    search); `icon_theme` names the theme their icons come from."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, terminal: tuple[str, ...] = ("kitty",),
+                 icon_theme: str | None = None) -> None:
         super().__init__()
         self.prompt = None
+        self.service = None             # the app service (it sets this when it starts)
         self.width = 400                # an input's: the section's
         self.columns: list[Column] = []
-        self.icons = None               # services.icons.Icons, for the app catalog's rows
+        self.terminal = terminal
+        self.icon_theme = icon_theme
+        self._catalog = None
+        self._icons = None
         self._opened_at = 0.0
         self._hover: tuple[int, int] | None = None
+
+    # ── the app search's catalog and icons, made on first use ───────────
+    @property
+    def catalog(self):
+        if self._catalog is None:
+            from ..services.apps import Catalog
+            self._catalog = Catalog(terminal=self.terminal)
+        return self._catalog
+
+    @property
+    def icons(self):
+        if self._icons is None:
+            from ..services.icons import Icons
+            self._icons = Icons(self.icon_theme)
+        return self._icons
 
     # ── what it shows ───────────────────────────────────────────────────
     def show(self, prompt, width: int | None = None) -> None:
@@ -161,8 +189,18 @@ class DropList(Widget):
     def attach(self, window) -> None:
         super().attach(window)
         self.begin()
+        if (self.prompt is None or not self.prompt.open) and self.service is not None:
+            # Opened by name with nothing to show (MOD+D): the app search.
+            self.service.open_apps(self, window)
         w, h = self.relayout()
         window.resize_content(w, h)
+
+    def on_dismiss(self) -> None:
+        """Closed by name (the toggle) while it shows something: that
+        closes too."""
+        p = self.prompt
+        if p is not None and p.open:
+            p.close("shell")
 
     # ── layout / paint ──────────────────────────────────────────────────
     def measure(self, avail: Size) -> Size:
@@ -272,7 +310,7 @@ class DropList(Widget):
             x += text.measure(tag, META_SIZE, bold=True, tracking=1.0) + GAP
         else:
             icon_rect = skia.Rect.MakeXYWH(x, r.centerY() - ICON / 2, ICON, ICON)
-            image = row.get("_image")
+            image = self.icons.get(row["_icon"], ICON) if row.get("_icon") else None
             if image is not None:
                 image.draw(canvas, icon_rect, tint=theme.color(theme.HUD_FG))
             elif row.get("_initial"):

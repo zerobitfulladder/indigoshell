@@ -65,7 +65,7 @@ class AppContext(Widget):
             self.shown = None
 
     def _on_focus(self, app) -> None:
-        content = getattr(app, "content", None)
+        content = self.service.shown(app)
         if content is self.shown:
             return
         if self.shown is not None:
