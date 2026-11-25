@@ -55,16 +55,22 @@ def applications_dir(data_home: str | None = None) -> str:
     return os.path.join(base, "applications")
 
 
+def main_py() -> str | None:
+    """The repository's main.py, when Flux runs from a checkout."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # flux/ sits at its root
+    path = os.path.join(repo, "main.py")
+    return path if os.path.isfile(path) else None
+
+
 def exec_command() -> list[str]:
     """What Flux runs, before ` browser %U` (see the module docstring)."""
     script = os.path.realpath(sys.argv[0]) if sys.argv and sys.argv[0] else ""
     on_path = shutil.which(CLI)
     if on_path and script and os.path.realpath(on_path) == script:
         return [CLI]
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # flux/ sits at its root
-    main_py = os.path.join(repo, "main.py")
-    if os.path.isfile(main_py):
-        return [sys.executable, main_py]
+    script = main_py()
+    if script is not None:
+        return [sys.executable, script]
     return [CLI]
 
 

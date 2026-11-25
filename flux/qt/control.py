@@ -627,6 +627,11 @@ class Requests:
         window manager's)."""
         return None if self.browser.headless else int(window.internalWinId()) or None
 
+    async def quit(self, job: Job, msg: dict) -> dict:
+        """Flux ends right after this answer (protocol.py, "Quit")."""
+        self.browser.quit("a quit request")
+        return {"quitting": True}
+
     async def tabs(self, job: Job, msg: dict) -> dict:
         focused = self.focused()
         out = []

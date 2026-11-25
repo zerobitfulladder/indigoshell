@@ -34,7 +34,8 @@ listens where the shell's apps connect, and counts them.
      borrow and return (the agent's window shown at once, no placing, no
      workspace words); downloads (into the scratch Downloads, waited
      for); the stand-in shell never connected to; its last tab closed and
-     Flux still there; its log in browser-pi.log; SIGTERM ends it cleanly.
+     Flux still there; its log in browser-pi.log; a quit request ends it
+     cleanly (answered first, then the process gone, its socket too).
   3. two profiles side by side: the default profile's headless Flux and
      pi's, each on its own socket, its own tabs, storage, cache, history
      and log; `main.py browser --profile pi URL` handed to pi's, not the
@@ -360,6 +361,18 @@ def test_pure() -> None:
                   "--profile", "pi"], f"{cmd}")
     check("... and the default one as it was",
           control.start_command() == [PY, str(REPO / "main.py"), "browser", "--no-window"])
+    other = "/usr/bin/python3"
+    pinned = control.start_command("pi", headless=True, python=other)
+    check("start command with python=: that Python runs the repository's main.py",
+          pinned == [other, str(REPO / "main.py"), "browser", "--no-window", "--headless",
+                     "--profile", "pi"], f"{pinned}")
+    os.environ[control.PYTHON_ENV] = other
+    try:
+        from_env = control.start_command("pi", headless=True)
+    finally:
+        del os.environ[control.PYTHON_ENV]
+    check(f"... and from ${control.PYTHON_ENV}", from_env == pinned, f"{from_env}")
+    check("... unset again: this Python", control.start_command("pi", headless=True) == cmd)
     check("no $DISPLAY nor $WAYLAND_DISPLAY: no display (headless)", control.no_display())
 
     cache = Path(profiles.cache_path("pi"))
@@ -423,6 +436,7 @@ def test_pure() -> None:
 # ── 2. a headless Flux through the hands ────────────────────────────────
 def test_headless() -> None:
     section("2. a headless Flux (--headless --no-window --profile pi) through the hands")
+    from flux import control, protocol
     from flux import hands as bh
     # link.py's, read from its source: importing it would load PySide6 here.
     FALLBACK_MS = int(re.search(r"^FALLBACK_MS = (\d+)", (REPO / "flux/qt/link.py")
@@ -571,10 +585,26 @@ def test_headless() -> None:
           out.get("tabs_end", ("", [], ""))[0][:120])
     check("the shell's app socket never connected to", len(SHELL_SEEN) == seen_before,
           f"{SHELL_SEEN[seen_before:][:2]}")
-    code = stop(proc)
+    async def quit_it() -> str:
+        c = await control.connect(profile="pi")
+        try:
+            await c.quit()
+            return "answered"
+        except Exception as e:          # noqa: BLE001
+            return f"{type(e).__name__}: {e}"
+        finally:
+            await c.close()
+    said = asyncio.run(quit_it())
+    try:
+        code = proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        code = stop(proc)
     log = log_of("pi")
-    check("SIGTERM: ended cleanly", code == 0 and "ending: SIGTERM received" in log
-          and "ended cleanly" in log, f"exit {code}")
+    check("quit: answered, then ended cleanly, its socket gone",
+          said == "answered" and code == 0 and "ending: a quit request" in log
+          and "ended cleanly" in log
+          and not os.path.exists(protocol.control_socket_path("pi")),
+          f"{said}; exit {code}")
     check("its log is browser-pi.log: started headless, with profile pi",
           "profile pi, headless, no window" in log and "permission denied (headless" in log
           and "answered at once (headless" in log, log[:200])

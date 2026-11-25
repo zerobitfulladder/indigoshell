@@ -63,7 +63,7 @@ import time
 from pathlib import Path
 
 import shiboken6
-from PySide6.QtCore import (QCoreApplication, QEvent, QObject, QSocketNotifier, Qt,
+from PySide6.QtCore import (QCoreApplication, QEvent, QObject, QSocketNotifier, Qt, QTimer,
                             QtMsgType, QUrl, qInstallMessageHandler, qVersion)
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWebEngineCore import QWebEngineDownloadRequest
@@ -149,6 +149,7 @@ class Browser(QObject):
         self.profile_name = name                # flux/profiles.py; None: the default one
         self.unattended = unattended
         self.headless = headless                # no screen (protocol.py, "Headless")
+        self.ended_by: str | None = None        # why it ends, when asked to (quit)
         self.identity = Identity(profile, sites)
         self.history = places.History(places.history_path(name))
         self.bookmarks = Bookmarks(self, places.bookmarks_path(name))
@@ -468,6 +469,13 @@ class Browser(QObject):
         window.refresh()
 
     # ── the end ─────────────────────────────────────────────────────────
+    def quit(self, reason: str) -> None:
+        """End at the event loop's next turn (protocol.py, "Quit"): what
+        was answered in this one is written by then."""
+        self.ended_by = reason
+        log.info("%s: quitting", reason)
+        QTimer.singleShot(0, QApplication.instance().quit)
+
     def shutdown(self) -> None:
         """Every page gone, before the profile goes."""
         if self.server is not None:
@@ -514,6 +522,7 @@ def main(urls: list[str], *, unattended: bool = False, lock: int | None = None,
     # Why, said before anything else can go wrong: a log that ends
     # without this line is a browser that did not end cleanly.
     why = (f"{wake.received} received" if wake.received
+           else browser.ended_by if browser.ended_by
            else "its last window closed" if closed else "the event loop was left")
     log.info("ending: %s", why)
     browser.shutdown()
