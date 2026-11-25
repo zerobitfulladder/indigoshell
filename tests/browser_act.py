@@ -655,7 +655,7 @@ def test_in_process() -> None:
           and (done["x"], done["y"]) == (80, 40) and done["what"] == f'[{press}] button "Press"',
           f"{err} {done and {k: done[k] for k in ('x', 'y', 'what')}}")
     check("the answer: TAB, the agent driving, nothing navigated or opened, no dialog",
-          done is not None and done["agent"] == "driving" and "voice" not in done
+          done is not None and done["agent"] == "driving"
           and done["navigated"] is False and done["opened"] == [] and done["dialog"] is None
           and done["tab"] == T and done["current"])
     clear_log()
@@ -1037,9 +1037,6 @@ def test_in_process() -> None:
     check("... and in no screenshot (the page's own white at those edges and that corner)",
           shot_px and all(near(p, (255, 255, 255), 3) for p in shot_px)
           and shot["viewport_width"] == shot["width"], f"{shot_px} {err}")
-    # A request that still names a voice (an older hub's): taken, the field ignored.
-    _, e_voice = J(flux.request("click", {"tab": T, "ref": R['button "Press"'],
-                                          "voice": "indigo"}))
     persona.adopt({"name": "Rose", "color": "#aa3366"})      # as the shell's `attached` gives
     J(flux.click(T, R['button "Press"']))
     rose_px = rgb(w.grab().toImage().pixelColor(g.x(), mid_y))
@@ -1047,12 +1044,12 @@ def test_in_process() -> None:
     persona.adopt({"name": persona.NAME, "color": persona.COLOR})
     J(flux.click(T, R['button "Press"']))
     back_px = rgb(w.grab().toImage().pixelColor(g.x(), mid_y))
-    check("a request still naming a voice is taken, the field ignored; the frame and mark in "
-          "the name and colour the shell gave (adopted), and back in Lilac's",
-          e_voice is None and near(rose_px, hex_rgb("#aa3366"))
+    check("the frame and mark in the name and colour the shell gave (adopted), and back in "
+          "Lilac's",
+          near(rose_px, hex_rgb("#aa3366"))
           and rose_mark.startswith("Rose is driving") and near(back_px, lilac)
           and overlay.mark.text().startswith("Lilac is driving"),
-          f"{e_voice} {rose_px} {rose_mark!r} {back_px}")
+          f"{rose_px} {rose_mark!r} {back_px}")
     states = [s for s in shell.states() if s.get("agent") and s["agent"][0]]
     check("the bar the shell gets: the tab driven",
           states and states[-1]["agent"][0] == {"state": "driving"},

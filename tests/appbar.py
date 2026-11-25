@@ -139,7 +139,6 @@ cases = {
         lambda b: b["inputs"]["find"].update(chords=["ctrl+delete"]),
     "a chord opening two things": lambda b: b["menus"]["actions"].update(chords=["ctrl+l"]),
     "a colour that is no role": lambda b: b["end"][0]["spans"][1].update(color="#ff0000"),
-    "a role per voice (gone)": lambda b: b["end"][0]["spans"][1].update(color="voice:lilac"),
     "a row's submenu naming nothing": lambda b: b["menus"]["actions"]["rows"][0].update(
         menu="none"),
     "a row's action the input has not": lambda b: b["inputs"]["address"].update(rows=[
@@ -164,7 +163,7 @@ fine = {
     "an icon it does not know": lambda b: b["end"][0]["spans"][0].update(icon="unicorn"),
     "the agent's colour": lambda b: b["end"][0]["spans"][2].update(color="agent"),
     "a hold with a field it does not know": lambda b: b["start"][0]["tabs"][2]["agent"].update(
-        voice="lilac"),
+        since=3),
     "no current tab": lambda b: b["start"][0].update(current=None),
     "nothing at all": lambda b: [b.pop(k) for k in ("start", "end", "inputs", "menus")],
 }

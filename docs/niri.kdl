@@ -25,7 +25,7 @@ layer-rule {
     }
 }
 
-// The agent's own Flux window ("<Voice> · Flux") goes to a workspace the
+// The agent's own Flux window ("Lilac · Flux": her name) goes to a workspace the
 // user isn't looking at: the shell moves it there as soon as niri lists
 // it (niri has no way to ask for that before it maps). This keeps it from
 // taking the focus in that moment.

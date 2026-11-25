@@ -27,7 +27,7 @@ agent's session there, or goes on with it (`begin`). While it drives:
   the mark flashes the mark (its colours swapped for FLASH_MS).
 - The page shows the lock in the shell's own look (effects.py, the
   user's design): it starts with the shell's panel glitch over the page;
-  while it holds, the shell's violet tint, the panels' raster and scan,
+  while it holds, her tint, the panels' raster and scan,
   and the glitch again now and then; it ends with the glitch played
   out over the live page (`_show` decides, for every way a lock starts or ends). An
   action waits for a glitch in to end (`hold_s`), and no repeat starts

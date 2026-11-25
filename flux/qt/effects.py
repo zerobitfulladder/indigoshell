@@ -7,11 +7,10 @@ lock, watch.py), the page says so, in the shell's own look:
   shell's indigoshell/effects.py ScanLock, played with config_default's
   PANEL_SPAWN): bands of the page snap in out of order, torn sideways,
   their colours split.
-- While it holds: a faint tint in the shell's violet
-  (theme.VIOLET_BRIGHT; the user's choice, under the frame and mark in
-  the agent's colour), the panels' raster over it, and the panels' scan
-  (widgets/holo.py): every few seconds a glowing band runs down the
-  page, tearing the rows under it. And the glitch again at random
+- While it holds: a faint tint in her colour (core/persona.py, as the
+  frame and the mark: every mark she makes is hers), the panels' raster
+  over it, and the panels' scan (widgets/holo.py): every few seconds a
+  glowing band runs down the page, tearing the rows under it. And the glitch again at random
   intervals (REPEAT_S), never while one of the agent's actions is in
   flight there.
 - The lock ends with the glitch played backwards over the live page; a
@@ -79,6 +78,8 @@ from PySide6.QtGui import QColor, QGuiApplication, QImage, QVector4D
 from PySide6.QtQuick import QQuickImageProvider, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
+from indigoshell.core import persona
+
 log = logging.getLogger(__name__)
 
 HERE = Path(__file__).resolve().parent
@@ -116,7 +117,6 @@ BELOW = 2.5
 SCAN_BREATH_S = 2.0         # a page too tall for SCAN_EVERY_S: this long between passes
 # agent/ui/style.py: a plate is its base pulled PLATE_TINT toward its colour
 PLATE_TINT = 0.12
-TINT = "#b967ff"            # the shell's violet (theme.VIOLET_BRIGHT)
 RASTER = "#05d9e8"          # theme.POPUP_RASTER: the panels' raster
 BACKGROUND = "#050310"      # theme.BAR_BG, Flux's window background
 
@@ -188,7 +188,7 @@ def _premul(color: QColor, alpha: float) -> QVector4D:
 def tint_rgb(over: tuple) -> tuple:
     """What the tint makes of an 8-bit colour on a row without a raster
     line (the tests compare the window's pixels with it)."""
-    t = _premul(QColor(TINT), PLATE_TINT)
+    t = _premul(QColor(persona.color()), PLATE_TINT)
     return tuple(round(c * 255 + (1 - t.w()) * v) for c, v in zip((t.x(), t.y(), t.z()), over))
 
 
@@ -250,7 +250,6 @@ class PageFx(QObject):
         self.page = root.findChild(QObject, "page")
         if None in (self.glitch, self.holo, self.page):
             self._refuse("effects.qml lacks an item")
-        root.setProperty("tint", _premul(QColor(TINT), PLATE_TINT))
         root.setProperty("line", _premul(_lerp(RASTER, HUD_FG_BRIGHT, RASTER_LIFT), RASTER_ALPHA))
         bg = QColor(BACKGROUND)
         root.setProperty("bg", QVector4D(bg.redF(), bg.greenF(), bg.blueF(), 1.0))
@@ -317,6 +316,8 @@ class PageFx(QObject):
         the raster and the scan, and repeats now and then."""
         self._stop()
         self.tab_id, self.view = tab.id, tab.view
+        # Her colour as it is now: the shell may have told us since.
+        self.root.setProperty("tint", _premul(QColor(persona.color()), PLATE_TINT))
         self._new_lock = True
         self._follow_exposure()
         self._note("lock")

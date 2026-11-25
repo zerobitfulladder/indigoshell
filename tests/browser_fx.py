@@ -1,5 +1,5 @@
 """The agent's page effects in Flux (flux/qt/effects.py): the shell's
-glitch, its violet tint and the panels' scanlines over a page she drives.
+glitch, her tint and the panels' scanlines over a page she drives.
 
     .venv/bin/python tests/browser_fx.py              a small floating test window (and the
                                                       agent's, as small) in the bottom-right
@@ -31,7 +31,7 @@ pixels read from their own composite pixmaps, never the root):
      the agent's script runs (skipped instead); a tab driven in the
      user's window and borrowed: gone there, its glitch owed until the
      agent's window shows and played then, its end there.
-  4. pixels: the tint is the shell's violet at PLATE_TINT, the raster
+  4. pixels: the tint is her colour at PLATE_TINT, the raster
      the panels' cyan on every third row; the band runs down the page at the
      shell's speed; the glitch tears the page; the Watch's mark and
      frame stay as they are, a band across the mark too; the agent's
@@ -542,7 +542,7 @@ def test_on_screen() -> None:
         d = int(np.abs(reg[i] - want).max())
         worst = max(worst, d)
         rows_ok &= d <= 2
-    check("the tint is the shell's violet at PLATE_TINT over white, the panels' cyan raster on "
+    check("the tint is her colour at PLATE_TINT over white, the panels' cyan raster on "
           "every third row", reg is not None and rows_ok,
           f"tinted {tinted.tolist()}, lined {lined.tolist()}, read {reg[0, 0].tolist()} "
           f"{reg[1, 0].tolist()} {reg[2, 0].tolist()}, worst {worst}")
