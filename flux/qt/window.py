@@ -46,6 +46,11 @@ anyway (WinIdChange) the filter moves to the new one and the shell is
 told the new X window. The release of a key we took (a shortcut, a key
 typed into find) never reaches the page either.
 
+Zoom is the user's: Ctrl++ / Ctrl+- / Ctrl+0 and Ctrl+wheel (taken on
+the QWindow too, a step a notch, so Chromium's own wheel zoom never
+happens unseen) step the current page, kept for its site (flux/zoom.py)
+and given to the site's other open pages (app.py `spread_zoom`).
+
 The shell's top bar. While a shell has the window it shows the
 window's section of its top bar (link.py; bar.py makes it of `state()`:
 the tabs, the page's host, the inputs and the actions menu), and what
@@ -336,6 +341,7 @@ class Window(QWidget):
         self._related: tuple[Tab, int] | None = None
         self._key_window = None         # the QWindow our key filter sits on
         self._held_keys: set[int] = set()       # pressed, taken by us
+        self._wheel = 0                 # Ctrl+wheel turned, short of a notch
         self._address_wanted = False    # a new window's address, until the shell says
         self.agent = agent              # the voice whose own window this is (None: the user's)
         self.opener = opener            # a popup's: the window whose page opened it
@@ -434,6 +440,7 @@ class Window(QWidget):
                 at: int | None = None) -> Tab:
         tab = Tab(self.profile, self)
         tab.page.watch = self.browser.watch
+        tab.zooms = self.browser.zooms      # before its first page
         if self.browser.unattended or self.browser.headless:
             tab.page.setAudioMuted(True)
         at = self._insert(tab, at)
@@ -450,6 +457,7 @@ class Window(QWidget):
         page = tab.page
         tab.slots = [(tab.changed, self.refresh), (tab.visited, partial(self._on_visit, tab)),
                      (tab.titled, self._on_title),
+                     (tab.zoomed, partial(self._on_zoom, tab)),
                      (page.newWindowRequested, partial(self.on_new_window, tab)),
                      (page.fullScreenRequested, partial(self.on_fullscreen, tab)),
                      (page.permissionRequested, partial(self.on_permission, tab)),
@@ -610,6 +618,11 @@ class Window(QWidget):
     def _on_visit(self, tab: Tab, url: str, again: bool) -> None:
         self.browser.history.visit(url, tab.page.title(), again=again)
 
+    def _on_zoom(self, tab: Tab, factor: float) -> None:
+        """The user zoomed `tab`'s page (keys, Ctrl+wheel): kept for its
+        site by the tab, followed by the site's other pages."""
+        self.browser.spread_zoom(tab, factor)
+
     def _on_title(self, url: str, title: str) -> None:
         self.browser.history.retitle(url, title)
 
@@ -698,7 +711,27 @@ class Window(QWidget):
             self._note_input()
             if self.find_phase is not None:
                 self.end_find(clear=False)  # and the press goes on to the page
+        if kind == QEvent.Type.Wheel and keys.wheel_zooms(event.modifiers()):
+            return self._wheel_zoom(event)
         return False
+
+    def _wheel_zoom(self, event) -> bool:
+        """Ctrl+wheel: the user's zoom, a step per notch (120), as Ctrl++
+        and Ctrl+- (Chromium's own would zoom the page unseen by the
+        site's zoom). A horizontal scroll is the page's."""
+        dy = event.angleDelta().y()
+        if dy == 0:
+            return False
+        if (self._wheel > 0) != (dy > 0):
+            self._wheel = 0             # the other way: start counting again
+        self._wheel += dy
+        tab = self.current_tab()
+        while abs(self._wheel) >= keys.WHEEL_NOTCH:
+            step = 1 if self._wheel > 0 else -1
+            self._wheel -= step * keys.WHEEL_NOTCH
+            if tab is not None:
+                tab.zoom(step)
+        return True
 
     def swallow_release(self, event) -> None:
         """A key press taken elsewhere (the Watch's take-over): its

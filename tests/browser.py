@@ -164,6 +164,9 @@ class Site(BaseHTTPRequestHandler):
         if route.startswith("/page/"):
             name = route[len("/page/"):]
             self._send(PAGE.format(title=name, body=f"<p>{name}</p>"))
+        elif route == "/zoomed":            # the page's zoom as its own script saw it run
+            self._send(PAGE.format(title="Zoomed", body="<script>document.title = 'z' + "
+                                   "Math.round(devicePixelRatio * 100)</script>"))
         elif route == "/plain":
             self._send("<!doctype html><title>Plain</title><p>no styles at all</p>")
         elif route == "/long":
@@ -468,6 +471,48 @@ def test_pure() -> None:
           flags == f"--foo --bar=1 {startup.DARK} {startup.NO_SMOOTH} --widevine-path={got}"
           and flags2 == f"--widevine-path=/x.so {startup.DARK} {startup.NO_SMOOTH}", flags)
 
+    # The zoom kept per site (flux/zoom.py), on a scratch file.
+    from flux import places, zoom
+    sites = [zoom.site_of(u) for u in (
+        "https://www.Example.com/a?b", "http://example.com:8080/", "https://mail.example.com/",
+        "http://127.0.0.1:5000/x", "about:blank", "file:///tmp/x.html", "data:text/html,x",
+        "https://www.example.org./", "not a url")]
+    check("a page's site: its host, lowercase, \"www.\" and the port dropped, a subdomain "
+          "its own; none for about:, file:, data:",
+          sites == ["example.com", "example.com", "mail.example.com", "127.0.0.1", None, None,
+                    None, "example.org", None], f"{sites}")
+    zpath = SCRATCH / "zoom-pure" / "zoom.json"
+    zf = zoom.ZoomFile(zpath)
+    first = zf.factor("https://news.example/")
+    put = zf.set("https://www.news.example/a", 1.25)
+    same = zf.set("https://news.example/b", 1.25)
+    written = json.loads(zpath.read_text())
+    check("no file: 100%; a site set to 125% written whole as {site: percent} (once: the same "
+          "again writes nothing); its other pages, with or without www., get it",
+          first == 1.0 and put and not same and written == {"news.example": 125}
+          and zf.factor("http://news.example/c") == 1.25 and zf.factor("https://other.example/")
+          == 1.0, f"{written}")
+    zpath.write_text(json.dumps({"news.example": 125, "www.docs.example": 90, "odd": "big",
+                                 "huge": 900}))
+    hand = (zf.factor("https://docs.example/"), zf.factor("https://odd/"))
+    zf.set("https://news.example/", 1.0)
+    after = json.loads(zpath.read_text())
+    check("a hand edit read at the next page (www. not counting, an entry that is no percent or "
+          "past 500 skipped); 100% forgets the site, the other entries kept as they are",
+          hand == (0.9, 1.0) and after == {"www.docs.example": 90, "odd": "big", "huge": 900},
+          f"{hand} {after}")
+    zpath.write_text("{oops")
+    try:
+        zf.set("https://news.example/", 1.5)
+        refused = False
+    except zoom.ZoomBroken:
+        refused = True
+    check("a file that does not parse: the zoom before it kept, the file not written over",
+          refused and zpath.read_text() == "{oops" and zf.factor("https://docs.example/") == 0.9)
+    check("the default profile's zoom.json beside its bookmarks; a named profile's zoom-NAME.json",
+          zoom.zoom_path().name == "zoom.json" and zoom.zoom_path("work").name == "zoom-work.json"
+          and zoom.zoom_path().parent == places.bookmarks_path().parent)
+
 
 # ── 2. one browser, in this process ─────────────────────────────────────
 
@@ -492,6 +537,103 @@ class Log:
 
     def messages(self, level=0, since=0):
         return [r.getMessage() for r in self.records[since:] if r.levelno >= level]
+
+
+def test_site_zoom(browser, w, press, loaded, navigate, wait) -> None:
+    """The zoom kept per site (flux/zoom.py), on the browser of section 2:
+    the user's keys and Ctrl+wheel, zoom.json, the site's other pages,
+    a tab navigated to and from it, a new window, a hand edit, Ctrl+0.
+    Every page at 100% again at the end, the file empty."""
+    from PySide6.QtCore import QPoint, QPointF, Qt, QUrl
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    from flux import places, zoom
+    K, M = Qt.Key, Qt.KeyboardModifier
+    ctrl = M.ControlModifier
+    zfile = zoom.zoom_path()
+
+    def wheel(window, dy, mods=ctrl):
+        at = QPointF(300, 300)
+        QApplication.sendEvent(window.windowHandle(), QWheelEvent(
+            at, at, QPoint(0, 0), QPoint(0, dy), Qt.MouseButton.NoButton, mods,
+            Qt.ScrollPhase.NoScrollPhase, False))
+        QTest.qWait(30)
+
+    def kept():
+        try:
+            return json.loads(zfile.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def z(tab):
+        return round(tab.page.zoomFactor(), 2)
+
+    print("  zoom kept per site:")
+    alpha = w.tabs[0]                   # 127.0.0.1, open from the start
+    za = w.add_tab(QUrl(url("/page/ZoomA")))
+    zl = w.add_tab(QUrl(url("/page/ZoomL", host="localhost")), background=True)
+    ok = loaded(za, "ZoomA") and loaded(zl, "ZoomL")
+    w.select(w.tabs.index(za))
+    press(w, K.Key_Equal, ctrl)
+    press(w, K.Key_Equal, ctrl)
+    keyed = z(za)
+    wheel(w, 120)
+    up = z(za)
+    wheel(w, 60)
+    half = z(za)
+    wheel(w, 60)
+    two_halves = z(za)
+    wheel(w, -120)
+    wheel(w, 120, M.NoModifier)         # no Ctrl: the page scrolls, no zoom
+    check("Ctrl+= twice (125%), Ctrl+wheel up a notch (150%; half a notch nothing, two halves "
+          "a step: 175%), down a notch (150%); the wheel with no Ctrl no zoom",
+          ok and (keyed, up, half, two_halves, z(za)) == (1.25, 1.5, 1.5, 1.75, 1.5),
+          f"{(keyed, up, half, two_halves, z(za))}")
+    check("kept for its site in zoom.json, beside the bookmarks: {127.0.0.1: 150}; the site's "
+          "page open in another tab followed at once, the other site's tab did not",
+          kept() == {"127.0.0.1": 150} and zfile.parent == places.bookmarks_path().parent
+          and z(alpha) == 1.5 and z(zl) == 1.0, f"{kept()}, alpha {z(alpha)}, localhost {z(zl)}")
+    to_site = navigate(zl, lambda: zl.page.load(QUrl(url("/page/ZoomB"))), title="ZoomB")
+    on_site = z(zl)
+    away = navigate(zl, lambda: zl.page.load(QUrl(url("/page/ZoomM", host="localhost"))),
+                    title="ZoomM")
+    check("a tab navigated to the site takes its zoom (150%), and away from it the other "
+          "site's (100%: none kept)", to_site and on_site == 1.5 and away and z(zl) == 1.0,
+          f"{on_site} then {z(zl)}")
+    press(w, K.Key_W, ctrl)             # ZoomA closed
+    w2 = browser.new_window()
+    zc = w2.add_tab(QUrl(url("/zoomed")))
+    w2.show()
+    shown = wait(lambda: not zc.loading and zc.page.title().startswith("z"), 10)
+    check("the site's page opened again, in a new window: at 150% before its own script ran "
+          "(its devicePixelRatio 1.5); a fresh read of the file says the same",
+          shown and z(zc) == 1.5 and zc.page.title() == "z150"
+          and zoom.ZoomFile(zfile).factor(url("/anything")) == 1.5,
+          f"{z(zc)}, the page said {zc.page.title()!r}")
+    zfile.write_text(json.dumps({"127.0.0.1": 150, "localhost": 80, "note": "big"}))
+    edited = navigate(zl, lambda: zl.page.load(QUrl(url("/page/ZoomN", host="localhost"))),
+                      title="ZoomN")
+    check("a hand edit of zoom.json applies to the site's next page (localhost: 80)",
+          edited and z(zl) == 0.8, f"{z(zl)}")
+    w2.select(0)
+    w2.activateWindow()
+    press(w2, K.Key_0, ctrl)
+    reset = (z(zc), z(alpha), kept())
+    fresh = w2.add_tab(QUrl(url("/page/ZoomD")))
+    check("Ctrl+0: back to 100%, the site forgotten (the hand edit's entries kept as they are), "
+          "its other open page back too; its next page at 100%",
+          reset == (1.0, 1.0, {"localhost": 80, "note": "big"}) and loaded(fresh, "ZoomD")
+          and z(fresh) == 1.0, f"{reset}, new page {z(fresh)}")
+    w.select(w.tabs.index(zl))
+    press(w, K.Key_0, ctrl)
+    zfile.write_text("{}\n")
+    check("... and the other site's the same way: every page at 100%, the file empty again",
+          z(zl) == 1.0 and all(z(t) == 1.0 for t in w.tabs), f"{[z(t) for t in w.tabs]}")
+    w2.close()
+    w.close_tab(zl)
+    QTest.qWait(50)
 
 
 def test_in_process() -> None:
@@ -695,6 +837,7 @@ def test_in_process() -> None:
         press(w, key, mods)
         zooms.append(round(w.tabs[3].page.zoomFactor(), 2))
     check("Ctrl++, Ctrl+=, Ctrl+-, Ctrl+0 zoom", zooms == [1.1, 1.25, 1.1, 1.0], f"{zooms}")
+    test_site_zoom(browser, w, press, loaded, navigate, wait)
     from flux.qt import profile as profile_mod
     tab3 = w.tabs[3]
     long_ok = navigate(tab3, lambda: tab3.page.load(QUrl(url("/long"))), title="Long")
@@ -1852,6 +1995,10 @@ def test_processes() -> None:
     envs = dict(os.environ, QT_QPA_PLATFORM="offscreen", XDG_STATE_HOME=str(state1), **{
         env("BROWSER_SOCKET"): SOCK["browser2"], env("APPS_SOCKET"): SOCK["apps2"]})
     log_path = SCRATCH / "browser-process-1.log"
+    from flux import zoom
+    zfile = zoom.zoom_path()
+    zfile.parent.mkdir(parents=True, exist_ok=True)
+    zfile.write_text(json.dumps({"localhost": 150}))     # kept by a run before this one
     with open(log_path, "w") as err:
         first = subprocess.Popen([PY, "-m", "flux.qt", "--log-level", "debug",
                                   url("/page/One")], cwd=REPO, env=envs,
@@ -1886,6 +2033,18 @@ def test_processes() -> None:
     windows = until(lambda: len(shell.conns) >= 2, 10)
     check("with no URL: exits 0, and the running browser opens a new window",
           third.returncode == 0 and windows, f"exit {third.returncode}, {len(shell.conns)} windows")
+    fourth = subprocess.run([PY, "-m", "flux.qt", url("/zoomed", host="localhost"),
+                             url("/zoomed")], cwd=REPO, env=envs, capture_output=True,
+                            text=True, timeout=30)
+
+    def zoomed():
+        return sorted({t["title"] for c in shell.conns for s in c.states() for t in s["tabs"]
+                       if re.fullmatch(r"z\d+", t["title"]) and not t["loading"]})
+    until(lambda: len(zoomed()) >= 2, 15)
+    check("a zoom kept in zoom.json before the browser started: a page of that site (localhost) "
+          "at 150% before its own script ran, another site's (127.0.0.1) at 100%",
+          fourth.returncode == 0 and zoomed() == ["z100", "z150"], f"{zoomed()}")
+    zfile.unlink()
     first.send_signal(signal.SIGINT)
     try:
         code = first.wait(15)

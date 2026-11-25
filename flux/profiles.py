@@ -16,6 +16,7 @@ its own storage, cache, history, bookmarks, log and socket:
                                                  <data_dir>/browser-NAME-history.sqlite
     bookmarks   <config_dir>/browser/bookmarks.json
                                                  <config_dir>/browser/bookmarks-NAME.json
+    zoom        <config_dir>/browser/zoom.json   <config_dir>/browser/zoom-NAME.json
     log         <state_dir>/browser.log          <state_dir>/browser-NAME.log
     socket      protocol.instance_socket_path()  the same with "-NAME" before ".sock"
 
@@ -70,6 +71,12 @@ def history_path(profile: str | None = None) -> str:
 def bookmarks_path(profile: str | None = None) -> str:
     name = check(profile)
     return os.path.join(config_dir(), BASE, f"bookmarks-{name}.json" if name else "bookmarks.json")
+
+
+def zoom_path(profile: str | None = None) -> str:
+    """The zoom kept per site (flux/zoom.py), beside the bookmarks."""
+    name = check(profile)
+    return os.path.join(config_dir(), BASE, f"zoom-{name}.json" if name else "zoom.json")
 
 
 def log_path(profile: str | None = None) -> str:

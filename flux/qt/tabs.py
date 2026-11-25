@@ -79,7 +79,7 @@ from PySide6.QtWebEngineCore import (QWebEngineLoadingInfo, QWebEngineNavigation
                                      QWebEnginePage)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from flux import bar as flux_bar, places, protocol
+from flux import bar as flux_bar, places, protocol, zoom
 
 log = logging.getLogger(__name__)
 js_log = logging.getLogger(__name__.rsplit(".", 1)[0] + ".js")
@@ -209,6 +209,7 @@ class Tab(QObject):
     changed = Signal()
     visited = Signal(str, bool)         # address, again
     titled = Signal(str, str)           # address, title
+    zoomed = Signal(float)              # the user zoomed the page: the factor it went to
 
     def __init__(self, profile, parent=None) -> None:
         super().__init__(parent)
@@ -236,12 +237,17 @@ class Tab(QObject):
         # The next name a frame's document gets (frames.py): "f<n>",
         # never given twice in the tab.
         self.next_frame = 1
+        # The zoom kept per site (flux/zoom.py, the browser's): given to
+        # each page of a site as it arrives. None: none kept (the window
+        # gives it before the first load).
+        self.zooms = None
 
         page = self.page
         page.titleChanged.connect(self.changed)
         page.titleChanged.connect(self._on_title)
         page.urlChanged.connect(self.changed)
         page.urlChanged.connect(self._on_url)
+        page.urlChanged.connect(self._site_zoom)
         page.loadProgress.connect(self._on_progress)
         page.loadingChanged.connect(self._on_loading)
         page.navigationRequested.connect(self._on_navigation)
@@ -312,6 +318,10 @@ class Tab(QObject):
         self._document_ok = status == S.LoadSucceededStatus
         if self.loading:
             self.progress = 0
+            if self.zooms is not None and _blank(self.page.url()):
+                # Nothing shown to re-zoom yet (a new tab, a reopened one):
+                # the site's zoom now, ahead of its page.
+                self.set_zoom(self.zooms.factor(info.url().toString()))
         else:
             self.progress = 100
             self._asked = None
@@ -417,13 +427,43 @@ class Tab(QObject):
 
     # ── zoom ────────────────────────────────────────────────────────────
     def zoom(self, step: int) -> None:
-        """One Chromium zoom step in (+1) or out (-1); 0 back to 100%."""
-        if step == 0:
-            self.page.setZoomFactor(1.0)
-            return
+        """The user's zoom: one Chromium zoom step in (+1) or out (-1); 0
+        back to 100%. Kept for the page's site (flux/zoom.py), and said
+        (`zoomed`), even when it is where it was (the last step)."""
         now = self.page.zoomFactor()
-        if step > 0:
+        if step == 0:
+            nxt = 1.0
+        elif step > 0:
             nxt = next((z for z in ZOOM_STEPS if z > now + 1e-3), ZOOM_STEPS[-1])
         else:
             nxt = next((z for z in reversed(ZOOM_STEPS) if z < now - 1e-3), ZOOM_STEPS[0])
         self.page.setZoomFactor(nxt)
+        if self.zooms is not None:
+            url = self.url().toString()
+            try:
+                if self.zooms.set(url, nxt):
+                    log.info("zoom for %s: %s", zoom.site_of(url), "forgotten (100%)"
+                             if zoom.percent_of(nxt) == 100 else f"{zoom.percent_of(nxt)}%")
+            except (zoom.ZoomBroken, OSError) as e:
+                log.warning("zoom not kept: %s", e)
+        self.zoomed.emit(nxt)
+
+    def set_zoom(self, factor: float) -> None:
+        """The page at `factor`, not the user's own step: the site's kept
+        zoom given to it."""
+        if abs(self.page.zoomFactor() - factor) > 1e-3:
+            self.page.setZoomFactor(factor)
+
+    def _site_zoom(self, url: QUrl) -> None:
+        """A page arrived (a load committed, a redirect's page, a
+        same-document move): the zoom kept for its site, 100% when none.
+        QtWebEngine carries a page's zoom across its navigations and gives
+        it again just before this, so what is set here holds. It reaches
+        the page's renderer as the page starts, not before: a script that
+        reads its size as the page loads may see the zoom before. A tab
+        with nothing shown yet gets its site's zoom when its load starts
+        instead (`_on_loading`), ahead of the page; one showing a page
+        cannot, the page being left would be re-zoomed while the next one
+        loads."""
+        if self.zooms is not None:
+            self.set_zoom(self.zooms.factor(url.toString()))
