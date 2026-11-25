@@ -503,7 +503,6 @@ def test_in_process() -> None:
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
-    from flux import protocol
     from flux.qt import app as browser_app
     from flux.qt import instance, startup
     from flux.qt.identity import CHROME, ORIGINAL
@@ -1183,14 +1182,14 @@ def test_in_process() -> None:
     w.add_tab = timed_add
     sent_epoch = time.time() * 1000
     t_sent = time.perf_counter()
-    conn.send({"type": "submit", "input": "new_tab", "text": "x", "row": url("/painted"),
+    conn.send({"type": "submit", "input": "new_tab", "text": url("/painted"), "row": None,
                "shift": False})
     made = wait(lambda: len(w.tabs) == tabs_before + 1 and "loaded" in timing, 10)
     w.add_tab = real_add
     new = w.tabs[-1]
     painted = wait(lambda: js(new.page, "window.painted || 0"), 5)
     painted_at = js(new.page, "window.painted || 0") or 0
-    check("{type: submit, input: new_tab} (a row: its address): a new tab, at the end, in "
+    check("{type: submit, input: new_tab} (the text, an address): a new tab, at the end, in "
           "front",
           made and w.current == len(w.tabs) - 1 and new.page.title() == "Painted")
     if made and painted:
@@ -1253,11 +1252,13 @@ def test_in_process() -> None:
     conn.send({"type": "query", "input": "address", "seq": 1, "text": "here"})
     got = wait(lambda: any(m["type"] == "answer" for m in conn.msgs[since:]), 3)
     ans = next((m for m in conn.msgs[since:] if m["type"] == "answer"), {})
+    places_ = w.addresses.get("address")
     check("an address input's query: answered from Flux's places (the typed row first, a page "
-          "visited before among the rows), the seq kept, good by the vocabulary's check",
+          "visited before among the rows, by a short id of the open's), the seq kept, good by "
+          "the vocabulary's check",
           got and ans.get("input") == "address" and ans.get("seq") == 1
-          and ans["rows"][0]["id"] == "typed"
-          and any(r["id"] == url("/page/Here") for r in ans["rows"])
+          and ans["rows"][0]["id"] == "typed" and places_ is not None
+          and any(places_.url_of(r["id"], "") == url("/page/Here") for r in ans["rows"])
           and B.answer_problems(ans) == [], f"{[r['id'] for r in ans.get('rows', [])]}")
     conn.send({"type": "closed", "input": "address", "by": "escape"})
 
@@ -1514,7 +1515,7 @@ def test_in_process() -> None:
         seen_nav.clear()
         seen_loads.clear()
         done = navigate(tab, lambda: conn.send({"type": "submit", "input": "address",
-                                                "text": "", "row": mark["url"],
+                                                "text": mark["url"], "row": None,
                                                 "shift": False}), title=land)
         return done and wait(lambda: state_now().get("url") == tab.url().toString(), 3)
 
@@ -1609,7 +1610,7 @@ def test_in_process() -> None:
     # A click on the page before it moves on by itself: the user's doing.
     touched = imported[5]
     first = navigate(tab, lambda: conn.send({"type": "submit", "input": "address",
-                                             "text": "", "row": touched["url"],
+                                             "text": touched["url"], "row": None,
                                              "shift": False}), title="Later")
     click = (first and wait(lambda: state_now().get("url") == tab.url().toString(), 2)
              and state_now().get("bookmarked") is True)
@@ -1622,17 +1623,26 @@ def test_in_process() -> None:
 
     # The address list's Shift+Delete: a named address, whatever is shown.
     shown_url = tab.url().toString()
-    conn.send({"type": "act", "input": "address", "action": "remove", "row": url("/page/Keep"),
+    since = len(conn.msgs)
+    conn.send({"type": "query", "input": "address", "seq": 9, "text": "keep"})
+    wait(lambda: any(m["type"] == "answer" and m.get("seq") == 9 for m in conn.msgs[since:]), 3)
+    ans = next((m for m in conn.msgs[since:] if m["type"] == "answer" and m.get("seq") == 9), {})
+    keep_row = next((r["id"] for r in ans.get("rows", []) if r.get("actions") == ["remove"]
+                     and w.addresses["address"].url_of(r["id"], "") == url("/page/Keep")), None)
+    conn.send({"type": "act", "input": "address", "action": "remove", "row": keep_row,
                "text": "keep"})
     left.remove(imported[6])
     named = wait(lambda: file_holds(left), 3)
-    conn.send({"type": "act", "input": "address", "action": "nonsense", "row": url("/hop1/B"),
+    conn.send({"type": "act", "input": "address", "action": "remove", "row": "r999",
+               "text": "keep"})
+    conn.send({"type": "act", "input": "address", "action": "nonsense", "row": keep_row,
                "text": ""})
     QTest.qWait(200)
-    check("{type: act, action: remove, row: an address} (Shift+Delete on a bookmark's row): "
-          "that address's bookmark, not the page shown's; an action it does not know: nothing",
-          named and file_holds(left) and tab.url().toString() == shown_url,
-          f"{json.loads(marks.read_text())}")
+    conn.send({"type": "closed", "input": "address", "by": "escape"})
+    check("{type: act, action: remove, row: a bookmark's row} (Shift+Delete on it): that "
+          "address's bookmark, not the page shown's; a row never listed, or an action it does "
+          "not know: nothing", keep_row is not None and named and file_holds(left)
+          and tab.url().toString() == shown_url, f"{json.loads(marks.read_text())}")
     tab.page.navigationRequested.disconnect(on_nav)
     tab.page.loadingChanged.disconnect(on_loading)
     hand_edit("[]")

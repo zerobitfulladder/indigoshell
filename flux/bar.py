@@ -87,6 +87,13 @@ def state(tabs: list[dict], current: int, progress: int, secure: bool, *, url: s
 # ── its bar ─────────────────────────────────────────────────────────────
 
 
+TITLE_CUT = 300                 # characters of a tab's title sent, at most
+
+
+def _cut(value: str, n: int = TITLE_CUT) -> str:
+    return value if len(value) <= n else value[:n - 1] + "…"
+
+
 def tabs_item(state: dict, *, single: bool) -> dict:
     tabs, current = state["tabs"], state["current"]
     agents = state.get("agent") or [None] * len(tabs)
@@ -95,7 +102,7 @@ def tabs_item(state: dict, *, single: bool) -> dict:
         here = i == current
         loading = bool(t.get("loading"))
         progress = state.get("progress", 100)
-        out.append(B.tab(t["tab"], t["title"], busy=loading,
+        out.append(B.tab(t["tab"], _cut(t["title"]), busy=loading,
                          progress=progress if here and loading and progress < 100 else None,
                          agent=B.agent(voice_id(agents[i]["voice"]), agents[i]["state"])
                          if i < len(agents) and agents[i] else None))
@@ -111,7 +118,7 @@ def host_item(state: dict) -> dict:
         spans.append(B.span(icon="bookmark"))
     if not state.get("secure", True):
         spans.append(B.span(icon="unlocked", color="error"))
-    spans.append(B.span(host))
+    spans.append(B.span(_cut(host)))
     return B.text(HOST_ITEM, spans=spans)
 
 
@@ -122,8 +129,8 @@ def find_item(state: dict) -> dict | None:
     if not f:
         return None
     count = find_count(f)
-    spans = [B.span(icon="search"), B.span(f["query"] + (FIND_CARET if f.get("typing") else ""),
-                                           color="strong")]
+    caret = FIND_CARET if f.get("typing") else ""
+    spans = [B.span(icon="search"), B.span(_cut(f["query"]) + caret, color="strong")]
     if count:
         spans.append(B.span("  " + count, color="error" if count == NO_MATCHES else "info"))
     return B.text(FIND_ITEM, spans=spans)
@@ -131,7 +138,8 @@ def find_item(state: dict) -> dict | None:
 
 def inputs_of(state: dict) -> dict:
     url = state.get("url") or ""
-    here = "" if url in ("", "about:blank") else url
+    # The page's address, to edit (none past the bound: a box to type in).
+    here = "" if url in ("", "about:blank") or len(url) > B.INPUT_TEXT_MAX else url
     remove = {REMOVE: B.action("shift+delete", drops=True)}
     return {ADDRESS: B.input_(chords=["ctrl+l"], icon="search", placeholder=PLACEHOLDER,
                               text=here or None, select=bool(here), query=True, actions=remove),

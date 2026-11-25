@@ -159,14 +159,16 @@ class AppWindow:
         elif kind == B.ANSWER:
             problems = B.answer_problems(msg)
             if problems:
+                log.debug("%s window 0x%x: answer seq %s for %r dropped: %s", self.kind,
+                          self.wid, msg.get("seq"), msg.get("input"), "; ".join(problems))
                 self._warn("an answer ignored", problems)
                 return
             p = self.service.prompt_of(self)
             if p is not None and p.what == "input" and p.name == msg["input"]:
                 p.answer(msg)
             else:
-                log.debug("%s window 0x%x: an answer for %r, which is not open; dropped",
-                          self.kind, self.wid, msg["input"])
+                log.debug("%s window 0x%x: answer seq %s for %r dropped: that input is not "
+                          "open", self.kind, self.wid, msg.get("seq"), msg["input"])
         elif kind == B.OPEN:
             what = "input" if "input" in msg else "menu"
             self.service.open_asked(self, what, msg.get(what))

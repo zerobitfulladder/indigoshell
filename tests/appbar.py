@@ -168,6 +168,10 @@ fine = {
 wrong = {name: probs for name, change in fine.items() if (probs := broken(change))}
 check(f"and {len(fine)} that are fine", not wrong, f"{wrong}")
 check("not even an object", B.bar_problems([1]) == ["not an object"])
+long_text = broken(lambda b: b["inputs"]["address"].update(text="https://x.org/?" + "a" * 2000))
+too_long = broken(lambda b: b["inputs"]["address"].update(text="x" * (B.INPUT_TEXT_MAX + 1)))
+check("an input's text may be an address of thousands of characters (up to INPUT_TEXT_MAX); "
+      "past that, refused", long_text == [] and too_long, f"{long_text} {too_long}")
 
 print("4. answers, chords")
 bad_answers = [{"input": "a"}, {"input": "a", "seq": -1}, {"input": "a", "seq": 1, "total": "x"},

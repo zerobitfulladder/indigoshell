@@ -248,7 +248,7 @@ def test_addresses() -> None:
         found, start = m.search(q)
         return [(r.get("tag") or ("B" if r.get("icon") == BOOKMARK else
                                   "H" if r.get("icon") == HISTORY else "?"),
-                 r["title"], r["id"] if not r.get("tag") else Addresses.url_of(r["id"], q))
+                 r["title"], m.url_of(r["id"], q))
                 for r in found], start
 
     r, s = rows("")
@@ -281,22 +281,45 @@ def test_addresses() -> None:
           " typed in part, it is an address already)", r[0][0] == "OPEN"
           and any(t == "Router" for _, t, _ in r), f"{r} start {s}")
     found, start = m.search("yo")
-    picked = [Addresses.url_of(found[start]["id"], "yo"), Addresses.url_of(None, "yo"),
-              Addresses.url_of(TYPED, "yo"), Addresses.url_of(None, "   ")]
-    check("what a submit names: the row's address; Shift+Return (no row) and the typed row: the "
-          "typed text; nothing typed: nothing",
-          picked == ["https://www.youtube.com/", places.SEARCH + "yo", places.SEARCH + "yo", None],
-          f"{picked}")
+    picked = [m.url_of(found[start]["id"], "yo"), m.url_of(None, "yo"),
+              m.url_of(TYPED, "yo"), m.url_of(None, "   "), m.url_of("r999", "yo")]
+    check("what a submit names: the row's address (by its short id, the same for the open); "
+          "Shift+Return (no row) and the typed row: the typed text; nothing typed, or a row "
+          "never listed: nothing", picked == ["https://www.youtube.com/", places.SEARCH + "yo",
+                                              places.SEARCH + "yo", None, None]
+          and found[start]["id"] == m.search("you")[0][1]["id"] and len(found[start]["id"]) < 8,
+          f"{picked} {found[start]['id']}")
     a = m.answer("address", 3, "yo")
     check("an answer: the input, the seq, the rows, the selected row's id, the total "
           "(bookmarks + history pages); a bookmark's rows allow `remove`, no other's",
           a["type"] == "answer" and a["input"] == "address" and a["seq"] == 3
-          and a["selected"] == "https://www.youtube.com/" and a["total"] == 8
+          and m.url_of(a["selected"], "yo") == "https://www.youtube.com/" and a["total"] == 8
           and all((r.get("actions") == ["remove"]) == (r.get("icon") == BOOKMARK)
                   for r in a["rows"]), f"{a['total']} {a['selected']}")
     from indigoshell.applink import bar as B
     check("... in the vocabulary's shape", B.answer_problems(a) == [], f"{B.answer_problems(a)}")
     m.close()
+
+    # A real history: addresses far past the bar's 128-character ids, a
+    # title past its 1000-character strings. (An answer holding such a row
+    # was refused whole by the shell, so no list ever showed.)
+    real = SCRATCH / "addr" / "real.sqlite"
+    long_url = ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLrAXtmErZgOeiKm4sgNOknGvNjby9"
+                "efdf&index=4&pp=iAQB8AUB&t=42s&ab_channel=Some")
+    search_url = "https://search.example/search?q=" + "yodel+" * 300
+    _history(real, [(long_url, "Yodeling at dawn", 2, 60), (search_url, "yodel - Search", 1, 60),
+                    ("https://example.org/t", "Yo " + "very " * 400, 1, 60)])
+    big = Addresses(history=real, bookmarks=marks, now=NOW)
+    a = big.answer("address", 1, "yo")
+    by_title = {r["title"][:9]: r for r in a["rows"]}
+    check("real-sized rows: the answer good by the shell's own check (short ids, titles and "
+          "details cut); each long address back from its row's id",
+          B.answer_problems(a) == []
+          and big.url_of(by_title["Yodeling "]["id"], "yo") == long_url
+          and big.url_of(by_title["yodel - S"]["id"], "yo") == search_url
+          and max(len(r["title"]) for r in a["rows"]) <= 300,
+          f"{B.answer_problems(a)[:2]} {[r['title'][:20] for r in a['rows']]}")
+    big.close()
 
     # Shift+Delete's side: a bookmark's row goes from this open's list.
     m = mode()

@@ -253,6 +253,7 @@ class Prompt:
         self.dirty = False
         seq = self.host.next_seq(self)
         self.sent = self.inflight = seq
+        log.debug("input %r: query seq %d sent (%d characters)", self.name, seq, len(self.text))
         self._send(B.QUERY, input=self.name, seq=seq, text=self.text)
 
     @property
@@ -264,10 +265,16 @@ class Prompt:
         if not self.open:
             return
         seq = msg.get("seq")
-        if self.sent is None or seq > self.sent or seq < self.taken:
-            log.debug("an answer for seq %s (sent %s, taken %s) dropped", seq, self.sent,
-                      self.taken)
+        if self.sent is None or seq > self.sent:
+            log.debug("input %r: answer seq %s dropped: no query of that seq was sent (the "
+                      "last is %s)", self.name, seq, self.sent)
             return
+        if seq < self.taken:
+            log.debug("input %r: answer seq %s dropped: older than the one taken (%s)",
+                      self.name, seq, self.taken)
+            return
+        log.debug("input %r: answer seq %s taken: %d row(s)%s", self.name, seq,
+                  len(msg.get("rows") or ()), ", a count" if msg.get("count") else "")
         self.taken = seq
         if seq == self.inflight:
             self.inflight = None

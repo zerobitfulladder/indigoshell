@@ -9,6 +9,14 @@ stays open and the texts prepared for the rest of the open, and `close`
 lets go of them. Picking a row (`submit`) is the window's: `url_of` says
 which address a submit names.
 
+A row's id is short and Flux's own ("r1", "r2", ... stable for the open,
+one per address), never the address itself: the bar's ids are keys of at
+most 128 characters, and a real history is full of addresses far longer
+(a video's with its playlist, a search's), which as ids would make the
+shell refuse the whole answer. `url_of` (and `address_of`) turn an id
+back into its address. Titles and details are cut to TEXT_CUT
+characters, well inside the bar's string bound.
+
 The rows, top to bottom:
 
 1. What was typed, always first (id "typed"): tagged OPEN when it reads
@@ -70,9 +78,11 @@ def _bare(host: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def _row(title: str, *, url: str, detail: str = "", icon: str, positions=()) -> dict:
-    return B.row(url, title, detail=detail or None, icon=icon, match=list(positions) or None,
-                 actions=[REMOVE] if icon == BOOKMARK else None)
+TEXT_CUT = 300                  # characters of a row's title or detail, at most
+
+
+def _cut(value: str) -> str:
+    return value if len(value) <= TEXT_CUT else value[:TEXT_CUT - 1] + "…"
 
 
 class Addresses:
@@ -90,6 +100,21 @@ class Addresses:
         self._hosts: list[tuple[str, bool, float]] | None = None
         self._marked: dict[str, float] | None = None    # bookmark key -> its pages' frecency
         self._total: int | None = None
+        self._ids: dict[str, str] = {}      # address -> its rows' id, for this open
+        self._urls: dict[str, str] = {}     # ... and back
+
+    def _id(self, url: str) -> str:
+        rid = self._ids.get(url)
+        if rid is None:
+            rid = self._ids[url] = f"r{len(self._ids) + 1}"
+            self._urls[rid] = url
+        return rid
+
+    def _row(self, title: str, *, url: str, detail: str = "", icon: str, positions=()) -> dict:
+        shown = _cut(title)
+        return B.row(self._id(url), shown, detail=_cut(detail) or None, icon=icon,
+                     match=[p for p in positions if p < len(shown)] or None,
+                     actions=[REMOVE] if icon == BOOKMARK else None)
 
     def _now(self) -> float:
         return time.time() if self.now is None else self.now
@@ -104,7 +129,7 @@ class Addresses:
         head: list[dict] = []
         kind, _url = places.classify(typed)
         if kind:
-            head.append(B.row(TYPED, typed, tag="OPEN" if kind == "open" else "SEARCH"))
+            head.append(B.row(TYPED, _cut(typed), tag="OPEN" if kind == "open" else "SEARCH"))
 
         rows: dict[str, tuple[float, dict, bool]] = {}
         marked = self._bookmark_frecency(now)
@@ -115,7 +140,8 @@ class Addresses:
             score, positions, prefix = hit
             key = places.page_key(b["url"])
             score += BOOKMARK_BONUS + HISTORY_WEIGHT * math.log1p(marked.get(key, 0.0))
-            rows[key] = (score, _row(b["name"], url=b["url"], detail=places.display(b["url"]),
+            rows[key] = (score, self._row(b["name"], url=b["url"],
+                                          detail=places.display(b["url"]),
                                      icon=BOOKMARK, positions=positions), prefix)
 
         for v in self.reader.candidates(folded, CANDIDATES, now):
@@ -127,7 +153,7 @@ class Addresses:
                 continue
             score, positions, _prefix = hit
             score += HISTORY_WEIGHT * math.log1p(v.frecency)
-            rows[v.url] = (score, _row(v.title or places.display(v.url), url=v.url,
+            rows[v.url] = (score, self._row(v.title or places.display(v.url), url=v.url,
                                        detail=places.display(v.url) if v.title else "",
                                        icon=HISTORY, positions=positions), False)
 
@@ -207,21 +233,24 @@ class Addresses:
             hit = fuzzy.match(folded, shown) or fuzzy.match(folded, fuzzy.Text(bare))
             score = (hit.score if hit else 0.0) + ORIGIN_BONUS + HISTORY_WEIGHT * math.log1p(fr)
             positions = fuzzy.match(folded, shown)
-            return url, score, _row(title or bare, url=url, detail=places.display(url),
+            return url, score, self._row(title or bare, url=url, detail=places.display(url),
                                     icon=HISTORY,
                                     positions=positions.positions if positions else ())
         return None
 
     # ── the rest of an open ─────────────────────────────────────────────
-    @staticmethod
-    def url_of(row, text: str) -> str | None:
+    def url_of(self, row, text: str) -> str | None:
         """The address a `submit` names: its row's, or for the typed row
         and none (Shift+Return), what was typed (None when it is
-        nothing)."""
+        nothing, or a row this open never listed)."""
         if row is None or row == TYPED:
             kind, url = places.classify(text)
             return url if kind else None
-        return row if isinstance(row, str) else None
+        return self.address_of(row)
+
+    def address_of(self, row) -> str | None:
+        """The address of a row this open listed, by its id."""
+        return self._urls.get(row) if isinstance(row, str) else None
 
     def remove(self, url: str) -> bool:
         """A bookmark taken out of the file: out of this open's rows too.

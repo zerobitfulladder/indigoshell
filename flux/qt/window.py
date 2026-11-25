@@ -1078,17 +1078,21 @@ class Window(QWidget):
             if name == flux_bar.FIND:
                 self.shell_find_step(bool(msg.get("shift")))
             elif name in (flux_bar.ADDRESS, flux_bar.NEW_TAB):
-                url = Addresses.url_of(msg.get("row"), str(msg.get("text") or ""))
+                places_ = self.addresses.get(name) or Addresses()
+                url = places_.url_of(msg.get("row"), str(msg.get("text") or ""))
+                if name not in self.addresses:
+                    places_.close()
                 if url is not None:
                     log.info("address picked: %s", url)
                     self.load(url, "tab" if name == flux_bar.NEW_TAB else "here")
         elif kind == B.ACT:
-            url = msg.get("row")
-            if msg.get("action") == flux_bar.REMOVE and isinstance(url, str) and url.strip():
-                self.bookmark("remove", url.strip())
-                places_ = self.addresses.get(name)
-                if places_ is not None:
-                    places_.remove(url)
+            places_ = self.addresses.get(name)
+            url = places_.address_of(msg.get("row")) if places_ is not None else None
+            if msg.get("action") == flux_bar.REMOVE and url:
+                self.bookmark("remove", url)
+                places_.remove(url)
+            else:
+                log.debug("an action on no row of an open address input: %s", msg)
         elif kind == B.PICK and msg.get("menu") == flux_bar.ACTIONS:
             self.on_action(msg.get("row"))
         elif kind == B.CLOSED:

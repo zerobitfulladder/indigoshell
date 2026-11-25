@@ -57,7 +57,8 @@ launcher into a part of the bar.
 A `bar` message holds two runs of visible items, `start` (from the left)
 and `end` (against the section's right), and two maps of things shown
 only when opened, `inputs` and `menus`. Ids are strings or ints (not
-bools), at most 128 characters, unique within one bar, echoed back
+bools), at most 128 characters (an app keeps a longer key, a page's
+address, behind a short id of its own), unique within one bar, echoed back
 unchanged. An item that keeps its id keeps its widget (hover, a drag in
 progress, motion); one whose kind changes is made anew.
 
@@ -165,7 +166,8 @@ frame. Patches are not worth their failure modes at this size.
 **Validation.** A `bar` that breaks its shape (a missing or repeated id,
 `current` naming no tab, `opens` naming nothing) is ignored whole, the
 last good one kept, a warning once per connection per problem. Bounds:
-`LINE_LIMIT` (1 MiB) a line, 1000 characters a string, 500 tabs, 50
+`LINE_LIMIT` (1 MiB) a line, 1000 characters a string (8000 an input's
+`text`: an address may be long), 500 tabs, 50
 other items, 2000 static rows, 200 rows an answer.
 
 **Windows.** One connection per window and one bar per connection, as

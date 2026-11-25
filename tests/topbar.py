@@ -86,7 +86,13 @@
    The browser announces its window, and the service grabs its bar's
    chords (another client's grab of them refused, so X itself says so);
    its bar reaches the service; the context area draws it; an event of
-   the bar's switches its tab;
+   the bar's switches its tab; the live path of its address input: the
+   real Daemon, a top bar of the test's own (a small window in the
+   corner over the browser's: no dock, no strut) and the real drop-down
+   window, Ctrl+L delivered to the service as X reports it (the grabs
+   recorded, never made), the browser answering from a history seeded
+   with addresses far past 128 characters and a title past 1000, the
+   list mapped flush under that bar and read back, "yo" typed, Escape;
    the browser's window has nothing of the shell's in it, no child
    window and no line (its own pixels, from its composite pixmap, never
    the root or the screen: the page's colour from the top edge);
@@ -2216,6 +2222,19 @@ def test_spec(scratch: Path) -> None:
 
 # ── 8. on screen ────────────────────────────────────────────────────────
 
+# Pages in the test browser's history, as a real one has them: addresses
+# far past 128 characters (a video's with its playlist, a search's past
+# 1000), a title past 1000. (An answer holding one such row was refused
+# whole by the shell: no list ever showed.)
+LIVE_PAGES = [
+    ("https://www.youtube.com/", "YouTube"),
+    ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf"
+     "&index=4&pp=iAQB8AUB&t=42s&ab_channel=SomeChannelName", "Yodeling at dawn - YouTube"),
+    ("https://search.example/search?q=" + "yodel+" * 200 + "&src=1", "yodel - Search"),
+    ("https://example.org/long", "Yo " + "very " * 300 + "long title"),
+    ("https://news.example/", "News"),
+]
+
 PAINTED_BG = (0x10, 0x60, 0x90)     # a page colour no other page here has
 LINE_BG = (0x05, 0x03, 0x10)        # the browser's own line: theme.BAR_BG
 PAGE = ("<!doctype html><title>{title}</title>"
@@ -2409,6 +2428,12 @@ async def on_screen(scratch: Path) -> None:
         return got[0] if got else None
 
     try:
+        from flux import places
+        hist = places.History(scratch / "data" / APP / "browser-history.sqlite")
+        for i, (page_url, page_title) in enumerate(LIVE_PAGES):
+            for _ in range(len(LIVE_PAGES) - i):
+                hist.visit(page_url, page_title)
+        hist.close()
         log_path = scratch / "browser.log"
         with open(log_path, "w") as err:
             browser = subprocess.Popen(
@@ -2465,6 +2490,7 @@ async def on_screen(scratch: Path) -> None:
               "id}): the browser switches, its bar follows", bool(moved) and jw.view.item("tabs").current == 1)
         jw.send_event(Bv.event("select", item="tabs", tab=ids[0]))
         await until(lambda: jw.bar["start"][0]["current"] == ids[0], 5)
+        await live_input(scratch, service, display, x, jw, loop)
         service.set_active(0)
         check("focus elsewhere: the context area empty", ctx.shown is None)
 
@@ -2515,6 +2541,125 @@ async def on_screen(scratch: Path) -> None:
         for path in (sock, isock, isock + ".lock"):
             if os.path.exists(path):
                 os.unlink(path)
+
+
+async def live_input(scratch: Path, service, display, x, jw, loop) -> None:
+    """Ctrl+L on the real browser's window, the live path whole: the real
+    Daemon opening the real drop-down window under a top bar of the
+    test's own (a small window in the corner over the browser's: no dock,
+    no strut), the browser answering from its history over the socket.
+    Keys are delivered to the service's handler as X reports them under
+    its grab; the keyboard and pointer grabs are recorded, never made."""
+    import xcffib.xproto as xp
+
+    from indigoshell import config_default, theme
+    from indigoshell.applink.context import AppContext
+    from indigoshell.applink.drop import DROP_WINDOW
+    from indigoshell.core import daemon as daemon_mod
+    from indigoshell.widgets.base import Insets
+    from indigoshell.widgets.layout import Align, Row
+    from indigoshell.window import Layer, Placement, WindowSpec
+
+    print("  the live path: Ctrl+L, the browser's answers, the list under a bar", flush=True)
+    top = jw.wid
+    core = x.conn.core
+    at = core.TranslateCoordinates(top, x.screen.root, 0, 0).reply()
+    geo = core.GetGeometry(top).reply()
+    bw = min(geo.width + 40, 700)
+    bar = WindowSpec(name="test-top-bar", layer=Layer.OVERLAY, size=(bw, theme.TOP_BAR_HEIGHT),
+                     override_redirect=True, focusable=False, background=theme.BAR_BG,
+                     padding=Insets.xy(theme.BAR_MARGIN, 0),
+                     content=Row([AppContext(service)], spacing=theme.BAR_SPACING,
+                                 align=Align.CENTER))
+    drop = next(s_ for s_ in config_default.WINDOWS if s_.name == DROP_WINDOW)
+    grabs: list = []
+    saved = {k: getattr(display, k) for k in ("grab_keyboard", "ungrab_keyboard",
+                                              "grab_pointer", "ungrab_pointer")}
+    display.grab_keyboard = lambda wid: grabs.append(("keyboard", wid)) or True
+    display.ungrab_keyboard = lambda: grabs.append("keyboard let go")
+    display.grab_pointer = lambda wid: grabs.append(("pointer", wid)) or True
+    display.ungrab_pointer = lambda: grabs.append("pointer let go")
+    d = daemon_mod.Daemon({"windows": [bar, drop]})
+    d.display, d.loop = display, loop
+    said: list[dict] = []
+    real_send = jw.send
+
+    def send(msg):
+        said.append(msg)
+        real_send(msg)
+    jw.send = send
+
+    def press(sym, state=0):
+        ev = xp.KeyPressEvent.synthetic(display.keycodes(sym)[0], 0, display.root, top,
+                                        0, 0, 0, 0, 0, state, 1)
+        ev.response_type = 2
+        display.dispatch(ev)
+
+    try:
+        d.open("test-top-bar", placement=Placement(at.dst_x + geo.width // 2,
+                                                   max(0, at.dst_y - theme.TOP_BAR_HEIGHT - 8)))
+        service.set_active(top)
+        press(ord("l"), xp.ModMask.Control)
+        p = service.prompt
+        opened = p is not None and p.owner is jw and jw.view.box is p.box
+        shown = await until(lambda: DROP_WINDOW in d.instances
+                            and d.instances[DROP_WINDOW].mapped and p.rows, 5)
+        win = d.instances.get(DROP_WINDOW)
+        left, bottom, width = service.section() or (0, 0, 0)
+        queries = [m for m in said if m.get("type") == "query"]
+        check("Ctrl+L on the real browser's window: the address input open in the section, the "
+              "page's address queried and answered by the browser, the list's window mapped "
+              "flush under the bar at the section's left and width",
+              opened and bool(shown) and queries and queries[0]["seq"] == 1
+              and queries[0]["text"] == jw.bar["inputs"]["address"]["text"]
+              and win is not None and win.content_root[:3] == (left, bottom, width),
+              f"opened {opened}, shown {bool(shown)}, queries {len(queries)}, "
+              f"{win.content_root if win else None} vs {(left, bottom, width)}")
+        await asyncio.sleep(0.3)
+        img = x.region(win.wid, 0, 0, win.width, win.height) if win is not None else None
+        if img is not None:
+            save(scratch / "live-drop.png", img)
+        cyan = count_color(img, theme.CYAN_BRIGHT, 90) if img is not None else 0
+        check("... its own pixels: the rows drawn, the selection's cyan slab",
+              img is not None and cyan > 100, f"cyan px {cyan}")
+        for c in "yo":
+            press(ord(c))
+        typed = await until(lambda: p.text == "yo" and p.taken >= 2 and p.inflight is None
+                            and any(r.get("tag") == "SEARCH" for r in p.rows), 5)
+        titles_ = [r["title"] for r in p.rows]
+        selected = p.selected_row()["title"] if p.rows else None
+        check("\"yo\" typed after it: into the box (the address replaced), each answer taken "
+              "in turn (one query in flight): the typed row first, pages with addresses far "
+              "past 128 characters and a title past 1000 (cut) among the rows, YouTube's front "
+              "page selected", bool(typed) and titles_[0] == "yo" and selected == "YouTube"
+              and "Yodeling at dawn - YouTube" in titles_ and "yodel - Search" in titles_
+              and any(t.startswith("Yo very") and len(t) <= 300 for t in titles_),
+              f"{p.text!r} {[t[:30] for t in titles_]} selected {selected!r}")
+        await asyncio.sleep(0.2)
+        long_row = next((r for r in p.rows if r["title"] == "yodel - Search"), None)
+        img = x.region(win.wid, 0, 0, win.width, win.height)
+        if img is not None:
+            save(scratch / "live-drop-yo.png", img)
+        check("... the list's window grown to the rows (its own pixels: the rows drawn)",
+              win.content_root[3] > 52 * 3 and img is not None
+              and count_color(img, theme.HUD_FG_BRIGHT, 40) > 200 and long_row is not None
+              and len(long_row["id"]) <= 128, f"{win.content_root}")
+        press(0xFF1B)
+        parked = await until(lambda: DROP_WINDOW in d._parked, 3)
+        check("Escape: closed (`closed` by escape to the browser), the list parked, the box "
+              "gone, the keyboard and pointer given back", bool(parked)
+              and service.prompt is None and jw.view.box is None
+              and said[-1] == {"type": "closed", "input": "address", "by": "escape"}
+              and "keyboard let go" in grabs and "pointer let go" in grabs, f"{said[-1:]}")
+    finally:
+        jw.send = real_send
+        for k, v in saved.items():
+            setattr(display, k, v)
+        for w in list(d.instances.values()) + list(d._parked.values()) + list(d._dying):
+            w.destroy()
+        d.instances.clear()
+        d._parked.clear()
+        daemon_mod._DAEMON = None
 
 
 def main() -> int:

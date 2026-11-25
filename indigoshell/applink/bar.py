@@ -62,7 +62,8 @@ ICONS = ("bookmark", "unlocked", "search", "replace", "play", "history", "unsave
 
 # Bounds.
 ID_MAX = 128                # characters of a string id
-STRING_MAX = 1000           # characters of any string
+STRING_MAX = 1000           # characters of any string but an input's text
+INPUT_TEXT_MAX = 8000       # characters of an input's `text` (an address may be long)
 TABS_MAX = 500              # tabs in one `tabs` item
 ITEMS_MAX = 50              # other items, start and end together
 ROWS_MAX = 2000             # static rows (an input's `rows`, a menu's)
@@ -242,7 +243,8 @@ def _check_spans(p: _Problems, where: str, spans) -> None:
         p.add(where, "spans is not a list of at most 20")
         return
     for i, s in enumerate(spans):
-        if not isinstance(s, dict) or not (_string(s.get("text")) or isinstance(s.get("icon"), str)):
+        if not isinstance(s, dict) or not (_string(s.get("text"))
+                                           or isinstance(s.get("icon"), str)):
             p.add(f"{where} span {i}", "neither text nor icon")
         elif not role_ok(s.get("color")):
             p.add(f"{where} span {i}", f"colour {s.get('color')!r} is no role")
@@ -397,9 +399,11 @@ def bar_problems(msg) -> list[str]:
             p.add(where, "not an object under an id")
             continue
         _check_chords(p, where, spec.get("chords"), taken)
-        for key in ("icon", "placeholder", "text"):
+        for key in ("icon", "placeholder"):
             if spec.get(key) is not None and not _string(spec[key]):
                 p.add(where, f"{key} is not a string")
+        if spec.get("text") is not None and not _string(spec["text"], INPUT_TEXT_MAX):
+            p.add(where, f"text is not a string of at most {INPUT_TEXT_MAX}")
         for key in ("select", "query", "keep", "steps"):
             if not _bool(spec.get(key)):
                 p.add(where, f"{key} is not a bool")
