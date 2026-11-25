@@ -1174,7 +1174,7 @@ class Window:
             if dirty is not None and not dirty.isEmpty():
                 self.paint(self.surface.getCanvas(), self.width, self.height,
                            dirty)
-                self.surface.flushAndSubmit()
+                self._flush_paint()
             frame = self.surface.makeImageSnapshot()
 
         passes = [e for e in self.effects if e.active(self._appear)]
@@ -1237,6 +1237,10 @@ class Window:
             out = self._out_surface()
             out.getCanvas().drawPaint(paint)
         self._show_out(out)
+
+    def _flush_paint(self) -> None:
+        """Submit what `redraw` just painted into `self.surface`."""
+        self.surface.flushAndSubmit()
 
     def _show_frame(self, frame: skia.Image) -> None:
         """Put a frame no pass touched on screen (`redraw`)."""

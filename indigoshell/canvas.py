@@ -688,6 +688,12 @@ class Region(Window):
                 log.debug("region %s painted in %.2f ms (%d px)", self.spec.name, ms,
                           self._painted)
 
+    def _flush_paint(self) -> None:
+        # The canvas's present submits the one context's work, this
+        # region's paint with it: a submit of its own per frame cost
+        # 0.8 ms on the GPU for nothing.
+        pass
+
     def _take_damage(self):
         region = super()._take_damage()
         self._dirty_local = skia.Region(region) if region is not None else None
