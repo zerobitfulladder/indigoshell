@@ -143,11 +143,10 @@ stat_ram = StatMeter("RAM", sysinfo.memory_percent,
 stat_temp = StatMeter("TEMP", sysinfo.temperature_package,
                       value_format="{:.0f}°",
                       dim_color=theme.CYAN_DIM, label_color=theme.CYAN_DIM,
-                      # 30°C -> 0%, 90°C -> 100%
-                      to_pct=lambda t: (t - 30) * (100 / 60),
-                      gradient=((0.0, theme.CYAN_BRIGHT),
-                                (0.5, theme.YELLOW_BRIGHT),
-                                (0.8, theme.ERROR)))
+                      # 30°C -> 0%, 90°C -> 100%; red from 78°C
+                      to_pct=lambda t: ((t - theme.TEMP_MIN_C) * 100
+                                        / (theme.TEMP_MAX_C - theme.TEMP_MIN_C)),
+                      gradient=theme.HEAT_RAMP)
 
 # Now playing — sptlrx pipes the current lyric line; the scramble effect
 # reveals each new line instead of snapping to it, and the line breathes

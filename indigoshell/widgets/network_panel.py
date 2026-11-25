@@ -361,11 +361,13 @@ class NetworkPanel(Widget):
 
     # ── firewall ────────────────────────────────────────────────────────
     def _firewall_color(self) -> str:
+        """Lime while a firewall runs; red, an alarm, when none does or
+        it failed; muted until the first answer."""
         state = self._firewall[0]
         if state == "active":
             return theme.LIME_BRIGHT
-        if state in ("inactive", "failed", "unknown"):
-            return theme.MAGENTA_BRIGHT
+        if state in ("inactive", "failed"):
+            return theme.ERROR
         return theme.BASE_MUTED
 
     def _poll_firewall(self) -> None:

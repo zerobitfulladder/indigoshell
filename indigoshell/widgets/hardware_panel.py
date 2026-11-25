@@ -43,12 +43,19 @@ def fmt_bytes(n: float) -> str:
 
 
 def heat_color(pct: float) -> str:
-    """Cool -> warm -> hot ramp, shared by disk and temperature."""
-    if pct >= 90:
-        return theme.MAGENTA_BRIGHT
-    if pct >= 75:
-        return theme.YELLOW_BRIGHT
-    return theme.CYAN_BRIGHT
+    """Cool -> warm -> hot, shared by disk and temperature: the bar's
+    TEMP ramp (theme.HEAT_RAMP), red from 80% of the scale."""
+    chosen = theme.HEAT_RAMP[0][1]
+    for share, color in theme.HEAT_RAMP:
+        if pct >= share * 100:
+            chosen = color
+    return chosen
+
+
+def temp_pct(celsius: float) -> float:
+    """A temperature on the bar's TEMP scale, 30 °C -> 0%, 90 °C -> 100%."""
+    return ((celsius - theme.TEMP_MIN_C) * 100
+            / (theme.TEMP_MAX_C - theme.TEMP_MIN_C))
 
 
 # ── GPU sampling ────────────────────────────────────────────────────────
@@ -302,8 +309,8 @@ class HardwarePanel(Widget):
         self._gpu_mem_bar.set_value(gpu["mem_used_mib"] / total * 100.0)
         self._gpu_mem.set_value(
             f"{gpu['mem_used_mib']:.0f} / {gpu['mem_total_mib']:.0f} MiB")
-        # 30°C -> 0%, 100°C -> 100%, same ramp the bar meter reads.
-        self._gpu_temp_bar.set_value((gpu["temp"] - 30) * (100 / 70))
+        # On the bar's TEMP scale, so it turns red where the bar does.
+        self._gpu_temp_bar.set_value(temp_pct(gpu["temp"]))
         self._gpu_temp.set_value(f"{gpu['temp']:.0f}°C")
 
     # ── layout / paint ──────────────────────────────────────────────────
