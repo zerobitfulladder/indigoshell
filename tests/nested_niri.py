@@ -17,7 +17,10 @@ that is removed at the end:
   test's for its launcher to find (a kitty).
 - niri's Mod+D: the user's (fuzzel) replaced by a script running the
   nested shell's own client with the nested shell's environment and
-  nothing else (env -i), so it reaches that daemon, never the live one.
+  nothing else (env -i), so it reaches that daemon, never the live one;
+  Mod+A the same for `toggle call`. The call's hub is a stand-in
+  (tests/_live.py's ScriptedAgent) that connects nowhere: the test plays
+  the hub's events through a file the config reads.
   niri's virtual keyboard goes to the focused client and not through
   niri's bindings, so the test runs the binding's command as niri
   does for the key (`niri msg action spawn`).
@@ -135,15 +138,17 @@ class Probe(Widget):
 class Dump:
     """Where everything on the canvas is, and what an open input or
     menu holds, written for the test five times a second (only when it
-    changed)."""
+    changed); and the canvas's state, the call's, its agent's."""
 
     last = None
 
     @classmethod
     def write(cls):
         from indigoshell.core.daemon import get_daemon
+        d = get_daemon()
+        scene = d.canvas.scene
         out = {}
-        for name, win in get_daemon().instances.items():
+        for name, win in d.instances.items():
             widgets = []
             for w in win.content.walk():
                 r = w.rect
@@ -153,17 +158,35 @@ class Dump:
                     item.update(stride=w._stride(), count=w._count)
                 if type(w).__name__ == "TabsItem":
                     item.update(pitch=w.pitch, first=w.first, ids=list(w.ids))
+                if type(w).__name__ == "_TrayRow":
+                    item.update(bus=w.item.bus_name, title=w.item.title)
+                if type(w).__name__ == "AgentChip":
+                    item.update(state=w.state, strength=round(w.strength(), 2))
                 widgets.append(item)
             out[name] = {"x": win.x, "y": win.y, "w": win.width, "h": win.height,
                          "cx": win.content_root[0], "cy": win.content_root[1],
                          "cw": win.content_root[2], "ch": win.content_root[3],
-                         "phase": win._phase, "widgets": widgets}
+                         "phase": win._phase, "widgets": widgets,
+                         "shows": scene.shows(win), "blur": list(win.blur_rects())}
             prompt = getattr(win.content, "prompt", None)
             if prompt is not None and getattr(prompt, "open", False):
                 out[name]["prompt"] = _prompt(prompt)
+            you = getattr(win.content, "you_plate", None)
+            if you is not None:
+                out[name]["typed"] = you.input.text
         p = APPS.prompt
         if p is not None and p.open:
             out["_apps_prompt"] = _prompt(p)
+        c = d.canvas
+        out["_canvas"] = {"fullscreen": c.fullscreen, "hidden": scene.hidden,
+                          "surface": c.surface is not None, "kb": c._kb_sent,
+                          "blur": [list(r) for r in (c._blur_sent or ())],
+                          "can_blur": c.can_blur, "frames_late": c.frames_late}
+        from indigoshell.services.systray import get_broker
+        out["_tray"] = [i.title for i in get_broker().items()]
+        out["_agent"] = {"busy": HUB.busy, "ringing": HUB.ringing, "call_open": HUB.call_open,
+                         "phase": HUB.phase, "said": [m.get("text") for m in HUB.sent
+                                                      if m.get("type") == "say"]}
         key = json.dumps(out, sort_keys=True)
         if key != cls.last:
             cls.last = key
@@ -181,10 +204,55 @@ def _prompt(p):
             "rows": [str(r.get("title")) for r in p.list_rows()][:20]}
 
 
+def _script():
+    """What the test asks of the shell's insides, a JSON line each in
+    DUMP + ".do": the stand-in hub's events (`do`: a ScriptedAgent
+    method and its `args`), or `blur` (whether the canvas asks for its
+    blur: the test's A/B of what the compositor's blur does)."""
+    path = DUMP + ".do"
+    try:
+        with open(path) as f:
+            f.seek(_script.at)
+            lines = f.read()
+    except OSError:
+        return
+    _script.at += len(lines.encode())
+    for line in lines.splitlines():
+        if not line.strip():
+            continue
+        step = json.loads(line)
+        log.info("probe: script %s", step)
+        if "do" in step:
+            getattr(HUB, step["do"])(*step.get("args", ()))
+        elif step.get("tray") == "toggle":
+            from indigoshell.core.daemon import get_daemon
+            bar = get_daemon().instances["bar"]
+            next(w for w in bar.content.walk() if type(w).__name__ == "Systray")._toggle_panel()
+        elif "blur" in step:
+            from indigoshell.core.daemon import get_daemon
+            c = get_daemon().canvas
+            c.can_blur = bool(step["blur"])
+            c._blur_sent = None
+            c.pending_state = True
+            c.scene.damage_all()        # a frame to carry it
+
+
+_script.at = 0
+
+
 async def _dumping():
+    try:
+        _script.at = os.path.getsize(DUMP + ".do")     # a shell started again: what is new
+    except OSError:
+        pass
+
     async def loop():
         while True:
             await asyncio.sleep(0.2)
+            try:
+                _script()
+            except Exception:
+                log.exception("probe: the script failed")
             try:
                 Dump.write()
             except Exception:
@@ -194,6 +262,35 @@ async def _dumping():
 
 WINDOWS = [top_bar(Probe()) if spec.name == TOP_BAR else spec for spec in WINDOWS]
 STARTUP = [*STARTUP, _dumping]
+
+
+# The call as this machine's config has it (config_default's `call`),
+# its hub stood in for: tests/_live.py's ScriptedAgent, the hub's events
+# as the test scripts them; it connects nowhere (no line is started).
+import shutil as _shutil  # noqa: E402
+import sys as _sys  # noqa: E402
+
+import indigoshell as _pkg  # noqa: E402
+
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_pkg.__file__)), "tests"))
+_state_home = os.environ["XDG_STATE_HOME"]
+from _live import ScriptedAgent  # noqa: E402
+
+_shutil.rmtree(os.environ["XDG_STATE_HOME"], ignore_errors=True)   # _live's own
+os.environ["XDG_STATE_HOME"] = _state_home
+
+from indigoshell.config_default import call  # noqa: E402
+
+
+class _Hub(ScriptedAgent):
+    def start(self):
+        pass                            # no line: the test plays the hub
+
+
+HUB = _Hub(voice="indigo")
+CALL, CALL_SERVICES = call(HUB)
+WINDOWS = [*WINDOWS, CALL]
+SERVICES = [*SERVICES, *CALL_SERVICES]
 
 
 # A chord menu of the test's own: its items only say they ran.
@@ -243,6 +340,10 @@ def _timed_present(self):
 _Daemon.open = _timed_open
 _wayland.Canvas._present = _timed_present
 
+if os.environ.get("INDIGOSHELL_TEST_UNPACED"):
+    # The other side of an A/B: presents not paced on frame callbacks.
+    _wayland.Canvas.ask_frame = lambda self: None
+
 _added = APPS.added
 
 
@@ -262,6 +363,24 @@ Type=Application
 Name=Zqxwv Nested Probe
 Exec=kitty --class wltest.launched -T {tag} -o linux_display_server=wayland -o confirm_os_window_close=0 sleep 900
 """
+
+
+# A screen of blocks in hard-edged colours, the same every time: the
+# terminal's size read once its window has settled (maximised).
+BUSY = r"""
+import random, shutil, time
+time.sleep(1.5)
+cols, rows = shutil.get_terminal_size()
+random.seed(7)
+for _ in range(rows - 1):
+    print("".join(f"\033[3{random.randint(1, 7)}m" + random.choice("\u2588\u2588 \u2580")
+                  for _ in range(cols)) + "\033[0m")
+"""
+
+
+def shlex_quote(value: str) -> str:
+    import shlex
+    return shlex.quote(value)
 
 
 class Poker:
@@ -420,6 +539,7 @@ class Nested:
         os.makedirs(self.run, mode=0o700)
         os.makedirs(self.shots)
         self.launcher_key = os.path.join(self.tmp, "launcher-key.sh")
+        self.call_key = os.path.join(self.tmp, "call-key.sh")
         self.rule = None
         self.wrapper = None             # dbus-run-session
         self.niri_pid = None
@@ -464,8 +584,9 @@ class Nested:
         # The launcher's key: the user's Mod+D (fuzzel) replaced by the
         # nested shell's own `toggle launcher` (a script of the test's,
         # written once the shell's environment is known).
-        out = [line for line in out if not re.match(r"\s*Mod\+D\s*(\{|\S+=)", line)]
-        binds = [f'    Mod+D {{ spawn "{self.launcher_key}"; }}']
+        out = [line for line in out if not re.match(r"\s*Mod\+[DA]\s*(\{|\S+=)", line)]
+        binds = [f'    Mod+D {{ spawn "{self.launcher_key}"; }}',
+                 f'    Mod+A {{ spawn "{self.call_key}"; }}']
         at = next((i for i, line in enumerate(out) if re.match(r"\s*binds\s*\{", line)), None)
         if at is None:
             out += ["binds {", *binds, "}"]
@@ -567,13 +688,15 @@ class Nested:
                            "-o", "linux_display_server=wayland", "-o", "confirm_os_window_close=0",
                            "sh", "-c", command], f"kitty-{name}.log")
 
-    def recorder(self, name) -> str:
+    def recorder(self, name, busy: bool = False) -> str:
         """A kitty whose terminal reports clicks (xterm's mode 1000) and
         writes them and every key typed into it, raw, to a file: what
-        reached that window."""
+        reached that window. `busy`: its screen full of hard-edged
+        coloured blocks first (BUSY), something a blur is seen on."""
         path = os.path.join(self.tmp, f"typed-{name}")
         open(path, "wb").close()
-        self.kitty(name, f"stty raw -echo; printf '\\033[?1000h'; exec cat > {path}")
+        first = f"python3 -c {shlex_quote(BUSY)}; " if busy else ""
+        self.kitty(name, f"{first}stty raw -echo; printf '\\033[?1000h'; exec cat > {path}")
         return path
 
     def screenshot(self, name: str, keep: str | None):
@@ -739,18 +862,21 @@ class Shell:
 
 
 def write_launcher_key(nested: "Nested", shell: "Shell",
-                       verb: tuple[str, ...] = ("toggle", "launcher")) -> None:
-    """The nested niri's Mod+D: the nested shell's own client, with the
-    nested shell's whole environment and nothing else (env -i), so it
-    reaches that daemon and never the live one."""
+                       verb: tuple[str, ...] = ("toggle", "launcher"),
+                       path: str | None = None) -> None:
+    """The nested niri's Mod+D (or, at `path`, Mod+A's `toggle call`):
+    the nested shell's own client, with the nested shell's whole
+    environment and nothing else (env -i), so it reaches that daemon and
+    never the live one."""
     import shlex
+    path = path or nested.launcher_key
     env = " ".join(shlex.quote(f"{k}={v}") for k, v in shell.env.items())
     main = shlex.quote(os.path.join(REPO, "main.py"))
     out = shlex.quote(os.path.join(nested.tmp, "launcher-key.log"))
-    with open(nested.launcher_key, "w") as f:
+    with open(path, "w") as f:
         f.write(f"#!/bin/sh\nexec env -i {env} {shlex.quote(sys.executable)} -B {main} "
                 f"{' '.join(verb)} >> {out} 2>&1\n")
-    os.chmod(nested.launcher_key, 0o700)
+    os.chmod(path, 0o700)
 
 
 def _comm(pid: int) -> str:
@@ -759,6 +885,134 @@ def _comm(pid: int) -> str:
             return f.read().strip()
     except OSError:
         return ""
+
+
+class TrayItem:
+    """A StatusNotifierItem of the test's on the nested shell's own bus:
+    a title, a menu of two rows (com.canonical.dbusmenu), and what the
+    shell calls on it recorded in `calls`. dbus-fast, on a loop in a
+    thread of its own; registered with the shell's watcher."""
+
+    TITLE = "Zqx Tray Probe"
+    ROWS = ((1, "Probe Alpha"), (2, "Probe Beta"))
+
+    def __init__(self, bus_address: str) -> None:
+        import asyncio
+        import threading
+        self.address = bus_address
+        self.calls: list[tuple] = []
+        self.error = None
+        self.ready = threading.Event()
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        self.ready.wait(10)
+
+    def _run(self) -> None:
+        import asyncio
+        asyncio.set_event_loop(self.loop)
+        try:
+            self.loop.run_until_complete(self._start())
+        except Exception as e:
+            self.error = e
+            self.ready.set()
+            return
+        self.ready.set()
+        self.loop.run_forever()
+
+    async def _start(self) -> None:
+        from dbus_fast import Message, PropertyAccess, Variant
+        from dbus_fast.aio import MessageBus
+        from dbus_fast.service import ServiceInterface, dbus_property, method
+
+        calls = self.calls
+        title, rows = self.TITLE, self.ROWS
+
+        class Item(ServiceInterface):
+            def __init__(self):
+                super().__init__("org.kde.StatusNotifierItem")
+
+            @dbus_property(access=PropertyAccess.READ)
+            def Id(self) -> "s":
+                return "zqx-tray-probe"
+
+            @dbus_property(access=PropertyAccess.READ)
+            def Title(self) -> "s":
+                return title
+
+            @dbus_property(access=PropertyAccess.READ)
+            def Status(self) -> "s":
+                return "Active"
+
+            @dbus_property(access=PropertyAccess.READ)
+            def Menu(self) -> "o":
+                return "/MenuBar"
+
+            @dbus_property(access=PropertyAccess.READ)
+            def ItemIsMenu(self) -> "b":
+                return True
+
+            @method()
+            def Activate(self, x: "i", y: "i"):
+                calls.append(("Activate", x, y))
+
+            @method()
+            def ContextMenu(self, x: "i", y: "i"):
+                calls.append(("ContextMenu", x, y))
+
+        class Menu(ServiceInterface):
+            def __init__(self):
+                super().__init__("com.canonical.dbusmenu")
+
+            @dbus_property(access=PropertyAccess.READ)
+            def Version(self) -> "u":
+                return 3
+
+            @method()
+            def AboutToShow(self, _id: "i") -> "b":
+                return False
+
+            @method()
+            def GetLayout(self, _parent: "i", _depth: "i", _names: "as") -> "u(ia{sv}av)":
+                kids = [Variant("(ia{sv}av)", [i, {"label": Variant("s", label)}, []])
+                        for i, label in rows]
+                return [1, [0, {"children-display": Variant("s", "submenu")}, kids]]
+
+            @method()
+            def Event(self, item: "i", event: "s", _data: "v", _ts: "u"):
+                calls.append(("Event", item, event))
+
+        bus = await MessageBus(bus_address=self.address).connect()
+        self.bus = bus
+        bus.export("/StatusNotifierItem", Item())
+        bus.export("/MenuBar", Menu())
+        await bus.call(Message(destination="org.kde.StatusNotifierWatcher",
+                               path="/StatusNotifierWatcher",
+                               interface="org.kde.StatusNotifierWatcher",
+                               member="RegisterStatusNotifierItem", signature="s",
+                               body=[bus.unique_name]))
+
+    def close(self) -> None:
+        def stop():
+            bus = getattr(self, "bus", None)
+            if bus is not None:
+                bus.disconnect()
+            self.loop.stop()
+        with contextlib.suppress(RuntimeError):
+            self.loop.call_soon_threadsafe(stop)
+        self.thread.join(5)
+
+
+def shell_bus(shell: "Shell", user_env: dict) -> str | None:
+    """The nested shell's own D-Bus (from its environment), never the
+    session's."""
+    try:
+        with open(f"/proc/{shell.pid}/environ", "rb") as f:
+            env = dict(v.split(b"=", 1) for v in f.read().split(b"\0") if b"=" in v)
+    except OSError:
+        return None
+    bus = env.get(b"DBUS_SESSION_BUS_ADDRESS", b"").decode()
+    return bus if bus and bus != user_env.get("DBUS_SESSION_BUS_ADDRESS") else None
 
 
 class App:
@@ -890,14 +1144,25 @@ def run(args, check, section, user_env) -> None:
             print(f"  ({renderer})", flush=True)
         line = re.search(r"canvas draws (.*); not on Wayland yet: (.*)$", log, re.M)
         check("one line names what the canvas draws: the bars, the panels, the chord menu, "
-              "the launcher, the drop-down (this config has no call)",
+              "the launcher, the drop-down, the call; nothing left out",
               line is not None and set(line[1].split(", ")) == {
                   "bar", "topbar", "system", "hardware", "network", "menu", "launcher",
-                  "dropdown"} and line[2] == "none", line[0] if line else "")
+                  "dropdown", "call"} and line[2] == "none", line[0] if line else "")
+        warmed = re.search(r"canvas: (\d+) effect chain\(s\) and the hologram warmed on the "
+                           r"GPU in (\d+) ms", log)
+        if not args.raster:
+            check("the effects' and the hologram's shaders warmed at start",
+                  warmed is not None and int(warmed[1]) >= 1, warmed[0] if warmed else "")
+            if warmed:
+                print(f"  (shaders warmed in {warmed[2]} ms)", flush=True)
+        blur = re.search(r"canvas: the compositor can blur behind the canvas", log)
+        check("niri offers ext-background-effect's blur, and the canvas binds it",
+              blur is not None and "no background blur" not in log)
         keymap = re.search(r"keyboard: keymap with (.*)$", log, re.M)
         check("the keymap niri sent read by xkbcommon (the user's layouts)",
               keymap is not None, keymap[0] if keymap else "")
         write_launcher_key(nested, shell)
+        write_launcher_key(nested, shell, ("toggle", "call"), nested.call_key)
         check("no errors or tracebacks in its log so far",
               "Traceback" not in log and " ERROR " not in log,
               "\n".join(ln for ln in log.splitlines() if "ERROR" in ln or "Trace" in ln)[:800])
@@ -1073,9 +1338,19 @@ def run(args, check, section, user_env) -> None:
                   moves and moves[-1].get("tab") == 101 and moves[-1].get("before") == 103,
                   str(got[-4:]))
 
-        overlays({"nested": nested, "shell": shell, "poker": poker, "app": app,
-                  "check": check, "W": W, "H": H, "keep": keep, "shots": shots,
-                  "recorder": recorder})
+        ctx = {"nested": nested, "shell": shell, "poker": poker, "app": app,
+               "check": check, "W": W, "H": H, "keep": keep, "shots": shots,
+               "recorder": recorder, "drawn": drawn}
+        overlays(ctx)
+        calls(ctx)
+        chip(ctx)
+        tray(ctx)
+        nested.action("focus-workspace", "1")
+        time.sleep(0.5)
+        log = shell.log()
+        check("no errors or tracebacks after the call, the chip and the tray",
+              "Traceback" not in log and " ERROR " not in log,
+              "\n".join(ln for ln in log.splitlines() if "ERROR" in ln or "Trace" in ln)[:800])
         if nested.output_size() != (W, H):
             W, H = nested.output_size()
             print(f"  (the nested output is {W}x{H} now: qtile laid its window out anew)",
@@ -1098,6 +1373,8 @@ def run(args, check, section, user_env) -> None:
               and ("indigoshell-reserve-top", "Bottom") in layers
               and fs_probe < 0.05 and fs_ink < 0.005,
               f"{layers} probe {fs_probe:.2f} ink {fs_ink:.3f}")
+        ctx.update(W=W, H=H)
+        over_fullscreen(ctx)
         mark = len(shell.log())
         nested.action("fullscreen-window")
         back = shell.wait_log(r"the canvas is back", 5, mark)
@@ -1567,4 +1844,457 @@ def overlays(ctx) -> None:
           "\n".join(ln for ln in log.splitlines() if "ERROR" in ln or "Trace" in ln)[:800])
     for what, t in timings.items():
         print(f"  ({_say_timing(what, t)})", flush=True)
-    ctx["timings"] = timings
+    ctx["timings"] = {}
+
+
+# ── phase 2b: the call, its blur, the agent chip, the tray ─────────────
+class _Look:
+    """What the phase 2b checks read of the nested shell and niri."""
+
+    def __init__(self, ctx) -> None:
+        self.nested, self.shell = ctx["nested"], ctx["shell"]
+
+    def lay(self) -> dict:
+        return self.shell.layout()
+
+    def win(self, name) -> dict | None:
+        return self.lay().get(name)
+
+    def idle(self, name, timeout: float = 5.0):
+        return _wait(lambda: (self.win(name) or {}).get("phase") == "idle" and self.win(name),
+                     timeout)
+
+    def gone(self, name, timeout: float = 5.0) -> bool:
+        return bool(_wait(lambda: name not in self.lay(), timeout))
+
+    def widget(self, name, kind) -> dict | None:
+        return next((w for w in (self.win(name) or {}).get("widgets", [])
+                     if w["type"] == kind), None)
+
+    def widgets(self, name, kind) -> list[dict]:
+        return [w for w in (self.win(name) or {}).get("widgets", []) if w["type"] == kind]
+
+    def kb(self):
+        return next((ly.get("keyboard_interactivity") for ly in self.nested.msg("layers") or []
+                     if ly.get("namespace") == "indigoshell"), None)
+
+    def kb_is(self, mode):
+        return _wait(lambda: self.kb() == mode, 3.0) and self.kb()
+
+    def overlay(self) -> bool:
+        return any(ly.get("namespace") == "indigoshell" and ly.get("layer") == "Overlay"
+                   for ly in self.nested.msg("layers") or [])
+
+    def canvas(self) -> dict:
+        return self.lay().get("_canvas") or {}
+
+    def agent(self) -> dict:
+        return self.lay().get("_agent") or {}
+
+    def do(self, **step) -> None:
+        with open(self.shell.dump + ".do", "a") as f:
+            f.write(json.dumps(step) + "\n")
+
+    def paste(self, primary: bool = False) -> str:
+        out = subprocess.run(["wl-paste", "-n", *(["--primary"] if primary else [])],
+                             env=self.nested.env, capture_output=True, text=True, timeout=10)
+        return out.stdout
+
+
+def _union(rects) -> tuple[int, int, int, int] | None:
+    """The bounds (x0, y0, x1, y1) of (x, y, w, h) rects."""
+    rects = [r for r in rects if r]
+    if not rects:
+        return None
+    return (min(r[0] for r in rects), min(r[1] for r in rects),
+            max(r[0] + r[2] for r in rects), max(r[1] + r[3] for r in rects))
+
+
+def _edges(img, box) -> float:
+    """How sharp a box of a screenshot is: the mean step between
+    neighbouring pixels along its rows (the plates' raster runs along
+    them, so it adds nothing)."""
+    import numpy as np
+    x0, y0, x1, y1 = (int(v) for v in box)
+    px = img[y0:y1, x0:x1, :3].astype(int)
+    return float(np.abs(np.diff(px, axis=1)).mean()) if px.size else 0.0
+
+
+def calls(ctx) -> None:
+    """The call on the canvas, over a busy window on a workspace of its
+    own: Mod+A (niri's binding, the nested shell's `toggle call`), its
+    place, the keyboard, typing and a line said, the hub's reply growing
+    the agent's plate and the blur region with it, the blur seen in
+    niri's screenshot (against the same with the canvas's blur off),
+    text selected and copied, and every way to hang up."""
+    from indigoshell import theme
+    nested, shell, poker = ctx["nested"], ctx["shell"], ctx["poker"]
+    check, keep, shots, timings = ctx["check"], ctx["keep"], ctx["shots"], ctx["timings"]
+    look = _Look(ctx)
+    W, H = nested.output_size()
+    ctx["W"], ctx["H"] = W, H
+
+    def mod_a():
+        nested.action("spawn", "--", nested.call_key)
+
+    nested.action("focus-workspace", "3")
+    busy = nested.recorder("busy", busy=True)
+    win = _wait(lambda: next((w for w in nested.msg("windows") or []
+                              if w.get("app_id") == "wltest.busy"), None), 10.0)
+    nested.action("maximize-column")
+    time.sleep(2.8)                         # BUSY prints once the window has settled
+    poker.click(W * 0.3, H / 2)
+
+    def got():
+        with open(busy, "rb") as f:
+            return f.read()
+
+    under, _ = nested.screenshot("call-under", None)
+    start = len(got())
+    mark = len(shell.log())
+    mod_a()
+    call = look.idle("call")
+    timings["call (first open)"] = _timings(shell.log(), "call", mark)
+    m_right = theme.BAR_MARGIN + 12
+    check("Mod+A (niri's binding, the nested shell's `toggle call`): the call opens top right "
+          "(its margins), takes the keyboard (exclusive) and the focus",
+          bool(win) and bool(call) and call["cx"] + call["cw"] == W - m_right
+          and call["cy"] == 16 and look.kb() == "Exclusive"
+          and shell.wait_log(r"keyboard: focus on the canvas", 3, mark) is not None,
+          f"{call and (call['cx'], call['cy'], call['cw'], call['ch'])} kb {look.kb()}")
+    blur = look.canvas().get("blur") or []
+    own = (call or {}).get("blur") or []
+    steps = [r for r in blur if r[3] == 1]
+    check("the blur region sent to niri: the call's plates and chips, stair-stepped at their "
+          "bevels, inside the call; nothing else blurred",
+          bool(blur) and len(steps) >= 8 and sorted(map(tuple, blur)) == sorted(map(tuple, own))
+          and _union(blur)[2] <= call["cx"] + call["cw"]
+          and _union(blur)[1] >= call["cy"], f"{len(blur)} rects, {len(steps)} steps")
+    img, path = nested.screenshot("call", keep)
+    shots["call"] = path
+    plate = look.widget("call", "AgentPlate")
+    sharp = blurred = flat = 0.0
+    if plate:
+        box = (plate["x"] + plate["w"] * 0.42, plate["y"] + 10,
+               plate["x"] + plate["w"] * 0.8, plate["y"] + plate["h"] - 10)
+        behind = _edges(under, box)
+        blurred = _edges(img, box)
+        look.do(blur=False)
+        _wait(lambda: not look.canvas().get("blur"), 3.0)
+        time.sleep(0.4)
+        img2, path2 = nested.screenshot("call-unblurred", keep)
+        shots["call-unblurred"] = path2
+        sharp = _edges(img2, box)
+        look.do(blur=True)
+        _wait(lambda: look.canvas().get("blur"), 3.0)
+        flat = behind
+        print(f"  (the agent's plate over the busy window: edges {behind:.1f} behind it, "
+              f"{sharp:.2f} through the plate unblurred, {blurred:.2f} blurred)", flush=True)
+        check("niri's screenshot: behind the plates the busy window is blurred (frosted, as "
+              "picom does), not merely showing through: its edges through the plate at most "
+              "half what they are with the canvas's blur off",
+              flat > 3 and sharp > 0.4 and blurred < 0.5 * sharp,
+              f"behind {flat:.1f}, unblurred {sharp:.2f}, blurred {blurred:.2f} ({path})")
+    else:
+        check("the agent's plate in the layout", False, str(look.win("call"))[:300])
+
+    poker.type("hello")
+    typed = _wait(lambda: (look.win("call") or {}).get("typed") == "hello", 3.0)
+    check("typed into the call (niri's virtual keyboard, the canvas's keyboard): your line in "
+          "your plate; nothing reached the window", bool(typed) and got()[start:] == b"",
+          f"{(look.win('call') or {}).get('typed')!r} {got()[start:]!r}")
+    before = _union((look.win("call") or {}).get("blur") or [])
+    poker.tap(28)                           # Return
+    said = _wait(lambda: "hello" in (look.agent().get("said") or []), 3.0)
+    look.do(do="text_start")
+    look.do(do="text", args=["Three resets since boot, all from the wifi driver.\n\n" + "\n\n".join(
+        f"Line {i} of the answer, long enough to be read across the plate." for i in range(8))])
+    look.do(do="end")
+    grown = _wait(lambda: (_union((look.win("call") or {}).get("blur") or []) or (0,) * 4)[3]
+                  > (before or (0,) * 4)[3] + 60, 5.0)
+    after = _union((look.win("call") or {}).get("blur") or [])
+    followed = _wait(lambda: _union(look.canvas().get("blur") or []) == after, 3.0)
+    check("Return says it (the stand-in hub hears it); the reply grows the agent's plate, and "
+          "the blur region sent follows it",
+          bool(said) and bool(grown) and bool(followed),
+          f"{before} -> {after}, said {look.agent().get('said')}")
+    img3, path3 = nested.screenshot("call-reply", keep)
+    shots["call-reply"] = path3
+
+    plate = look.widget("call", "AgentPlate")
+    if plate:
+        y = plate["y"] + plate["h"] * 0.62
+        x0 = plate["x"] + 30
+        poker.drag(x0, y, x0 + 360, y, steps=12)
+        primary = _wait(lambda: look.paste(primary=True).strip(), 3.0) or ""
+        poker.tap(46, "ctrl")               # Ctrl+C
+        clip = _wait(lambda: look.paste().strip(), 3.0) or ""
+        check("text dragged across in the reply: on PRIMARY (wl-paste --primary in the nested "
+              "niri); Ctrl+C puts it on the clipboard", len(primary) >= 10
+              and "of the answer" in primary
+              and clip == primary, f"{primary!r} {clip!r}")
+    mark = len(shell.log())
+    poker.tap(1)                            # Escape
+    closed = look.gone("call")
+    poker.type("ok")
+    back = _wait(lambda: got()[start:].endswith(b"ok"), 3.0)
+    check("Escape hangs up: the call goes, the blur region is cleared, the keyboard goes back "
+          "to the window (what is typed next reaches it)",
+          closed and look.canvas().get("blur") == [] and look.kb_is("None") == "None"
+          and bool(back), f"blur {look.canvas().get('blur')} kb {look.kb()} {got()[start:]!r}")
+
+    mark = len(shell.log())
+    mod_a()
+    look.idle("call")
+    timings["call (reopen)"] = _timings(shell.log(), "call", mark)
+    mod_a()
+    check("Mod+A again (`toggle`) hangs up", look.gone("call") and look.kb_is("None") == "None")
+    mod_a()
+    look.idle("call")
+    poker.tap(30, "super")                  # Super+A typed to the canvas
+    check("Super+A reaching the call (its close key, for when no binding takes it) hangs up",
+          look.gone("call"))
+    mod_a()
+    look.idle("call")
+    before = len(got())
+    poker.click(W * 0.15, H * 0.6)
+    closed = look.gone("call")
+    time.sleep(0.4)
+    check("an outside click hangs up, swallowed (the window under it saw nothing)",
+          closed and got()[before:] == b"", repr(got()[before:]))
+    ctx["busy"] = busy
+
+
+def chip(ctx) -> None:
+    """The top bar's agent chip with the call hung up: idle and dim; its
+    arcs turning (frames) while a turn runs; the ring blinking when it
+    ends; a click answers (the call opens)."""
+    nested, shell, poker = ctx["nested"], ctx["shell"], ctx["poker"]
+    check, keep, shots = ctx["check"], ctx["keep"], ctx["shots"]
+    look = _Look(ctx)
+    ac = look.widget("topbar", "AgentChip")
+    check("the agent chip on the top bar finds its router (CallRouter in SERVICES): idle, "
+          "dimmed", bool(ac) and ac.get("state") == "idle" and ac.get("strength") == 0.4,
+          str(ac))
+    if not ac:
+        return
+    look.do(do="say", args=["status check"])
+    look.do(do="tool", args=["t1", "uptime"])
+    working = _wait(lambda: (look.widget("topbar", "AgentChip") or {}).get("state")
+                    == "working", 3.0)
+    time.sleep(0.3)
+    m0 = len(shell.log())
+    time.sleep(1.5)
+    paints = _paints(shell.log()[m0:], "topbar")
+    check("a turn with the call hung up: the chip says working, its arcs turn (the top bar "
+          "repainted ~30 times a second, only the chip's square)",
+          bool(working) and 30 <= len(paints) <= 60
+          and all(px <= 40 * 40 for _ms, px in paints),
+          f"{look.widget('topbar', 'AgentChip')} {len(paints)} paints, {paints[:3]}")
+    img, path = nested.screenshot("chip-working", keep)
+    shots["chip-working"] = path
+    look.do(do="result", args=["t1", "up 3 days"])
+    look.do(do="text", args=["All good."])
+    look.do(do="end")
+    ringing = _wait(lambda: (look.widget("topbar", "AgentChip") or {}).get("state")
+                    == "calling", 3.0)
+    strengths = set()
+    m0 = len(shell.log())
+    for _ in range(12):
+        strengths.add((look.widget("topbar", "AgentChip") or {}).get("strength"))
+        time.sleep(0.1)
+    paints = _paints(shell.log()[m0:], "topbar")
+    check("the turn ends: it rings, both pieces blinking (lit and unlit, the top bar repainted "
+          "for it)", bool(ringing) and {1.0, 0.3} <= strengths and len(paints) >= 8
+          and look.agent().get("ringing") is not None,
+          f"{strengths} {len(paints)} paints {look.agent()}")
+    img, path = nested.screenshot("chip-ringing", keep)
+    shots["chip-ringing"] = path
+    ac = look.widget("topbar", "AgentChip")
+    poker.click(ac["x"] + ac["w"] - 16, ac["y"] + ac["h"] / 2)
+    call = look.idle("call")
+    check("a click on the chip answers: the call opens, the ring is over, the chip idle",
+          bool(call) and look.agent().get("ringing") is None and look.agent().get("call_open")
+          and _wait(lambda: (look.widget("topbar", "AgentChip") or {}).get("state")
+                    == "idle", 3.0), f"{look.agent()} {look.widget('topbar', 'AgentChip')}")
+    poker.tap(1)
+    look.gone("call")
+    for what, t in ctx["timings"].items():
+        print(f"  ({_say_timing(what, t)})", flush=True)
+
+
+def tray(ctx) -> None:
+    """The systray's panel and menu on the canvas, placed on its output:
+    an item of the test's on the shell's bus, its row in the panel, its
+    menu beside the row, a row of the menu clicked (the item hears it)."""
+    from indigoshell import theme
+    from indigoshell.widgets.systray import TrayPanel
+    nested, shell, poker = ctx["nested"], ctx["shell"], ctx["poker"]
+    check, keep, shots = ctx["check"], ctx["keep"], ctx["shots"]
+    look = _Look(ctx)
+    W, H = ctx["W"], ctx["H"]
+    bus = shell_bus(shell, nested.user_env)
+    if not bus:
+        check("the shell's own D-Bus, for a tray item", False, str(bus))
+        return
+    item = TrayItem(bus)
+    try:
+        listed = _wait(lambda: TrayItem.TITLE in (look.lay().get("_tray") or []), 5.0)
+        check("a StatusNotifierItem on the shell's bus registers with its watcher",
+              item.error is None and bool(listed), f"{item.error} {look.lay().get('_tray')}")
+        st = look.widget("bar", "Systray")
+        if not st:
+            check("the systray indicator on the bottom bar", False)
+            return
+        if st["x"] + st["w"] <= W:
+            how = "a click on the indicator"
+            poker.click(st["x"] + st["w"] / 2, st["y"] + st["h"] / 2)
+        else:
+            # The bottom bar's row is wider than a small output: the
+            # indicator is past its edge (as on X at that width).
+            how = "the indicator's toggle (it is past the edge of this small output)"
+            look.do(tray="toggle")
+        panel = look.idle("systray-panel")
+        check(f"{how}: the tray's panel opens bottom right on the canvas's output, above the "
+              "bar, as on X (anchored, its margins), keyboard taken",
+              bool(panel) and panel["cx"] + panel["cw"] == W - theme.BAR_MARGIN
+              and panel["cy"] + panel["ch"] == H - theme.BAR_HEIGHT - theme.POPUP_GAP
+              and look.kb_is("Exclusive") == "Exclusive",
+              f"{panel and (panel['cx'], panel['cy'], panel['cw'], panel['ch'])} kb {look.kb()}")
+        row = look.widget("systray-panel", "_TrayRow")
+        if not row:
+            check("the item's row in the panel", False, str(panel)[:300])
+            return
+        img, path = nested.screenshot("tray-panel", keep)
+        shots["tray-panel"] = path
+        poker.click(row["x"] + row["w"] / 2, row["y"] + row["h"] / 2)
+        menu = look.idle("systray-menu")
+        rows = look.widgets("systray-menu", "_MenuItemRow")
+        gap = TrayPanel.MENU_GAP
+        check("a click on the row: its menu (the item's dbusmenu, two rows) beside the row, its "
+              "right edge MENU_GAP left of the row, its top at the row's, inside the output",
+              bool(menu) and len(rows) == 2 and menu["cx"] + menu["cw"] == int(row["x"]) - gap
+              and menu["cy"] == int(row["y"]) and 0 <= menu["cx"]
+              and menu["cy"] + menu["ch"] <= H,
+              f"{menu and (menu['cx'], menu['cy'], menu['cw'], menu['ch'])} row "
+              f"{(row['x'], row['y'])} {len(rows)} rows")
+        img, path = nested.screenshot("tray-menu", keep)
+        shots["tray-menu"] = path
+        if len(rows) == 2:
+            r = rows[1]
+            poker.click(r["x"] + r["w"] / 2, r["y"] + r["h"] / 2)
+            heard = _wait(lambda: ("Event", 2, "clicked") in item.calls, 3.0)
+            check("a click on its second row: the item hears `clicked` for it, the menu closes, "
+                  "the panel keeps the keyboard", bool(heard) and look.gone("systray-menu")
+                  and "systray-panel" in look.lay() and look.kb() == "Exclusive",
+                  f"{item.calls} kb {look.kb()}")
+        poker.tap(1)
+        check("Escape closes the panel", look.gone("systray-panel")
+              and look.kb_is("None") == "None")
+    finally:
+        item.close()
+
+
+def over_fullscreen(ctx) -> None:
+    """With a fullscreen window (the canvas gone): what the user calls up
+    shows over it with nothing else — the launcher, a toast, the app's
+    menu in the top bar, the call — and the canvas goes again when the
+    last of it closes, the window still fullscreen."""
+    from indigoshell import theme
+    from indigoshell.applink import bar as B
+    nested, shell, poker, app = ctx["nested"], ctx["shell"], ctx["poker"], ctx["app"]
+    check, keep, shots, drawn = ctx["check"], ctx["keep"], ctx["shots"], ctx["drawn"]
+    rec = ctx["recorder"]
+    look = _Look(ctx)
+    W, H = ctx["W"], ctx["H"]
+
+    def got():
+        with open(rec, "rb") as f:
+            return f.read()
+
+    def still_fullscreen(mark):
+        return "no fullscreen window" not in shell.log()[mark:]
+
+    mark = len(shell.log())
+    nested.action("spawn", "--", nested.launcher_key)
+    win = look.idle("launcher")
+    time.sleep(0.3)
+    img, path = nested.screenshot("launcher-over-fullscreen", keep)
+    shots["launcher-over-fullscreen"] = path
+    probe, ink = drawn(img)
+    bg = [int(theme.POPUP_BG[i:i + 2], 16) for i in (1, 3, 5)]
+    share = 0.0
+    if win:
+        import numpy as np
+        box = img[int(win["cy"]) + 30:int(win["cy"] + win["ch"]) - 30,
+                  int(win["cx"]) + 30:int(win["cx"] + win["cw"]) - 30, :3].astype(int)
+        share = float((np.abs(box - bg).max(axis=-1) <= 40).mean())
+    check("Mod+D over the fullscreen window: the canvas is back with only the launcher on it "
+          "(drawn; no bar), the keyboard exclusive, the window still fullscreen",
+          bool(win) and look.overlay() and look.kb() == "Exclusive" and share > 0.5
+          and probe < 0.05 and ink < 0.005 and still_fullscreen(mark),
+          f"launcher {share:.2f} probe {probe:.2f} ink {ink:.3f} kb {look.kb()} ({path})")
+    start = len(got())
+    poker.tap(1)
+    gone = look.gone("launcher")
+    away = _wait(lambda: not look.overlay(), 3.0)
+    poker.type("fs")
+    reached = _wait(lambda: got()[start:].endswith(b"fs"), 3.0)
+    time.sleep(0.8)                         # past the keyboard's way back
+    check("Escape: once it has despawned the canvas goes again, the window still fullscreen "
+          "with the keyboard (typed text reaches it), no bar flashed back",
+          gone and bool(away) and bool(reached) and still_fullscreen(mark)
+          and not look.overlay(), f"{look.canvas()} {got()[start:]!r}")
+
+    bus = shell_bus(shell, nested.user_env)
+    if bus:
+        mark = len(shell.log())
+        out = subprocess.run(
+            ["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications",
+             "--object-path", "/org/freedesktop/Notifications", "--method",
+             "org.freedesktop.Notifications.Notify", "wltest", "0", "", "Over fullscreen",
+             "a toast over a fullscreen window", "[]", "{}", "2000"],
+            env={"PATH": os.environ.get("PATH", "/usr/bin"), "DBUS_SESSION_BUS_ADDRESS": bus},
+            capture_output=True, text=True, timeout=10)
+        m = re.search(r"\(uint32 (\d+),\)", out.stdout)
+        name = f"notif-{m[1]}" if m else None
+        toast = look.idle(name) if name else None
+        img, path = nested.screenshot("toast-over-fullscreen", keep)
+        shots["toast-over-fullscreen"] = path
+        probe, ink = drawn(img)
+        check("a toast over the fullscreen window (notifications not missed): the canvas with "
+              "the toast alone, no keyboard taken", bool(toast) and look.overlay()
+              and look.kb() == "None" and ink < 0.005 and probe < 0.05,
+              f"{toast and (toast['cx'], toast['cy'])} kb {look.kb()} ink {ink:.3f}")
+        away = _wait(lambda: name not in look.lay() and not look.overlay(), 8.0)
+        check("... its time up, the canvas goes again", bool(away) and still_fullscreen(mark))
+
+    mark = len(shell.log())
+    app.send(B.open_menu("pick"))
+    drop = look.idle("dropdown")
+    menu = _wait(lambda: look.lay().get("_apps_prompt"), 3.0) or {}
+    top = look.win("topbar") or {}
+    img, path = nested.screenshot("menu-over-fullscreen", keep)
+    shots["menu-over-fullscreen"] = path
+    probe, ink = drawn(img)
+    check("the app asks for its menu: the top bar (its open menu) and the drop-down over the "
+          "fullscreen window, the bottom bar not", bool(drop) and top.get("shows") is True
+          and (look.win("bar") or {}).get("shows") is False and probe > 0.4 and ink < 0.005
+          and menu.get("rows") == ["Alpha row", "Beta row", "Gamma row"],
+          f"top {top.get('shows')} probe {probe:.2f} ink {ink:.3f} {menu}")
+    poker.tap(1)
+    away = _wait(lambda: look.gone("dropdown") and not look.overlay(), 4.0)
+    check("Escape: the menu closes, the top bar goes with it and so does the canvas",
+          bool(away) and still_fullscreen(mark), str(look.canvas()))
+
+    mark = len(shell.log())
+    nested.action("spawn", "--", nested.call_key)
+    call = look.idle("call")
+    img, path = nested.screenshot("call-over-fullscreen", keep)
+    shots["call-over-fullscreen"] = path
+    check("Mod+A: the call over the fullscreen window, blurred behind its plates, the keyboard "
+          "taken", bool(call) and look.overlay() and look.kb() == "Exclusive"
+          and bool(look.canvas().get("blur")), f"{look.canvas()}")
+    poker.tap(1)
+    away = _wait(lambda: look.gone("call") and not look.overlay(), 4.0)
+    check("... hung up: the canvas goes again", bool(away) and still_fullscreen(mark))

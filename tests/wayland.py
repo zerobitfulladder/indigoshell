@@ -12,12 +12,15 @@
         --raster   the nested shell without the GPU (INDIGOSHELL_GPU=0)
 
 1. Pure: which display the shell picks ($INDIGOSHELL_BACKEND,
-   $WAYLAND_DISPLAY); which kinds the canvas draws (the bars, panels,
-   chord menu, launcher, drop-down, toasts) and which it refuses (the
-   call, the systray's); the edge a spec reserves and how far; what a back buffer
-   of each age must repaint; the foreign-toplevel states that hide the
-   canvas; buttons and wheel steps in X's numbers; the protocol bindings
-   generated into a scratch cache.
+   $WAYLAND_DISPLAY); which kinds the canvas draws (every kind the shell
+   ships: the bars, panels, chord menu, launcher, drop-down, toasts, the
+   call and the systray's) and which it refuses (one of nobody's); the
+   bars among them; a beveled plate as the whole-pixel stairs a blur
+   region is made of; the edge a spec reserves and how far; what a back
+   buffer of each age must repaint; the foreign-toplevel states that
+   hide the canvas, a fullscreen window deactivated for the canvas's
+   keyboard still one; buttons and wheel steps in X's numbers; the
+   protocol bindings generated into a scratch cache.
 2. Pure: the pointer's routing over stand-in regions: hover moving
    between regions and off the canvas, X's implicit grab (motion and
    the release to the region that had the press, wherever the pointer
@@ -43,6 +46,17 @@
    keyboard and outside clicks taken, keys typed into the query with
    the damage inside the launcher, Escape and an outside click closing
    (the keyboard given back at once), a digit run on its release.
+3c. Off screen: the call (config_default's `call`, its hub a stand-in
+   that plays the hub's events, tests/_live.py): top right, the
+   keyboard and outside clicks taken, no blur during its spawn, then
+   its plates and chips as the blur region (stair-stepped, nothing
+   between or below), typed into, a line said and answered growing the
+   plate and the blur region, text dragged across in the reply on
+   PRIMARY and Ctrl+C's clipboard, Escape (blur off at once), Super+A
+   and an outside click hanging up; then a fullscreen window: the bars
+   stopped and cleared, no surface wanted until the call is called up
+   over it (shown, blurred, the bars' strips empty) and none after; the
+   top bar shown while its open input catches the outside clicks.
 4. `--nested`: a nested niri (its config the user's own, read at run
    time, minus what it starts; a private D-Bus; its window on qtile
    group 8, put there by a runtime rule that is removed again), and the
@@ -63,8 +77,21 @@
    click), the chord menu (a digit, Escape, outside), the stand-in
    app's menu in the top bar's drop-down (filtering, Return, Escape,
    outside), a toast from the shell's own bus; what each open costs;
-   then a fullscreen window taking the canvas away and giving it back,
-   the frame times, and idle.
+   then (phase 2b) the call from niri's Mod+A over a busy window on a
+   workspace of its own: placed, the keyboard taken, the blur region
+   niri gets (the plates, stair-stepped) and the blur seen in niri's
+   screenshot against the same with the canvas's blur off, typing, a
+   line said and the reply growing the plate and the blur region, text
+   selected (wl-paste --primary) and Ctrl+C (wl-paste), Escape, Mod+A
+   again, Super+A and an outside click hanging up; the top bar's agent
+   chip idle and dim, turning while a turn runs with the call hung up,
+   blinking when it rings, a click answering; a tray item on the
+   shell's bus, the tray's panel bottom right on the output, its menu
+   beside its row, a row heard by the item; then a fullscreen window
+   taking the canvas away, the launcher, a toast, the app's menu (the
+   top bar with it) and the call each over it with nothing else, the
+   canvas gone again after each; and giving it back, the frame times,
+   and idle.
 """
 
 import argparse
@@ -134,10 +161,10 @@ def test_pure() -> None:
     check("an empty $WAYLAND_DISPLAY is no Wayland", order({"WAYLAND_DISPLAY": ""}) == ["x11"])
     check("connect() on X: None, nothing opened", wb.connect({"DISPLAY": ":0"}) is None)
 
-    from indigoshell.agent import CALL_WINDOW
+    from indigoshell.agent import CALL_WINDOW, STATUS_WINDOW
     from indigoshell.applink.drop import DROP_WINDOW
     from indigoshell.applink.launcher import LAUNCHER_WINDOW
-    from indigoshell.canvas import CANVAS_KINDS
+    from indigoshell.canvas import CANVAS_KINDS, is_bar, pixel_rects
     from indigoshell.widgets import notification, systray
     from indigoshell.widgets.menu import MENU_WINDOW
     from indigoshell.window import WindowSpec
@@ -147,15 +174,34 @@ def test_pure() -> None:
           "chord menu, the launcher, the drop-down",
           sorted(drawn) == sorted(["bar", "topbar", "system", "hardware", "network", "menu",
                                    "launcher", "dropdown"]), str(drawn))
-    check("... named as their modules name them",
+    check("... named as their modules name them, the call's, its corner plate's and the "
+          "systray's panel and menu with them",
           CANVAS_KINDS == {cd.SYSTEM_PANEL, cd.HARDWARE_PANEL, cd.NETWORK_PANEL, MENU_WINDOW,
-                           LAUNCHER_WINDOW, DROP_WINDOW}, str(CANVAS_KINDS))
-    check("toasts (notification.py's names) are on it; the call and the systray's panel and "
-          "menu are not yet",
-          on_canvas(WindowSpec(name=notification._win_name(7)))
-          and not on_canvas(WindowSpec(name=CALL_WINDOW, blur=True))
-          and not on_canvas(WindowSpec(name=systray.PANEL_WINDOW))
-          and not on_canvas(WindowSpec(name=systray.MENU_WINDOW)))
+                           LAUNCHER_WINDOW, DROP_WINDOW, CALL_WINDOW, STATUS_WINDOW,
+                           systray.PANEL_WINDOW, systray.MENU_WINDOW}, str(CANVAS_KINDS))
+    call_spec = WindowSpec(name=CALL_WINDOW, layer=cd.Layer.OVERLAY,
+                           anchor=cd.Anchor.TOP | cd.Anchor.RIGHT, blur=True)
+    check("toasts (notification.py's names) and the call are on it; a kind of nobody's is not",
+          on_canvas(WindowSpec(name=notification._win_name(7))) and on_canvas(call_spec)
+          and not on_canvas(WindowSpec(name="somebodys-own")))
+    check("the bars are the kinds that reserve one edge; the call, a panel, a toast are not",
+          [is_bar(s) for s in cd.WINDOWS if s.name in ("bar", "topbar", "system", "launcher")]
+          .count(True) == 2 and not is_bar(call_spec)
+          and not is_bar(WindowSpec(name=notification._win_name(7))))
+    bevel = skia.Path()
+    bevel.moveTo(12, 0)
+    bevel.lineTo(100, 0)
+    bevel.lineTo(100, 50)
+    bevel.lineTo(0, 50)
+    bevel.lineTo(0, 12)
+    bevel.close()
+    px = pixel_rects(bevel, skia.IRect.MakeWH(200, 200), 1000, 10)
+    rows = [r for r in px if r[1] < 22]
+    check("a plate as whole pixels: a 45° bevel of 12 stair-stepped, one rect per row each "
+          "a pixel wider, the rest one rect; moved onto the canvas",
+          len(rows) == 12 and all(r[3] == 1 for r in rows)
+          and [r[0] for r in rows] == list(range(1012, 1000, -1))
+          and px[-1] == (1000, 22, 100, 38) and all(r[0] + r[2] == 1100 for r in px), str(px))
     check("edges: top, bottom, left, right; a corner or the centre is no edge",
           [edge_of(a) for a in (Anchor.TOP, Anchor.BOTTOM | Anchor.LEFT | Anchor.RIGHT,
                                 Anchor.LEFT, Anchor.RIGHT | Anchor.TOP | Anchor.BOTTOM,
@@ -203,6 +249,62 @@ def test_pure() -> None:
     check("fullscreen = fullscreen and activated; either alone is not",
           wb.is_fullscreen({2, 3}) and not wb.is_fullscreen({3})
           and not wb.is_fullscreen({2}) and wb.is_fullscreen({0, 2, 3}))
+
+    # Toplevels as the compositor reports them, the canvas's keyboard held
+    # or not.
+    class Handle:
+        def __init__(self):
+            self.dispatcher = {}
+
+        def destroy(self):
+            pass
+
+    class Manager:
+        def __init__(self):
+            self.dispatcher = {}
+
+    saved_ptr, wb._ptr = wb._ptr, id
+    try:
+        held = [False]
+        told = []
+        mgr = Manager()
+        wb.Toplevels(None, mgr, told.append, held=lambda: held[0])
+        tl_recheck = None
+        h1, h2 = Handle(), Handle()
+        mgr.dispatcher["toplevel"](mgr, h1)
+        mgr.dispatcher["toplevel"](mgr, h2)
+
+        def state(h, *states):
+            h.dispatcher["state"](h, list(states))
+            h.dispatcher["done"](h)
+
+        state(h1, 2, 3)
+        state(h2)
+        fs_on = list(told)
+        held[0] = True
+        state(h1, 3)                        # deactivated: the canvas took the keyboard
+        kept = list(told)
+        held[0] = False
+        tl_recheck = h1.dispatcher["done"]
+        tl_recheck(h1)                      # as Toplevels.recheck: the states as they are
+        let_go = list(told)
+        state(h1, 2, 3)
+        held[0] = True
+        state(h1, 3)
+        state(h2, 2)                        # another window activated meanwhile
+        other = list(told)
+        state(h2)
+        state(h1, 2, 3)
+        state(h1, 2)                        # left fullscreen while held
+        left = list(told)
+    finally:
+        wb._ptr = saved_ptr
+    check("a fullscreen window deactivated for the canvas's keyboard (nothing else "
+          "activated) stays fullscreen while it is held; let go, as the states say",
+          fs_on == [True] and kept == [True] and let_go == [True, False], f"{told}")
+    check("... but not when another window is activated meanwhile, or the window leaves "
+          "fullscreen", other == [True, False, True, False] and left[-1] is False
+          and left.count(True) == 3, f"{told}")
     check("buttons: left 1, middle 2, right 3, side 8/9, others none",
           [button_of(c) for c in (0x110, 0x112, 0x111, 0x113, 0x114, 0x115)]
           == [1, 2, 3, 8, 9, None])
@@ -767,6 +869,252 @@ async def test_offscreen_overlays() -> None:
         core_daemon._DAEMON = saved
 
 
+# ── 3c. off screen: the call, and what shows over a fullscreen window ───
+async def test_offscreen_call() -> None:
+    import skia
+
+    # The call's real bookkeeping with no hub behind it (tests/_live.py);
+    # _live points XDG_STATE_HOME at a directory of its own: ours again.
+    state_home = os.environ["XDG_STATE_HOME"]
+    from _live import ScriptedAgent
+    shutil.rmtree(os.environ["XDG_STATE_HOME"], ignore_errors=True)
+    os.environ["XDG_STATE_HOME"] = state_home
+
+    from indigoshell import config_default as cd, theme, wm
+    from indigoshell.agent.ui.call import BOTTOM_CLEAR
+    from indigoshell.canvas import Region, Scene, rects
+    from indigoshell.core import daemon as core_daemon
+    from indigoshell.widgets.base import KeyEvent
+
+    section("3c. off screen: the call as a region, its blur; what shows over a fullscreen "
+            "window (CPU)")
+    copied: list[tuple[str, str]] = []
+
+    class StandInWM(wm.WM):
+        name = "stand-in"
+
+        def follow_workspaces(self, window, on_change):
+            on_change(wm.WorkspaceState(count=5, current=1, windows=(1, 0, 0, 0, 0),
+                                        urgent=(False,) * 5))
+            return wm.Follower()
+
+        def copy(self, value, selection="clipboard"):
+            copied.append((selection, value))
+            return True
+
+    saved_wm, wm._current = wm._current, StandInWM()
+    loop = asyncio.get_running_loop()
+    scene = Scene(loop)
+    scene.resize(2560, 1440)
+    scene.keyboard.available = True
+    layouts = []
+    scene.on_layout = lambda: layouts.append(1)
+    agent = ScriptedAgent(voice="indigo")
+    call_spec, _services = cd.call(agent)
+    specs = {s.name: s for s in cd.WINDOWS}
+    specs["call"] = call_spec
+
+    class StandInDaemon:
+        def __init__(self):
+            self.instances, self.closed = {}, []
+            self.config = {"services": []}
+
+        def open(self, name, *_a, **_k):
+            if name in self.instances:
+                return self.instances[name]
+            r = Region(scene, specs[name], loop)
+            r.create()
+            self.instances[name] = r
+            r.show()
+            return r
+
+        def close(self, name):
+            win = self.instances.pop(name, None)
+            if win is None:
+                return False
+            self.closed.append(name)
+            win.dismiss(win.destroy)
+            return True
+
+        def dismiss_others(self, except_name=None):
+            pass
+
+    def blur_box():
+        region = skia.Region()
+        for r in scene.blur_rects():
+            region.op(r, skia.Region.kUnion_Op)
+        return region
+
+    def key(sym, text="", **mods):
+        scene.keyboard.press(KeyEvent(keysym=sym, text=text, **mods))
+        scene.keyboard.release(KeyEvent(keysym=sym, **mods))
+
+    daemon = StandInDaemon()
+    saved = core_daemon._DAEMON
+    core_daemon._DAEMON = daemon
+    bars = []
+    try:
+        call = daemon.open("call")
+        host = call_spec.content
+        cx, cy, cw, ch = call.content_root
+        m = call_spec.margin
+        entering = scene.blur_rects()
+        check("the call: top right as on X (its margins), as tall as the canvas allows less "
+              "the bar's clearance, the keyboard and the outside clicks taken",
+              cx + cw == 2560 - m.right and cy == m.top and ch == 1440 - m.top - BOTTOM_CLEAR
+              and scene.keyboard.holds(call) and call in scene.catchers,
+              f"{call.content_root}")
+        check("... no blur while its spawn plays (it tears past the plates)",
+              call._phase == "enter" and entering == [], f"{call._phase} {entering}")
+        await asyncio.sleep(0.45)
+        blur = blur_box()
+        plates = [host.you_plate, host.agent_plate, host.you_chip, host.agent_chip]
+        inside = all(blur.contains(int(call.x + w.rect.centerX()), int(call.y + w.rect.centerY()))
+                     for w in plates)
+        gap = host.you_plate.rect.right() + 4       # between your plate and your chip
+        steps = [r for r in scene.blur_rects() if r.height() == 1]
+        check("spawned: the blur region is the plates and chips, stair-stepped at their "
+              "bevels (one-pixel rows), nothing between them or below the call",
+              call._phase == "idle" and inside and len(steps) >= 8
+              and not blur.contains(int(call.x + gap), int(call.y + host.you_plate.rect.centerY()))
+              and blur.getBounds().bottom() <= call.y + int(host.agent_plate.rect.bottom()) + 1
+              and call.box().contains(blur.getBounds()),
+              f"{blur.getBounds()} {len(scene.blur_rects())} rects, {len(steps)} steps")
+
+        scene.take_damage()
+        for ch_ in "hello":
+            key(ord(ch_), ch_)
+        await asyncio.sleep(0.1)
+        damage = scene.take_damage()
+        check("typed into the call through the canvas's keyboard: the line in your plate, the "
+              "damage inside the call",
+              host.you_plate.input.text == "hello" and not damage.isEmpty()
+              and all(call.box().contains(r) for r in rects(damage)),
+              f"{host.you_plate.input.text!r} {damage.getBounds()}")
+        before = blur.getBounds()
+        n_layouts = len(layouts)
+        key(0xFF0D)                                     # Return: said
+        await asyncio.sleep(0.05)
+        agent.text_start()
+        agent.text("Three resets since boot, all from the wifi driver.\n\n"
+                   + "\n\n".join(f"Line {i} of the answer, long enough to read." for i in range(8)))
+        await asyncio.sleep(0.3)
+        agent.end()
+        await asyncio.sleep(0.3)
+        after = blur_box().getBounds()
+        check("a line said and answered: the agent's plate grew, and the blur region with it "
+              "(sent again: a layout change)",
+              any(s.get("type") == "say" and s.get("text") == "hello" for s in agent.sent)
+              and after.bottom() > before.bottom() + 40 and len(layouts) > n_layouts,
+              f"{before} -> {after}")
+
+        plate = host.agent_plate
+        laid = plate._layout()
+        row = next(((r, top) for r, top in laid if r.selectable and r.kind == "line"
+                    and "Line 3" in r.src[r.start:r.end]), None)
+        if row is not None:
+            r, top = row
+            y = call.y + top + r.h / 2
+            x0 = call.x + plate.rect.left() + 40
+            scene.pointer.enter(x0, y)
+            scene.pointer.button(1, True)
+            for i in range(1, 9):
+                scene.pointer.motion(x0 + 30 * i, y)
+            scene.pointer.button(1, False)
+            await asyncio.sleep(0.05)
+            primary = [v for s, v in copied if s == "primary"]
+            key(ord("c"), ctrl=True)
+            clip = [v for s, v in copied if s == "clipboard"]
+            check("text dragged across in the agent's reply: selected and put on PRIMARY; "
+                  "Ctrl+C copies it to the clipboard",
+                  primary and len(primary[-1]) >= 10 and primary[-1] in r.src
+                  and clip and clip[-1] == primary[-1],
+                  f"{copied}")
+        else:
+            check("a line of the reply in the agent's plate", False, str([r.src for r, _ in laid])[:300])
+
+        key(0xFF1B)                                     # Escape: hang up
+        check("Escape hangs up: closed, the keyboard and the outside clicks given back, the "
+              "blur off at once (the despawn runs unblurred)",
+              daemon.closed[-1:] == ["call"] and not scene.keyboard.wanted and not scene.catchers
+              and scene.blur_rects() == [], f"{daemon.closed} {scene.blur_rects()}")
+        await asyncio.sleep(0.45)
+        check("... gone once it has despawned", call not in scene.regions)
+
+        call = daemon.open("call")
+        await asyncio.sleep(0.4)
+        key(ord("a"), super=True)
+        check("Super+A (its close key, for when the compositor's binding does not take it) "
+              "closes it too", daemon.closed[-1:] == ["call"] and "call" not in daemon.instances)
+        await asyncio.sleep(0.45)
+        call = daemon.open("call")
+        await asyncio.sleep(0.4)
+        scene.pointer.enter(300, 700)
+        scene.pointer.button(1, True)
+        scene.pointer.button(1, False)
+        check("an outside click hangs up", daemon.closed[-1:] == ["call"]
+              and "call" not in daemon.instances)
+        await asyncio.sleep(0.45)
+
+        # ── a fullscreen window: what shows ──────────────────────────────
+        for name in ("bar", "topbar"):
+            r = Region(scene, specs[name], loop)
+            r.create()
+            r.show()
+            bars.append(r)
+        bar, top = bars
+        await asyncio.sleep(0.2)
+        scene.take_damage()
+        scene.set_fullscreen(True)
+        damage = scene.take_damage()
+        check("a fullscreen window: the bars stop (clocks, input), their strips cleared, and "
+              "the canvas wants no surface",
+              not scene.shows(bar) and not bar.mapped and not bar._clock_fps
+              and damage.contains(skia.IRect.MakeXYWH(0, 1440 - theme.BAR_HEIGHT, 2560,
+                                                      theme.BAR_HEIGHT))
+              and not scene.wants_surface() and scene.input_rects() == [],
+              f"{damage.getBounds()} {scene.wants_surface()}")
+        call = daemon.open("call")
+        await asyncio.sleep(0.45)
+        surface = skia.Surface(2560, 1440)
+        scene.compose(surface.getCanvas(), skia.Region(scene.bounds))
+        img = surface.makeImageSnapshot().toarray(colorType=skia.kRGBA_8888_ColorType)
+        check("the call called up over it: the canvas wants its surface, the call shows, "
+              "blurred, with the keyboard; the bars' strips stay empty",
+              scene.wants_surface() and scene.shows(call) and call._clock_fps >= 0
+              and scene.blur_rects() and scene.keyboard.holds(call)
+              and (img[1440 - theme.BAR_HEIGHT:, :, 3] == 0).all()
+              and (img[:theme.TOP_BAR_HEIGHT, :1500, 3] == 0).all()
+              and img[call.y + int(host.agent_plate.rect.centerY()),
+                      call.x + int(host.agent_plate.rect.centerX()), 3] > 0,
+              f"{scene.wants_surface()} {len(scene.blur_rects())}")
+        daemon.close("call")
+        await asyncio.sleep(0.45)
+        check("... hung up: once it has despawned the canvas wants no surface again",
+              not scene.wants_surface() and call not in scene.regions)
+
+        token = object()
+        scene.catch_outside(token, lambda: None, top)
+        shown_top = scene.shows(top) and top.mapped and not scene.shows(bar)
+        scene.take_damage()
+        scene.release_outside(token)
+        gone = scene.take_damage()
+        check("the top bar's open input (its outside clicks caught for it) shows the top bar "
+              "over the window, the bottom one not; closed, the top bar goes and is cleared",
+              shown_top and not scene.shows(top) and not top.mapped
+              and gone.contains(skia.IRect.MakeXYWH(0, 0, 2560, theme.TOP_BAR_HEIGHT)))
+        scene.set_fullscreen(False)
+        await asyncio.sleep(0.1)
+        check("the fullscreen window gone: both bars back, painting",
+              scene.shows(bar) and bar.mapped and top.mapped and scene.wants_surface()
+              and len(scene.input_rects()) == 2)
+    finally:
+        for r in list(daemon.instances.values()) + bars:
+            r.destroy()
+        core_daemon._DAEMON = saved
+        wm._current = saved_wm
+
+
 # ── 4. a nested niri ────────────────────────────────────────────────────
 def test_nested(args) -> None:
     import nested_niri
@@ -789,6 +1137,7 @@ def main() -> int:
         asyncio.run(test_keyboard())
         asyncio.run(test_offscreen())
         asyncio.run(test_offscreen_overlays())
+        asyncio.run(test_offscreen_call())
         if args.nested:
             test_nested(args)
     finally:
