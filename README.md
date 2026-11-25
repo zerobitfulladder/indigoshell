@@ -49,25 +49,30 @@ the shell's side of the call. It talks to the hub over a WebSocket with
 mutual TLS ([`agent/remote.py`](indigoshell/agent/remote.py)), and with
 no hub to talk to there is no call — the shipped config has none until
 a `config.py` adds it (below). On the hub the agent is Claude, run
-through Claude Code: one mind with two voices, Indigo and Lilac, and
-one conversation shared with the other devices connected to it.
+through Claude Code: Lilac, in one chat that never ends, shared with
+the other devices connected to it and compacted on the hub as it grows.
 
 - **A call, not a chat window.** Your plate on top, the agent's below,
   each with its chip. What it *does* shows as one-line steps, kept apart
   from what it *says*; click a step for the whole command and its
   output. Replies render Markdown with clickable links, and any of it
   can be selected and copied.
-- **Two voices.** `Ctrl+S` switches who answers your next line, Indigo
-  or Lilac, and the call remembers the pick. The turn on show may be in
-  the other voice — asked from another device, or before a switch — and
-  the agent's plate and chip take that voice's name and colour, which
-  are the hub's.
+- **One chat, and how full it is.** A faint bar under her heading fills
+  as the chat does, with a tick where the hub compacts it after an idle
+  hour; while it compacts, a run of cells sweeps back through it, and a
+  small note says how it went. Ask her to compact when the bar says so.
+- **Scroll back.** `Ctrl+K` scrolls up through the turn on show and on
+  into the earlier exchanges, each with its date and time, your lines
+  in your colour and her reply as it was; `Ctrl+J` comes back down, and
+  reaching the newest is live again. It goes as far as she still holds
+  the chat word for word: past that, the plate says the rest is in her
+  memory, to ask her about.
 - **Chips you read at a glance.** Arcs turning: working. Blinking: it
   wants you — an answer blinks twice, a question blinks until answered.
   While a turn runs, the agent's frame is redrawn clockwise as a turn
   clock, one lap a minute.
 - **Model and effort on its header.** `Ctrl+M` switches the model on
-  the live conversation and `Ctrl+T` the effort; the hub keeps the real
+  the chat at once and `Ctrl+T` the effort; the hub keeps the real
   settings. The header names the model as the hub reports it —
   `opus 5.5`, never a guess — and the effort by street name: idle,
   stock, boost, overclock, redline (low to max).
@@ -111,7 +116,7 @@ one conversation shared with the other devices connected to it.
   and JavaScript in the page behind Flux's guard. It acts signed in as
   you, with no question asked; Flux never hands it a password field's
   value and leaves a site's permission prompts to you. While it drives a
-  tab, Flux draws its hold in the voice's colour and locks your input
+  tab, Flux draws its hold in her colour and locks your input
   out; a key from you takes the tab back. What is its to do alone
   happens in a Flux window of its own, on a workspace you aren't looking
   at, where it borrows a tab and returns it when done.
@@ -137,10 +142,9 @@ one conversation shared with the other devices connected to it.
 | `Return` | send — even while it works: it reads the line at its next step |
 | `Esc` | hang up (the work carries on) |
 | `Ctrl+C` | copy the selection; with none, stop the task |
-| `Ctrl+S` | who answers your next line: Indigo or Lilac |
+| `Ctrl+K` · `Ctrl+J` | scroll back through the chat · down again, to live |
 | `Ctrl+L` · `Ctrl+Shift+L` | Look: your next line carries Flux's tab · and a screenshot of it |
 | `Ctrl+F` | open the last picture or file the agent showed |
-| `Ctrl+N` · `Ctrl+H` | a new conversation · past ones, to resume |
 | `Ctrl+D` | the hub's devices |
 | `Ctrl+M` · `Ctrl+T` | next model (opus, sonnet, haiku, fable) · effort (idle … redline) |
 | `Ctrl+O` | every step of the turn |
@@ -162,7 +166,7 @@ from indigoshell.agent import RemoteAgent, laptop_hands
 from indigoshell.config_default import (MENUS, SCREEN, SERVICES,
                                         STARTUP, WINDOWS, call)
 
-HUB = RemoteAgent(voice="indigo", endpoints=["wss://hub.lan:443"],
+HUB = RemoteAgent(endpoints=["wss://hub.lan:443"],
                   tls={"ca": ..., "cert": ..., "key": ...},
                   hands=laptop_hands())
 CALL, CALL_SERVICES = call(HUB)
@@ -170,7 +174,7 @@ WINDOWS = [*WINDOWS, CALL]
 SERVICES = [*SERVICES, *CALL_SERVICES]
 ```
 
-`voice` answers until `Ctrl+S` switches it. `tls` names three PEM
+`tls` names three PEM
 files — the hub's CA, this machine's certificate and its key — and only
 that CA is trusted; the hub's certificate must carry the name given as
 `server_name`, whatever address answered. `endpoints` are tried in
@@ -380,7 +384,8 @@ indigoshell/
   agent/            ─ the call: the shell's side of the agent on a hub
                       (see Agent, above)
     remote.py       ─ RemoteAgent: the line to the hub (WebSocket, mutual
-                      TLS), turns, questions, ring-backs, voices, history
+                      TLS), turns, questions, ring-backs, the chat's
+                      fill and its scrollback
     activity.py     ─ the agent's steps and questions, as the call shows them
     hands.py        ─ Hands: the tools this machine lends, and their calls
     laptop.py       ─ the desktop as those tools: open, screenshot, windows,
@@ -393,7 +398,8 @@ indigoshell/
     watch.py        ─ the reporting end; the yt-dlp/ffmpeg/curl/rsync wrapper
     ui/             ─ call.py (keys, layout), agent_plate.py, you_plate.py,
                       choice.py (GREENLIGHT / SCRUB), bars.py (progress),
-                      chip.py, status.py (the top bar's AgentChip), frame.py
+                      chip.py, context.py (the chat's fill), status.py (the
+                      top bar's AgentChip), frame.py
                       (turn clock), reveal.py (decode), media.py (pictures
                       and files shown), rows.py, style.py
   applink/          ─ the shell's line to its own apps, and the top bar they set
@@ -435,7 +441,8 @@ indigoshell/
     ipc.py          ─ control socket (line-delimited JSON over AF_UNIX)
     client.py       ─ the CLI side of that socket
     hands.py        ─ what a tool lent to the hub's agent is (pure; Flux's too)
-    voices.py       ─ the agent's voices: names and colours (pure; Flux's too)
+    persona.py      ─ the agent's name and colour, as the hub names her
+                      (pure; Flux's too)
     registry.py     ─ plugin discovery, shipped then user, later winning
     naming.py       ─ APP / CLI / env prefix, derived from the package
     paths.py        ─ socket, lock, config, state and log locations

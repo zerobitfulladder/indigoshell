@@ -341,8 +341,8 @@ PALETTE = [
      "OK / received / go: received / down, ok role, GREENLIGHT, ON, online"),
     ("violet", "VIOLET_DIM", "", "unlit violet cells (RAM, volume)"),
     ("violet", "VIOLET", "", "RAM label, a finished job's cells"),
-    ("violet", "VIOLET_BRIGHT", "ICON, AGENT_ACCENT, voice Indigo",
-     "the agent: its frame, chip, plate tint; RAM; volume; toast body"),
+    ("violet", "VIOLET_BRIGHT", "ICON",
+     "RAM; volume; toast body; on the call, the selection and progress cells"),
     ("error", "ERROR", "RING_ACCENT, FAIL_ACCENT",
      "errors and alarms only: failed, hot, critical, SCRUB, urgent, muted, ring"),
     ("hud", "HUD_FG", "", "body text on plates: steps, details (blue-grey, not neon)"),
@@ -353,9 +353,10 @@ PALETTE = [
 ]
 
 
-def voices():
-    from indigoshell.core.voices import VOICES
-    return VOICES
+def her() -> str:
+    """Her colour (core/persona.py): the agent's, as the hub names it."""
+    from indigoshell.core import persona
+    return persona.COLOR
 
 
 def paint_swatch(c, x, y, w, hexv: str, name: str, alias: str, role: str,
@@ -382,23 +383,18 @@ def render_palette() -> None:
         if not groups or groups[-1][0] != g:
             groups.append((g, []))
         groups[-1][1].append((getattr(theme, name), name, alias, role))
-    vs = voices()
-    groups.append(("voices (core/voices.py)", [
-        (col, vid.upper(), f"voice '{vid}'" + (" (default)" if vid == "lilac" else ""),
-         "the agent's voice: its tab outline/number, the call's plate when it speaks"
-         if vid == "lilac" else "the second voice; also Flux's page tint, whoever drives")
-        for vid, (_n, col) in vs.items()]))
+    groups.append(("the agent (core/persona.py)", [
+        (her(), "LILAC", "persona.COLOR, AGENT_ACCENT",
+         "her: the call's plate, chip and name, a tab she drives, Flux's frame, "
+         "mark and tint")]))
     from indigoshell.agent.ui import style
     groups.append(("surfaces (computed)", [
         (theme.POPUP_BG[:7], "POPUP_BG", "#170620 @ 95% (F2)",
          "panel plate: launcher, panels, menu chips, tray rows", " F2"),
         (style.YOU_FILL[0], "YOU_FILL", f"call plate: PLATE_BASE 12% to magenta @ {style.PLATE_ALPHA:.0%}",
          "your plate on the call", ""),
-        (style.AGENT_FILL[0], "AGENT_FILL", f"call plate: PLATE_BASE 12% to violet @ {style.PLATE_ALPHA:.0%}",
-         "the agent's plate on the call", ""),
-        (style.plate_fill(vs['lilac'][1])[0], "LILAC_FILL",
-         f"call plate: PLATE_BASE 12% to lilac @ {style.PLATE_ALPHA:.0%}",
-         "the agent's plate while Lilac speaks", ""),
+        (style.AGENT_FILL[0], "AGENT_FILL", f"call plate: PLATE_BASE 12% to lilac @ {style.PLATE_ALPHA:.0%}",
+         "her plate on the call", ""),
     ]))
     col_w, row_h = 470, 58
     cols = 2
@@ -448,7 +444,7 @@ def render_type() -> None:
          "16 px  FONT_SIZE  names: network, tab titles, menu rows, inputs"),
         (theme.FONT_SIZE, False, 1.0, theme.FG_STRONG, "SUSPEND   POWEROFF",
          "16 px, 1 px tracking  chord-menu / tray row labels"),
-        (15, True, 0, None, [("//", theme.CYAN_BRIGHT, True), (" INDIGO", theme.VIOLET_BRIGHT, True),
+        (15, True, 0, None, [("//", theme.CYAN_BRIGHT, True), (" LILAC", her(), True),
                              (" working", theme.BASE_MUTED, False)],
          "15 px bold  toast & call heading:  // NAME tag"),
         (15, False, 0, theme.HUD_FG_BRIGHT, "Uplink's clean. Three ghosts in the logs.",
@@ -507,7 +503,7 @@ def render_type() -> None:
     caption(c, f"16 px: advance {adv:.2f} px, line height {lh:.2f} px", 520, y + lh / 2 + 4, 11,
             LABEL_FG)
     y += lh + 18
-    caption(c, "caps for labels, keys, tags and headings (CPU, SUSPEND, // INDIGO, GREENLIGHT); "
+    caption(c, "caps for labels, keys, tags and headings (CPU, SUSPEND, // LILAC, GREENLIGHT); "
             "mixed or lower case for prose and states (working, on the line).",
             pad, y, 11, LABEL_FG)
     y += 18
@@ -940,14 +936,11 @@ def render_bar_widgets() -> None:
 TAB_TITLES = ["Uplink status", "Netrunner field guide", "Patch notes 7.3", "Weather radar"]
 
 
-def hub_agent(voice: str = "lilac", **state):
-    """render_call's never-connected hub agent, with the hub's voices as
-    its welcome would leave them (names and colours from core/voices)."""
+def hub_agent(**state):
+    """render_call's never-connected hub agent: Lilac, as the hub's
+    welcome names her (core/persona.py)."""
     from render_call import agent_in
-    a = agent_in(**state)
-    a._voices = {vid: {"name": n, "color": col} for vid, (n, col) in voices().items()}
-    a.voice = a.shown_voice = voice
-    return a
+    return agent_in(**state)
 
 
 class Router:
@@ -1021,9 +1014,9 @@ def top_strip(view, chip, width=BAR_W, hover=None) -> skia.Image:
     return snap(s)
 
 
-def working_agent(voice="lilac"):
+def working_agent():
     from indigoshell.agent.activity import Activity
-    return hub_agent(voice, phase="working", busy=True, turn_started=NOW[0] - 41,
+    return hub_agent(phase="working", busy=True, turn_started=NOW[0] - 41,
                      activity=[Activity("tool", "$ journalctl -b -p err --no-pager"),
                                Activity("tool", "$ systemctl --failed")])
 
@@ -1031,7 +1024,7 @@ def working_agent(voice="lilac"):
 def render_top_bar() -> None:
     from indigoshell.applink.kinds import look
     NOW[0] = 3000.0 + 0.35 * look.COMET_S        # the busy tab's comet mid-run
-    view = app_view(TAB_TITLES, 0, busy=(2,), agents={1: ("lilac", "driving")})
+    view = app_view(TAB_TITLES, 0, busy=(2,), agents={1: ("driving",)})
     chip = agent_chip(working_agent(), "working", angle=-60)
     img = top_strip(view, chip)
     save(img, "bar_top.png")
@@ -1064,11 +1057,11 @@ def render_top_states() -> None:
               progress=40)
     tabs_tile("tab behind loading: a comet runs round its box (1.1 s a lap)", busy=(1,))
     tabs_tile("the agent drives the current tab: number, brackets, outline in Lilac",
-              agents={0: ("lilac", "driving")})
-    tabs_tile("Indigo drives the tab behind; its outline in the voice's colour",
-              agents={1: ("indigo", "driving")})
-    tabs_tile("taken over by the user: the voice's colour 35% toward the bar",
-              agents={0: ("lilac", "paused"), 1: ("indigo", "paused")})
+              agents={0: ("driving",)})
+    tabs_tile("she drives the tab behind; its outline in her colour",
+              agents={1: ("driving",)})
+    tabs_tile("taken over by the user: her colour 35% toward the bar",
+              agents={0: ("paused",), 1: ("paused",)})
 
     loop = asyncio.new_event_loop()
     CW = 420
@@ -1083,25 +1076,24 @@ def render_top_states() -> None:
         tiles.append((cap, snap(s)))
 
     NOW[0] = 5000.0
-    idle = hub_agent("lilac", phase="idle")
-    chip_tile("agent idle: both pieces at 40%, the voice that worked last", idle, "idle")
-    chip_tile("working (Lilac): the step in cyan, arcs turning", working_agent(), "working", -50)
-    chip_tile("working (Indigo)", working_agent("indigo"), "working", -20)
-    ask = hub_agent("lilac", phase="asking", busy=True, turn_started=NOW[0] - 20)
+    idle = hub_agent(phase="idle")
+    chip_tile("agent idle: both pieces at 40%, her name", idle, "idle")
+    chip_tile("working: the step in cyan, arcs turning", working_agent(), "working", -50)
+    ask = hub_agent(phase="asking", busy=True, turn_started=NOW[0] - 20)
     ask._hub_ask = Approval(tool="Bash", title="Run a command",
                             detail="sudo systemctl restart bluetooth",
                             future=loop.create_future())
     ask.ring_started = NOW[0] - 0.05
     chip_tile("a question, call closed: yellow, the square blinking", ask, "calling")
-    ring = hub_agent("lilac", phase="idle", ringing="done")
+    ring = hub_agent(phase="idle", ringing="done")
     ring.ring_line = "Patched. 143 packages, no reboot needed."
     ring.ring_started = NOW[0] - 0.05
     chip_tile("calling back, lit: red, both pieces blink (ring pattern)", ring, "calling")
-    ring2 = hub_agent("lilac", phase="idle", ringing="done")
+    ring2 = hub_agent(phase="idle", ringing="done")
     ring2.ring_line = ring.ring_line
     ring2.ring_started = NOW[0] - 0.2                   # in the 100 ms gap
     chip_tile("calling back, between flashes: 30%", ring2, "calling")
-    missed = hub_agent("lilac", phase="idle", ringing="done")
+    missed = hub_agent(phase="idle", ringing="done")
     missed.ring_line = ring.ring_line
     missed.ring_started = NOW[0] - 300
     chip_tile("missed call (after 40 s): still, 45%", missed, "calling")
@@ -1126,7 +1118,7 @@ def render_top_input() -> None:
     box.field.set_text("netrun", notify=False)
     box.set_count(("4/38", look.color_of("info")))
     view.show_box(box)
-    chip = agent_chip(hub_agent("lilac", phase="idle"), "idle")
+    chip = agent_chip(hub_agent(phase="idle"), "idle")
     row = top_bar_row(view, chip)
     width = 1400
     drop = DropList()
@@ -1455,9 +1447,12 @@ def render_launcher() -> None:
 # ═══════════════════════════════════════════════════════════════════════
 # the call (MOD+A): CallHost over a frosted city, as readme_call frames it
 # ═══════════════════════════════════════════════════════════════════════
-def call_agent(voice="lilac", **state):
-    a = hub_agent(voice, **state)
+def call_agent(**state):
+    a = hub_agent(**state)
     a.model, a.effort, a._label = "opus", "medium", "opus 5.5"
+    # How full her chat is, as the hub's state says (the context bar).
+    a.context = {"used": 132_000, "compact_at": 200_000, "cap": 500_000,
+                 "window": 1_000_000, "from": None}
     return a
 
 
@@ -1511,7 +1506,7 @@ def render_call() -> None:
     random.seed(5)
     # working: steps above the rule, the reply arriving below it
     NOW[0] = 11000.0
-    a = call_agent("lilac", phase="working", busy=True, turn_started=NOW[0] - 41,
+    a = call_agent(phase="working", busy=True, turn_started=NOW[0] - 41,
                    heard="why does my wifi keep dropping every few minutes?")
     a.activity.extend([Activity("note", "Checking the driver and the logs first."),
                        bash("journalctl -b -u NetworkManager --since -1h | tail -n 40", "...", 1),
@@ -1522,7 +1517,7 @@ def render_call() -> None:
 
     # answered: the reply in Markdown; the chip's two-blink nudge, lit
     NOW[0] = 12000.0
-    b = call_agent("lilac", phase="idle", busy=False, turn_started=NOW[0] - 60,
+    b = call_agent(phase="idle", busy=False, turn_started=NOW[0] - 60,
                    heard="why does my wifi keep dropping every few minutes?")
     b.activity.extend([bash("iw dev wlan0 link", "Connected", 3),
                        bash("journalctl -k -g iwlwifi", "...", 4)])
@@ -1530,9 +1525,9 @@ def render_call() -> None:
     answered, _ = call_shot(b, typed="do it", nudge=True)
     save(answered, "call_answer.png")
 
-    # asking: GREENLIGHT / SCRUB, Indigo's voice
+    # asking: GREENLIGHT / SCRUB
     NOW[0] = 13000.0
-    c = call_agent("indigo", phase="asking", busy=True, turn_started=NOW[0] - 9,
+    c = call_agent(phase="asking", busy=True, turn_started=NOW[0] - 9,
                    heard="patch the deck. everything.")
     c.activity.extend([bash("checkupdates | wc -l", "143", 5),
                        bash("checkupdates | grep -E '^(linux|mesa)'", "linux ...", 6)])
@@ -1564,14 +1559,11 @@ def render_call_chips() -> None:
     from indigoshell.agent.ui import style
     looks = [
         ("YOU", theme.MAGENTA_BRIGHT, (theme.MAGENTA_BRIGHT, "YOU", "still"), -90),
-        ("idle / waiting on you: still", theme.VIOLET_BRIGHT,
-         (theme.VIOLET_BRIGHT, "CALL", "still"), -90),
-        ("working: arcs turn (200 deg/s)", voices()["lilac"][1],
-         (voices()["lilac"][1], "CALL", "working"), -35),
-        ("asking: yellow, blinking", voices()["lilac"][1],
-         (theme.YELLOW_BRIGHT, "ASK", "blink"), -90),
-        ("line down: red, DROP", theme.VIOLET_BRIGHT, (theme.ERROR, "DROP", "still"), -90),
-        ("missed: dimmed 45%", theme.VIOLET_BRIGHT, (theme.ERROR, "CALL", "dim"), -90),
+        ("idle / waiting on you: still", her(), (her(), "CALL", "still"), -90),
+        ("working: arcs turn (200 deg/s)", her(), (her(), "CALL", "working"), -35),
+        ("asking: yellow, blinking", her(), (theme.YELLOW_BRIGHT, "ASK", "blink"), -90),
+        ("line down: red, DROP", her(), (theme.ERROR, "DROP", "still"), -90),
+        ("missed: dimmed 45%", her(), (theme.ERROR, "CALL", "dim"), -90),
     ]
     NOW[0] = 15000.0
     tiles = []
@@ -1594,8 +1586,6 @@ def render_progress() -> None:
     NOW[0] = 16000.0
     a = rcp.agent_in(phase="working", busy=True, turn_started=NOW[0] - 64,
                      heard="pull the field recordings and transcribe them")
-    a._voices = {vid: {"name": n, "color": col} for vid, (n, col) in voices().items()}
-    a.shown_voice = "lilac"
     a.model, a.effort, a._label = "opus", "high", "opus 5.5"
     a.activity = [Activity("tool", "$ rsync -a deck:/recordings/ ~/field/", tool_id="t1",
                            tool="Bash", summary="212.0 MB in 0:41"),
@@ -1610,8 +1600,6 @@ def render_progress() -> None:
     # the corner plate's compact line (CallStatus), on the city
     s = rcp.agent_in(phase="working", busy=True, turn_started=NOW[0] - 23,
                      activity=[Activity("tool", "$ rsync ...", tool_id="t1", tool="Bash")])
-    s._voices = a._voices
-    s.shown_voice = "lilac"
     rcp.job(s, "t1", label="night-city-dataset.tar", done=22.4e6, total=51.0e6, unit="B",
             rate=3.1e6)
     st = rc.place(CallStatus(s))
@@ -1903,9 +1891,9 @@ def fake_page(w: int, h: int) -> skia.Image:
 
 
 def render_flux_standin() -> None:
-    """What the user sees while the agent drives a tab: a 2 px frame in the
-    voice's colour, the mark, and over the page Indigo's tint, the panels'
-    raster and scan; the lock starts with the panel spawn glitch. Built
+    """What the user sees while the agent drives a tab: a 2 px frame in her
+    colour, the mark, and over the page her tint, the panels' raster and
+    scan; the lock starts with the panel spawn glitch. Built
     from the shell's own originals (holo.raster, Projection, ScanLock with
     PANEL_SPAWN) and flux/qt/effects.py's constants, in Skia, because the
     real thing is a QQuickWidget that only runs on a display."""
@@ -1914,12 +1902,13 @@ def render_flux_standin() -> None:
     from indigoshell.widgets.holo import Projection, raster
     W, H = 760, 300
     page = fake_page(W, H)
-    voice_name, voice_col = "Lilac", voices()["lilac"][1]
+    from indigoshell.core import persona
+    name, col_her = persona.NAME, persona.COLOR
 
     def projected():
         s, c = surface(W, H)
         c.drawImage(page, 0, 0)
-        c.drawRect(skia.Rect.MakeWH(W, H), fill(ffx.TINT, ffx.PLATE_TINT, aa=False))
+        c.drawRect(skia.Rect.MakeWH(W, H), fill(col_her, ffx.PLATE_TINT, aa=False))
         lines = skia.Paint(Shader=raster(ffx.RASTER, ffx.RASTER_ALPHA))
         c.drawRect(skia.Rect.MakeWH(W, H), lines)
         return s, c
@@ -1928,15 +1917,15 @@ def render_flux_standin() -> None:
         s, c = surface(W, H)
         c.drawImage(img, 0, 0)
         f = FRAME_PX
-        col = fill(voice_col, aa=False)
+        col = fill(col_her, aa=False)
         for r in ((0, 0, W, f), (0, H - f, W, f), (0, 0, f, H), (W - f, 0, f, H)):
             c.drawRect(skia.Rect.MakeXYWH(*r), col)
-        mark = MARK.format(name=voice_name)
+        mark = MARK.format(name=name)
         mw = T.measure(mark, 15) + 16
         mh = T.line_height(15) + 6
         r = skia.Rect.MakeXYWH(W - f - mw, H - f - mh, mw, mh)
         c.drawRect(r, fill(ffx.BACKGROUND, aa=False))
-        T.draw(c, mark, r.left() + 8, T.baseline_in(r, 15), 15, C(voice_col))
+        T.draw(c, mark, r.left() + 8, T.baseline_in(r, 15), 15, C(col_her))
         return snap(s)
 
     # holding: tint + raster, the scan band partway down
@@ -1958,8 +1947,8 @@ def render_flux_standin() -> None:
     glitch = chrome(snap(s3))
     save(sheet([("the page, user in control (no overlay)", page),
                 ("lock starts: the panel spawn glitch over the page (0.22 s)", glitch),
-                ("lock holds: Indigo tint 12%, raster, scan band; frame + mark in the "
-                 "voice's colour", holding)], cols=1,
+                ("lock holds: her tint 12%, raster, scan band; frame + mark in her "
+                 "colour", holding)], cols=1,
                title="Flux while the agent drives a tab — Skia stand-in built from the "
                "shell's originals, not a capture of Flux"), "flux_watch_standin.png")
 
@@ -1971,7 +1960,7 @@ def render_overview() -> None:
     from indigoshell.applink.kinds import look
     W, H = 1600, 900
     NOW[0] = 3000.0 + 0.35 * look.COMET_S
-    view = app_view(TAB_TITLES, 0, busy=(2,), agents={1: ("lilac", "driving")})
+    view = app_view(TAB_TITLES, 0, busy=(2,), agents={1: ("driving",)})
     chip = agent_chip(working_agent(), "working", angle=-60)
     top = top_strip(view, chip, width=W)
     row, _ = bottom_bar()
@@ -1982,7 +1971,7 @@ def render_overview() -> None:
     # the call, top right
     NOW[0] = 12000.0
     from indigoshell.agent.activity import Activity, describe_tool
-    b = call_agent("lilac", phase="idle", busy=False, turn_started=NOW[0] - 60,
+    b = call_agent(phase="idle", busy=False, turn_started=NOW[0] - 60,
                    heard="why does my wifi keep dropping every few minutes?")
     b.activity.extend([Activity("tool", describe_tool("Bash", {"command": "iw dev wlan0 link"}),
                                 id=3)])
@@ -2096,7 +2085,7 @@ def build_tokens() -> dict:
     from indigoshell.agent.ui import bars, choice, frame, reveal, status, style
     from indigoshell.applink import drop
     from indigoshell.applink.kinds import input as input_mod, look
-    from indigoshell.core import voices as voices_mod
+    from indigoshell.core import persona
     from indigoshell.services import text_effects
     from indigoshell.widgets import (holo, hud, media as media_mod, menu as menu_mod, meters,
                                      notification as notif_mod, stdout_text,
@@ -2130,11 +2119,12 @@ def build_tokens() -> dict:
     for n in semantic_names:
         semantic[n] = color_tok(getattr(th, n), f"{thf}:{n}", notes.get(n, ""))
 
-    vs = voices_mod.VOICES
-    voice_tokens = {vid: color_tok(col, f"{_rel(voices_mod)}:VOICES['{vid}']",
-                                   f"the agent's voice '{name}'", [name]) for vid, (name, col)
-                    in vs.items()}
-    voice_tokens["default"] = tok(voices_mod, "DEFAULT_VOICE")
+    agent_tokens = {
+        "color": color_tok(persona.COLOR, f"{_rel(persona)}:COLOR",
+                           "the agent's colour until the hub's welcome names hers "
+                           "(welcome.agent): every reply, mark and plate of hers",
+                           [persona.NAME]),
+        "name": tok(persona, "NAME")}
 
     def fill_tok(name, accent, role):
         hexv, a = style.plate_fill(accent)
@@ -2142,8 +2132,8 @@ def build_tokens() -> dict:
 
     call_colors = {
         "AGENT_ACCENT": color_tok(style.AGENT_ACCENT, f"{_rel(style)}:AGENT_ACCENT",
-                                  "the desktop agent's colour (= VIOLET_BRIGHT); a hub agent "
-                                  "uses its voice's colour instead"),
+                                  "her colour (= persona.COLOR); the call reads the hub's "
+                                  "welcome.agent at run time"),
         "YOU_ACCENT": color_tok(style.YOU_ACCENT, f"{_rel(style)}:YOU_ACCENT", "you"),
         "PLATE_BASE": color_tok(style.PLATE_BASE, f"{_rel(style)}:PLATE_BASE",
                                 "a plate's base before its tint", alpha=style.PLATE_ALPHA),
@@ -2151,8 +2141,7 @@ def build_tokens() -> dict:
                           "speaker's colour"),
         "PLATE_ALPHA": tok(style, "PLATE_ALPHA"),
         "YOU_FILL": fill_tok("YOU_ACCENT", style.YOU_ACCENT, "your plate"),
-        "AGENT_FILL": fill_tok("AGENT_ACCENT", style.AGENT_ACCENT, "the agent's plate (Indigo)"),
-        "LILAC_FILL": fill_tok("lilac", vs["lilac"][1], "the agent's plate while Lilac speaks"),
+        "AGENT_FILL": fill_tok("AGENT_ACCENT", style.AGENT_ACCENT, "her plate"),
         "SLASH_FG": color_tok(style.SLASH_FG, f"{_rel(style)}:SLASH_FG", "the // before a name"),
         "ASK_ACCENT": color_tok(style.ASK_ACCENT, f"{_rel(style)}:ASK_ACCENT", "a question"),
         "FAIL_ACCENT": color_tok(style.FAIL_ACCENT, f"{_rel(style)}:FAIL_ACCENT", "line down, "
@@ -2219,7 +2208,7 @@ def build_tokens() -> dict:
                                           "OUTLINE_GLOW", "OUTLINE_GLOW_A", "FILL_A",
                                           "LOAD_DIM_A", "COMET_LEN", "PAUSED_DIM", "TEAR_A")}
     top_bar["ROLE_COLORS"] = tok(look, "ROLE_COLORS", note="colour roles an app may name; "
-                                 "'voice:<id>' gives that voice's colour")
+                                 "'agent' gives her colour")
     top_bar["QUERY_FG"] = tok(input_mod, "QUERY_FG")
     top_bar["TOGGLE_ON"] = tok(input_mod, "TOGGLE_ON")
     top_bar["TOGGLE_OFF"] = tok(input_mod, "TOGGLE_OFF")
@@ -2576,7 +2565,7 @@ def build_tokens() -> dict:
         "reply_reveal": effect_params(reveal.Reveal().wipe, "indigoshell/agent/ui/reveal.py:"
                                       "Reveal.wipe", "per streamed chunk; spark CYAN_BRIGHT, "
                                       "cursor VIOLET_BRIGHT, its own bar off; a 2 px lead bar "
-                                      "in the voice's colour with a 22 px glow (BAR_GLOW_PX)"),
+                                      "in her colour with a 22 px glow (BAR_GLOW_PX)"),
         "holo": {
             "raster": {k: tok(holo, k) for k in ("RASTER_PITCH", "RASTER_ALPHA", "RASTER_LIFT")},
             "raster_note": "1 px line every RASTER_PITCH px on the window grid, its colour "
@@ -2602,9 +2591,10 @@ def build_tokens() -> dict:
             "class": "Scramble", "source": "indigoshell/services/text_effects.py:Scramble",
             "note": "a character-swap reveal; available, not in the shipped config"},
         "media_glitch_palette": tok(media_mod, "GLITCH_PALETTE"),
-        "flux_page": {k: tok(flux_fx, k) for k in ("TINT", "PLATE_TINT", "RASTER", "BACKGROUND",
+        "flux_page": {k: tok(flux_fx, k) for k in ("PLATE_TINT", "RASTER", "BACKGROUND",
                                                     "SPAWN_S", "BAND_PX", "TEAR_PX", "SPLIT_PX")},
-        "flux_watch_frame": tok(flux_watch, "FRAME_PX", "px", "in the voice's colour"),
+        "flux_page_tint": "her colour (core/persona.py) at PLATE_TINT",
+        "flux_watch_frame": tok(flux_watch, "FRAME_PX", "px", "in her colour"),
     }
 
     wording = {
@@ -2625,7 +2615,7 @@ def build_tokens() -> dict:
             "inline": "a source ending '(inline)' is a value written in place in that "
                       "function, not a named constant",
         },
-        "color": {"palette": palette, "semantic": semantic, "voices": voice_tokens,
+        "color": {"palette": palette, "semantic": semantic, "agent": agent_tokens,
                   "call": call_colors, "rows": rows, "top_bar": top_bar,
                   "directions": directions, "heat": heat},
         "typography": typography,

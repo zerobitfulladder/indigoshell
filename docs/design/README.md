@@ -86,7 +86,8 @@ off every use in the code (tokens.json `color.palette[*].role`).
 | `YELLOW_FAINT` | `#3a3010` | faint yellow ground: inline code background (55%), tray menu separators |
 | **Lime** `LIME_BRIGHT` | `#ccff00` | **OK / received / go**: **received / down** (the bar's lower light, the network panel's down rate, the speedtest's DN), the `ok` role, GREENLIGHT, toggle ON, a device online, a running firewall, a full battery |
 | `LIME_DIM` | `#3a4a0a` | a full battery's empty cells |
-| **Violet** `VIOLET_BRIGHT` (`AGENT_ACCENT`, voice Indigo) | `#b967ff` | **the agent**: its frame, chip, plate tint, selection on the call (38%), progress cells; also the RAM meter, the volume level, normal toast body text |
+| **Violet** `VIOLET_BRIGHT` | `#b967ff` | **the shell's violet**: selection on the call (38%), progress cells; also the RAM meter, the volume level, normal toast body text |
+| **Lilac** `persona.COLOR` (`AGENT_ACCENT`) | `#c8a2c8` | **the agent, her**: the call's plate tint, frame, chip and name, her Markdown's headings and bullets, a tab she drives, Flux's frame, mark and tint while she drives (§2, "Her colour") |
 | `VIOLET` / `VIOLET_DIM` | `#7700a6` / `#2a0a3a` | RAM label, a finished job's cells / unlit violet cells |
 | **Red** `ERROR` | `#ff003c` | **errors, alarms, hot — and nothing else**: critical toast, failed step `×`, SCRUB, a dropped line, the agent **ringing back**, an urgent workspace, no network address, volume muted, **hot** (the bar's TEMP and the hardware panel's GPU temperature at ≥ 80% of their scale), a **nearly full disk** (≥ 90%), a **failed or inactive firewall**, insecure padlock, "no matches" |
 | `HUD_FG` | `#a0a8c8` | body text on plates (blue-grey: long runs of neon are unreadable) |
@@ -131,19 +132,15 @@ Each hue is a ramp, and the step says the job:
   against its own bright neighbours (a beat, a load, a comet). Only in
   motion.
 
-### The voices (core/voices.py)
+### Her colour (core/persona.py)
 
-The agent is one mind with two voices; whichever speaks owns its colour
-everywhere (call plate tint, frame, chip, name; a top-bar tab it drives).
-
-| Voice | Hex | |
-|---|---|---|
-| **Lilac** (default) | `#c8a2c8` | |
-| **Indigo** | `#b967ff` | = `VIOLET_BRIGHT` |
-
-A voice the table doesn't know is drawn in Lilac. Over a **Flux page the
-agent drives, the tint is Indigo whoever drives** (the user's choice); the
-frame and the mark there are the driving voice's colour.
+The agent is Lilac, and **every reply, notification and mark of hers is
+drawn in her colour**, `#c8a2c8`: the call's plate tint, frame, chip and
+name, the bar of how full her chat is, a top-bar tab she drives, and in
+Flux the frame, the mark and the page tint while she drives a tab. The
+hub names her name and colour in its welcome (`welcome.agent`); until a
+call has heard it, and in an app with no shell, she is Lilac in
+`#c8a2c8`.
 
 ### Backgrounds and alphas
 
@@ -151,11 +148,11 @@ frame and the mark there are the driving voice's colour.
 |---|---|
 | bars, toasts, drop-down | `BASE_BLACK` opaque |
 | panels, launcher, menu chips, tray rows (`POPUP_BG`) | `#170620` at 95% (`F2`) |
-| call plates | `#170620` pulled 12% toward the speaker's colour, at 88%: YOU `#330a29`, Indigo `#2a123b`, Lilac `#2c1934` — the compositor blurs what's behind |
+| call plates | `#170620` pulled 12% toward the speaker's colour, at 88%: YOU `#330a29`, hers `#2c1934` — the compositor blurs what's behind |
 | panel cards (`HudCard`) | `BASE_BLACK` at 60% on the panel |
 | row/selection tints | selected cyan 22% · armed cyan 22% · pulse yellow 40% · picked magenta 32% · reject magenta 75% · border cyan 85% |
 | hologram raster | 1 px line every 3 px, the colour lifted 35% toward `HUD_FG_BRIGHT`, at 7% |
-| Flux page tint | Indigo at 12% |
+| Flux page tint | her colour at 12% |
 
 ---
 
@@ -179,7 +176,7 @@ frame and the mark there are the driving voice's colour.
   section titles · 10.7 the IP. Line height = descent − ascent (16 px →
   19.7 px; tokens.json has the table).
 - **Caps** for labels, keys, tags, chips and headings (CPU, SUSPEND,
-  `// INDIGO`, GREENLIGHT, NETLINK); **lower or mixed case** for prose and
+  `// LILAC`, GREENLIGHT, NETLINK); **lower or mixed case** for prose and
   state words (`working`, `on the line`, `needs your ok`).
 - **Tracking** only on short caps: 1 px (menu rows, KEY labels, tab strip,
   row tags), 1.5 px (answers, the speedtest button), 2 px (an interface
@@ -284,7 +281,7 @@ change).
 |---|---|---|
 | **Panel spawn** (ScanLock) | every overlay opening; despawn plays it backwards | 220 ms; 36 px bands snap in **out of order**, each with a sideways tear (≤ 29 px) and an RGB split (17 px) that settle as it locks (`smoothstep(thr, thr+0.18, appear)`); a faint cyan lock flash on the locking row; whole thing fades in over the first 12%; jitter re-rolled 28×/s; a new seed each spawn; no static |
 | **Lyric reveal** (GlitchWipe) | each new lyric line | 800 ms; a 2 px magenta cursor bar with a 14 px glow sweeps left→right over 55%; behind it text arrives as 3 px solid cells, then torn glyphs (3 px slices shifted ≤ 5 px, some dropping), RGB fringes (3 px), then clean; nothing moves vertically |
-| **Reply decode** | each streamed chunk of the agent's reply | 420 ms per chunk, the same wipe without its bar; one 2 px lead bar in the voice's colour with a 22 px glow leads the stream |
+| **Reply decode** | each streamed chunk of the agent's reply | 420 ms per chunk, the same wipe without its bar; one 2 px lead bar in her colour with a 22 px glow leads the stream |
 | **Tab switch** | top bar | the current tab's light slides to the new box in **110 ms** (ease-out cubic) |
 | **Tab close** | top bar | the closed box **wipes out in 80 ms**, then the others **slide 110 ms** to close the gap |
 | **Tab loading** | top bar | current: its outline lights round from the bottom-left as progress goes; behind: a comet (22% of the outline) laps its box every 1.1 s |
@@ -334,11 +331,12 @@ linearly in wall-clock time and shape themselves with `smoothstep`.
 | **warning / attention** | yellow: a question (ASK), values; `YELLOW_MID` for the `warn` role |
 | **error** | `ERROR` red: frame, text, cells; red steady for "down" (and hot, failed), red blinking for "wants you" |
 | **on / off** (a dot) | the 5 px square light filled = on, current, picked, online; its 1 px outline = off, offline |
-| **agent working** | the voice's colour; the chip's arcs turn; steps in cyan; the frame's turn trace |
-| **agent driving a tab** | the tab's number, brackets and outline in the voice's colour; in Flux, a 2 px frame + mark in the voice's colour and the page in Indigo's tint |
-| **taken over / paused** | the voice's colour 35% of the way to the bar's black |
+| **agent working** | her colour; the chip's arcs turn; steps in cyan; the frame's turn trace |
+| **compacting** (her chat, on the hub) | not a turn: the phase word `compacting`, the chip's arcs turning slowly (80°/s), a 3-cell run sweeping back through the context bar's lit cells (70 ms a cell); then a muted note under the turn, `compacted 240k → 31k` |
+| **agent driving a tab** | the tab's number, brackets and outline in her colour; in Flux, a 2 px frame + mark in her colour and the page in her tint |
+| **taken over / paused** | her colour 35% of the way to the bar's black |
 | **calling back** | red, both chip pieces blinking in the ring pattern for 40 s, then still at 45% "missed call" |
-| **idle agent** | both chip pieces at 40%, in the voice that worked last |
+| **idle agent** | both chip pieces at 40%, her name |
 
 ![top bar states](samples/bar_top_states.png)
 
@@ -426,7 +424,7 @@ Each a **box 32 px tall, 2 px outline, cut 8 px at the top-right only**:
 - current: outline `FG_STRONG` full with a 3 px glow (45%) and a faint light
   rising inside (0 → 10% toward the foot), title `FG_STRONG`, number
   `CYAN_BRIGHT` in `CYAN_MID` corner brackets;
-- the agent's: number, brackets and outline in the voice's colour (driving),
+- the agent's: number, brackets and outline in her colour (driving),
   or that colour 35% toward black (the user took over);
 - loading and motion as in §6; a dragged tab lifts 3 px with a 2 px upright
   marker where it lands, and past 40 px below the bar dims and says
@@ -438,9 +436,9 @@ plain http).
 
 **Agent chip** — a **box 360 × 32** and, 6 px right, a **square 32 × 32**,
 both cut 8 px top-right + bottom-left, drawn as the call draws a plate and a
-chip (voice-tinted fill at 88%, raster in the frame colour, 2 px frame;
+chip (her tinted fill at 88%, raster in the frame colour, 2 px frame;
 corner marks inset 4 / arm 8 in the box; a hairline and two arcs r 7, 2 px,
-no label in the square). The box says one line: the voice's NAME 14 px bold
+no label in the square). The box says one line: her NAME 14 px bold
 in the frame colour, the state word 14 px `BASE_MUTED`, the step 13 px
 (cyan while working). Never the agent's thinking or reply — only the step.
 States in §7; with no agent configured it takes no room. Click answers the
@@ -567,22 +565,26 @@ the agent's below with its chip on its left. Plates **680 px**, chips
 speaker's tinted fill at 88% (frosted by the compositor), its raster, a
 **2 px frame cut 12 px**, corner brackets inside; padding 16 × 12. **Each
 speaker owns one colour throughout** — frame, chip, name, tint: magenta for
-you, the voice's colour for the agent. The agent's frame and chip turn
+you, hers for the agent. The agent's frame and chip turn
 **yellow while it asks** and **red when the line is down**; its plate keeps
 its tint through those.
 
-- **Your plate**: `// YOU` heading, key hints right-aligned 12 px muted
-  (`⏎ send  ^L look  ^C stop  esc hang up`, led by `^S Lilac` — who answers
-  next, in that voice's colour); what you said 15 px `HUD_FG`; the line you
-  type after a magenta `›` with a magenta caret ("say something" / "follow
-  up").
+- **Your plate**: `// YOU 21:14` heading (when the turn on show began,
+  muted), key hints right-aligned 12 px muted (`⏎ send  ^L look  ^K
+  earlier  ^D devices  esc hang up`; `^C stop` while she works); what you
+  said 15 px `HUD_FG`; the line you type after a magenta `›` with a
+  magenta caret ("say something" / "follow up").
 - **The agent's plate**: `// LILAC working` heading with the turn clock
   (`00:41`, `YELLOW_DIM`) and `opus 5.5 · stock` (model · effort) at the
-  right; **steps above a short rule** in 13 px — `›` tool (cyan; muted cyan
-  once done), `⌄` expanded, `×` failed (red), `!` info (yellow), `·` note,
-  `∴` thinking (in the voice's colour); **what it says below**, rendered
-  Markdown 15 px `HUD_FG_BRIGHT`: headings bold and bullets (square lights)
-  in the voice's colour, code blocks yellow with a left bar, inline code
+  right; under the heading **the context bar**: how full her chat is, a
+  row of 3 × 3 px level cells (2 px gaps) across the plate in her colour,
+  lit 55% left to right as `used` of `cap` (500k), unlit 13%, with a
+  1 × 7 px `YELLOW_DIM` tick at `compact_at` (200k), no number; `used`
+  unknown (just compacted): nothing lit. Then the turn: **steps** in 13 px —
+  `›` tool (cyan; muted cyan once done), `⌄` expanded, `×` failed (red),
+  `!` info (yellow), `·` note, `∴` thinking (in her colour); **what she
+  says**, rendered Markdown 15 px `HUD_FG_BRIGHT`: headings bold and
+  bullets (square lights) in her colour, code blocks yellow with a left bar, inline code
   yellow on faint yellow, links cyan underlined, quotes `HUD_FG` with a
   muted bar, selection violet 38%.
 - **A question**: the request in yellow, then two answer buttons —
@@ -593,9 +595,17 @@ its tint through those.
   the chip: 11 px on the 64 px chip, tracked 0.6: `YOU`, `CALL`, `ASK`,
   `DROP`) in the state colour; arcs turning
   while it works, blinking when it wants you, still when it waits.
+- **Scrolling back** (`^K` up, `^J` down, live again at the newest): the
+  earlier exchanges above the turn on show, each under a muted `// 21:14`
+  row (`yesterday 21:14`, `mon 21:14`, `nov 12 21:14`; `on iris` when
+  asked elsewhere) with 12 px above it; your lines as a line said
+  mid-turn shows (magenta 15 px, a 2 px magenta bar at their left); her
+  reply as Markdown; a hub-started turn's line as a `·` note. At the top,
+  muted 13 px: `↑ earlier — ^K`, `loading earlier…`, `the chat starts
+  here`, or past what she still holds word for word, `earlier is in
+  Lilac's memory now: ask her`; at the foot `↓ newer — ^J`.
 - **Lists** in the agent's plate: `^D` devices — a square light each, lime
-  filled online, muted outline offline; `^H` past conversations — the
-  current one lit in the voice's colour.
+  filled online, muted outline offline.
 - **Progress** (§8.10).
 
 ### 8.10 Progress bars
@@ -609,7 +619,7 @@ over unlit cells halfway between `VIOLET_DIM` and `VIOLET` (a finished job's
 cells rest in `VIOLET`), a 3-cell white-violet sweep running through the
 lit cells while it runs (70 ms a cell), easing toward each new value; a
 busy job with no total sends a 5-cell run across. Text around it: label
-`HUD_FG`, percentage bold in the voice's colour, numbers and ETA muted; a
+`HUD_FG`, percentage bold in her colour, numbers and ETA muted; a
 pipeline's stages as `audio › model › transcribe › write` with the current
 one bold. Elsewhere: panel bars (4/2 × 8), the toast meter (28 cells), the
 tab outline lighting round (on the bars, never a separate bar).
@@ -622,10 +632,10 @@ tab outline lighting round (on the bars, never a separate bar).
 display, so this was drawn in Skia from the shell's originals that Flux's
 shaders port line for line (ScanLock with PANEL_SPAWN, the raster, the
 scan) and Flux's own constants. While the agent drives: a **2 px frame in
-the voice's colour** along the page, a mark at its bottom-right in the
-voice's colour on black ("Lilac is driving · press a key to take over",
-15 px), the lock **starting with the panel spawn glitch** over the page,
-then **Indigo's tint (12%), the cyan raster and the 7 s scan** while it
+her colour** along the page, a mark at its bottom-right in her colour on
+black ("Lilac is driving · press a key to take over", 15 px), the lock
+**starting with the panel spawn glitch** over the page, then **her tint
+(12%), the cyan raster and the 7 s scan** while it
 holds, the glitch again every 5–15 s, and the glitch played out when it
 ends.
 
@@ -650,7 +660,7 @@ From the code:
 - panel headings: **NETLINK** · LIVE INTERFACE TELEMETRY, **THROUGHPUT** ·
   SECURE SPEEDTEST ROUTINE, `// RUN TEST`; row tags **OPEN / SEARCH /
   RUN**; **NEW WINDOW**;
-- the agent's voice in replies: "Copy that, choom. Jacked in and found the
+- how she talks in replies: "Copy that, choom. Jacked in and found the
   leech", "the ICE wants your say-so", "Flatline it".
 
 ---
@@ -724,8 +734,8 @@ This is how the look carries over — not a design for the app.
   icons and pins every glyph to one cell; check the advance on device). Use `FontFamily` with both
   weights and keep the grid (monospace, one cell per glyph).
 - **Colours** translate directly: generate a Kotlin object from
-  `tokens.json` → `color.palette` (`Color(0xFF05D9E8)` …), plus the voices
-  and the computed plate fills (with their alphas). Prefer your own
+  `tokens.json` → `color.palette` (`Color(0xFF05D9E8)` …), plus her colour
+  (`color.agent`) and the computed plate fills (with their alphas). Prefer your own
   `CompositionLocal` palette over Material's colour scheme; if Material
   components are used, set `background = BASE_BLACK`, text on it
   `HUD_FG_BRIGHT`, interactive = `CYAN_BRIGHT`, focus/user = `MAGENTA_BRIGHT`,
