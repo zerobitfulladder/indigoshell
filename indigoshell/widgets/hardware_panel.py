@@ -43,13 +43,30 @@ def fmt_bytes(n: float) -> str:
 
 
 def heat_color(pct: float) -> str:
-    """Cool -> warm -> hot, shared by disk and temperature: the bar's
-    TEMP ramp (theme.HEAT_RAMP), red from 80% of the scale."""
+    """Cool -> warm -> hot, for temperature: the bar's TEMP ramp
+    (theme.HEAT_RAMP), red from 80% of the scale."""
     chosen = theme.HEAT_RAMP[0][1]
     for share, color in theme.HEAT_RAMP:
         if pct >= share * 100:
             chosen = color
     return chosen
+
+
+# A disk fills, it does not heat: most disks sit above half full, so the
+# heat ramp would keep this bar yellow all day. Its own points instead,
+# with red (theme.ERROR) only when it is nearly full.
+DISK_WARN_PCT = 75.0
+DISK_FULL_PCT = 90.0
+
+
+def disk_color(pct: float) -> str:
+    """The disk bar: cyan, yellow from DISK_WARN_PCT, red from
+    DISK_FULL_PCT."""
+    if pct >= DISK_FULL_PCT:
+        return theme.ERROR
+    if pct >= DISK_WARN_PCT:
+        return theme.YELLOW_BRIGHT
+    return theme.CYAN_BRIGHT
 
 
 def temp_pct(celsius: float) -> float:
@@ -146,7 +163,7 @@ class HardwarePanel(Widget):
 
         # ── disk ────────────────────────────────────────────────────────
         self._disk_value = value_label()
-        self._disk_bar = BarMeter(color=heat_color, min_width=width - 40)
+        self._disk_bar = BarMeter(color=disk_color, min_width=width - 40)
         disk = HudCard(Column([
             Row([key_label("DISK"), meta_label(disk_mount, color=theme.FG),
                  Spacer(), self._disk_value], spacing=10, align=Align.CENTER),

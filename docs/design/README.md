@@ -88,7 +88,7 @@ off every use in the code (tokens.json `color.palette[*].role`).
 | `LIME_DIM` | `#3a4a0a` | a full battery's empty cells |
 | **Violet** `VIOLET_BRIGHT` (`AGENT_ACCENT`, voice Indigo) | `#b967ff` | **the agent**: its frame, chip, plate tint, selection on the call (38%), progress cells; also the RAM meter, the volume level, normal toast body text |
 | `VIOLET` / `VIOLET_DIM` | `#7700a6` / `#2a0a3a` | RAM label, a finished job's cells / unlit violet cells |
-| **Red** `ERROR` | `#ff003c` | **errors, alarms, hot — and nothing else**: critical toast, failed step `×`, SCRUB, a dropped line, the agent **ringing back**, an urgent workspace, no network address, volume muted, **hot** (the bar's TEMP and the hardware panel's disk and GPU temperature at ≥ 80% of their scale), a **failed or inactive firewall**, insecure padlock, "no matches" |
+| **Red** `ERROR` | `#ff003c` | **errors, alarms, hot — and nothing else**: critical toast, failed step `×`, SCRUB, a dropped line, the agent **ringing back**, an urgent workspace, no network address, volume muted, **hot** (the bar's TEMP and the hardware panel's GPU temperature at ≥ 80% of their scale), a **nearly full disk** (≥ 90%), a **failed or inactive firewall**, insecure padlock, "no matches" |
 | `HUD_FG` | `#a0a8c8` | body text on plates (blue-grey: long runs of neon are unreadable) |
 | `HUD_FG_BRIGHT` | `#c8d0e8` | bright body text: the agent's reply, typed text, row titles |
 | `BASE_MUTED` | `#5a4a78` | **the muted tone**: every secondary text (dates, IPs, units, app names, tabs behind, key hints, state words). The most used colour after the neons |
@@ -109,9 +109,11 @@ off every use in the code (tokens.json `color.palette[*].role`).
   indicator is.
 - **Heat is one ramp** (`theme.HEAT_RAMP`): cyan, **yellow from 50%**,
   **red from 80%** of the scale, for the bar's TEMP and the hardware
-  panel's disk and GPU temperature alike; both temperatures read 30 °C
-  empty to 90 °C full (`TEMP_MIN_C`/`TEMP_MAX_C`), so yellow from 60 °C,
-  red from 78 °C.
+  panel's GPU temperature alike; both read 30 °C empty to 90 °C full
+  (`TEMP_MIN_C`/`TEMP_MAX_C`), so yellow from 60 °C, red from 78 °C.
+- **A disk fills, it does not heat**: the disk bar keeps its own points
+  (`hardware_panel.DISK_WARN_PCT`/`DISK_FULL_PCT`): cyan, yellow from
+  75%, red only from 90% full.
 - **Every dot is a square light** (§4): its colour says what, filled
   says on or current, its outline says off.
 
@@ -506,7 +508,8 @@ bevel 14, padding 10/14/10/16, the 2 px accent stripe wrapping the
 bottom-left cut (DISK cyan, CPU magenta, RAM violet, GPU cyan, state yellow).
 Card rows: KEY 13 px `CYAN_MID` tracking 1 (in a fixed cell when stacked),
 meta 13 px muted, value 13 px bold `YELLOW_BRIGHT` at the right; segmented
-bars 4/2 × 8, the disk and GPU-temperature bars in the heat ramp (§2);
+bars 4/2 × 8, the GPU-temperature bar in the heat ramp and the disk bar
+on its own points (§2);
 1-minute line graphs (1.4 px line, 14% fill, a 35% ceiling rule, a 5 px
 square light on the newest sample). The network panel: its FIREWALL row's
 square light lime and filled while a firewall runs, red and hollow when it
