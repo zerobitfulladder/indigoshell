@@ -647,7 +647,8 @@ class RemoteAgent:
             lines = [self.heard] if self.heard else []
         lines += [s for s, you in zip(self._segments, self._seg_you) if you]
         item = {"id": xid, "at": self.at, "source": kind,
-                "device": self.heard_on or self.device, "lines": lines,
+                "device": None if kind == "hub"
+                else self.heard_on or self.device, "lines": lines,
                 "reply": self.message, "attached": self.heard_attached,
                 "shown": [self.shown[sid] for sid in self._seg_shown
                           if sid is not None and sid in self.shown]}
@@ -843,8 +844,16 @@ class RemoteAgent:
         self._clear_turn()
         self._local_turn = self._turn_ours = False
         self._turn = view.get("turn")
-        self.heard = str(view.get("line") or "")
-        self.heard_on = None
+        line = str(view.get("line") or "")
+        # A turn the hub started: its line a note at the top, as `turn`
+        # shows one, and kept as the hub's when it ends.
+        self.from_hub = view.get("client") == HUB_CLIENT
+        self.heard = "" if self.from_hub else line
+        device = view.get("device")
+        self.heard_on = str(device) if device and device != self.device \
+            and not self.from_hub else None
+        if self.from_hub:
+            self.activity.append(Activity("note", line))
         xid, at = view.get("exchange"), view.get("at")
         self.exchange = xid if isinstance(xid, int) else None
         self.at = float(at) if isinstance(at, (int, float)) else None

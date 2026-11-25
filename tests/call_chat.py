@@ -12,7 +12,9 @@ compaction, and scrolling back through it.
    unknown right after; compacting is no turn (not busy, Ctrl+C sends no
    stop) and a line said meanwhile waits, shown as asked, until the
    hub's turn joins it; a refused `fetch` is matched by its id; `say`
-   carries the line alone.
+   carries the line alone; a welcome whose turn on show the hub started
+   (`view.client`) shows its line as a note, not as yours, and keeps it
+   as the hub's when it ends; one asked on another device says which.
 2. The keys, on the plate's rows: Ctrl+K up through the chat to the
    edge and no further, Ctrl+J down to live again; with Super (niri's
    Mod+Ctrl+J/K resize) or Alt nothing scrolls; Escape goes back live
@@ -158,6 +160,41 @@ async def test_bookkeeping() -> None:
     check("a refused fetch is matched by its id, not its order",
           agent.media_failed("def") == "not found" and agent.media_failed("abc") is None
           and agent._fetching == ["abc"])
+
+    hub = _live.ScriptedAgent()
+    line = "job transcribe talk.mp4 ended: ok"
+    hub._hub_turn, hub._hub_phase = 7, "speaking"
+    hub._on_welcome({
+        "type": "welcome", "protocol": 2, "device": hub.DEVICE,
+        "agent": hub.AGENT, "state": hub._hub_state(), "ask": None,
+        "unseen": None, "devices": [],
+        "view": {"turn": 7, "at": time.time() - 30, "client": "hub",
+                 "device": None, "line": line, "text": "Transcript's done.",
+                 "blocks": [{"block": 0, "text": "Transcript's done."}],
+                 "steps": [], "shown": [], "exchange": None}})
+    acts = list(hub.activity)
+    check("a welcome with the hub's own turn on show (`view.client`: hub): its line a "
+          "note at the top, not in your plate", hub.heard == "" and hub.from_hub
+          and acts and acts[0].kind == "note" and acts[0].text == line
+          and hub.busy, f"heard={hub.heard!r} {[(a.kind, a.text) for a in acts]}")
+    hub._feed("done", turn=7, ok=True, text="Transcript's done.", error=None,
+              hint=None, notify=None, seconds=1.0, exchange=950)
+    kept = next((x for x in hub.exchanges if x["id"] == 950), None)
+    check("... watched to its end: kept as the hub's exchange, its line first",
+          kept is not None and kept["source"] == "hub" and kept["lines"] == [line]
+          and kept["device"] is None
+          and kept["reply"] == "Transcript's done.", f"{kept}")
+    other = _live.ScriptedAgent()
+    other._on_welcome({
+        "type": "welcome", "protocol": 2, "device": other.DEVICE,
+        "agent": other.AGENT, "state": other._hub_state(), "ask": None,
+        "unseen": None, "devices": [],
+        "view": {"turn": 3, "at": time.time() - 60, "client": "app",
+                 "device": "iris", "line": "is the pi hot", "text": "52 °C.",
+                 "blocks": [], "steps": [], "shown": [], "exchange": 949}})
+    check("a welcome with a turn asked on the phone: your line in your plate, "
+          "'on iris'", other.heard == "is the pi hot" and other.heard_on == "iris"
+          and not other.from_hub and not other.activity)
 
 
 # ── 2. the keys ─────────────────────────────────────────────────────────
