@@ -94,9 +94,11 @@ class Systray(Widget):
         lit_count = min(len(self._broker.items()), n)
         paint = skia.Paint(AntiAlias=False)
         for i in range(n):
-            # i=0 is the bottom-most cell; lit fills bottom-up.
+            # i=0 is the bottom-most cell; lit fills bottom-up. A count of
+            # apps you can click through to is info, cyan like the clock
+            # beside it: red is for errors and alarms only.
             y = r.bottom() - (i + 1) * cell_h - i * self.gap
-            color = theme.ERROR if i < lit_count else theme.MAGENTA_DIM
+            color = theme.CYAN_BRIGHT if i < lit_count else theme.MAGENTA_DIM
             paint.setColor(theme.color(color))
             canvas.drawRect(
                 skia.Rect.MakeXYWH(r.left(), y, r.width(), cell_h), paint)
