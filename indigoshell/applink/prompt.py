@@ -2,10 +2,12 @@
 key, click or loss of focus that closes it (PROTOCOL.md, section 4).
 
 A `Prompt` is one open INPUT or MENU of an app window's bar (or the
-shell's own: MOD+D's app search, `local` rows of its own). While it is
-open it has the keyboard (the app service holds it: service.py), and
-every key typed reaches `key` in the order typed, whichever window X
-reported it on. It shows in two places:
+shell's own: MOD+D's launcher, launcher.py, `local` rows of its own).
+While it is open it has the keyboard (the app service holds it:
+service.py; the launcher's window grabs it), and every key typed
+reaches `key` in the order typed, whichever window X reported it on.
+For an app's input it shows in two places (the launcher frames the same
+two as its own panel):
 
   - an input turns the app's section of the top bar into its box (an
     `InputBox`, kinds/input.py): the icon, the text being typed, the
@@ -29,8 +31,10 @@ Where the rows come from:
   a menu    the same, the filter line shown at the list's top once
             something is typed; a row with `menu` opens its submenu
             beside it (Right, Return, a click), Left or Escape go back.
-  local     the shell's own source (MOD+D's catalog): searched and
-            picked in the shell, no app involved.
+  local     the shell's own source (the app catalog, catalog.py): searched
+            and picked in the shell, no app involved. MOD+D's launcher
+            (launcher.py) is such an input, its box and list framed as a
+            panel of its own instead of the bar's.
 
 Keys, while an input is open:
 
@@ -160,11 +164,12 @@ class Prompt:
     `host` the app service, which holds the keyboard and the pointer for
     it, shows its list and closes it on focus lost (service.py);
     `local` a source of the shell's own: `search(text) -> (rows,
-    selected)`, `pick(row, text)`, `total`, `count(rows)`.
+    selected)`, `pick(row, text)`, `total`, `count(rows)`. `box` the
+    input's box when it is not the bar's (MOD+D's launcher: launcher.py).
     """
 
     def __init__(self, host, owner, what: str, name, spec: dict, *, local=None,
-                 anchor=None, chord: str | None = None) -> None:
+                 anchor=None, chord: str | None = None, box=None) -> None:
         self.host = host
         self.owner = owner
         self.what = what                # "input" | "menu"
@@ -174,7 +179,9 @@ class Prompt:
         self.anchor = anchor            # the item it drops under (a menu's), or None
         self.chord = chord              # the chord that opened it
         self.open = True
-        self.box = InputBox() if what == "input" else None
+        # An input's box: the bar's (kinds/input.py), or one of the same
+        # shape framed otherwise (the launcher's query line).
+        self.box = (box or InputBox()) if what == "input" else None
         self.levels: list[Level] = []
         # The list (an input's).
         self.rows: list[dict] = []

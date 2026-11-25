@@ -7,7 +7,7 @@ It owns its top-level X windows: one window holds many pages (tabs),
 each page from the window's top edge. It is a single instance per
 profile: a second invocation hands its URLs to the running one.
 `desktop.py` installs its desktop entry, Flux (`python -m flux
---install`), which MOD+D's app search finds.
+--install`), which the launcher finds.
 
 The shell integrates it, as it will its other apps: Flux is an
 indigoshell app (indigoshell/applink/PROTOCOL.md, the app bar protocol).

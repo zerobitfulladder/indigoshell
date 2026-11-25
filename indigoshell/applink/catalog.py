@@ -1,5 +1,6 @@
-"""MOD+D's app search: the installed apps as the rows of the top bar's
-input, the shell's own (no app behind it: PROTOCOL.md, section 1).
+"""MOD+D's app search: the installed apps as the rows of an input, the
+shell's own (no app behind it: PROTOCOL.md, section 1), which the
+launcher (launcher.py) frames as its panel.
 
 `AppSearch` is a prompt's `local` source (applink/prompt.py): it
 searches the app catalog (services/apps.py: fuzzy on the name, then the

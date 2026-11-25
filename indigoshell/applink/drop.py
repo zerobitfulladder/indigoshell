@@ -2,8 +2,7 @@
 as if the bar grew down (PROTOCOL.md, section 4).
 
 The bar is a dock of fixed height, so the list is a window of its own
-(DROP_WINDOW, config_default's WINDOWS: "launcher", so that MOD+D's
-`indigoshell toggle launcher` opens it), its top against the bar's
+(DROP_WINDOW, config_default's WINDOWS), its top against the bar's
 bottom edge and on the bar's background, with no edge between: the app
 section's width for an input (the box above it its header), its own for
 a menu, dropped under the item that opened it or at the section's left
@@ -11,7 +10,8 @@ edge. A submenu opens beside its row, in the same window. It takes no
 keyboard and no pointer of its own: the open prompt holds both
 (applink/prompt.py, service.py), and a click on a row reaches it here.
 
-The rows are the old launcher's: up to PAGE slots, ROW_H each, a scroll
+The rows are the launcher's (MOD+D's panel, launcher.py, paints its
+rows with the same `paint_row`): up to PAGE slots, ROW_H each, a scroll
 thumb when there are more. A row is a `tag` word (OPEN, SEARCH) or an
 icon, its title with the characters the query matched lit, its `detail`
 muted at the right, a key hint (`chord`), a check when `on`, an arrow
@@ -23,11 +23,6 @@ typed into shows what is typed on a line at its top.
 
 Its spawn is the list unrolling from the bar, top down (UNROLL_S), the
 window's own motion: no effect pass, so no bleed around it either.
-
-Opened by name with nothing open (`indigoshell toggle launcher`, MOD+D)
-it asks the app service for the app search (catalog.py): the top bar's
-app section becomes its box, the installed apps its rows. Closed by name
-(the same toggle) it closes whatever it shows.
 """
 
 import logging
@@ -42,7 +37,7 @@ from .kinds.look import CHECK, SUBMENU, glyph
 
 log = logging.getLogger(__name__)
 
-DROP_WINDOW = "launcher"
+DROP_WINDOW = "dropdown"
 PAGE = 12                       # slots shown at once
 QUERY_SIZE = theme.FONT_SIZE
 NAME_SIZE = theme.FONT_SIZE - 2
@@ -112,38 +107,15 @@ class Column:
 
 
 class DropList(Widget):
-    """The drop-down window's content: the open prompt's list. `terminal`
-    wraps the apps whose desktop entry says Terminal=true (MOD+D's app
-    search); `icon_theme` names the theme their icons come from."""
+    """The drop-down window's content: the open prompt's list."""
 
-    def __init__(self, *, terminal: tuple[str, ...] = ("kitty",),
-                 icon_theme: str | None = None) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.prompt = None
-        self.service = None             # the app service (it sets this when it starts)
         self.width = 400                # an input's: the section's
         self.columns: list[Column] = []
-        self.terminal = terminal
-        self.icon_theme = icon_theme
-        self._catalog = None
-        self._icons = None
         self._opened_at = 0.0
         self._hover: tuple[int, int] | None = None
-
-    # ── the app search's catalog and icons, made on first use ───────────
-    @property
-    def catalog(self):
-        if self._catalog is None:
-            from ..services.apps import Catalog
-            self._catalog = Catalog(terminal=self.terminal)
-        return self._catalog
-
-    @property
-    def icons(self):
-        if self._icons is None:
-            from ..services.icons import Icons
-            self._icons = Icons(self.icon_theme)
-        return self._icons
 
     # ── what it shows ───────────────────────────────────────────────────
     def show(self, prompt, width: int | None = None) -> None:
@@ -192,18 +164,8 @@ class DropList(Widget):
         w, h = self.relayout()
         window.resize_content(w, h)
 
-    def on_open(self, window) -> None:
-        """An open is about to show the window (Daemon.open; not when it is
-        made ahead and parked). Opened by name with nothing to show
-        (MOD+D): the app search."""
-        if (self.prompt is None or not self.prompt.open) and self.service is not None:
-            self.service.open_apps(self, window)
-            w, h = self.relayout()
-            window.resize_content(w, h)
-
     def on_dismiss(self) -> None:
-        """Closed by name (the toggle) while it shows something: that
-        closes too."""
+        """Closed by name while it shows something: that closes too."""
         p = self.prompt
         if p is not None and p.open:
             p.close("shell")
@@ -262,88 +224,14 @@ class DropList(Widget):
                   QUERY_SIZE, theme.color(theme.HUD_FG_BRIGHT))
 
     def _paint_thumb(self, canvas: skia.Canvas, col: Column) -> None:
-        n = len(col.rows)
-        if n <= PAGE:
-            return
         r = self.rect
-        h_all = rows_height(PAGE)
-        h = max(ROW_H / 2, h_all * PAGE / n)
-        y = r.top() + col.first_y + (h_all - h) * col.top / (n - PAGE)
-        paint = skia.Paint(AntiAlias=False)
-        paint.setColor(theme.color(theme.CYAN_MID))
-        canvas.drawRect(skia.Rect.MakeXYWH(r.left() + col.x + col.w - PAD_X / 2 - SCROLL_W, y,
-                                           SCROLL_W, h), paint)
+        paint_thumb(canvas, skia.Rect.MakeXYWH(r.left() + col.x + col.w - PAD_X / 2 - SCROLL_W,
+                                               r.top() + col.first_y, SCROLL_W, rows_height(PAGE)),
+                    len(col.rows), PAGE, col.top)
 
     def _paint_row(self, canvas: skia.Canvas, r: skia.Rect, row: dict, selected: bool,
                    reject: bool) -> None:
-        """A row: a tag word or an icon, the title with its matched
-        characters lit, the detail and key hint muted at the right, a
-        check or an arrow at the end; dimmed throughout when it cannot be
-        picked."""
-        if selected:
-            slab = shapes.beveled(r.left(), r.top(), r.width(), r.height(), bevel=BEVEL,
-                                  corners=CORNERS, inset=LINE_W / 2)
-            fill = skia.Paint(AntiAlias=True)
-            fill.setColor(theme.color(*(_REJECT if reject else _SELECTED)))
-            canvas.drawPath(slab, fill)
-            stroke = skia.Paint(AntiAlias=True)
-            stroke.setStyle(skia.Paint.kStroke_Style)
-            stroke.setStrokeWidth(LINE_W)
-            stroke.setColor(theme.color(*_BORDER))
-            canvas.drawPath(slab, stroke)
-        dim = row.get("enabled") is False
-        title = str(row.get("title") or "")
-        if dim:
-            plain = hit = theme.BASE_MUTED
-        else:
-            plain = theme.YELLOW_BRIGHT if selected else theme.HUD_FG_BRIGHT
-            hit = theme.CYAN_BLOOM if selected else theme.CYAN_BRIGHT
-        # The right end: an arrow or a check, the key hint, the detail.
-        right = r.right() - PAD_X
-        end_mark = SUBMENU if row.get("menu") is not None else CHECK if row.get("on") else ""
-        if end_mark:
-            w = text.measure(end_mark, META_SIZE)
-            right -= w
-            text.draw(canvas, end_mark, right, text.baseline_in(r, META_SIZE), META_SIZE,
-                      theme.color(theme.BASE_MUTED if dim else theme.CYAN_MID))
-            right -= GAP
-        meta = "  ".join(str(row[k]) for k in ("detail", "chord") if row.get(k))
-        tag = str(row.get("tag") or "")
-        x = r.left() + PAD_X
-        if tag:
-            text.draw(canvas, tag, x, text.baseline_in(r, META_SIZE), META_SIZE,
-                      theme.color(theme.CYAN_MID), bold=True, tracking=1.0)
-            x += text.measure(tag, META_SIZE, bold=True, tracking=1.0) + GAP
-        else:
-            icon_rect = skia.Rect.MakeXYWH(x, r.centerY() - ICON / 2, ICON, ICON)
-            image = self.icons.get(row["_icon"], ICON) if row.get("_icon") else None
-            if image is not None:
-                image.draw(canvas, icon_rect, tint=theme.color(theme.HUD_FG))
-            elif row.get("_initial"):
-                ch = row["_initial"]
-                text.draw(canvas, ch, icon_rect.centerX() - text.measure(ch, NAME_SIZE, True) / 2,
-                          text.baseline_in(icon_rect, NAME_SIZE, bold=True), NAME_SIZE,
-                          theme.color(theme.BASE_MUTED), bold=True)
-            else:
-                g = glyph(row.get("icon")) if row.get("icon") else ""
-                if g:
-                    text.draw(canvas, g, icon_rect.centerX() - text.measure(g, NAME_SIZE) / 2,
-                              text.baseline_in(icon_rect, NAME_SIZE), NAME_SIZE,
-                              theme.color(theme.BASE_MUTED if dim else theme.HUD_FG))
-            x = icon_rect.right() + GAP
-        # The title has the room the meta does not need, up to half.
-        meta_w = min(text.measure(meta, META_SIZE), r.width() / 2) if meta else 0.0
-        room = right - x - (meta_w + GAP * 2 if meta_w else 0.0)
-        shown = _ellipsize(title, NAME_SIZE, room)
-        positions = set(row.get("match") or ()) if shown == title else set()
-        end = _draw_runs(canvas, shown, positions, x, text.baseline_in(r, NAME_SIZE), NAME_SIZE,
-                         plain, hit)
-        room = right - (end + GAP * 2)
-        if meta and room > text.advance(META_SIZE, chars=4):
-            meta = _ellipsize(meta, META_SIZE, room)
-            color = theme.BASE_MUTED if dim or not selected else theme.CYAN_MID
-            text.draw(canvas, meta, right - text.measure(meta, META_SIZE),
-                      text.baseline_in(r, META_SIZE), META_SIZE, theme.color(color))
+        paint_row(canvas, r, row, selected=selected, reject=reject)
 
     # ── the mouse ───────────────────────────────────────────────────────
     def row_at(self, x: float, y: float) -> tuple[int, int] | None:
@@ -393,6 +281,95 @@ class DropList(Widget):
         return True
 
 
+def paint_thumb(canvas: skia.Canvas, track: skia.Rect, n: int, shown: int, top: int) -> None:
+    """The scroll thumb of a list of `n` rows `shown` at a time from
+    `top`, in its track (the list's height, SCROLL_W wide); none when
+    they all show."""
+    if n <= shown:
+        return
+    h = max(ROW_H / 2, track.height() * shown / n)
+    y = track.top() + (track.height() - h) * top / (n - shown)
+    paint = skia.Paint(AntiAlias=False)
+    paint.setColor(theme.color(theme.CYAN_MID))
+    canvas.drawRect(skia.Rect.MakeXYWH(track.left(), y, SCROLL_W, h), paint)
+
+
+def paint_row(canvas: skia.Canvas, r: skia.Rect, row: dict, *, selected: bool,
+              reject: bool = False, icons=None) -> None:
+    """A row: a tag word or an icon (an app's from `icons`, or its
+    initial), the title with its matched characters lit, the detail and
+    key hint muted at the right, a check or an arrow at the end; dimmed
+    throughout when it cannot be picked."""
+    if selected:
+        slab = shapes.beveled(r.left(), r.top(), r.width(), r.height(), bevel=BEVEL,
+                              corners=CORNERS, inset=LINE_W / 2)
+        fill = skia.Paint(AntiAlias=True)
+        fill.setColor(theme.color(*(_REJECT if reject else _SELECTED)))
+        canvas.drawPath(slab, fill)
+        stroke = skia.Paint(AntiAlias=True)
+        stroke.setStyle(skia.Paint.kStroke_Style)
+        stroke.setStrokeWidth(LINE_W)
+        stroke.setColor(theme.color(*_BORDER))
+        canvas.drawPath(slab, stroke)
+    dim = row.get("enabled") is False
+    title = str(row.get("title") or "")
+    if dim:
+        plain = hit = theme.BASE_MUTED
+    else:
+        plain = theme.YELLOW_BRIGHT if selected else theme.HUD_FG_BRIGHT
+        hit = theme.CYAN_BLOOM if selected else theme.CYAN_BRIGHT
+    # The right end: an arrow or a check, the key hint, the detail.
+    right = r.right() - PAD_X
+    end_mark = SUBMENU if row.get("menu") is not None else CHECK if row.get("on") else ""
+    if end_mark:
+        w = text.measure(end_mark, META_SIZE)
+        right -= w
+        text.draw(canvas, end_mark, right, text.baseline_in(r, META_SIZE), META_SIZE,
+                  theme.color(theme.BASE_MUTED if dim else theme.CYAN_MID))
+        right -= GAP
+    meta = "  ".join(str(row[k]) for k in ("detail", "chord") if row.get(k))
+    tag = str(row.get("tag") or "")
+    x = r.left() + PAD_X
+    if tag:
+        text.draw(canvas, tag, x, text.baseline_in(r, META_SIZE), META_SIZE,
+                  theme.color(theme.CYAN_MID), bold=True, tracking=1.0)
+        x += text.measure(tag, META_SIZE, bold=True, tracking=1.0) + GAP
+    else:
+        icon_rect = skia.Rect.MakeXYWH(x, r.centerY() - ICON / 2, ICON, ICON)
+        image = icons.get(row["_icon"], ICON) if icons is not None and row.get("_icon") \
+            else None
+        if image is not None:
+            image.draw(canvas, icon_rect, tint=theme.color(theme.HUD_FG))
+        elif row.get("_initial"):
+            ch = row["_initial"]
+            text.draw(canvas, ch, icon_rect.centerX() - text.measure(ch, NAME_SIZE, True) / 2,
+                      text.baseline_in(icon_rect, NAME_SIZE, bold=True), NAME_SIZE,
+                      theme.color(theme.BASE_MUTED), bold=True)
+        else:
+            g = glyph(row.get("icon")) if row.get("icon") else ""
+            if g:
+                text.draw(canvas, g, icon_rect.centerX() - text.measure(g, NAME_SIZE) / 2,
+                          text.baseline_in(icon_rect, NAME_SIZE), NAME_SIZE,
+                          theme.color(theme.BASE_MUTED if dim else theme.HUD_FG))
+        x = icon_rect.right() + GAP
+    # The title has the room the meta does not need, up to half; an app's
+    # name (the launcher's) all it wants, its generic name after it where
+    # room is left.
+    app = "_initial" in row
+    meta_w = min(text.measure(meta, META_SIZE), r.width() / 2) if meta and not app else 0.0
+    room = right - x - (meta_w + GAP * 2 if meta_w else 0.0)
+    shown = title if app else _ellipsize(title, NAME_SIZE, room)
+    positions = set(row.get("match") or ()) if shown == title else set()
+    end = _draw_runs(canvas, shown, positions, x, text.baseline_in(r, NAME_SIZE), NAME_SIZE,
+                     plain, hit)
+    room = right - (end + GAP * 2)
+    if meta and room > text.advance(META_SIZE, chars=4):
+        meta = _ellipsize(meta, META_SIZE, room)
+        color = theme.BASE_MUTED if dim or not selected else theme.CYAN_MID
+        text.draw(canvas, meta, right - text.measure(meta, META_SIZE),
+                  text.baseline_in(r, META_SIZE), META_SIZE, theme.color(color))
+
+
 def _draw_runs(canvas: skia.Canvas, value: str, hits: set[int], x: float, baseline: float,
                size: float, plain: str, hit: str) -> float:
     """Draw `value` with the characters at `hits` bold and in `hit`; the x
@@ -412,6 +389,8 @@ def _draw_runs(canvas: skia.Canvas, value: str, hits: set[int], x: float, baseli
 
 
 def _ellipsize(value: str, size: float, room: float) -> str:
+    """Cut to `room` with an ellipsis, by the face's cell (monospace)."""
     if text.measure(value, size) <= room:
         return value
-    return text.ellipsize(value, size, max(0.0, room)) if room > 0 else ""
+    keep = max(0, int(room / text.advance(size)) - 1)
+    return value[:keep].rstrip() + "…"

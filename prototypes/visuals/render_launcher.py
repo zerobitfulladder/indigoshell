@@ -1,12 +1,10 @@
-"""MOD+D's app search, rendered from the real widgets against this
-machine's apps: the top bar's app section as its box, the drop-down's
-rows under it (indigoshell/applink: catalog.py, prompt.py, drop.py).
+"""The launcher, rendered from the real widget against this machine's apps.
 
-Four states stacked at 1x, the scale it is seen at: an empty box
+Four states side by side at 1x — the scale it is seen at: an empty query
 (recent apps first), a query with its matched letters lit, a selection
-moved down the list, and a query that matches nothing (RUN it). Every
-state is reached by feeding real KeyEvents through the open input's
-`key`, so the sheet also exercises the input path.
+moved down the list, and a query that matches nothing. Every state is
+reached by feeding real KeyEvents through `Launcher.key`, so the sheet
+also exercises the input path.
 
 Launch history goes to a throwaway state dir, never the real one.
 
@@ -14,7 +12,6 @@ Launch history goes to a throwaway state dir, never the real one.
 """
 import os
 import tempfile
-import types
 
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="launcher-render-")
 
@@ -22,56 +19,69 @@ import skia                                             # noqa: E402
 
 from common import C, txt                               # noqa: E402
 from indigoshell import theme                           # noqa: E402
-from indigoshell.applink.catalog import AppSearch       # noqa: E402
-from indigoshell.applink.drop import DropList           # noqa: E402
-from indigoshell.applink.prompt import Prompt           # noqa: E402
 from indigoshell.widgets.base import KeyEvent, Size     # noqa: E402
+from indigoshell.applink.launcher import Launcher       # noqa: E402
 
+MARGIN = 28
 DOWN = 0xFF54
-WIDTH = 1100                    # the app section's, at a 1600 px screen
-BAR_H = theme.TOP_BAR_HEIGHT
 
 
-class Host:
-    """What an open input asks of the app service."""
+class FakeSpec:
+    name = "launcher"
 
-    def changed(self, prompt):
+
+class FakeWindow:
+    """What a widget asks of its host: damage, a resize, the spec."""
+    spec = FakeSpec()
+
+    def __init__(self):
+        self.size = (0, 0)
+
+    def damage(self, widget=None, *, layout=False):
         pass
 
-    def closed(self, prompt):
-        pass
+    def resize_content(self, w, h):
+        self.size = (w, h)
 
-    def next_seq(self, prompt):
-        return 0
 
-    def later(self, delay, fn):
-        return types.SimpleNamespace(cancel=lambda: None)
+def type_into(launcher, keys):
+    for k in keys:
+        if isinstance(k, str):
+            launcher.key(KeyEvent(keysym=ord(k), text=k))
+        else:
+            launcher.key(KeyEvent(keysym=k))
+
+
+def snapshot(launcher, window):
+    w, h = window.size
+    s = skia.Surface(w + 2 * MARGIN, h + 2 * MARGIN)
+    c = s.getCanvas()
+    c.clear(C(theme.BASE_BLACK))
+    launcher.measure(Size(w, h))
+    launcher.arrange(skia.Rect.MakeXYWH(MARGIN, MARGIN, w, h))
+    launcher.paint(c)
+    s.flushAndSubmit()
+    return s.makeImageSnapshot()
+
+
+def configured():
+    """A fresh launcher at the size the shipped config gives it."""
+    from indigoshell.config_default import LAUNCHER, WINDOWS
+    shipped = next(w for w in WINDOWS if w.name == LAUNCHER).content
+    assert isinstance(shipped, Launcher)
+    return Launcher(rows=shipped.rows, width=shipped._list.width)
 
 
 def state(keys, history=()):
-    drop = DropList()
+    launcher = configured()
+    window = FakeWindow()
+    launcher.attach(window)
     for name in history:
-        app = next(a for a in drop.catalog.apps or drop.catalog.refresh() and drop.catalog.apps
-                   if a.entry.name == name)
-        drop.catalog.history.record(app.entry.id)
-    source = AppSearch(drop.catalog, drop.icons)
-    prompt = Prompt(Host(), None, "input", "apps", source.spec, local=source)
-    prompt.start()
-    for k in keys:
-        prompt.key(KeyEvent(keysym=ord(k), text=k) if isinstance(k, str) else KeyEvent(keysym=k))
-    drop.show(prompt, WIDTH)
-    w, h = drop.relayout()
-    s = skia.Surface(WIDTH, BAR_H + h)
-    c = s.getCanvas()
-    c.clear(C(theme.BAR_BG))
-    prompt.box.measure(Size(WIDTH, BAR_H))
-    prompt.box.arrange(skia.Rect.MakeWH(WIDTH, BAR_H))
-    prompt.box.paint(c)
-    c.translate(0, BAR_H)
-    drop.arrange(skia.Rect.MakeWH(w, h))
-    drop.paint(c)
-    s.flushAndSubmit()
-    return s.makeImageSnapshot()
+        app = next(a for a in launcher.catalog.apps if a.entry.name == name)
+        launcher.catalog.history.record(app.entry.id)
+    launcher.attach(window)             # reopen: picks the history up
+    type_into(launcher, keys)
+    return snapshot(launcher, window)
 
 
 def main():
@@ -82,17 +92,17 @@ def main():
         ("'set' + Down x2", state(list("set") + [DOWN, DOWN], used)),
         ("no match: runs it", state(list("htop -t"), used)),
     ]
-    gap, top = 24, 30
-    w = max(img.width() for _, img in shots) + 2 * gap
-    h = sum(img.height() + top for _, img in shots) + gap * (len(shots) + 1)
+    gap, top = 24, 40
+    w = sum(img.width() for _, img in shots) + gap * (len(shots) + 1)
+    h = max(img.height() for _, img in shots) + top + gap
     s = skia.Surface(w, h)
     c = s.getCanvas()
     c.clear(skia.ColorSetARGB(255, 28, 28, 34))
-    y = gap
+    x = gap
     for label, img in shots:
-        txt(c, label, gap, y + 18, 13, theme.HUD_FG_BRIGHT, bold=True)
-        c.drawImage(img, gap, y + top)
-        y += img.height() + top + gap
+        txt(c, label, x + MARGIN, 26, 13, theme.HUD_FG_BRIGHT, bold=True)
+        c.drawImage(img, x, top)
+        x += img.width() + gap
     s.flushAndSubmit()
     s.makeImageSnapshot().save("launcher.png", skia.kPNG)
     print("wrote launcher.png", f"{w}x{h}")

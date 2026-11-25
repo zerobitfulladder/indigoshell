@@ -5,8 +5,8 @@ one of its windows has focus, and how the shell sends the user's
 interactions back. The reference: change it first, then the shell and
 the apps. It starts
 from `applink/` (the line, the service, the bar's app section), removes
-`applink/flux.py` (~1300 lines of Flux in the shell) and turns the
-launcher into a part of the bar.
+`applink/flux.py` (~1300 lines of Flux in the shell) and makes the
+launcher's parts the bar's: one component, two frames.
 
 ```
  top bar, a Flux window focused:
@@ -28,8 +28,9 @@ launcher into a part of the bar.
   picking from a menu are all the bar's: an input turns the app's section
   into a text box, suggestions dropping flush from the bar's bottom edge
   as if the bar extended down; a menu drops the same way. An app sees no
-  launcher, panel or chip. (The shell's MOD+D app picker becomes the same
-  component, fed by the app catalog in-process: not this protocol's.)
+  launcher, panel or chip. (The shell's MOD+D launcher is the same
+  component, fed by the app catalog in-process and framed as its own
+  centred panel: not this protocol's.)
 - **Nothing app-specific in the shell.** `AppService(kinds=...)`,
   `AppWindow` subclasses, `FluxWindow` and the shell's reading of Flux's
   history and bookmarks (`services/addresses.py`) go. No per-kind
@@ -281,9 +282,8 @@ second window against its bottom edge (`window.Placement`, as the
 launcher drops from the bar now), on the bar's background with no edge
 between: the section's width for an input, its own for a menu. The
 launcher's rows, filter and steps move into it; its spawn effect becomes
-the list unrolling from the bar. It is the window kind `launcher`, so
-MOD+D's `indigoshell toggle launcher` opens it: opened by name with
-nothing open, it is the app search (step 5).
+the list unrolling from the bar. MOD+D's launcher stays a window of its
+own (step 5).
 
 ## 5. The agent
 
@@ -452,10 +452,12 @@ Steps, each one working:
    connection); `tests/browser_launcher.py` 2 and 5 test
    `flux/addresses.py` and `flux/bar.py`, pure; `tests/browser.py`
    follows; `tests/flux_imports.py` allows `indigoshell.core.voices`.
-5. **MOD+D** onto the same component, the app catalog as its source: the
-   focused monitor's top bar app section becomes the app search box (an
-   app's bar, if one shows, gives way until it closes), its list dropping
-   under it like any input's.
+5. **MOD+D** onto the same component, the app catalog as its source:
+   the launcher keeps its window, place, size, look and keys (a centred
+   panel, its `//` query line over twelve rows), built from the bar's
+   parts (the prompt with its keys and filtering, the rows' painter, the
+   text field). (First built in the top bar's app section; the user
+   chose the panel back: decision 7.)
 6. **Docs**: applink's and flux's package docstrings, the README.
 
 ## 9. Decisions (the user's, 2026-11-25)
@@ -469,5 +471,9 @@ Steps, each one working:
 5. **One tab look for every app**; another is a shell change, not an
    app's choice.
 6. **Icons by name**, the shell's table grown as apps need.
-7. **MOD+D opens in the top bar** too: the focused monitor's app section
-   becomes the app search box (step 5).
+7. **MOD+D opens the launcher as it was**: its own centred panel, not
+   the top bar (changed by the user on 2026-11-25 after trying the top
+   bar's: "I just wanted to disappear the distinction between bar widgets
+   and the launcher window"). One component in code, two frames: the
+   launcher is the bar's input fed by the app catalog, framed as a panel
+   (step 5).

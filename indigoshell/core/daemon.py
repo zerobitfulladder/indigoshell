@@ -353,15 +353,6 @@ class Daemon:
             win = Window(self.display, spec, self.loop)
             win.placement = placement
             win.create()
-        # The content hears that this open shows it (`prepare` makes and
-        # parks a window without one): the top bar's drop-down, opened by
-        # name with nothing to show, becomes the app search there.
-        hook = getattr(spec.content, "on_open", None)
-        if hook is not None:
-            try:
-                hook(win)
-            except Exception:
-                log.exception("on_open failed in %s", name)
         win.show()
         self.instances[name] = win
         # Creating a window round-trips (atom interning), and replies pull

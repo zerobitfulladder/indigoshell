@@ -263,14 +263,17 @@ size, cut to the song's beats.
   <img src="docs/media/menu.gif" width="440"
        alt="The profile menu scanning in, its rows lighting up under the pointer">
 
-- **App search** — replaces rofi's `drun`, in the top bar: MOD+D turns
-  its app section into a search box, every installed desktop entry
-  dropping under it with its theme icon, fuzzy matching (fzy's scorer,
-  case- and accent-blind, matched letters lit) and launch history that
-  lifts the apps actually used. Type straight away: no key is lost.
-  Shift+Return runs the query as a command line. Apps start in their own
-  systemd scope, detached from the shell, so a reload never takes them
-  down. It is the same input as an app's (Flux's address box).
+- **Launcher** — replaces rofi's `drun`: a centred panel over every
+  installed desktop entry, with their theme icons, fuzzy matching (fzy's
+  scorer, case- and accent-blind, matched letters lit) and launch
+  history that lifts the apps actually used. Type straight away — keys
+  pressed during the spawn animation are kept. Shift+Return runs the
+  query as a command line. Apps start in their own systemd scope,
+  detached from the shell, so a reload never takes them down. Inside it
+  is the top bar's input (Flux's address box), fed by the app catalog.
+
+  <img src="docs/media/launcher.gif" width="560"
+       alt="The launcher opening, nvim typed and Neovim picked">
 
 - **Notifications** — a full `org.freedesktop.Notifications` daemon,
   replacing dunst. One window per toast, so the spawn and despawn
@@ -314,7 +317,7 @@ per profile: a second invocation hands its URLs to the running one.
 
 ```bash
 indigoshell browser [url ...]   # or from the checkout: python -m flux [url ...]
-indigoshell browser --install   # its desktop entry, "Flux" (the app search finds it)
+indigoshell browser --install   # its entry in the launcher, "Flux"
 ```
 
 It is an indigoshell app, the first: each window sends the shell its
@@ -392,7 +395,8 @@ indigoshell/
                       open input's box; the shared look (colour roles, icons)
     prompt.py       ─ an open input or menu: queries, keys, steps, actions
     drop.py         ─ the drop-down under the bar: the rows, unrolling
-    catalog.py      ─ MOD+D's app search, the same input
+    catalog.py      ─ the app catalog as an input's rows
+    launcher.py     ─ MOD+D's launcher: that input framed as a centred panel
   backend/
     x11.py          ─ the process's single xcffib connection + event pump
     gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback

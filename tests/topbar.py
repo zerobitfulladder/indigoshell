@@ -1052,8 +1052,7 @@ def test_mouse(scratch: Path) -> None:
     import types
     sent: list = []
     service = types.SimpleNamespace(focused=None, context=None, follow=lambda cb: None,
-                                    unfollow=lambda cb: None,
-                                    shown=lambda app: getattr(app, "content", None))
+                                    unfollow=lambda cb: None)
     j = types.SimpleNamespace(view=BarView(emit=sent.append))
     j.content = j.view
     service.focused = j

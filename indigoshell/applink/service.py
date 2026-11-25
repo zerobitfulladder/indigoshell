@@ -410,12 +410,6 @@ class AppService:
         # The input or menu open (prompt.py): at most one, the shell's.
         self.prompt: Prompt | None = None
         self._pointer_on: int | None = None         # the bar window the pointer is held on
-        self._keys_on: int | None = None            # ... and the keyboard (MOD+D's search)
-        self._keys_retry = None
-        self._opening = None                        # the drop-down mid-open, for MOD+D
-        # The section the shell's own input shows in (MOD+D's app search):
-        # an app's bar gives way to it while it is open.
-        self.shell_view = BarView()
 
     @property
     def path(self) -> str:
@@ -433,10 +427,6 @@ class AppService:
         self._watch_focus()
         self._try_claim()
         if self._own_display is None:
-            from ..core.daemon import get_daemon
-            drop = getattr(get_daemon().kinds.get(DROP_WINDOW), "content", None)
-            if drop is not None:
-                drop.service = self     # opened by name (MOD+D): the app search
             # The drop-down made and parked ahead of the first input opened.
             asyncio.get_running_loop().call_later(PREPARE_S, self._prepare)
 
@@ -793,12 +783,6 @@ class AppService:
 
     def release_keyboard(self) -> None:
         """Give the keyboard back: keys go to the focused window again."""
-        if self._keys_retry is not None:
-            self._keys_retry.cancel()
-            self._keys_retry = None
-        wid, self._keys_on = self._keys_on, None
-        if wid is not None and wid != self._pointer_on and self.display is not None:
-            self.display.off(wid, self._on_bar_event)
         if self.display is not None:
             self.display.ungrab_keyboard()
 
@@ -808,23 +792,6 @@ class AppService:
         (None: the window with focus is no app's)."""
         if callback not in self._followers:
             self._followers.append(callback)
-
-    def shown(self, window):
-        """What the top bar's app section shows for the focused `window`:
-        the shell's own input while it is open (MOD+D), else the window's
-        section (None: no app's window has focus)."""
-        p = self.prompt
-        if p is not None and p.open and p.owner is None:
-            return self.shell_view
-        return getattr(window, "content", None)
-
-    def _tell(self) -> None:
-        """The followers hear focus again: what shows may have changed."""
-        for callback in list(self._followers):
-            try:
-                callback(self.focused)
-            except Exception:
-                log.exception("apps: a focus follower failed")
 
     def unfollow(self, callback) -> None:
         if callback in self._followers:
@@ -1002,59 +969,6 @@ class AppService:
                  window.kind, window.wid, what, name)
         window.send_event(B.event(B.FALLBACK, **{what: name}))
 
-    def open_apps(self, drop, window) -> bool:
-        """MOD+D: the drop-down opened by name with nothing to show. The
-        top bar's app section becomes the app search's box (catalog.py),
-        its list the installed apps; the keyboard taken on the bar's
-        window (MOD+D is still down: its grab is the window manager's a
-        moment longer, so tried again for a while), the pointer too."""
-        from .catalog import AppSearch
-        if self.prompt is not None:
-            self.prompt.close("shell")
-        if self.section() is None:
-            log.warning("apps: no top bar to search the apps in")
-            return False
-        source = AppSearch(drop.catalog, drop.icons)
-        prompt = Prompt(self, None, "input", "apps", source.spec, local=source)
-        self.prompt = prompt
-        self.shell_view.show_box(prompt.box)
-        self._tell()
-        self._dismiss_panels()
-        self._hold_pointer()
-        self._hold_keyboard_here()
-        self._opening = (drop, window)
-        try:
-            prompt.start()
-            self.changed(prompt)
-        finally:
-            self._opening = None
-        return True
-
-    def _hold_keyboard_here(self, since: float | None = None) -> None:
-        """The keyboard on the bar's window, its keys to the open prompt;
-        tried again every GRAB_RETRY_S while something else has it, for
-        at most GRAB_GIVE_UP_S."""
-        import time
-
-        from ..window import GRAB_GIVE_UP_S, GRAB_RETRY_S
-        self._keys_retry = None
-        d, window = self.display, getattr(self.context, "window", None)
-        wid = getattr(window, "wid", None)
-        p = self.prompt
-        if d is None or wid is None or p is None or not p.open or p.owner is not None:
-            return
-        if d.grab_keyboard(wid):
-            self._keys_on = wid
-            d.on(wid, self._on_bar_event)
-            return
-        now = time.monotonic()
-        since = now if since is None else since
-        if now - since > GRAB_GIVE_UP_S:
-            log.warning("apps: the keyboard is not to be had; the app search closes")
-            p.close("shell")
-            return
-        self._keys_retry = self.later(GRAB_RETRY_S, lambda: self._hold_keyboard_here(since))
-
     def _cannot_show(self, window: AppWindow) -> str | None:
         """Why `window`'s input or menu cannot show in the top bar; None
         when it can."""
@@ -1105,9 +1019,6 @@ class AppService:
             owner.view.show_box(None)
             owner.view.set_lit(())
             owner.prompt_closed(prompt)
-        else:
-            self.shell_view.show_box(None)
-            self._tell()
 
     def next_seq(self, prompt) -> int:
         return prompt.owner.next_seq() if prompt.owner is not None else 0
@@ -1133,14 +1044,6 @@ class AppService:
         show = getattr(self, "show_drop", None)     # tests put a recorder there
         if show is not None:
             show(prompt, self._drop_place(prompt))
-            return
-        if self._opening is not None:
-            # Mid-open by name (MOD+D): the window is the one opening.
-            drop, win = self._opening
-            left, top, width = self._drop_place(prompt)
-            drop.show(prompt, width)
-            w, _h = drop.relayout()
-            win.placement = Placement(left + w // 2, top)
             return
         from ..core.daemon import get_daemon
         daemon = get_daemon()
@@ -1200,21 +1103,11 @@ class AppService:
         wid, self._pointer_on = self._pointer_on, None
         if wid is None or self.display is None:
             return
-        if wid != self._keys_on:
-            self.display.off(wid, self._on_bar_event)
+        self.display.off(wid, self._on_bar_event)
         self.display.ungrab_pointer()
 
     def _on_bar_event(self, ev) -> None:
-        kind = ev.response_type & 0x7F
-        if kind == _KEY_PRESS and self._keys_on is not None and ev.event == self._keys_on:
-            p = self.prompt
-            if p is not None and p.open:
-                try:
-                    p.key(key_event(self.display, ev))
-                except Exception:
-                    log.exception("apps: a key for the app search failed")
-            return
-        if kind != _BUTTON_PRESS or self.prompt is None:
+        if (ev.response_type & 0x7F) != _BUTTON_PRESS or self.prompt is None:
             return
         window = getattr(self.context, "window", None)
         if window is None:

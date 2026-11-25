@@ -21,8 +21,9 @@ the app's own ids. Nothing in this package is any app's.
     view.py      BarView, a window's section: its items by id
     kinds/       the items (tabs, text, button) and the open input's box
     prompt.py    an open input or menu: its keys, queries, list
-    drop.py      the drop-down under the bar (the "launcher" window)
-    catalog.py   MOD+D's app search, the same input fed by the app catalog
+    drop.py      the drop-down under the bar; the rows' painter
+    catalog.py   the app catalog as an input's rows
+    launcher.py  MOD+D's launcher: that input framed as a centred panel
 
 Import rule: `protocol` and `bar` are pure Python, for the apps (Qt
 processes) to import; everything else here is the daemon's (xcffib,

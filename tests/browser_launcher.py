@@ -27,11 +27,11 @@ of any app's bar, and what they read and open.
    typing); static rows filtered here; a toggle's chord.
 4. Menus: the same list, a submenu beside its row (Right, Return, Left
    back), filtered by typing (the filter line), a dimmed row refused,
-   `pick`, Escape. 3b. MOD+D's app search (applink/catalog.py) as the
-   same input: the apps, filtered, launched; RUN for nothing matching,
-   Shift+Return; a command line that is none flashing; the service
-   putting it in the top bar's app section, an app's section giving
-   way while it is open; no top bar, no search.
+   `pick`, Escape. 3b. MOD+D's launcher (applink/launcher.py): the app
+   catalog (catalog.py) in a panel, the same input as the bar's: the
+   apps, filtered, launched (Return, Ctrl+L); RUN for nothing matching,
+   Shift+Return; a command line that is none and Shift+Delete flashing;
+   Escape left to the window, Ctrl+H; painted off screen.
 5. What Flux sends the shell (flux/bar.py, pure): a window's state as
    its bar: the tabs by id with the load and the agent's hold, the host
    with its marks, the inputs (Ctrl+L, Ctrl+T, Ctrl+F) and the actions
@@ -52,9 +52,11 @@ of any app's bar, and what they read and open.
    the section's left and width, its own pixels read (never the root);
    keys typed after the press into the box in order, an Escape among
    them closing it and a key after that dropped; the time from the
-   answer to the list's first frame, cold and from parked. Then MOD+D
-   the way `toggle launcher` does it: the app search in the shell's own
-   section, its keys on the bar's window, the toggle again closing it.
+   answer to the list's first frame, cold and from parked; the
+   drop-down made ahead, parked unshown. Then MOD+D's launcher, a copy
+   of its spec taking no keyboard, pointer or focus, opened in the
+   corner: its apps listed and filtered, its centred place computed,
+   its first frame from parked.
 
 Nothing here touches the running shell or the real history and
 bookmarks: every XDG directory and socket is a scratch one.
@@ -62,6 +64,7 @@ bookmarks: every XDG directory and socket is a scratch one.
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import os
 import shutil
@@ -761,16 +764,34 @@ def test_menus() -> None:
           app.out[-1] == {"type": "closed", "menu": "file", "by": "escape"})
 
 
-def test_apps_search() -> None:
-    from indigoshell.applink import catalog as catalog_mod
-    from indigoshell.applink.catalog import RUN, AppSearch
-    from indigoshell.applink.prompt import Prompt
-    from indigoshell.applink.service import AppService
-    from indigoshell.applink.view import BarView
+def render(launcher, name: str):
+    """The launcher painted off screen, saved; RGBA."""
+    import numpy as np
+    import skia
+
+    from indigoshell.widgets.base import Size
+    size = launcher.measure(Size(10_000, 10_000))
+    w, h = int(size.width), int(size.height)
+    surface = skia.Surface(w, h)
+    canvas = surface.getCanvas()
+    canvas.clear(0)
+    launcher.arrange(skia.Rect.MakeWH(w, h))
+    launcher.paint(canvas)
+    image = surface.makeImageSnapshot()
+    image.save(str(SCRATCH / f"{name}.png"), skia.kPNG)
+    return np.array(image.toarray(colorType=skia.kRGBA_8888_ColorType))
+
+
+def test_launcher() -> None:
+    import numpy as np
+
+    from indigoshell import theme
+    from indigoshell.applink.catalog import PLACEHOLDER, RUN
+    from indigoshell.applink.launcher import Launcher
     from indigoshell.services.apps import Catalog
 
-    section("3b. MOD+D: the app search, the same input in the top bar, the installed apps its "
-            "rows (applink/catalog.py)")
+    section("3b. MOD+D's launcher (applink/launcher.py): the app catalog in a panel, the same "
+            "input as the bar's (its prompt, rows, keys)")
     apps = SCRATCH / "apps" / "applications"
     apps.mkdir(parents=True)
     for name in ("Alpha Editor", "Beta Browser", "Gamma Terminal"):
@@ -779,7 +800,7 @@ def test_apps_search() -> None:
     os.environ["XDG_DATA_DIRS"] = str(SCRATCH / "apps")
     os.environ["XDG_DATA_HOME"] = str(SCRATCH / "no-user-apps")
     catalog = Catalog()
-    launched, ran = [], []
+    launched, ran, closed = [], [], []
     catalog.launch = lambda app: launched.append(app.entry.name)
 
     def run(line):
@@ -787,74 +808,71 @@ def test_apps_search() -> None:
             raise ValueError("unbalanced")
         ran.append(line)
     catalog.run = run
-    host = PromptHost()
+    L = Launcher(rows=6, width=600, catalog=catalog)
+    L._close = lambda: closed.append(1)
+    win = FakeWindow()
 
-    def search():
-        p = Prompt(host, None, "input", "apps", AppSearch(catalog).spec, local=AppSearch(catalog))
-        p.start()
-        return p
-
-    p = search()
+    L.attach(win)
+    p = L.prompt
     names = [r["title"] for r in p.rows]
-    check("the apps, the usual placeholder, an empty box, the count of them",
-          names == ["Alpha Editor", "Beta Browser", "Gamma Terminal"]
-          and p.box.field.placeholder == catalog_mod.PLACEHOLDER and p.text == ""
-          and p.count_text()[0] == "3/3" and p.wants_list(), f"{names}")
+    check("an open: the apps, the usual placeholder, an empty query, the count, the window sized "
+          "once (its rows fixed)", names == ["Alpha Editor", "Beta Browser", "Gamma Terminal"]
+          and L.query.field.placeholder == PLACEHOLDER and L.query.field.text == ""
+          and L.query.count[0] == "3/3" and len(win.sizes) == 1, f"{names}")
     for ev in typed("bet"):
-        p.key(ev)
-    filtered = [r["title"] for r in p.rows]
-    img = render_prompt(p, "apps-bet", width=900)
-    p.key(key(RETURN))
-    check("typing filters (the matched characters lit); Return launches the selected app and "
-          "closes", filtered == ["Beta Browser"] and launched == ["Beta Browser"]
-          and not p.open and p.rows[0].get("match") == [0, 1, 2]
-          and colour_px(img[42:], "#05d9e8", 90) > 100, f"{filtered} {launched}")
-    p = search()
+        L.key(ev)
+    filtered = [r["title"] for r in L.prompt.rows]
+    shot = render(L, "launcher-bet")
+    L.key(key(RETURN))
+    check("typing filters (the box edits as the bar's does); Return launches the selected app "
+          "and closes", filtered == ["Beta Browser"] and launched == ["Beta Browser"]
+          and len(closed) == 1 and not p.open, f"{filtered} {launched}")
+    L.attach(win)
+    for ev in typed("bet"):
+        L.key(ev)
+    L.key(key(ord("l"), ctrl=True))
+    check("Ctrl+L launches too; every open starts afresh", launched[-1] == "Beta Browser"
+          and len(closed) == 2 and len(win.sizes) == 2)
+    L.attach(win)
     for ev in typed("zzz"):
-        p.key(ev)
-    run_row = [(r["id"], r.get("tag"), r["title"]) for r in p.rows]
-    p.key(key(RETURN))
-    q = search()
+        L.key(ev)
+    run_row = [(r["id"], r.get("tag"), r["title"]) for r in L.prompt.rows]
+    nomatch = render(L, "launcher-nomatch")
+    L.key(key(RETURN))
+    L.attach(win)
     for ev in typed("bet ls"):
-        q.key(ev)
-    q.key(key(RETURN, shift=True))
-    r = search()
+        L.key(ev)
+    L.key(key(RETURN, shift=True))
+    check("nothing matching: one row, RUN the query, and Return runs it as a command line; "
+          "Shift+Return runs the query whatever is listed",
+          run_row == [(RUN, "RUN", "zzz")] and ran == ["zzz", "bet ls"] and len(closed) == 4,
+          f"{run_row} {ran}")
+    L.attach(win)
     for ev in typed('bad "quote'):
-        r.key(ev)
-    r.key(key(RETURN))
-    check("nothing matching: one row, RUN the text, and Return runs it as a command line; "
-          "Shift+Return runs the text whatever is listed; a command line that is none flashes "
-          "and the search stays", run_row == [(RUN, "RUN", "zzz")] and ran == ["zzz", "bet ls"]
-          and not q.open and r.open and r.reject_until > 0, f"{run_row} {ran}")
-    r.key(key(ESC))
-    check("Escape closes it", not r.open)
-
-    # The service: the app search in the top bar's app section.
-    service = AppService(path="/nonexistent")   # no X here: no display
-    service.context = stand_in_bar()
-    shown, followed = [], []
-    service.show_drop = lambda prompt, place: shown.append((prompt.name, place))
-    service.hide_drop = lambda: shown.append("hide")
-    service.follow(lambda w: followed.append(service.shown(w)))
-    focused = types.SimpleNamespace(content=BarView())
-    service.focused = focused
-    drop = types.SimpleNamespace(catalog=catalog, icons=None)
-    ok = service.open_apps(drop, None)
-    p = service.prompt
-    check("MOD+D (the drop-down opened by name with nothing to show): the app search in the top "
-          "bar; the focused app's section gives way to the shell's own while it is open; the "
-          "list drops at the section's left, the section's width",
-          ok and p is not None and p.owner is None and service.shown(focused)
-          is service.shell_view and service.shell_view.box is p.box
-          and followed[-1] is service.shell_view and shown[-1] == ("apps", (12, 42, 1800)),
-          f"{shown[-1:]}")
-    p.key(key(ESC))
-    check("... closed: the app's section back, the list hidden",
-          service.prompt is None and followed[-1] is focused.content
-          and service.shell_view.box is None and shown[-1] == "hide")
-    service.context = None
-    check("no top bar: no app search", service.open_apps(drop, None) is False
-          and service.prompt is None)
+        L.key(ev)
+    L.key(key(RETURN))
+    refused = L.prompt.open and L.prompt.reject_until > 0 and len(closed) == 4
+    L.prompt.reject_until = 0
+    L.key(key(DELETE, shift=True))
+    flashed = L.prompt.reject_until > 0 and L.query.field.text == 'bad "quote'
+    L.prompt.reject_until = 0
+    esc = L.key(key(ESC))
+    L.key(key(ord("h"), ctrl=True))
+    check("a command line that is none: the flash, the launcher stays; Shift+Delete: the flash, "
+          "nothing taken out; Escape left to the window (it closes it); Ctrl+H closes",
+          refused and flashed and esc is False and len(closed) == 5)
+    L.on_dismiss()
+    check("dismissed: its input closed, keys for it no longer taken",
+          not L.prompt.open and L.key(typed("x")[0]) is False)
+    L.attach(win)
+    L.key(key(DOWN))
+    L.key(key(ord("j"), ctrl=True))
+    check("Down and Ctrl+J move the selection (the prompt's keys)", L.prompt.selected == 2)
+    cyan = np.array([int(theme.CYAN_BRIGHT[i:i + 2], 16) for i in (1, 3, 5)])
+    sel = np.abs(shot[..., :3].astype(int) - cyan).max(-1) < 90
+    check("painted: the plate, the selection's slab on the row; RUN in the no-match case",
+          sel.sum() > 200 and np.abs(nomatch[..., :3].astype(int) - cyan).max(-1).min() < 90,
+          f"{int(sel.sum())} px")
 
 
 # ── 5. Flux's bar ───────────────────────────────────────────────────────
@@ -1037,7 +1055,8 @@ async def on_screen() -> None:
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
     from indigoshell.core import daemon as daemon_mod
-    from indigoshell.window import Window
+    from indigoshell.applink.launcher import Launcher
+    from indigoshell.window import Placement, Window
     from flux import bar as fb
 
     section("7. on screen: the drop-down under a stand-in top bar, for a stand-in browser")
@@ -1203,62 +1222,57 @@ async def on_screen() -> None:
         check("the list's first frame within 50 ms of the answer, from parked",
               warm is not None and warm < 50, f"{warm:.0f} ms")
 
-        # MOD+D: `indigoshell toggle launcher`, the drop-down opened by name.
-        real.content.service = service
-        display.grab_keyboard = lambda wid: grabs.append(("keyboard", wid)) or True
-        presented.pop(DROP_WINDOW, None)
-        t0 = time.monotonic()
-        toggled = d.toggle(DROP_WINDOW)
-        ok = await until(lambda: presented.get(DROP_WINDOW), 5)
-        took = (presented[DROP_WINDOW][0] - t0) * 1000 if ok else None
-        win = d.instances.get(DROP_WINDOW)
-        cx, cy, cw, ch = win.content_root if win else (0, 0, 0, 0)
-        p = service.prompt
-        listed = [r["title"] for r in p.rows] if p is not None else None
-        check("MOD+D (toggle launcher): the drop-down opened by name is the app search: its box "
-              "in the shell's own section (an app's bar gives way), the apps listed, flush under "
-              "the bar at the section's left and width; the keyboard taken on the bar's window "
-              "(recorded, never made)", toggled == "opened" and p is not None
-              and p.owner is None and service.shell_view.box is p.box
-              and listed == ["Alpha Editor", "Beta Browser", "Gamma Terminal"]
-              and (cx, cy, cw) == (bar_x + 40, bar_y + 42, 600) and ("keyboard", 1) in grabs,
-              f"{toggled} {listed} {(cx, cy, cw)}")
-        for c in "bet":
-            ev = xp.KeyPressEvent.synthetic(display.keycodes(ord(c))[0], 0, display.root, 1,
-                                            0, 0, 0, 0, 0, 0, 1)
-            ev.response_type = 2
-            display.dispatch(ev)
-        typed_rows = [r["title"] for r in p.rows] if p is not None else None
-        toggled_again = d.toggle(DROP_WINDOW)
-        closed = await until(lambda: DROP_WINDOW in d._parked, 3)
-        check("its keys on the bar's window, into its box in order (filtering the apps); the "
-              "toggle again closes it, and the shell's own section with it",
-              typed_rows == ["Beta Browser"] and toggled_again == "closed" and bool(closed)
-              and service.prompt is None and service.shell_view.box is None, f"{typed_rows}")
-        print(f"  (timing) MOD+D's toggle -> the app search's list mapped with its first frame: "
-              f"{took:.0f} ms (from parked)", flush=True)
-        check("... its first frame within 100 ms of the toggle, from parked",
-              took is not None and took < 100, f"{took:.0f} ms")
-
         # Made ahead (what the service asks of the daemon after its start):
-        # parked unshown, and no app search for it.
+        # parked unshown, nothing in it.
         d._parked.pop(DROP_WINDOW).destroy()
         n = len(grabs)
         d.prepare(DROP_WINDOW)
-        prepared = DROP_WINDOW in d._parked and DROP_WINDOW not in d.instances
-        check("the drop-down made ahead (Daemon.prepare): parked unshown, no app search opened, "
-              "no keyboard asked for", prepared and service.prompt is None and grabs[n:] == []
+        check("the drop-down made ahead (Daemon.prepare): parked unshown, nothing opened, no "
+              "grab asked for", DROP_WINDOW in d._parked and DROP_WINDOW not in d.instances
+              and service.prompt is None and grabs[n:] == []
               and not d._parked[DROP_WINDOW].mapped)
-        presented.pop(DROP_WINDOW, None)
-        t0 = time.monotonic()
-        d.toggle(DROP_WINDOW)
-        ok = await until(lambda: presented.get(DROP_WINDOW), 5)
-        first = (presented[DROP_WINDOW][0] - t0) * 1000 if ok else None
-        opened = service.prompt is not None and service.prompt.owner is None
-        d.toggle(DROP_WINDOW)
-        await until(lambda: DROP_WINDOW in d._parked, 3)
-        check("... then MOD+D: the app search from the window made ahead, its first frame "
-              "within 100 ms", opened and first is not None and first < 100, f"{first} ms")
+
+        # MOD+D: `indigoshell toggle launcher`, the launcher as it was (a
+        # copy of its spec that takes no keyboard, no pointer, no focus,
+        # opened in the corner here: its centred place is checked as data).
+        real_launcher = next(s_ for s_ in config_default.WINDOWS
+                             if s_.name == config_default.LAUNCHER)
+        spec = dataclasses.replace(real_launcher, name="test-launcher", grab_keyboard=False,
+                                   dismiss_on_outside_click=False, focusable=False)
+        check("the launcher's spec as before: centred (no anchor), a grabbing panel with the "
+              "panels' spawn, kept alive; the copy takes no keyboard, pointer or focus",
+              real_launcher.name == "launcher" and real_launcher.grab_keyboard
+              and real_launcher.dismiss_on_outside_click and real_launcher.keep_alive
+              and real_launcher.effects and real_launcher.holo and not spec.grab_keyboard
+              and isinstance(real_launcher.content, Launcher))
+        d.kinds["test-launcher"] = spec
+        corner = Placement(mon.x + mon.width - 420, mon.y + mon.height - 760)
+        for round_ in ("cold", "parked"):
+            presented.pop("test-launcher", None)
+            t0 = time.monotonic()
+            d.open("test-launcher", placement=corner)
+            ok = await until(lambda: presented.get("test-launcher"), 5)
+            took = (presented["test-launcher"][0] - t0) * 1000 if ok else None
+            launcher = spec.content
+            listed = [r["title"] for r in launcher.prompt.rows] if ok else None
+            for ev in typed("bet"):
+                launcher.key(ev)
+            filtered = [r["title"] for r in launcher.prompt.rows]
+            win = d.instances.get("test-launcher")
+            cw, ch = win.content_root[2:] if win else (0, 0)
+            d.close("test-launcher")
+            await until(lambda: "test-launcher" in d._parked, 3)
+            print(f"  (timing) MOD+D's open -> the launcher mapped with its first frame: "
+                  f"{took:.0f} ms ({round_})", flush=True)
+        parked = d._parked["test-launcher"]
+        centred = parked._compute_geometry(mon, size=(cw, ch))
+        check("MOD+D: the launcher, its apps listed, typing filtering them; at its usual spot "
+              "(no placement: centred on the primary monitor); its first frame within 100 ms "
+              "of the open, from parked",
+              listed == ["Alpha Editor", "Beta Browser", "Gamma Terminal"]
+              and filtered == ["Beta Browser"]
+              and centred[:2] == (mon.x + (mon.width - cw) // 2, mon.y + (mon.height - ch) // 2)
+              and took is not None and took < 100, f"{listed} {filtered} {centred} {took}")
     finally:
         Window.show = original
         Prompt.answer = real_answer
@@ -1317,7 +1331,7 @@ def main() -> int:
         test_addresses()
         test_input()
         test_menus()
-        test_apps_search()
+        test_launcher()
         test_flux_bar()
         test_placement()
         if not args.off_screen:

@@ -4,9 +4,8 @@
 It takes all the room the row leaves it (the bar's own widgets take
 theirs first) and fills it with the focused app window's section, its
 `BarView` (view.py: what the app's bar says, drawn by the shell's
-kinds); while MOD+D's app search is open, with the shell's own section
-holding its box instead (service.AppService.shown). When the window with
-focus is no app's, it is empty: the bar's background.
+kinds). When the window with focus is no app's, it is empty: the bar's
+background.
 
 Focus moving swaps the content: the one shown is attached to the bar's
 window, the one left is detached and forgets the window, so an app
@@ -67,7 +66,7 @@ class AppContext(Widget):
             self.shown = None
 
     def _on_focus(self, app) -> None:
-        content = self.service.shown(app)
+        content = getattr(app, "content", None)
         if content is self.shown:
             return
         if self.shown is not None:
