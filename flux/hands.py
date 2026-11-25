@@ -1,7 +1,8 @@
 """Flux, the user's browser, as hands for the hub's agent (agent/hands.py).
 
-`browser_hands()` is the list laptop.py lends; the hub names them
-`laptop_browser_tabs` and so on. Each one is a request or two to Flux's
+`browser_hands()` is the list laptop.py lends; the hub names them after
+the device that lends them, `<device>_browser_tabs` (the laptop's:
+`indigo_browser_tabs`) and so on. Each one is a request or two to Flux's
 control socket (control.py; protocol.py has the requests) and returns
 content blocks.
 
@@ -129,7 +130,7 @@ class _Words:
     Flux: the laptop's Flux, or a headless one (`HEADLESS`)."""
     flux: str = FLUX
     windows: str = ("most recently used first; which one has the user's focus; the X window "
-                    "id that laptop_windows and laptop_focus use")
+                    "id that this machine's windows and focus hands use")
     watched: str = WATCHED
     alone: str = ALONE
     agent_window: str = ("your own window, made the first time on an empty workspace the user "

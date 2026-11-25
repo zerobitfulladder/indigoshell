@@ -414,7 +414,7 @@ def test_pure() -> None:
     check("... and they say headless", all("headless" in d for d in words.values()))
     lap = {h.name: h.description for h in laptop}
     check("... the laptop's words as they were", bool(lap) and all(
-        "on the laptop" in d for d in lap.values()) and "laptop_windows" in lap["browser_tabs"]
+        "on the laptop" in d for d in lap.values()) and "windows and focus hands" in lap["browser_tabs"]
         and "empty workspace" in lap["browser_borrow"])
 
     async def bad_tab():

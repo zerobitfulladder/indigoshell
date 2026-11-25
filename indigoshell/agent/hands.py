@@ -2,7 +2,7 @@
 
 A device connected to the hub (remote.py) can lend its agent tools. The
 connection lists them in its `hello`; the hub gives them to the agent as
-`<device>_<name>` (`laptop_about`), and when the agent uses one it sends
+`<device>_<name>` (the laptop's `about`: `indigo_about`), and when the agent uses one it sends
 the connection a `call` and waits for the `result`. lilac's PROTOCOL.md
 ("Hands") is the reference.
 

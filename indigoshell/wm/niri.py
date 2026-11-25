@@ -15,7 +15,7 @@ How niri differs from qtile, as the interface sees it:
 
 - Workspaces are per monitor, dynamic, stacked vertically; each
   monitor keeps one empty one at its end. A workspace's name (what
-  laptop_focus takes) is its configured name, else its index on its
+  the laptop's focus hand takes) is its configured name, else its index on its
   monitor ("2"), with the monitor's name in front ("eDP-1:2") when
   there are several monitors. The bar shows the workspaces of its own
   monitor, without that spare empty one at the end.
