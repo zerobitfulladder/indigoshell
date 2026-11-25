@@ -21,6 +21,8 @@ import signal
 import sys
 from typing import Any
 
+import skia
+
 from ..backend.x11 import Display, DisplayError
 from . import log as logsetup
 from .ipc import IPCServer
@@ -28,6 +30,8 @@ from .paths import config_dir
 from .singleton import AlreadyRunning, acquire_lock, release_lock
 
 log = logging.getLogger(__name__)
+
+WARM_S = 2.5                    # after the start: contents drawn once ahead (launcher)
 
 _DAEMON: "Daemon | None" = None
 
@@ -160,6 +164,7 @@ class Daemon:
                     log.exception("service %s failed to start",
                                   type(svc).__name__)
             log.info("ready (pid %d)", os.getpid())
+            self.loop.call_later(WARM_S, self._warm_contents)
             await self._stopped.wait()
         finally:
             await self._shutdown()
@@ -254,6 +259,54 @@ class Daemon:
             else:
                 log.info("canvas: %d effect chain(s) and the hologram warmed on the GPU "
                          "in %.0f ms", n, (time.perf_counter() - t0) * 1000)
+
+    def _warm_contents(self) -> None:
+        """A moment after the start, each kind whose content can (`warm`:
+        the launcher's first page of app icons) draws once on the GPU,
+        small and thrown away, so its first open does not pay for that
+        (canvas.py `warm_shaders` does the effects' programs)."""
+        gpu = self._gpu_scratch()
+        if gpu is None:
+            return
+        import time
+        for name, spec in self.kinds.items():
+            warm = getattr(spec.content, "warm", None)
+            if warm is None or not self._drawable(spec):
+                continue
+            t0 = time.perf_counter()
+            try:
+                n = warm(gpu)
+            except Exception:
+                log.exception("warming %s failed", name)
+                continue
+            log.info("%s warmed: %d row(s) drawn ahead in %.0f ms", name, n,
+                     (time.perf_counter() - t0) * 1000)
+        self._pump()
+
+    def _gpu_scratch(self):
+        """Something to draw on in the windows' GPU context, small and
+        thrown away (canvas.py GpuScratch); None without the GPU."""
+        if self.canvas is not None:
+            return self.canvas.scene.gpu
+        if self.display is None:
+            return None
+        from ..backend.gl import backend as gl_backend
+        gl = gl_backend(self.display)
+        if gl is None or gl.context is None or not gl._idle:
+            return None                 # no pbuffer to draw with outside a window
+
+        class X11Scratch:
+            def make_current(self, _surface=None) -> bool:
+                gl.make_idle()          # the 1x1 pbuffer; a window rebinds its own
+                return True
+
+            def offscreen(self, width: int, height: int):
+                return gl.offscreen(width, height)
+
+            def finish(self) -> None:
+                gl.context.flushAndSubmit(skia.GrSyncCpu.kYes)
+
+        return X11Scratch()
 
     def _pump(self, *, flush: bool = False) -> None:
         """Dispatch what the X connection queued (and send what we did,

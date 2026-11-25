@@ -207,6 +207,35 @@ class Launcher(Box):
                              box=self.query)
         self.prompt.start()
 
+    def warm(self, gpu) -> int:
+        """Pay at start what the first open would: the catalog read, the
+        first page's icons loaded (an SVG parsed and recorded), and its
+        rows drawn once on the GPU, small and thrown away, so the shared
+        context has their programs and its caches for the icons' paths
+        before the first frame needs them. `gpu`: a GpuScratch
+        (canvas.py). Returns how many rows were drawn."""
+        source = AppSearch(self.catalog, self.icons)
+        rows, _ = source.search("")
+        rows = rows[:self.rows]
+        if not rows:
+            return 0
+        width = int(self._list.width - SCROLL_GAP - SCROLL_W)
+        if not gpu.make_current():
+            return 0
+        surface = gpu.offscreen(width, ROW_H)
+        canvas = surface.getCanvas()
+        rect = skia.Rect.MakeWH(width, ROW_H)
+        for i, row in enumerate(rows):
+            canvas.clear(skia.ColorTRANSPARENT)
+            paint_row(canvas, rect, row, selected=i == 0, icons=self.icons)
+            # Off the whole-pixel grid too, as a slot's rows may sit.
+            canvas.save()
+            canvas.translate(0.5, 0.5)
+            paint_row(canvas, rect, row, selected=False, icons=self.icons)
+            canvas.restore()
+        gpu.finish()
+        return len(rows)
+
     def on_dismiss(self) -> None:
         """The window is closing: keys for it no longer count. (Not on
         detach: a window still despawning is destroyed, and detaches this
