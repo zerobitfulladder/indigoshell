@@ -1125,13 +1125,14 @@ class AppService:
         pointer held on the bar's window (owner_events: the bar and the
         list still get theirs), presses anywhere else reported there.
         On the Wayland canvas: its outside clicks caught (presses on any
-        region of it still reach that region)."""
+        region of it still reach that region), for the bar's region, which
+        so shows over a fullscreen window while the prompt is open."""
         d, window = self.display, getattr(self.context, "window", None)
         wid = getattr(window, "wid", None)
         if d is None:
             scene = self._scene()
             if scene is not None and wid is not None:
-                scene.catch_outside(self, self._outside_click)
+                scene.catch_outside(self, self._outside_click, window)
             return
         if wid is None or self._pointer_on is not None:
             return

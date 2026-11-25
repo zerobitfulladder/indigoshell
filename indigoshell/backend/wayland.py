@@ -27,11 +27,17 @@ drops it at once: prototypes/wayland/README.md.) The change rides on the
 next commit, the frame that shows what took it.
 
 While a window is fullscreen (wlr-foreign-toplevel: `fullscreen` and
-`activated`; niri's IPC has no such flag) the canvas is taken away
-entirely, so the compositor can scan the window out directly, and it is
-made again after. The EGL context outlives it, parked on a 1x1 surface
-of its own, and so do the regions' pixels in it. An output going away
-closes the canvas too; it is made again on whatever output there is.
+`activated`; niri's IPC has no such flag) the bars are not drawn, and
+the canvas is taken away entirely, so the compositor can scan the window
+out directly, unless the user has called something up (canvas.py
+`Scene.shows`): then the canvas is there with only that on it, and goes
+again when the last of it closes. A fullscreen window stays so while the
+canvas has the keyboard it took for what was called up: the compositor
+deactivates the window when the canvas takes its keyboard, and the bars
+must not come back for that. The EGL context outlives the surface,
+parked on a 1x1 surface of its own, and so do the regions' pixels in it.
+An output going away closes the canvas too; it is made again on
+whatever output there is.
 
 The event pump is loop-agnostic like backend/x11.py's: `fd` is wired
 into the daemon's loop, `on_readable` reads and dispatches, `flush`
@@ -59,6 +65,10 @@ log = logging.getLogger(__name__)
 NAMESPACE = APP                       # the user's niri layer-rule matches it
 EDGES = ("top", "bottom", "left", "right")
 CONFIGURE_TIMEOUT_S = 5.0
+# After the canvas lets the keyboard go, how long a fullscreen window it
+# took it from has to be activated again before it counts as no longer
+# fullscreen (Toplevels).
+KEYBOARD_BACK_S = 0.5
 REOPEN_S = (0.25, 0.5, 1.0, 2.0)      # after the canvas was closed under us
 
 # zwlr_foreign_toplevel_handle_v1.state
@@ -345,14 +355,21 @@ class Strip:
 # ── fullscreen windows ──────────────────────────────────────────────────
 class Toplevels:
     """Every toplevel's state (wlr-foreign-toplevel), and whether one
-    is fullscreen and focused."""
+    is fullscreen and focused.
 
-    def __init__(self, wl, manager, on_change) -> None:
+    `held()` says whether the canvas has the keyboard: the compositor
+    then deactivates the window that had it, and a fullscreen window so
+    deactivated, with no other window activated instead, is still the
+    one on screen under what was called up."""
+
+    def __init__(self, wl, manager, on_change, held=None) -> None:
         self.wl = wl
         self.manager = manager
         self.on_change = on_change
+        self.held = held or (lambda: False)
         self.handles: dict[int, dict] = {}
         self.fullscreen = False
+        self._fs_key: int | None = None     # the fullscreen window's handle
         manager.dispatcher["toplevel"] = self._toplevel
         manager.dispatcher["finished"] = lambda *_: log.debug("foreign toplevels: finished")
 
@@ -386,13 +403,27 @@ class Toplevels:
         d["closed"] = closed
 
     def _check(self) -> None:
-        fs = any(is_fullscreen(t["state"]) for t in self.handles.values())
+        key = next((k for k, t in self.handles.items() if is_fullscreen(t["state"])), None)
+        fs = key is not None
+        if not fs and self.fullscreen and self.held():
+            # Deactivated for the canvas's keyboard: still fullscreen,
+            # nothing else in front.
+            was = self.handles.get(self._fs_key)
+            if (was is not None and STATE_FULLSCREEN in was["state"]
+                    and not any(STATE_ACTIVATED in t["state"]
+                                for t in self.handles.values())):
+                fs, key = True, self._fs_key
+        self._fs_key = key
         if fs != self.fullscreen:
             self.fullscreen = fs
-            who = next((t for t in self.handles.values() if is_fullscreen(t["state"])), None)
+            who = self.handles.get(key) if key is not None else None
             log.debug("foreign toplevels: fullscreen %s%s", fs,
                       f" ({who['app_id']!r})" if who else "")
             self.on_change(fs)
+
+    def recheck(self) -> None:
+        """The canvas let the keyboard go: as the states say now."""
+        self._check()
 
 
 # ── the canvas ──────────────────────────────────────────────────────────
@@ -435,6 +466,7 @@ class Canvas:
         self.scene.keyboard.available = self.keys is not None
         self.scene.on_keyboard = self._keyboard_wanted
         self._kb_sent = None            # the overlay's keyboard_interactivity, as last sent
+        self._kb_let_go = -1e9          # when it went from exclusive to none
         self.on_resize = None           # the daemon's screen-change hook
         self.fullscreen = False
         self._present_queued = False
@@ -486,7 +518,8 @@ class Canvas:
             self.disconnect()
             raise DisplayError("the compositor offers no wl_compositor or wl_shm")
         if manager is not None:
-            self.toplevels = Toplevels(wl, manager, self._fullscreen_changed)
+            self.toplevels = Toplevels(wl, manager, self._fullscreen_changed,
+                                       held=self._keyboard_held)
         else:
             log.warning("canvas: no wlr-foreign-toplevel; it stays over fullscreen windows")
         if self.seat is not None:
@@ -688,7 +721,7 @@ class Canvas:
         if self._closed:
             return
         self._sync_strips()
-        if not self.fullscreen:
+        if self.scene.wants_surface():
             self._make_overlay()
 
     # ── frames ──────────────────────────────────────────────────────────
@@ -750,8 +783,20 @@ class Canvas:
         if want != self._kb_sent and self.layer is not None:
             K = self.wl.wlr_layer_shell_unstable_v1.ZwlrLayerSurfaceV1.keyboard_interactivity
             self.layer.set_keyboard_interactivity(getattr(K, want))
-            self._kb_sent = want
+            was, self._kb_sent = self._kb_sent, want
             log.debug("canvas: keyboard_interactivity %s", want)
+            if was == "exclusive" and self.toplevels is not None and self.loop is not None:
+                # The compositor activates the window again in a moment;
+                # until it has had that moment the window stays fullscreen.
+                self._kb_let_go = time.monotonic()
+                self.loop.call_later(KEYBOARD_BACK_S, self.toplevels.recheck)
+
+    def _keyboard_held(self) -> bool:
+        """Whether the canvas has the keyboard, or let it go only just
+        (KEYBOARD_BACK_S): a fullscreen window deactivated meanwhile is
+        still the one on screen."""
+        return (self._kb_sent == "exclusive"
+                or time.monotonic() - self._kb_let_go < KEYBOARD_BACK_S)
 
     def _keyboard_wanted(self) -> None:
         """Someone took the keyboard, or the last one gave it back: the
@@ -764,7 +809,24 @@ class Canvas:
     def _layout_changed(self) -> None:
         self.pending_state = True
         self._sync_strips()
+        self._sync_surface()
         self.present_soon()
+
+    def _sync_surface(self) -> None:
+        """The canvas surface made or taken away as the scene wants it:
+        over a fullscreen window, only while something is called up."""
+        if self._closed or self.display is None or self._reopen is not None:
+            return
+        want = self.scene.wants_surface()
+        if want and self.surface is None:
+            log.info("canvas: called up over the fullscreen window; the canvas is back "
+                     "with only that on it")
+            self._make_overlay()        # what shows resumes once configured
+        elif not want and self.surface is not None:
+            log.info("canvas: nothing called up over the fullscreen window; the canvas "
+                     "goes away")
+            self.scene.suspend()
+            self._drop_overlay()
 
     def _sync_strips(self) -> None:
         if self._closed or self.display is None:
@@ -789,13 +851,12 @@ class Canvas:
             return
         self.fullscreen = fullscreen
         if fullscreen:
-            log.info("canvas: a fullscreen window is focused; the canvas goes away")
-            self.scene.suspend()
-            self._drop_overlay()
+            log.info("canvas: a fullscreen window is focused; the bars go%s",
+                     "" if self.scene.wants_surface() else ", and the canvas")
         else:
             log.info("canvas: no fullscreen window; the canvas is back")
-            if self.surface is None and self._reopen is None:
-                self._make_overlay()       # resumes the scene once configured
+        self.scene.set_fullscreen(fullscreen)   # its layout change syncs the surface
+        self._sync_surface()
 
     # ── the pointer ─────────────────────────────────────────────────────
     def _seat_caps(self, _seat, caps: int) -> None:

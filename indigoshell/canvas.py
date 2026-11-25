@@ -47,6 +47,13 @@ had it. While a region that closes on an outside click is open the
 canvas's input region is the whole canvas: a click outside every region
 closes it and is swallowed, as under X's pointer grab, and clicks on the
 other regions (the bars) reach them as X's owner_events did.
+
+A fullscreen window: the bars are not drawn over it, but whatever the
+user calls up is (`shows`): every region that is not a bar — the
+launcher, the chord menu, the panels, the call, the drop-down, the
+toasts — and a bar while its open input catches the outside clicks (the
+top bar's). The canvas surface is there only while one of those is
+(`wants_surface`), so a fullscreen window alone is scanned out.
 """
 
 import itertools
@@ -104,10 +111,14 @@ CANVAS_KINDS = frozenset({"system", "hardware", "network", "menu", "launcher", "
 TOAST_PREFIX = "notif-"
 
 
+def is_bar(spec: WindowSpec) -> bool:
+    """A bar: a kind that reserves one edge of the screen."""
+    return spec.exclusive and edge_of(spec.anchor) is not None
+
+
 def on_canvas(spec: WindowSpec) -> bool:
-    """Whether the canvas draws this kind: the bars (the kinds that
-    reserve one edge of the screen) and CANVAS_KINDS."""
-    if spec.exclusive and edge_of(spec.anchor) is not None:
+    """Whether the canvas draws this kind: the bars and CANVAS_KINDS."""
+    if is_bar(spec):
         return True
     return spec.name in CANVAS_KINDS or spec.name.startswith(TOAST_PREFIX)
 
@@ -413,12 +424,15 @@ class Scene:
         self.output = output
         self.regions: list[Region] = []         # on the canvas, bottom to top
         self.damage = skia.Region()
-        self.hidden = False
+        self.hidden = False                     # no canvas surface: nothing shows
+        self.fullscreen = False                 # a fullscreen window: only what is called up shows
         self.pointer = PointerRouter(self)
         self.keyboard = KeyboardRouter(self._keyboard_changed)
         # Who closes on a click outside every region (X's pointer grab):
-        # token -> callable, oldest first.
+        # token -> callable, oldest first; and the region each belongs
+        # to (its own, or the top bar for its open input), if any.
         self.catchers: dict = {}
+        self.catcher_regions: dict = {}
         self.gpu: GpuScratch | None = None      # a Region's `gl`; None: raster
         # The backend's: a present is due; the input region or the
         # reservations changed; the keyboard is wanted or not any more;
@@ -536,23 +550,76 @@ class Scene:
 
     def region_at(self, x: float, y: float) -> "Region | None":
         for region in reversed(self.regions):
-            if region.takes_input(x, y):
+            if self.shows(region) and region.takes_input(x, y):
                 return region
         return None
 
+    # ── what shows ──────────────────────────────────────────────────────
+    def over_fullscreen(self, region: "Region") -> bool:
+        """Whether `region` shows over a fullscreen window: what the user
+        calls up — every region but a bar, and a bar while its open
+        input catches the outside clicks (the top bar's)."""
+        if not is_bar(region.spec):
+            return True
+        return any(owner is region for owner in self.catcher_regions.values())
+
+    def shows(self, region: "Region") -> bool:
+        """Whether `region` is drawn and takes input now."""
+        if self.hidden:
+            return False
+        return not self.fullscreen or self.over_fullscreen(region)
+
+    def wants_surface(self) -> bool:
+        """Whether the canvas needs its surface: always, but over a
+        fullscreen window only while something is called up."""
+        return not self.fullscreen or any(self.over_fullscreen(r) for r in self.regions)
+
+    def set_fullscreen(self, fullscreen: bool) -> None:
+        if fullscreen == self.fullscreen:
+            return
+        self.fullscreen = fullscreen
+        self._settle()
+        self._layout()
+
+    def _settle(self) -> None:
+        """Every region's clock running or stopped as `shows` says; one
+        that stops showing while the canvas stays is cleared off it.
+        Without the surface everything is stopped already (`suspend`), and
+        a region being shown stops itself once it has taken its grabs
+        (Region.show)."""
+        if self.hidden:
+            return
+        for region in list(self.regions):
+            if self.shows(region):
+                if region.resume():
+                    self._damage_box(region.box())
+            elif region.suspend():
+                self.pointer.forget(region)
+                self._damage_box(region.box())
+
     # ── outside clicks and the keyboard ─────────────────────────────────
-    def catch_outside(self, token, callback) -> None:
+    def catch_outside(self, token, callback, region: "Region | None" = None) -> None:
         """Call `callback()` for a click outside every region, until
         `release_outside(token)`; the input region is the whole canvas
-        meanwhile, so that click comes here and goes no further."""
+        meanwhile, so that click comes here and goes no further. `region`:
+        the region it belongs to (shown over a fullscreen window
+        meanwhile, if it is a bar)."""
         had = bool(self.catchers)
         self.catchers.pop(token, None)
         self.catchers[token] = callback
-        if not had:
+        self.catcher_regions[token] = region
+        if self.fullscreen:
+            self._settle()
+        if not had or self.fullscreen:
             self._layout()
 
     def release_outside(self, token) -> None:
-        if self.catchers.pop(token, None) is not None and not self.catchers:
+        self.catcher_regions.pop(token, None)
+        if self.catchers.pop(token, None) is None:
+            return
+        if self.fullscreen:
+            self._settle()
+        if not self.catchers or self.fullscreen:
             self._layout()
 
     def outside_click(self) -> bool:
@@ -583,7 +650,8 @@ class Scene:
             return [self.bounds]        # outside clicks are ours (catch_outside)
         region = skia.Region()
         for r in self.regions:
-            region.op(r.input_box(), skia.Region.kUnion_Op)
+            if self.shows(r):
+                region.op(r.input_box(), skia.Region.kUnion_Op)
         region.op(self.bounds, skia.Region.kIntersect_Op)
         return rects(region)
 
@@ -614,7 +682,7 @@ class Scene:
             canvas.clipRect(skia.Rect.Make(rect))
             canvas.clear(TRANSPARENT)
             for region in self.regions:
-                if not skia.IRect.Intersects(region.box(), rect):
+                if not skia.IRect.Intersects(region.box(), rect) or not self.shows(region):
                     continue
                 key = id(region)
                 if key not in pictures:
@@ -625,19 +693,20 @@ class Scene:
             canvas.restore()
         return area
 
-    # ── a fullscreen window ─────────────────────────────────────────────
+    # ── the canvas surface gone and back ────────────────────────────────
     def suspend(self) -> None:
-        """The canvas is gone (a fullscreen window): the regions stop
-        their clocks and the pointer is nobody's."""
+        """The canvas surface is gone (a fullscreen window with nothing
+        called up, an output gone): the regions stop their clocks and
+        the pointer is nobody's."""
         self.hidden = True
         self.pointer.reset()
-        for region in self.regions:
+        for region in list(self.regions):
             region.suspend()
 
     def resume(self) -> None:
+        """The canvas surface is back: what shows starts again."""
         self.hidden = False
-        for region in self.regions:
-            region.resume()
+        self._settle()
         self.damage_all()
 
 
@@ -759,7 +828,7 @@ class Region(Window):
     def show(self) -> None:
         self._suspended = False
         super().show()
-        if self.scene.hidden:
+        if not self.scene.shows(self):
             self.suspend()
 
     def hide(self) -> None:
@@ -770,24 +839,27 @@ class Region(Window):
         self.mapped = False
         self._suspended = False
 
-    def suspend(self) -> None:
-        """The canvas went away under a fullscreen window: stop painting
-        until `resume`. Changes meanwhile are damage, as on a hidden X
-        window."""
+    def suspend(self) -> bool:
+        """Not shown for now (the canvas went away, or a fullscreen
+        window hides this bar): stop painting until `resume`. Changes
+        meanwhile are damage, as on a hidden X window. True when it was
+        showing."""
         if self._suspended or not self.mapped:
-            return
+            return False
         self._suspended = True
         self._end_hold(cancel=True)
         self._set_hover(None)
         self._stop_clock()
         self.mapped = False
+        return True
 
-    def resume(self) -> None:
+    def resume(self) -> bool:
         if not self._suspended:
-            return
+            return False
         self._suspended = False
         self.mapped = True
         self.damage(None)
+        return True
 
     def destroy(self) -> None:
         if self.wid is None:
@@ -892,7 +964,7 @@ class Region(Window):
         if self.wid is None or not self.mapped or self._dismissing():
             return
         if what == "pointer":
-            self.scene.catch_outside(self, self._outside_click)
+            self.scene.catch_outside(self, self._outside_click, self)
             self._grabbed = True
         else:
             if not self.scene.keyboard.available:
