@@ -12,9 +12,16 @@ that is removed at the end:
   its own runtime, config, state, data and cache directories, a D-Bus
   of its own (dbus-run-session), no sound server, and a config.py of
   the user's shape (config_default's, plus a probe widget on the top
-  bar, a chord menu whose items only log, timing probes, and the window
-  a stand-in app announces taken as focused); a desktop entry of the
-  test's for its launcher to find (a kitty).
+  bar, a chord menu whose items only log, timing probes, and the
+  stand-in app, this process on the apps socket with no window in
+  niri, taken as focused while no real app's window is); a desktop
+  entry of the test's for its launcher to find (a kitty). niri's config
+  gets docs/niri.kdl's window rule for the agent's Flux window.
+- Flux (phase 2c): `main.py browser` with the nested shell's whole
+  environment (its scratch XDG directories: never the user's profile,
+  history or bookmarks; Widevine off), on Qt's Wayland platform, its
+  pages from a server of the test's on 127.0.0.1, its control socket
+  reached the same way; every Flux killed at the end of its section.
 - niri's Mod+D: the user's (fuzzel) replaced by a script running the
   nested shell's own client with the nested shell's environment and
   nothing else (env -i), so it reaches that daemon, never the live one;
@@ -63,9 +70,9 @@ elif cmd == "fullscreen":
 # The probe and the focus hook, in a config of the user's shape.
 TEST_CONFIG = r'''
 """The nested test's config: this machine's shape (config_default's
-windows and services), a probe widget on the top bar, and the window a
-stand-in app announces taken as focused (applink follows X's focus
-only, so far)."""
+windows and services), a probe widget on the top bar, and the stand-in
+app (the test's own process, with no window in niri) taken as focused
+while no real app's window is."""
 
 import asyncio
 import json
@@ -177,6 +184,10 @@ class Dump:
         p = APPS.prompt
         if p is not None and p.open:
             out["_apps_prompt"] = _prompt(p)
+        f = APPS.focused
+        out["_apps"] = {"focused": [f.kind, f.app_id, f.link.pid] if f else None,
+                        "windows": [[w.kind, w.app_id, w.link.pid, w.active_seq, w.wm_id]
+                                    for w in APPS.windows]}
         c = d.canvas
         out["_canvas"] = {"fullscreen": c.fullscreen, "hidden": scene.hidden,
                           "surface": c.surface is not None, "kb": c._kb_sent,
@@ -186,7 +197,9 @@ class Dump:
         out["_tray"] = [i.title for i in get_broker().items()]
         out["_agent"] = {"busy": HUB.busy, "ringing": HUB.ringing, "call_open": HUB.call_open,
                          "phase": HUB.phase, "said": [m.get("text") for m in HUB.sent
-                                                      if m.get("type") == "say"]}
+                                                      if m.get("type") == "say"],
+                         "attached": [((m.get("attach") or [{}])[0].get("text") or "")[:300]
+                                      for m in HUB.sent if m.get("type") == "say"]}
         key = json.dumps(out, sort_keys=True)
         if key != cls.last:
             cls.last = key
@@ -344,15 +357,24 @@ if os.environ.get("INDIGOSHELL_TEST_UNPACED"):
     # The other side of an A/B: presents not paced on frame callbacks.
     _wayland.Canvas.ask_frame = lambda self: None
 
-_added = APPS.added
+# The stand-in app (the test's own process on the apps socket) has no
+# window in niri for the shell to follow: it is taken as focused whenever
+# no real app's window is (niri's focus decides for Flux, section 4f).
+import types as _types  # noqa: E402
+
+_STAND_IN = int(os.environ.get("INDIGOSHELL_TEST_STAND_IN_PID") or 0)
+_focused_app = type(APPS)._focused_app
 
 
-def _added_and_focused(window):
-    _added(window)
-    APPS.set_active(window.wid)
+def _focused_or_stand_in(self):
+    window = _focused_app(self)
+    if window is None:
+        window = next((w for w in reversed(self.windows)
+                       if w.link.pid == _STAND_IN and w.active_seq), None)
+    return window
 
 
-APPS.added = _added_and_focused
+APPS._focused_app = _types.MethodType(_focused_or_stand_in, APPS)
 '''
 
 
@@ -511,6 +533,36 @@ class Poker:
         self.display.roundtrip()
         time.sleep(settle)
 
+    def burst(self, chord: tuple, text: str) -> None:
+        """`chord` (evdev code, modifiers...) and then `text`, every key
+        sent at once with one round trip at the end: niri hands them all
+        to the focused client before anyone can move the keyboard (the
+        type-ahead after an app's chord)."""
+        mod_codes = {"shift": 42, "ctrl": 29, "alt": 56, "super": 125}
+        code, *mods = chord
+        for m in mods:
+            self.kb.key(self._ms(), mod_codes[m], 1)
+        mask = self.keys.mask(*mods)
+        self.kb.modifiers(mask, 0, 0, 0)
+        self.kb.key(self._ms(), code, 1)
+        self.kb.key(self._ms(), code, 0)
+        self.kb.modifiers(0, 0, 0, 0)
+        for m in reversed(mods):
+            self.kb.key(self._ms(), mod_codes[m], 0)
+        for ch in text:
+            found = self.keys.code_for(ch)
+            if found is None:
+                raise ValueError(f"no key types {ch!r} in this layout")
+            key, shift = found
+            if shift:
+                self.kb.modifiers(self.keys.mask("shift"), 0, 0, 0)
+            self.kb.key(self._ms(), key, 1)
+            self.kb.key(self._ms(), key, 0)
+            if shift:
+                self.kb.modifiers(0, 0, 0, 0)
+        self.display.roundtrip()
+        time.sleep(0.05)
+
     def type(self, text: str, settle: float = 0.04) -> None:
         for ch in text:
             found = self.keys.code_for(ch)
@@ -592,6 +644,11 @@ class Nested:
             out += ["binds {", *binds, "}"]
         else:
             out[at + 1:at + 1] = binds
+        # The agent's window rule of docs/niri.kdl, as the user applies it.
+        with open(os.path.join(REPO, "docs", "niri.kdl")) as f:
+            rule = re.search(r"^window-rule \{\n.*?^\}", f.read(), re.S | re.M)
+        if rule:
+            out += rule[0].splitlines()
         out += [f'screenshot-path "{self.shots}/shot-%H%M%S.png"',
                 "xwayland-satellite {", "    off", "}",
                 "hotkey-overlay {", "    skip-at-startup", "}"]
@@ -779,7 +836,8 @@ class Shell:
         with open(os.path.join(apps, "wltest-launched.desktop"), "w") as f:
             f.write(LAUNCHED_ENTRY.format(tag=os.path.basename(nested.tmp)))
         env.update(PYTHONPATH=REPO, PULSE_SERVER=f"unix:{nested.tmp}/no-pulse",
-                   INDIGOSHELL_TEST_DUMP=self.dump, PYTHONDONTWRITEBYTECODE="1")
+                   INDIGOSHELL_TEST_DUMP=self.dump, PYTHONDONTWRITEBYTECODE="1",
+                   INDIGOSHELL_TEST_STAND_IN_PID=str(os.getpid()))
         env.pop("DISPLAY", None)
         if raster:
             env["INDIGOSHELL_GPU"] = "0"
@@ -1031,8 +1089,11 @@ class App:
         self.sock.sendall(self.protocol.encode(msg))
 
     def announce(self, wid: int, titles) -> None:
+        """As a Wayland app announces: no handle, then `active` (the
+        test config takes it as focused while no real app is)."""
         B = self.B
-        self.send(B.announce("flux", wid, wid))
+        self.send(B.announce("standin", wid))
+        self.send(B.active(True))
         tabs = [B.tab(101 + i, t) for i, t in enumerate(titles)]
         self.send(B.bar([B.tabs("tabs", tabs, current=101, can=("close", "move", "detach"))],
                         [B.text("host", spans=[B.span("example.org")], opens="pick")],
@@ -1341,6 +1402,16 @@ def run(args, check, section, user_env) -> None:
         ctx = {"nested": nested, "shell": shell, "poker": poker, "app": app,
                "check": check, "W": W, "H": H, "keep": keep, "shots": shots,
                "recorder": recorder, "drawn": drawn}
+        if getattr(args, "only", None) == "flux":
+            ctx["timings"] = {}
+            flux(ctx)
+            app = ctx["app"]
+            log = shell.log()
+            check("no errors or tracebacks in its log", "Traceback" not in log
+                  and " ERROR " not in log,
+                  "\n".join(ln for ln in log.splitlines() if "ERROR" in ln or "Trace" in ln)[:800])
+            print("  screenshots: " + ", ".join(f"{k} {v}" for k, v in shots.items()), flush=True)
+            return
         overlays(ctx)
         calls(ctx)
         chip(ctx)
@@ -1391,6 +1462,12 @@ def run(args, check, section, user_env) -> None:
               and back_probe > 0.4 and back_ink > 0.02,
               f"{layers} {frame_back[0] if frame_back else None} probe {back_probe:.2f} "
               f"ink {back_ink:.3f}")
+
+        # Flux itself (the stand-in app goes first).
+        flux(ctx)
+        app = ctx["app"]
+        nested.action("focus-workspace", "1")
+        time.sleep(0.5)
 
         # Timings and idle.
         poker.move(W * 0.75, H / 2)
@@ -1956,10 +2033,10 @@ def calls(ctx) -> None:
     call = look.idle("call")
     timings["call (first open)"] = _timings(shell.log(), "call", mark)
     m_right = theme.BAR_MARGIN + 12
-    check("Mod+A (niri's binding, the nested shell's `toggle call`): the call opens top right "
-          "(its margins), takes the keyboard (exclusive) and the focus",
+    check("Mod+A (niri's binding, the nested shell's `toggle call`): the call opens top right, "
+          "16 px under the top bar (its margins), takes the keyboard (exclusive) and the focus",
           bool(win) and bool(call) and call["cx"] + call["cw"] == W - m_right
-          and call["cy"] == 16 and look.kb() == "Exclusive"
+          and call["cy"] == theme.TOP_BAR_HEIGHT + 16 and look.kb() == "Exclusive"
           and shell.wait_log(r"keyboard: focus on the canvas", 3, mark) is not None,
           f"{call and (call['cx'], call['cy'], call['cw'], call['ch'])} kb {look.kb()}")
     blur = look.canvas().get("blur") or []
@@ -2298,3 +2375,401 @@ def over_fullscreen(ctx) -> None:
     poker.tap(1)
     away = _wait(lambda: look.gone("call") and not look.overlay(), 4.0)
     check("... hung up: the canvas goes again", bool(away) and still_fullscreen(mark))
+
+
+# ── phase 2c: Flux on Wayland, the app bar by niri's focus ─────────────
+PAGE = """<!doctype html><title>{title}</title>
+<body style="background:#123;color:#ccc;font:40px sans-serif"><h1>{title} page</h1>
+<p>some text to find: needle {title} needle</p>
+<script>document.addEventListener("keydown", e => {{ document.title += " KEY " + e.key; }});
+</script></body>"""
+
+
+def _flux_control(shell: "Shell", code: str, timeout: float = 30.0):
+    """Run `code` (the body of an async function given `control`, Flux's
+    control client connected in the nested shell's environment) and
+    return what it prints as JSON."""
+    script = ("import asyncio, json\nfrom flux import control as C\n"
+              "async def main():\n    control = await C.connect()\n"
+              "    try:\n" + "".join(f"        {line}\n" for line in code.splitlines())
+              + "    finally:\n        await control.close()\n"
+              "print(json.dumps(asyncio.run(main())))\n")
+    out = subprocess.run([sys.executable, "-B", "-c", script], env=shell.env,
+                         capture_output=True, text=True, timeout=timeout)
+    try:
+        return json.loads(out.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"error": out.stderr[-800:]}
+
+
+def flux(ctx) -> None:
+    """Flux itself in the nested niri, on Qt's Wayland platform: its
+    window a Wayland client whose process is the app connection's, its
+    tabs on the top bar by niri's focus (and none for a kitty), a tab
+    clicked, Alt+digits by their place, Ctrl+L caught by Flux and the
+    shell's box opened with the keyboard taken, what is typed at once
+    in it in order and never in the page, a submit loading, find and the
+    actions menu, a new window's address input, the agent's window
+    placed on a spare workspace, the call's Look naming Flux's window,
+    a screenshot of a tab, the Watch's effects; then the laptop's hands
+    on niri, called directly."""
+    import http.server
+    import functools
+    import threading
+    nested, shell, poker = ctx["nested"], ctx["shell"], ctx["poker"]
+    check, keep, shots = ctx["check"], ctx["keep"], ctx["shots"]
+    look = _Look(ctx)
+    W, H = nested.output_size()
+    if ctx.get("app") is not None:
+        ctx["app"].close()                  # the stand-in: no longer taken as focused
+        ctx["app"] = None
+    www = os.path.join(nested.tmp, "www")
+    os.makedirs(www, exist_ok=True)
+    for title in ("Alpha", "Beta", "Gamma"):
+        with open(os.path.join(www, f"{title.lower()}.html"), "w") as f:
+            f.write(PAGE.format(title=title))
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=www)
+    handler.log_message = lambda *a: None
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    env = dict(shell.env, INDIGOSHELL_BROWSER_WIDEVINE="off")
+    procs = []
+
+    def start_flux(*urls):
+        p = subprocess.Popen([sys.executable, "-B", os.path.join(REPO, "main.py"), "browser",
+                              *urls], env=env, cwd=nested.tmp, start_new_session=True,
+                             stdout=open(os.path.join(nested.tmp, f"flux-{len(procs)}.log"),
+                                         "w"), stderr=subprocess.STDOUT)
+        procs.append(p)
+        return p
+
+    def windows():
+        return nested.msg("windows") or []
+
+    def flux_windows():
+        return [w for w in windows() if w.get("app_id") == "indigoshell-browser"]
+
+    def apps():
+        return look.lay().get("_apps") or {}
+
+    def tab_ids():
+        t = look.widget("topbar", "TabsItem")
+        return (t or {}).get("ids")
+
+    def focused_title():
+        return (nested.msg("focused-window") or {}).get("title") or ""
+
+    def flux_log():
+        out = ""
+        for path in sorted(os.listdir(nested.tmp)):
+            if path.startswith("flux-") and path.endswith(".log"):
+                with open(os.path.join(nested.tmp, path), errors="replace") as f:
+                    out += f.read()
+        state = os.path.join(shell.home, "xdg_state_home")
+        for root, _dirs, files in os.walk(state):
+            for name in files:
+                if name.endswith(".log") and "browser" in name:
+                    with open(os.path.join(root, name), errors="replace") as f:
+                        out += f.read()
+        return out
+
+    try:
+        nested.action("focus-workspace", "4")
+        time.sleep(0.4)
+        kitty = nested.recorder("flux-side")
+        _wait(lambda: any(w.get("app_id") == "wltest.flux-side" for w in windows()), 10)
+        mark = len(shell.log())
+        start_flux(f"{base}/alpha.html", f"{base}/beta.html", f"{base}/gamma.html")
+        m = shell.wait_log(r"flux window (\S+) connected \(pid (\d+)\)", 60, mark)
+        win = _wait(lambda: next(iter(flux_windows()), None), 20)
+        ids = _wait(lambda: tab_ids() == [1, 2, 3] and tab_ids(), 15)
+        check("Flux on Qt's Wayland platform: its window a Wayland client of niri's (app id "
+              "indigoshell-browser) whose pid is the app connection's (no X handle)",
+              m is not None and win is not None and win.get("pid") == int(m[2]),
+              f"{m and m[0]} {win}")
+        check("the top bar follows niri's focus: Flux's window focused, its three tabs on the "
+              "top bar (by niri's pid and Flux's `active`)",
+              bool(ids) and (apps().get("focused") or [None])[0] == "flux"
+              and (win or {}).get("is_focused"), f"{ids} {apps()}")
+        time.sleep(0.6)
+        img, path = nested.screenshot("flux-tabs", keep)
+        shots["flux-tabs"] = path
+
+        # Focus elsewhere and back.
+        side = next((w for w in windows() if w.get("app_id") == "wltest.flux-side"), None)
+        if side is not None:
+            nested.action("focus-window", "--id", str(side["id"]))
+        gone = _wait(lambda: tab_ids() is None and apps().get("focused") is None, 5)
+        if win is not None:
+            nested.action("focus-window", "--id", str(win["id"]))
+        back = _wait(lambda: tab_ids() == [1, 2, 3], 5)
+        check("a kitty focused: the app section empty; Flux focused again: its tabs back",
+              bool(gone) and bool(back), f"{apps()} {tab_ids()}")
+
+        # A tab clicked on the top bar.
+        tabs = look.widget("topbar", "TabsItem")
+        if tabs:
+            ty = tabs["y"] + tabs["h"] / 2
+            poker.click(tabs["x"] + tabs["pitch"] * 1.5, ty)
+            beta = _wait(lambda: focused_title().startswith("Beta"), 5)
+            check("a click on the second tab: Flux shows it (its window's title Beta)",
+                  bool(beta), focused_title())
+        # Alt+digits by their place (XKB keycodes under Wayland too).
+        poker.keyboard("us")
+        poker.tap(2, "alt")
+        alpha = _wait(lambda: focused_title().startswith("Alpha"), 5)
+        poker.tap(4, "alt", "shift")                # Alt+Shift+3: "#", keycode 12
+        moved = _wait(lambda: tab_ids() == [2, 3, 1], 5)
+        poker.tap(2, "alt", "shift")                # back to the first place
+        home = _wait(lambda: tab_ids() == [1, 2, 3], 5)
+        check("Alt+1 shows the first tab; Alt+Shift+3 (\"#\" by its symbol) moves it third "
+              "and Alt+Shift+1 back, the digits read by their place",
+              bool(alpha) and bool(moved) and bool(home), f"{focused_title()} {tab_ids()}")
+
+        # The pointer parked on the top bar: niri's focus follows the mouse
+        # (the user's config), and qtile may lay the nested niri out anew.
+        def flux_focused():
+            poker.move(W / 2, 3)
+            if win is not None:
+                nested.action("focus-window", "--id", str(win["id"]))
+            return _wait(lambda: (nested.msg("focused-window") or {}).get("id")
+                         == (win or {}).get("id"), 3)
+
+        # Ctrl+L: caught by Flux, opened by the shell; type-ahead.
+        flux_focused()
+        mark = len(shell.log())
+        poker.burst((38, "ctrl"), "yo")
+        prompt = _wait(lambda: (look.lay().get("_apps_prompt") or {}).get("text") == "yo"
+                       and look.lay()["_apps_prompt"], 5)
+        kb = look.kb_is("Exclusive")
+        fwd = re.findall(r"(\d+) key\(s\) forwarded", shell.log()[mark:])
+        forwarded = sum(map(int, fwd))
+        check("Ctrl+L on Flux's window: Flux catches it (`open` with the chord), the shell "
+              "opens the address box and takes the keyboard (exclusive)",
+              bool(prompt) and prompt.get("what") == "input" and kb == "Exclusive",
+              f"{look.lay().get('_apps_prompt')} kb {kb}")
+        check("type-ahead: \"yo\" sent in the same burst as Ctrl+L reaches Flux's window "
+              "before the shell has the keyboard; Flux forwards it (`keys`) and it lands in "
+              "the box in order, nothing in the page",
+              bool(prompt) and forwarded == 2 and "KEY" not in focused_title(),
+              f"forwarded {forwarded}, title {focused_title()!r}")
+        drop = _wait(lambda: "dropdown" in look.lay(), 3)
+        time.sleep(0.4)
+        img, path = nested.screenshot("flux-address", keep)
+        shots["flux-address"] = path
+        check("its suggestions drop under the bar (Flux's answer: the typed search)",
+              bool(drop) and "yo" in (look.lay().get("_apps_prompt") or {}).get("rows", []),
+              str(look.lay().get("_apps_prompt")))
+        # Return on a typed address loads it here.
+        poker.tap(14)                               # BackSpace twice: "yo" gone
+        poker.tap(14)
+        poker.type(f"{base}/gamma.html".replace("http://", ""), settle=0.0)
+        time.sleep(0.4)
+        poker.tap(28)
+        gamma = _wait(lambda: focused_title().startswith("Gamma"), 8)
+        closed = _wait(lambda: "_apps_prompt" not in look.lay() and look.kb() == "None", 3)
+        check("an address typed and Return: Flux loads it in the tab; the box closes and the "
+              "keyboard goes back to Flux's window; no key reached the page",
+              bool(gamma) and bool(closed) and "KEY" not in focused_title(),
+              f"{focused_title()!r} kb {look.kb()}")
+        poker.type("a")
+        keyed = _wait(lambda: "KEY a" in focused_title(), 3)
+        check("... and a key typed after it reaches the page again", bool(keyed),
+              focused_title())
+
+        # Find and the actions menu.
+        flux_focused()
+        poker.tap(33, "ctrl")
+        poker.type("needle", settle=0.0)
+        found = _wait(lambda: (look.lay().get("_apps_prompt") or {}).get("text") == "needle", 5)
+        poker.tap(1)
+        found_closed = _wait(lambda: "_apps_prompt" not in look.lay(), 3)
+        poker.tap(50, "ctrl")
+        menu = _wait(lambda: (look.lay().get("_apps_prompt") or {}).get("what") == "menu"
+                     and look.lay()["_apps_prompt"], 5)
+        poker.tap(1)
+        menu_closed = _wait(lambda: "_apps_prompt" not in look.lay(), 3)
+        check("Ctrl+F: find typed into the box, Escape; Ctrl+M: the actions menu drops "
+              "(\"Add bookmark\"), Escape", bool(found) and bool(found_closed) and bool(menu)
+              and "Add bookmark" in menu.get("rows", []) and bool(menu_closed),
+              f"{menu}")
+
+        # A second invocation with no address: a new window asking for one.
+        flux_focused()
+        mark = len(shell.log())
+        start_flux()
+        second = shell.wait_log(r"flux window (\S+) connected", 30, mark)
+        asked = _wait(lambda: (look.lay().get("_apps_prompt") or {}).get("what") == "input"
+                      and (apps().get("focused") or [None, None])[1] != 1, 10)
+        check("a second `browser` with no address: a new Flux window, focused by niri, its "
+              "address input opened by the shell (`open`)", second is not None and bool(asked),
+              f"{second and second[0]} {apps()} {look.lay().get('_apps_prompt')}")
+        poker.tap(1)
+        _wait(lambda: "_apps_prompt" not in look.lay(), 3)
+        poker.tap(17, "ctrl")                       # Ctrl+W: its one tab, and it
+        _wait(lambda: len(flux_windows()) == 1, 8)
+        flux_focused()
+        _wait(lambda: tab_ids() == [1, 2, 3], 5)
+
+        # The agent's own window, placed by the shell through niri.
+        mark = len(shell.log())
+        before = {w["id"] for w in windows()}
+        res = _flux_control(shell, f'r = await control.open({base + "/beta.html"!r}, '
+                            'window="agent")\nreturn r.tab')
+        moved = shell.wait_log(r"is window (\d+) of the compositor's: moved to workspace (\S+)",
+                               10, mark)
+        time.sleep(1.0)
+        agent = next((w for w in windows() if w["id"] not in before), None)
+        wss = {w["id"]: w for w in nested.msg("workspaces") or []}
+        ws = wss.get((agent or {}).get("workspace_id")) or {}
+        check("the agent's window: Flux asks `place`, the shell answers at once and moves the "
+              "window to a spare workspace no monitor shows once niri lists it; the user's "
+              "Flux window keeps the focus",
+              moved is not None and agent is not None and int(moved[1]) == agent["id"]
+              and not ws.get("is_active") and " · Flux" in (agent.get("title") or "")
+              and (nested.msg("focused-window") or {}).get("id") == (win or {}).get("id"),
+              f"{res} {moved and moved[0]} {agent} ws {ws}")
+
+        # The call's Look: by Flux's window id and pid.
+        flux_focused()
+        mark = len(shell.log())
+        nested.action("spawn", "--", nested.call_key)
+        call = look.idle("call")
+        poker.tap(38, "ctrl")                       # Look
+        time.sleep(1.5)
+        poker.type("hi")
+        poker.tap(28)
+        said = _wait(lambda: any("In Flux" in a for a in look.agent().get("attached", [])), 8)
+        attached = (look.agent().get("attached") or [""])[-1]
+        check("the call over Flux, Ctrl+L (Look) and a line: what Flux shows goes with it, the "
+              "window named by its app bar id and pid (no X window on Wayland)",
+              bool(call) and bool(said) and "Gamma" in attached, attached[:300])
+        look.do(do="end")                           # the stand-in hub's turn over, unrung
+        time.sleep(0.5)
+        poker.tap(1)
+        look.gone("call")
+
+        # A screenshot of a tab and the Watch's effects, under Wayland.
+        res = _flux_control(shell, "t = await control.tabs()\n"
+                            "tab = [x.tab for w in t if not w.agent for x in w.tabs if x.current][0]\n"
+                            "s = await control.screenshot(tab)\n"
+                            "c = await control.click(tab, x=200, y=200)\n"
+                            "await asyncio.sleep(1.5)\n"
+                            "return {'png': len(s.get('png') or ''), 'w': s.get('width'), "
+                            "'clicked': bool(c), 'xid': [w.xid for w in t]}")
+        log = flux_log()
+        check("Flux's screenshot of a tab under Wayland (the view grabbed): a PNG; `tabs` gives "
+              "no X window (xid null)", isinstance(res, dict) and res.get("png", 0) > 1000
+              and all(x is None for x in res.get("xid") or [0]), str(res)[:400])
+        check("the agent clicking in the tab: the Watch locks it and its effects run on Qt "
+              "Quick under Wayland (none turned off, no traceback in Flux's log)",
+              isinstance(res, dict) and res.get("clicked") and "effects are off" not in log
+              and "Traceback" not in log, str(res)[:200] + " " + "\n".join(
+                  ln for ln in log.splitlines() if "effects" in ln or "Trace" in ln)[:600])
+        img, path = nested.screenshot("flux-watch", keep)
+        shots["flux-watch"] = path
+        laptop(ctx)
+        toggle_bar(ctx)
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(p.pid, signal.SIGTERM)
+        for p in procs:
+            try:
+                p.wait(10)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(p.pid, signal.SIGKILL)
+        server.shutdown()
+        if keep:
+            with contextlib.suppress(OSError):
+                with open(os.path.join(keep, "flux.log"), "w") as f:
+                    f.write(flux_log())
+
+
+LAPTOP = r"""
+import asyncio, base64, json
+from indigoshell.agent import laptop
+from indigoshell.core.hands import Call
+
+async def main():
+    hands = {h.name: h for h in laptop.desktop_hands()}
+    out = {}
+    async def call(name, args=None):
+        try:
+            blocks = await hands[name].run(Call(id="t", tool=name, args=args or {},
+                                                timeout=60.0))
+        except Exception as e:
+            return {"error": f"{type(e).__name__}: {e}"}
+        return [{"type": b.get("type"), "text": (b.get("text") or "")[:400],
+                 "png": len(base64.b64decode(b["data"])) if b.get("type") == "image" else 0}
+                for b in blocks]
+    out["windows"] = await call("windows")
+    out["shot"] = await call("screenshot", {"target": "monitor"})
+    out["write"] = await call("write_clipboard", {"text": "nested laptop clip"})
+    await asyncio.sleep(0.5)
+    out["read"] = await call("read_clipboard")
+    out["focus"] = await call("focus", {"window_id": int(__import__("sys").argv[1])})
+    out["shot_window"] = await call("screenshot", {"target": "window"})
+    return out
+
+print(json.dumps(asyncio.run(main())))
+"""
+
+
+def laptop(ctx) -> None:
+    """The laptop's hands (agent/laptop.py) on niri, called directly in
+    the nested niri's environment: the windows, a monitor's screenshot,
+    the clipboard written and read, a window focused, its screenshot."""
+    nested, shell, check = ctx["nested"], ctx["shell"], ctx["check"]
+    side = next((w for w in nested.msg("windows") or []
+                 if w.get("app_id") == "wltest.flux-side"), None)
+    target = (side or {}).get("id", 0)
+    out = subprocess.run([sys.executable, "-B", "-c", LAPTOP, str(target)], env=shell.env,
+                         capture_output=True, text=True, timeout=60)
+    try:
+        res = json.loads(out.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check("the laptop's hands ran in the nested niri", False, out.stderr[-1200:])
+        return
+
+    def text(name):
+        r = res.get(name)
+        return " ".join(b.get("text", "") for b in r) if isinstance(r, list) else str(r)
+
+    def png(name):
+        r = res.get(name)
+        return max((b.get("png", 0) for b in r), default=0) if isinstance(r, list) else 0
+
+    check("laptop_windows on niri: the workspaces and their windows (the kitty, Flux)",
+          "wltest.flux-side" in text("windows") and "indigoshell-browser" in text("windows"),
+          text("windows")[:400])
+    check("laptop_screenshot of the monitor over wlr-screencopy: a PNG", png("shot") > 10000,
+          text("shot")[:300])
+    check("laptop_write_clipboard then laptop_read_clipboard through wl-clipboard: the same text",
+          "nested laptop clip" in text("read"), f"{text('write')[:200]} / {text('read')[:200]}")
+    focused = (nested.msg("focused-window") or {}).get("id")
+    check("laptop_focus on a window by its niri id: niri focuses it; its screenshot (a tiled "
+          "window: its monitor, the reply says so)",
+          focused == target and png("shot_window") > 10000,
+          f"focused {focused} vs {target}: {text('focus')[:200]} / {text('shot_window')[:200]}")
+
+
+def toggle_bar(ctx) -> None:
+    """docs/niri.kdl's Mod+M: `toggle bar` hides the bottom bar and gives
+    its strip to the windows; again, both back."""
+    nested, shell, check = ctx["nested"], ctx["shell"], ctx["check"]
+    look = _Look(ctx)
+
+    def reserved():
+        return any(ly.get("namespace") == "indigoshell-reserve-bottom"
+                   for ly in nested.msg("layers") or [])
+
+    shell.client("toggle", "bar")
+    hidden = _wait(lambda: "bar" not in look.lay() and not reserved(), 5)
+    shell.client("toggle", "bar")
+    back = _wait(lambda: (look.win("bar") or {}).get("phase") == "idle" and reserved(), 5)
+    check("Mod+M's `toggle bar` (docs/niri.kdl): the bottom bar and its reservation go, then "
+          "come back", bool(hidden) and bool(back), f"{list(look.lay())} {reserved()}")

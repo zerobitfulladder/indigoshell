@@ -10,6 +10,7 @@
                    instead (only when group 7 is empty, one run at a time)
         --shots DIR   keep the nested niri's screenshots there
         --raster   the nested shell without the GPU (INDIGOSHELL_GPU=0)
+        --only flux   in the nested niri only the start and Flux's section
 
 1. Pure: which display the shell picks ($INDIGOSHELL_BACKEND,
    $WAYLAND_DISPLAY); which kinds the canvas draws (every kind the shell
@@ -34,6 +35,20 @@
    as the compositor sends it; our repeat (delay, rate, the newest key,
    none); who has the keyboard (the newest taker; asked for and let go
    of once); the input region while outside clicks are caught.
+2c. Pure: the apps' line on Wayland: the vocabulary's `open` with a
+   chord, `active`, KEY and `keys` (and what breaks one); niri's spare
+   workspace; an app service with no X display and the window manager
+   stood in for: the focused app window by niri's focused window's
+   process and the apps' `active` (none, a kitty, two windows of one
+   process, one that never said, the canvas taking the keyboard and
+   giving it back, its grace running out, no window manager at all);
+   `attached` asking a handle-less app for its chords; a chord the app
+   caught opening its input at once with the keyboard, the canvas's own
+   key held until the app's forwarded one and its `last` (or until
+   FORWARD_WAIT_S), keys for nothing dropped, a menu's chord; placing:
+   answered at once, the first new window of the process moved, `with`,
+   niri's windows not known yet. Outside clicks go to the newest catcher
+   only (the tray's menu over its panel).
 3. Off screen: the real bars (config_default's specs, real widgets; the
    window manager a stand-in) as regions of a 2560x1440 canvas on the
    CPU: where they sit, the input region and reservations they make,
@@ -90,8 +105,18 @@
    beside its row, a row heard by the item; then a fullscreen window
    taking the canvas away, the launcher, a toast, the app's menu (the
    top bar with it) and the call each over it with nothing else, the
-   canvas gone again after each; and giving it back, the frame times,
-   and idle.
+   canvas gone again after each; and giving it back; then (phase 2c)
+   Flux itself on Qt's Wayland platform: its window niri's with the
+   app connection's pid, its tabs on the top bar by niri's focus (none
+   for a kitty), a tab clicked, Alt+1 and Alt+Shift+3 by their place,
+   Ctrl+L caught by Flux and the shell's address box with the keyboard,
+   what is typed in the same burst forwarded and in order, never in the
+   page, its suggestions, an address submitted, find and the actions
+   menu, a second window's address input, the agent's window moved to a
+   spare workspace unfocused, the call's Look naming Flux's window, a
+   tab's screenshot and the Watch's effects; the laptop's hands on niri
+   (windows, screenshots, the clipboard, focus); Mod+M's `toggle bar`;
+   then the frame times, and idle.
 """
 
 import argparse
@@ -609,6 +634,290 @@ async def test_keyboard() -> None:
     check("while outside clicks are caught the input region is the whole canvas, and back after",
           [(r.left(), r.top(), r.width(), r.height()) for r in whole] == [(0, 0, 800, 600)]
           and sc.input_rects() == [] and len(layouts) == 2)
+
+
+# ── 2c. pure: the apps' line on Wayland ─────────────────────────────────
+class FakeWindows:
+    """The window manager's windows and focus, as wm's WindowFollower."""
+
+    def __init__(self):
+        self.focus = None
+        self.ids: dict[int, set] = {}
+        self.ready = True
+        self.moves = []
+        self.spare = (77, 6, "the highest-numbered empty workspace no monitor shows")
+        self.where: dict[int, tuple] = {}
+
+    def focused(self):
+        return self.focus
+
+    def ids_of(self, pid):
+        return set(self.ids.get(pid, ()))
+
+    def spare_workspace(self, taken=frozenset()):
+        return self.spare
+
+    def workspace_of(self, window_id):
+        return self.where.get(window_id)
+
+    def move(self, window_id, workspace):
+        self.moves.append((window_id, workspace))
+
+    def close(self):
+        pass
+
+
+async def test_apps() -> None:
+    import types
+
+    import skia
+
+    from indigoshell import wm
+    from indigoshell.applink import bar as B, protocol
+    from indigoshell.applink.service import AppService, AppWindow, Link
+    from indigoshell.canvas import KeyboardRouter, Scene
+    from indigoshell.widgets.base import KeyEvent
+    from indigoshell.wm import niri
+
+    section("2c. pure: the apps' line on Wayland (focus by process and `active`, chords, "
+            "type-ahead, placing), outside clicks")
+
+    # The vocabulary's new pieces.
+    check("bar.py: `open` with the chord the app caught, `active`, a KEY, `keys` with `last`",
+          B.open_input("address", "ctrl+l") == {"type": "open", "input": "address",
+                                                "chord": "ctrl+l"}
+          and B.open_input("address") == {"type": "open", "input": "address"}
+          and B.open_menu("actions", "ctrl+m")["chord"] == "ctrl+m"
+          and B.active(True) == {"type": "active", "active": True}
+          and B.key(0x79, "y") == {"keysym": 0x79, "text": "y"}
+          and B.key(0x6C, "", ["shift", "ctrl"]) == {"keysym": 0x6C, "mods": ["ctrl", "shift"]}
+          and B.keys([B.key(0x79, "y")], last=True)["last"] is True
+          and "last" not in B.keys([]))
+    check("keys_problems: good ones pass; a keysym that is none, mods of no modifier, a "
+          "list too long, `last` no bool, each said",
+          B.keys_problems(B.keys([B.key(0x79, "y")], last=True)) == []
+          and B.keys_problems({"type": "keys", "keys": [{"keysym": 0}]}) != []
+          and B.keys_problems({"type": "keys", "keys": [{"keysym": 1, "mods": ["hyper"]}]}) != []
+          and B.keys_problems({"type": "keys", "keys": [{"keysym": 1}] * 201}) != []
+          and B.keys_problems({"type": "keys", "keys": [], "last": 1}) != []
+          and B.keys_problems({"type": "keys"}) != [])
+
+    # niri's spare workspace, as pick_desktop chooses on X11.
+    ws = [{"id": 1, "idx": 1, "name": "1", "output": "o", "is_active": True},
+          {"id": 2, "idx": 2, "name": "2", "output": "o"},
+          {"id": 3, "idx": 3, "name": "3", "output": "o"},
+          {"id": 4, "idx": 4, "name": None, "output": "o"},
+          {"id": 9, "idx": 1, "name": None, "output": "p", "is_active": True}]
+    wins = [{"id": 10, "workspace_id": 1}, {"id": 11, "workspace_id": 3}]
+    check("niri: the spare workspace is the highest-numbered empty one of the bar's no monitor "
+          "shows (2 here: 3 has a window); with that taken, the spare one niri keeps at the "
+          "end; with none hidden, none",
+          niri.spare_workspace(ws, wins, "o")[:2] == (2, 1)
+          and niri.spare_workspace(ws, wins, "o", {2})[:2] == (4, None)
+          and niri.spare_workspace(ws[:1] + ws[4:], wins[:1], "o")[0] is None)
+
+    # A service on Wayland: no X display, the window manager stood in for.
+    fake = FakeWindows()
+    svc = AppService(path=os.path.join(SCRATCH, "apps.sock"), windows=fake)
+    scene = Scene(None)
+    scene.keyboard.available = True
+    svc._scene = lambda: scene
+    svc.running, svc.on_wayland, svc.wm_windows = True, True, fake
+    svc.context = types.SimpleNamespace(
+        window=types.SimpleNamespace(wid=1, x=0, y=0, width=2560, height=42,
+                                     content_root=(0, 0, 2560, 42)),
+        rect=skia.Rect.MakeXYWH(12, 0, 1800, 42))
+    drops = []
+    svc.show_drop = lambda prompt, place: drops.append(place)
+    svc.hide_drop = lambda: drops.append(None)
+    sent: dict = {}
+
+    def window(app, wid, pid):
+        out = sent.setdefault((pid, wid), [])
+        link = types.SimpleNamespace(service=svc, pid=pid, send=out.append, closed=False)
+        w = AppWindow(link, None, B.announce(app, wid))
+        svc.added(w)
+        return w
+
+    def focus(wid, pid, app="x"):
+        fake.focus = wm.Window(id=wid, app=app, title="", workspace="1", pid=pid) \
+            if wid is not None else None
+        svc.set_focus(fake.focus)
+
+    a = window("flux", 1, 500)
+    b = window("flux", 2, 500)
+    c = window("editor", 1, 600)
+    focus(None, None)
+    check("no window focused: no app's", svc.focused is None)
+    focus(30, 700, "kitty")
+    check("a kitty focused (a process with no app connection): no app's", svc.focused is None)
+    focus(41, 500)
+    neither = svc.focused
+    a.set_active(True)
+    first = svc.focused
+    b.set_active(True)
+    second = svc.focused
+    a.set_active(False)
+    check("Flux's process focused: its window that said `active` last (none said yet: "
+          "none of its two), A, then B; A's `not active` changes nothing",
+          neither is None and first is a and second is b and svc.focused is b)
+    focus(42, 600)
+    check("the editor's process focused: its only window, which never sent `active`",
+          svc.focused is c)
+    focus(41, 500)
+    scene.keyboard.take("launcher", object())
+    focus(None, None)
+    held = svc.focused
+    b.set_active(False)
+    check("the canvas takes the keyboard: niri names no window and Flux says B is not "
+          "active, and B keeps the focus", held is b and svc.focused is b and b.active_seq)
+    scene.keyboard.give_back("launcher")
+    a.set_active(True)
+    graced = svc.focused
+    focus(41, 500)
+    named = svc.focused
+    check("the canvas lets go: for a moment (HOLD_GRACE_S) no focused window still keeps B, "
+          "A's `active` meanwhile included; once niri names Flux's window, A (the newest "
+          "to say it)", graced is b and named is a, f"{graced} {named}")
+    scene.keyboard.take("launcher", object())
+    focus(None, None)
+    scene.keyboard.give_back("launcher")
+    kept = svc.focused
+    await asyncio.sleep(0.6)
+    check("... and with no window named after it (an empty workspace), no app's once the "
+          "moment is over", kept is a and svc.focused is None, f"{kept} {svc.focused}")
+    svc.wm_windows = None
+    c.set_active(True)
+    check("no window manager to follow: the apps' own `active` decides", svc.focused is c)
+    svc.wm_windows = fake
+    for w in (a, b, c):
+        svc.forget(w.link, w)
+
+    # The attached message on Wayland asks the app for its chords.
+    class Writer:
+        def __init__(self):
+            self.out = []
+
+        def write(self, data):
+            self.out.append(protocol.decode(data))
+
+        def is_closing(self):
+            return False
+
+        def get_extra_info(self, _name):
+            return None
+
+        def close(self):
+            pass
+
+    w = Writer()
+    link = Link(svc, w)
+    link.on_message(B.announce("flux", 9))
+    check("an announce with no handle is a Wayland window: `attached` says `chords: \"app\"`",
+          link.window is not None and link.window.wid is None
+          and w.out[-1].get("chords") == "app" and w.out[-1]["type"] == "attached",
+          str(w.out))
+    svc.forget(link, link.window)
+
+    # A chord the app caught, and the keys typed before the canvas had
+    # the keyboard.
+    bar = B.bar([B.tabs("tabs", [B.tab(1, "Alpha")], current=1)], [],
+                inputs={"address": B.input_(chords=["ctrl+l"], query=True)},
+                menus={"actions": B.menu([B.row("add", "Add")], chords=["ctrl+m"])})
+    f = window("flux", 1, 500)
+    f.show_bar(bar)
+    focus(41, 500)
+    f.set_active(True)
+    svc.open_asked(f, "input", "address", chord="ctrl+l")
+    p = svc.prompt
+    check("`open` with a chord: the input opens at once as for a press, the canvas's "
+          "keyboard taken, the app's forwarded keys awaited",
+          p is not None and p.open and scene.keyboard.holds(svc) and svc._forwarding is f)
+
+    def k(ch):
+        return KeyEvent(keysym=ord(ch), text=ch)
+
+    def text():
+        return p.box.field.text if p is not None and p.box is not None else None
+
+    svc.key_press(k("o"))                   # the canvas's own: after what Flux forwards
+    early = text()
+    f.on_message(B.keys([B.key(ord("y"), "y")]))
+    mid = text()
+    f.on_message(B.keys([], last=True))
+    check("the canvas's \"o\" waits; Flux's forwarded \"y\" goes in; at `last` the \"o\" "
+          "after it: \"yo\", in the order typed", early == "" and mid == "y"
+          and text() == "yo" and svc._forwarding is None, f"{early!r} {mid!r} {text()!r}")
+    f.on_message({"type": "keys", "keys": [{"keysym": 0}]})
+    check("a bad `keys` ignored with a warning, the box as it was", text() == "yo")
+    p.close("escape")
+    check("closed: the keyboard given back", not scene.keyboard.holds(svc)
+          and svc.prompt is None)
+    svc.open_asked(f, "input", "address", chord="ctrl+l")
+    p = svc.prompt
+    svc.key_press(k("z"))
+    held_early = text()
+    await asyncio.sleep(B.FORWARD_WAIT_S + 0.1)
+    check("no `last` from the app: the canvas's keys go in after FORWARD_WAIT_S",
+          held_early == "" and text() == "z", f"{held_early!r} {text()!r}")
+    p.close("escape")
+    f.on_message(B.keys([B.key(ord("q"), "q")]))
+    check("keys forwarded with nothing open: dropped", svc.prompt is None)
+    svc.open_asked(f, "menu", "actions", chord="ctrl+m")
+    check("a menu's chord the same way", svc.prompt is not None and svc.prompt.what == "menu"
+          and svc._forwarding is f)
+    svc.prompt.close("escape")
+
+    # Placing on niri.
+    fake.ids = {500: {41}}
+    f.send_event = None
+    out = sent[(500, 1)]
+    out.clear()
+    svc.place(f, protocol.place())
+    answer = next((m for m in out if m["type"] == "placed"), None)
+    check("`place` on niri: answered at once with the workspace chosen (its index among "
+          "the bar's)", answer == {"type": "placed", "desktop": 6} and f in svc._placing,
+          str(out))
+    fake.ids = {500: {41, 55}}
+    svc._on_windows(fake)
+    check("... and the first new window of the app's process niri lists moved there, not "
+          "focused; its id kept", fake.moves == [(55, 77)] and f.wm_id == 55
+          and f not in svc._placing)
+    g = window("flux", 2, 500)
+    fake.where = {55: (78, 3)}
+    out2 = sent[(500, 2)]
+    svc.place(g, protocol.place(1))
+    check("`with` the first window: the workspace that one is on",
+          next(m for m in out2 if m["type"] == "placed")["desktop"] == 3
+          and svc._placing[g][0] == 78)
+    fake.ready = False
+    h = window("flux", 3, 500)
+    svc.place(h, protocol.place())
+    check("niri's windows not known yet: not placed, and why",
+          next(m for m in sent[(500, 3)] if m["type"] == "placed")["desktop"] is None
+          and h not in svc._placing)
+    svc.stop()
+
+    # Outside clicks: the newest catcher only.
+    sc = Scene(None)
+    sc.resize(800, 600)
+    told = []
+    sc.catch_outside("panel", lambda: told.append("panel"))
+    sc.catch_outside("menu", lambda: told.append("menu"))
+    sc.outside_click()
+    first = list(told)
+    sc.release_outside("menu")
+    sc.outside_click()
+    check("an outside click with the tray's menu over its panel closes the menu only, as X's "
+          "one grab did; the panel takes the next one", first == ["menu"]
+          and told == ["menu", "panel"], str(told))
+    kb = KeyboardRouter()
+    kb.available = True
+    kb.take("x", object())
+    before = kb.released_at
+    kb.give_back("x")
+    check("the canvas's keyboard remembers when the last taker let go",
+          before < 0 and kb.released_at > 0)
 
 
 # ── 3. off screen: the real bars on a canvas ────────────────────────────
@@ -1130,11 +1439,14 @@ def main() -> int:
     parser.add_argument("--raster", action="store_true",
                         help="the nested shell without the GPU")
     parser.add_argument("--shots", metavar="DIR", help="keep the nested screenshots here")
+    parser.add_argument("--only", choices=["flux"],
+                        help="in the nested niri, only the start and Flux's section")
     args = parser.parse_args()
     try:
         test_pure()
         test_pointer()
         asyncio.run(test_keyboard())
+        asyncio.run(test_apps())
         asyncio.run(test_offscreen())
         asyncio.run(test_offscreen_overlays())
         asyncio.run(test_offscreen_call())
