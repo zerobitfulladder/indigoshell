@@ -24,7 +24,7 @@ control socket, the windows and the downloads ask for "the window to
 put this in". Its `watch` (watch.py) keeps the agent's hold on the tabs
 it acts on.
 
-The agent's own windows (protocol.py, "Alone"), one per voice, are
+The agent's own window (protocol.py, "Alone"), one at most, is
 among them but never "the window to put this in" for the user: that is
 `main_window()`, the user's most recently used main window. `move_tab`
 moves a tab with its page as it is; `borrow` takes a user's tab into the
@@ -172,7 +172,7 @@ class Browser(QObject):
         self.server = ControlServer(self, path or protocol.control_socket_path(self.profile_name))
 
     # ── windows ─────────────────────────────────────────────────────────
-    def new_window(self, *, single: bool = False, dialog: bool = False, agent: str | None = None,
+    def new_window(self, *, single: bool = False, dialog: bool = False, agent: bool = False,
                    opener: Window | None = None) -> Window:
         window = Window(self, single=single, dialog=dialog or (self.unattended and not single),
                         agent=agent, opener=opener)
@@ -222,16 +222,15 @@ class Browser(QObject):
         window.show()
         return window
 
-    def agent_window(self, voice) -> Window:
-        """The agent's own window for `voice`; a new one when there is
-        none, not yet shown: the caller gives it a tab, then
-        `show_placed()` (which does nothing once it is placed or shown)."""
-        vid = protocol.voice_id(voice)
+    def agent_window(self) -> Window:
+        """The agent's own window; a new one when there is none, not yet
+        shown: the caller gives it a tab, then `show_placed()` (which does
+        nothing once it is placed or shown)."""
         for window in self.windows:
-            if shiboken6.isValid(window) and window.agent == vid:
+            if shiboken6.isValid(window) and window.agent:
                 return window
-        log.info("the agent's own window for %s: made", protocol.voice_name(vid))
-        return self.new_window(agent=vid)
+        log.info("the agent's own window: made")
+        return self.new_window(agent=True)
 
     # ── tabs moving between windows (protocol.py, "Alone") ──────────────
     def move_tab(self, tab, dest: Window, *, at: int | None = None, background: bool = False,
@@ -280,11 +279,11 @@ class Browser(QObject):
         log.info("tab %d torn out of window %d into window %d", tab.id, src.id, window.id)
         return window
 
-    def borrow(self, tab, voice) -> dict:
+    def borrow(self, tab) -> dict:
         """A user's tab into the agent's window, as its current tab; where
         it came from (kept in that window's `borrowed`)."""
         src = self.window_of(tab.page)
-        dest = self.agent_window(voice)
+        dest = self.agent_window()
         origin = {"window": src, "window_id": src.id, "index": src.tabs.index(tab),
                   "placeholder": None}
         if len(src.tabs) == 1:

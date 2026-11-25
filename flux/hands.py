@@ -49,11 +49,11 @@ showing in its window (the agent switches first, which never raises a
 window or changes the workspace), never reads a password field's value,
 and leaves a site's permission prompts to the user.
 
-Acting is watched (flux/qt/watch.py): the acting hands pass the
-call's voice, Flux draws its hold on the tab in that voice's colour and
-locks the user's input out of it, and a key from the user takes the tab
-back. Then Flux's answer is "the user took over tab N", and the agent is
-told to stop and say so, not to try again.
+Acting is watched (flux/qt/watch.py): Flux draws the agent's hold on
+the tab in her colour (core/persona.py) and locks the user's input out
+of it, and a key from the user takes the tab back. Then Flux's answer
+is "the user took over tab N", and the agent is told to stop and say
+so, not to try again.
 
 Alone (protocol.py): the agent's own window, on a workspace of its own
 the user is not looking at, is where it works on what is its to do
@@ -301,9 +301,8 @@ async def _tabs(call: Call) -> list[dict]:
     for w in windows:
         about = []
         if w.agent:
-            about.append(f"{protocol.voice_name(w.agent)}'s own window"
-                         + ("" if headless else ", on a workspace of its own")
-                         + (": yours" if w.agent == protocol.voice_id(_voice(call)) else ""))
+            about.append("your own window"
+                         + ("" if headless else ", on a workspace of its own"))
         if w.focused:
             about.append("has the user's focus")
         if w.single:
@@ -339,7 +338,7 @@ async def _open(call: Call) -> list[dict]:
     flux = await _flux(start=True)
     try:
         tab = await flux.open(url.strip(), window=window, background=background,
-                              voice=_voice(call), within=_within(call))
+                              within=_within(call))
         # A tab in the background is not showing: no waiting on it.
         note = await _settle(flux, call, tab.tab, wanted) if wanted and not background else ""
         tab = await _current(flux, call, tab.tab)
@@ -576,10 +575,6 @@ async def _look(call: Call) -> list[dict]:
 
 
 # ── acting ──────────────────────────────────────────────────────────────
-def _voice(call: Call) -> str | None:
-    return getattr(call, "voice", None)
-
-
 def _where(call: Call, *, need: bool) -> dict:
     """`ref`, or `x` and `y`, from the call."""
     ref, x, y = call.args.get("ref"), call.args.get("x"), call.args.get("y")
@@ -674,7 +669,7 @@ async def _click(call: Call) -> list[dict]:
     tab = _tab(call)
     done = await _act(call, lambda flux: flux.click(
         tab, where.get("ref"), x=where.get("x"), y=where.get("y"), button=button,
-        double=bool(call.args.get("double")), voice=_voice(call), within=_within(call)))
+        double=bool(call.args.get("double")), within=_within(call)))
     how = "Double-clicked" if call.args.get("double") else "Clicked"
     return _acted(done, f"{how} at ({done['x']}, {done['y']}) in tab {tab}.",
                   f"What was clicked: {done['what']}" if done.get("what") else "")
@@ -689,7 +684,7 @@ async def _type(call: Call) -> list[dict]:
     done = await _act(call, lambda flux: flux.type_text(
         tab, text, ref=where.get("ref"), x=where.get("x"), y=where.get("y"),
         clear=bool(call.args.get("clear")), submit=bool(call.args.get("submit")),
-        voice=_voice(call), within=_within(call)))
+        within=_within(call)))
     short = done["typed"] < len(text.replace("\r\n", "\n"))
     did = (f"Typed {done['typed']} character(s)" + (" (as one input)" if done["via"] != "keys"
                                                      else "")
@@ -707,7 +702,7 @@ async def _key(call: Call) -> list[dict]:
         raise HandError("`count` must be an integer")
     tab = _tab(call)
     done = await _act(call, lambda flux: flux.key(tab, key.strip(), count=count,
-                                                  voice=_voice(call), within=_within(call)))
+                                                  within=_within(call)))
     return _acted(done, f"Pressed {key.strip()}" + (f" {count} times" if count and count > 1
                                                     else "") + f" in tab {tab}.")
 
@@ -721,7 +716,7 @@ async def _select(call: Call) -> list[dict]:
         raise HandError("give `value` or `label`")
     tab = _tab(call)
     done = await _act(call, lambda flux: flux.select(tab, ref, value=value, label=label,
-                                                     voice=_voice(call), within=_within(call)))
+                                                     within=_within(call)))
     return _acted(done, f"Chose in [{ref}] (the page got input and change events).",
                   f"Now chosen: {done['label']!r} (value {done['value']!r})")
 
@@ -738,7 +733,7 @@ async def _scroll(call: Call) -> list[dict]:
     tab = _tab(call)
     done = await _act(call, lambda flux: flux.scroll(
         tab, dy=dy, dx=dx, ref=where.get("ref"), x=where.get("x"), y=where.get("y"), to=to,
-        voice=_voice(call), within=_within(call)))
+        within=_within(call)))
     did = (f"Scrolled [{to}] into view." if to is not None else
            f"Turned the wheel by about ({dx or 0}, {dy or 0}) px.")
     return _acted(done, did + f" The page is scrolled to ({done.get('scroll_x')}, "
@@ -752,8 +747,7 @@ async def _fill(call: Call) -> list[dict]:
             isinstance(f, dict) and protocol.is_ref(f.get("ref")) and "value" in f for f in fields):
         raise HandError("give `fields`: a list of {ref, value}")
     tab = _tab(call)
-    done = await _act(call, lambda flux: flux.fill(tab, fields, voice=_voice(call),
-                                                   within=_within(call)))
+    done = await _act(call, lambda flux: flux.fill(tab, fields, within=_within(call)))
     results = done.get("fields") or []
     bad = [f for f in results if not f.get("ok")]
     lines = [f"[{f['ref']}] not filled: {f.get('error')}" for f in bad]
@@ -766,8 +760,7 @@ async def _hover(call: Call) -> list[dict]:
     where = _where(call, need=True)
     tab = _tab(call)
     done = await _act(call, lambda flux: flux.hover(tab, where.get("ref"), x=where.get("x"),
-                                                    y=where.get("y"), voice=_voice(call),
-                                                    within=_within(call)))
+                                                    y=where.get("y"), within=_within(call)))
     return _acted(done, f"The pointer is at ({done['x']}, {done['y']}) in tab {tab}.",
                   f"Under it: {done['what']}" if done.get("what") else "")
 
@@ -780,8 +773,7 @@ async def _dialog(call: Call) -> list[dict]:
     if text is not None and not isinstance(text, str):
         raise HandError("`text` must be a string")
     tab = _tab(call)
-    done = await _act(call, lambda flux: flux.dialog(tab, accept, text=text, voice=_voice(call),
-                                                     within=_within(call)))
+    done = await _act(call, lambda flux: flux.dialog(tab, accept, text=text, within=_within(call)))
     return _acted(done, f"{'Accepted' if accept else 'Dismissed'} the page's dialog.")
 
 
@@ -814,8 +806,7 @@ async def _upload(call: Call) -> list[dict]:
     if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
         raise HandError("give `paths`: the files' absolute paths")
     tab = _tab(call)
-    done = await _act(call, lambda flux: flux.upload(tab, ref, paths, voice=_voice(call),
-                                                     within=_within(call)))
+    done = await _act(call, lambda flux: flux.upload(tab, ref, paths, within=_within(call)))
     files = ", ".join(f"{f['name']} ({f['size']} bytes)" for f in done.get("files") or ())
     return _acted(done, f"The page got {len(done.get('files') or ())} file(s) as from its file "
                   f"chooser: {files}.", f"What was clicked: {done['what']}"
@@ -827,7 +818,7 @@ async def _borrow(call: Call) -> list[dict]:
     flux = await _flux()
     tab = _tab(call)
     try:
-        done = await flux.borrow(tab, voice=_voice(call), within=_within(call))
+        done = await flux.borrow(tab, within=_within(call))
     except ControlError as e:
         raise HandError(str(e)) from None
     came = done.get("from") or {}
@@ -917,8 +908,7 @@ async def _js(call: Call) -> list[dict]:
         raise HandError("no time left to run a script in")
     timeout = min(timeout, room)
     tab = _tab(call)
-    done = await _act(call, lambda flux: flux.js(tab, code, timeout=timeout, voice=_voice(call),
-                                                 within=_within(call)))
+    done = await _act(call, lambda flux: flux.js(tab, code, timeout=timeout, within=_within(call)))
     if done.get("withheld"):
         did = (f"Ran your script in tab {tab}: it answered, but the page went on to another "
                "document before Flux could check the answer for passwords, so it is withheld. "

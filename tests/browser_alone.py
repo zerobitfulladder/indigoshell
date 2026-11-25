@@ -54,8 +54,8 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      (requests named, no uploaded file's name).
   3. the shell's side (a child process, so skia and Qt stay apart): the
      workspace rule (applink.service.pick_desktop) case by case; the top
-     bar for the agent's own window, its name first in the voice's
-     colour; `place` with no X display answered with why.
+     bar for the agent's own window, her name first in her colour;
+     `place` with no X display answered with why.
 
 --on-screen, on the real display; the user's current workspace and
 focused window are read before and after each part and traced between:
@@ -305,10 +305,10 @@ def test_pure(files: dict) -> None:
     from flux import bar as fb
     st = fb.state([fb.tab("A", "a.org", False, id_=1)], 0, 100, True, url="https://a.org/",
                   bookmarked=False)
-    hers, users = fb.bar_of(st, agent="Lilac"), fb.bar_of(st)
-    check("the agent's own window's bar starts with her name in her voice's colour; the user's "
-          "with the tabs", hers["start"][0] == {"kind": "text", "id": "owner", "text": "Lilac",
-                                               "color": "voice:lilac"}
+    hers, users = fb.bar_of(st, agent=True), fb.bar_of(st)
+    check("the agent's own window's bar starts with her name in her colour (the `agent` role); "
+          "the user's with the tabs",
+          hers["start"][0] == {"kind": "text", "id": "owner", "text": "Lilac", "color": "agent"}
           and users["start"][0]["kind"] == "tabs", f"{hers['start'][0]}")
     check("place / placed on the apps' line", link.place() == {"type": "place"}
           and link.place(5) == {"type": "place", "with": 5}
@@ -317,7 +317,7 @@ def test_pure(files: dict) -> None:
     check("the requests: borrow, return, show, downloads, upload; the words",
           {"borrow", "return", "show", "downloads", "upload"} <= set(protocol.REQUESTS)
           and protocol.kept("bank.example") == "the user keeps bank.example to themselves"
-          and protocol.agent_title("indigo") == "Indigo · Flux")
+          and protocol.agent_title() == "Lilac · Flux")
 
     hands = {h.name: h for h in browser_hands()}
     new = ["browser_borrow", "browser_return", "browser_show", "browser_downloads",
@@ -593,7 +593,7 @@ def test_in_process(files: dict) -> None:
     calls.clear()
 
     # ── the agent's own window ──────────────────────────────────────────
-    future = client.start(flux.open(url("/page/Mine"), window="agent", voice="lilac"))
+    future = client.start(flux.open(url("/page/Mine"), window="agent"))
     shown_early, her = False, None
     deadline = time.monotonic() + 10
     while not future.done() and time.monotonic() < deadline:
@@ -608,9 +608,9 @@ def test_in_process(files: dict) -> None:
     announce = next((m for m in said if m.get("type") == "announce"), {})
     kinds = [m["type"] for m in said if m.get("type") in ("announce", "place")]
     bar = next((m for m in said if m.get("type") == "bar"), {})
-    check("open in the agent's window: a window of its own, made for Lilac, announced (Flux, "
+    check("open in the agent's window: a window of its own, made for her, announced (Flux, "
           "its id), `place` asked right after the announce; its bar starts with her name",
-          her is not None and her.agent == "lilac" and announce.get("app") == "flux"
+          her is not None and her.agent is True and announce.get("app") == "flux"
           and announce.get("window") == her.id and kinds[:2] == ["announce", "place"]
           and (bar.get("start") or [{}])[0].get("text") == "Lilac"
           and mine is not None and mine.window == her.id, f"{kinds} {announce}")
@@ -635,9 +635,9 @@ def test_in_process(files: dict) -> None:
     J(flux.close_tab(plain.tab))
     windows, _ = J(flux.tabs())
     hers = [w for w in windows or () if w.agent]
-    check("tabs: the agent's window listed as Lilac's", len(hers) == 1 and hers[0].window == her.id
-          and hers[0].agent == "lilac")
-    again, _ = J(flux.open(url("/page/Second"), window="agent", voice="lilac"))
+    check("tabs: the agent's window listed as hers (`agent`: true), the only one",
+          len(hers) == 1 and hers[0].window == her.id and hers[0].agent is True)
+    again, _ = J(flux.open(url("/page/Second"), window="agent"))
     check("a second open in the agent's window: the same window, not placed again",
           again is not None and again.window == her.id
           and [m["type"] for m in shell.of(hid)].count("place") == 1)
@@ -654,7 +654,7 @@ def test_in_process(files: dict) -> None:
     before = json.loads(js(form.tab, STATE))
     page_before = next(t.page for t in user.tabs if t.id == form.tab)
     states_before = len([m for m in shell.of(int(user.winId())) if m.get("type") == "bar"])
-    done, err = J(flux.borrow(form.tab, voice="lilac"))
+    done, err = J(flux.borrow(form.tab))
     after = json.loads(js(form.tab, STATE) or "{}")
     moved = window_of(form.tab)
     check("borrow a tab that is not showing: now the current tab of the agent's window, "
@@ -675,7 +675,7 @@ def test_in_process(files: dict) -> None:
           and len([m for m in shell.of(int(user.winId())) if m.get("type") == "bar"])
           > states_before, f"{titles(user)} {last_tabs}")
     press = refs_of(form.tab)['button "Press"']
-    acted, err = J(flux.click(form.tab, press, voice="lilac"))
+    acted, err = J(flux.click(form.tab, press))
     overlay = browser.watch.overlays.get(her.id)
     check("acting on it in the agent's window: the Watch drives it there, its overlay in that "
           "window", acted is not None and acted["agent"] == "driving" and overlay is not None
@@ -690,7 +690,7 @@ def test_in_process(files: dict) -> None:
     QWidget.activateWindow(her)         # the user's doing (not Flux's: not recorded)
     wait(lambda: QApplication.activeWindow() is her, 3)
     QTest.keyClick(her.windowHandle(), Qt.Key.Key_Q)
-    _, e_taken = J(flux.click(form.tab, press, voice="lilac"))
+    _, e_taken = J(flux.click(form.tab, press))
     check("a key the user presses in the agent's window takes the tab over there too: the next "
           "request says so, the overlay goes", e_taken == f"the user took over tab {form.tab}"
           and not overlay.shown() and browser.watch.paused(form.tab), f"{e_taken}")
@@ -709,7 +709,7 @@ def test_in_process(files: dict) -> None:
     check("... still the same page with its state (the scroll where the agent's click left it)",
           back == held and back["name"] == "half typed" and back["marker"] == before["marker"],
           f"{held} -> {back}")
-    J(flux.borrow(form.tab, voice="lilac"))
+    J(flux.borrow(form.tab))
     done, err = J(flux.return_tab(form.tab, show=True))
     check("return with show: the current tab of its window (the window not raised or activated)",
           done is not None and user.current_tab().id == form.tab and done["current"]
@@ -719,7 +719,7 @@ def test_in_process(files: dict) -> None:
     lone_tab = lone.add_tab(browser_app.to_url(url("/page/Lone")))
     lone.show()
     J(flux.wait(lone_tab.id, timeout=15), 20)
-    done, err = J(flux.borrow(lone_tab.id, voice="lilac"))
+    done, err = J(flux.borrow(lone_tab.id))
     blank = [t.url().toString() for t in lone.tabs] if shiboken6.isValid(lone) else None
     check("borrow a window's last tab: the window stays, a blank tab in its place",
           done is not None and shiboken6.isValid(lone) and blank == ["about:blank"], f"{err} {blank}")
@@ -740,9 +740,9 @@ def test_in_process(files: dict) -> None:
           e_not_hers and "not in your own window" in e_not_hers, f"{e_not_hers}")
 
     # The agent's window closed by the user while it holds a borrowed tab.
-    own, _ = J(flux.open(url("/page/Own"), window="agent", voice="lilac"))
+    own, _ = J(flux.open(url("/page/Own"), window="agent"))
     her2 = window_of(own.tab)
-    J(flux.borrow(form.tab, voice="lilac"))
+    J(flux.borrow(form.tab))
     order = [t.id for t in user.tabs]
     her2.close()
     QTest.qWait(300)
@@ -819,7 +819,7 @@ def test_in_process(files: dict) -> None:
     J(flux.close_tab(dl.tab))
 
     # ── upload ──────────────────────────────────────────────────────────
-    up, _ = J(flux.open(url("/files"), window="agent", voice="lilac"))
+    up, _ = J(flux.open(url("/files"), window="agent"))
     J(flux.wait(up.tab, timeout=15), 20)
     R = refs_of(up.tab)
     a, b = files["allowed"]["text"], files["allowed"]["binary"]
@@ -832,7 +832,7 @@ def test_in_process(files: dict) -> None:
                                      f"'{ident}').files).map(f => [f.name, f.size]))") or "[]")
 
     users.clear()
-    done, err = J(flux.upload(up.tab, R['button "Many"'], [a, b], voice="lilac"))
+    done, err = J(flux.upload(up.tab, R['button "Many"'], [a, b]))
     got = changes()
     check("upload into a shown field: the page's input.files are the names and sizes, its "
           "change event trusted, as from its own chooser; the answer says them",
@@ -848,7 +848,7 @@ def test_in_process(files: dict) -> None:
     for label, ref, ident in (("by its own ref, through its label", by_name.get("hid"), "hid"),
                               ("through the button that opens it", R.get('button "Browse"'),
                                "hid2")):
-        done, err = J(flux.upload(up.tab, ref, [a], voice="lilac"))
+        done, err = J(flux.upload(up.tab, ref, [a]))
         hidden[label] = (done is not None and holds(ident) == [["upload-a.txt", 5]], err,
                          done and done.get("field"))
     check("a hidden field by its own ref (its shown label clicked), and through the button that "
@@ -856,18 +856,18 @@ def test_in_process(files: dict) -> None:
           "button opened it", all(v[0] for v in hidden.values())
           and hidden["through the button that opens it"][2] is None, f"{hidden}")
     hid3 = by_name.get("hid3")
-    done, err = J(flux.upload(up.tab, hid3, [b], voice="lilac"))
+    done, err = J(flux.upload(up.tab, hid3, [b]))
     check("a hidden field with no label shown, by its own ref: a key lets the page open its "
           "chooser, a click in the agent's world opens it, the file arrives",
           done is not None and holds("hid3") == [["upload-b.bin", 1234]], f"{err} ref {hid3}")
     changes()
-    _, e_one = J(flux.upload(up.tab, R['button "One"'], [a, b], voice="lilac"))
-    _, e_dir = J(flux.upload(up.tab, R['button "Folder"'], [a], voice="lilac"))
-    _, e_nothing = J(flux.upload(up.tab, R['button "Nothing"'], [a], voice="lilac"))
+    _, e_one = J(flux.upload(up.tab, R['button "One"'], [a, b]))
+    _, e_dir = J(flux.upload(up.tab, R['button "Folder"'], [a]))
+    _, e_nothing = J(flux.upload(up.tab, R['button "Nothing"'], [a]))
     refused_through = {}
     for k in ("ssh config", "link named innocently", "flux profile", "named .pem", "connections"):
         _, refused_through[k] = J(flux.upload(up.tab, R['button "Many"'],
-                                              [a, files["refused"][k]], voice="lilac"))
+                                              [a, files["refused"][k]]))
     check("refused: two files for a field that takes one, a folder field, a click that opens no "
           "chooser (saying what to give instead)", e_one and "takes one file" in e_one
           and e_dir and "takes a folder" in e_dir and e_nothing
@@ -878,7 +878,7 @@ def test_in_process(files: dict) -> None:
           and changes() == [] and holds("vis") == [["upload-a.txt", 5], ["upload-b.bin", 1234]]
           and not users, f"{refused_through} {users}")
     held = holds("hid2")
-    done, err = J(flux.click(up.tab, R['button "Browse"'], voice="lilac"))
+    done, err = J(flux.click(up.tab, R['button "Browse"']))
     got = changes()
     check("a chooser a plain click opens while the agent drives: refused, said in the answer; "
           "no file added (Chromium empties the field, as for the user's Cancel: Qt gives no "
@@ -916,25 +916,25 @@ def test_in_process(files: dict) -> None:
     user.close_tab(kept_tab)
 
     # ── an older shell, which never answers `place` ─────────────────────
+    closed, _ = J(flux.close_tab(up.tab))      # her window goes with its last tab
     shell.answer_place = False
     began = time.monotonic()
-    other_voice, err = J(flux.open(url("/page/Indigo"), window="agent", voice="indigo"))
+    again, err = J(flux.open(url("/page/Again"), window="agent"))
     took = time.monotonic() - began
-    hers2 = window_of(other_voice.tab) if other_voice else None
-    check("a shell that never answers `place`: the agent's window shows anyway after "
-          "PLACE_WAIT_S (placed nowhere), one for each voice", hers2 is not None
-          and hers2.agent == "indigo" and hers2.isVisible() and hers2.placed_on is None
-          and 1.3 < took < 4.0 and hers2.windowTitle().startswith("Indigo · Flux"),
-          f"{err} {took:.2f} s")
-    J(flux.close_tab(other_voice.tab))
+    hers2 = window_of(again.tab) if again else None
+    check("a shell that never answers `place`: the agent's window, made again, shows anyway "
+          "after PLACE_WAIT_S (placed nowhere)", closed and closed["window_closed"]
+          and hers2 is not None and hers2.agent is True and hers2.isVisible()
+          and hers2.placed_on is None and 1.3 < took < 4.0
+          and hers2.windowTitle().startswith("Lilac · Flux"), f"{err} {took:.2f} s")
+    J(flux.close_tab(again.tab))
     shell.answer_place = True
 
     # ── the hands ───────────────────────────────────────────────────────
     hands = {h.name: h for h in browser_hands()}
 
-    def call(name, args, voice="lilac", timeout=120.0):
-        blocks, err = J(hands[name].run(Call(f"c-{name}", name, args, timeout, voice=voice)),
-                        timeout)
+    def call(name, args, timeout=120.0):
+        blocks, err = J(hands[name].run(Call(f"c-{name}", name, args, timeout)), timeout)
         return "\n".join(b["text"] for b in blocks or ()), err
 
     out = {}
@@ -960,7 +960,8 @@ def test_in_process(files: dict) -> None:
     check("... and says what happened: whose window, where a tab came from and went, the files, "
           "the download's path",
           "in your own window" in texts["open"] and "Borrowed into your own window" in texts["borrow"]
-          and "Lilac's own window" in texts["tabs"] and "borrowed from window" in texts["tabs"]
+          and "(your own window, on a workspace of its own" in texts["tabs"]
+          and "borrowed from window" in texts["tabs"]
           and "upload-a.txt (5 bytes)" in texts["upload"]
           and "back to its window (as its current tab)" in texts["return"]
           and "Shown in the user's window" in texts["show"]
@@ -1005,7 +1006,8 @@ def shell_side() -> None:
     from indigoshell import theme
     from indigoshell.applink import bar as B
     from indigoshell.applink.service import AppService, AppWindow, pick_desktop
-    from flux import bar as fb, protocol
+    from flux import bar as fb
+    from indigoshell.core import persona
     from indigoshell.widgets.base import Size
 
     out = {}
@@ -1046,10 +1048,10 @@ def shell_side() -> None:
         )[..., :3].astype("int16")
 
     service = AppService(path="/nonexistent")
-    lilac = np.array([int(protocol.voice_color("lilac")[i:i + 2], 16) for i in (1, 3, 5)])
+    lilac = np.array([int(persona.color()[i:i + 2], 16) for i in (1, 3, 5)])
     state = fb.state([fb.tab("Alpha", "x.org", False, id_=1)], 0, 100, True,
                      url="https://x.org/", bookmarked=False)
-    for name, wid, agent in (("hers", 0x400001, "lilac"), ("users", 0x400002, None)):
+    for name, wid, agent in (("hers", 0x400001, True), ("users", 0x400002, False)):
         j = AppWindow(Line(service), wid, B.announce("flux", wid, wid))
         j.content.attach(Host())
         j.on_message(fb.bar_of(state, agent=agent))
@@ -1342,7 +1344,7 @@ def _agent_window_on_screen(service) -> None:
     browser.listen(SOCK["browser"])
     client = Client(QTest.qWait)
     flux = client.run(control.connect())
-    tab = client.run(flux.open(url("/live"), window="agent", voice="lilac"))
+    tab = client.run(flux.open(url("/live"), window="agent"))
     her = next(w for w in browser.windows if w.agent)
     wid = int(her.winId())
     client.run(flux.wait(tab.tab, timeout=15), 20)

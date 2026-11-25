@@ -683,62 +683,61 @@ def test_in_process() -> None:
             else None
 
     r1 = ref_in("Same", 'button "Press 1"')
-    done, err = J(flux.click(tf, r1, voice="lilac"))
+    done, err = J(flux.click(tf, r1))
     check("act in a frame by ref: same origin, trusted, at the frame's point plus its element's "
           "(border and padding) in the page", done is not None and clicked(1) == "hit 1|true"
           and (done["x"], done["y"]) == (85, 165) and done["what"].startswith(f"[{r1}] button"),
           f"{err} {done and (done['x'], done['y'], done['what'])} {clicked(1)}")
     r2 = ref_in("Cross", 'button "Press 2"')
-    done, err = J(flux.click(tf, r2, voice="lilac"))
+    done, err = J(flux.click(tf, r2))
     check("act in a frame by ref: cross origin", done is not None and clicked(2) == "hit 2|true"
           and (done["x"], done["y"]) == (415, 155), f"{err} {clicked(2)}")
     r3 = ref_in("Deep", 'button "Press 3"')
-    done, err = J(flux.click(tf, r3, voice="lilac"))
+    done, err = J(flux.click(tf, r3))
     check("act in a frame by ref: a cross-origin frame inside a frame", done is not None
           and clicked(3) == "hit 3|true" and (done["x"], done["y"]) == (95, 395),
           f"{err} {done and (done['x'], done['y'])} {clicked(3)}")
     rf = ref_in("Cross", 'textbox "Field 2"')
-    done, err = J(flux.type_text(tf, "hello frame", ref=rf, voice="lilac"))
+    done, err = J(flux.type_text(tf, "hello frame", ref=rf))
     f2 = frame_of(tf, "n=2")
     check("type into a field in a cross-origin frame by its ref",
           done is not None and js(f2, "document.getElementById('f').value") == "hello frame",
           f"{err}")
-    done, err = J(flux.fill(tf, [{"ref": ref_in("Same", 'textbox "Field 1"'), "value": "filled"}],
-                            voice="lilac"))
+    done, err = J(flux.fill(tf, [{"ref": ref_in("Same", 'textbox "Field 1"'), "value": "filled"}]))
     f1 = frame_of(tf, "n=1")
     check("fill a field in a frame", done is not None and done["fields"][0]["ok"]
           and js(f1, "document.getElementById('f').value") == "filled", f"{err} {done}")
     js(f2, "document.getElementById('b').textContent = 'Press 2'")
-    done, err = J(flux.click(tf, x=415, y=155, voice="lilac"))
+    done, err = J(flux.click(tf, x=415, y=155))
     check("a point over a frame: acted on in the frame, what is there named with its frame ref",
           done is not None and done["what"].startswith(f"[{r2}] button")
           and clicked(2) == "hit 2|true", f"{err} {done and done['what']}")
     r5 = ref_in("Low", 'button "Press 5"')
     page_main = tab_of(tf).page
-    done, err = J(flux.click(tf, r5, voice="lilac"))
+    done, err = J(flux.click(tf, r5))
     scrolled = js(page_main, "scrollY")
     check("a frame below the fold: scrolled into view in the page, then clicked",
           done is not None and clicked(5) == "hit 5|true" and scrolled and scrolled > 1000
           and 0 <= done["y"] <= 800, f"{err} scrollY {scrolled}")
     js(page_main, "scrollTo(0, 0)")
     QTest.qWait(100)
-    done, err = J(flux.scroll(tf, to=r5, voice="lilac"))
+    done, err = J(flux.scroll(tf, to=r5))
     check("scroll to an element in a frame: the frame brought into view in the page",
           done is not None and (js(page_main, "scrollY") or 0) > 1000, f"{err}")
     js(page_main, "scrollTo(0, 0)")
     QTest.qWait(100)
     r6 = ref_in("Under", 'button "Press 6"')
-    done, err = J(flux.click(tf, r6, voice="lilac"))
+    done, err = J(flux.click(tf, r6))
     check("a covered frame: refused, nothing clicked, the answer naming what covers it",
           done is None and err and "whose element is covered" in err and "Overlay" in err
           and clicked(6) == "Press 6|undefined", f"{err}")
-    done, err = J(flux.click(tf, x=755, y=355, voice="lilac"))
+    done, err = J(flux.click(tf, x=755, y=355))
     check("a point over the kept site's frame: refused with the kept words",
           done is None and err == protocol.kept("kept.localhost"), f"{err}")
     js(f1, "window.__before = 1; location.reload()")
     wait(lambda: js(f1, "String(window.__before)") == "undefined"
          and js(f1, "document.readyState") == "complete", 5)
-    done, err = J(flux.click(tf, r1, voice="lilac"))
+    done, err = J(flux.click(tf, r1))
     check("a frame's refs go with its document (it reloaded, and is named anew)",
           done is None and err and f"no frame {r1.split(':')[0]} in this page now" in err,
           f"{err}")
@@ -753,7 +752,7 @@ def test_in_process() -> None:
     pj = tab_of(tj).page
 
     def run(code, **kw):
-        return J(flux.js(tj, code, voice="lilac", **kw), 40)
+        return J(flux.js(tj, code, **kw), 40)
 
     done, err = run("document.title")
     check("js: one line, an expression: its value", done is not None
@@ -848,7 +847,7 @@ return out;"""
     check("js: a promise past its time: pending, answered at once after it",
           done is not None and done.get("pending") and done["result"] is None and took < 3,
           f"{err} {took:.1f} s")
-    J(flux.js(tj, "window.HTMLInputElement = function () {}; return 1", voice="lilac"))
+    J(flux.js(tj, "window.HTMLInputElement = function () {}; return 1"))
     # Its own call may answer anything (its last statement is no answer Qt
     # can pass); what matters is the next one.
     hoisted, err_h = run("}); function Object() { return {}; } (() => {")
@@ -945,7 +944,7 @@ return out;"""
     hands = {h.name: h for h in browser_hands()}
 
     def call(name, args, timeout=120.0):
-        return J(hands[name].run(Call(f"c-{name}", name, args, timeout, voice="lilac")), timeout)
+        return J(hands[name].run(Call(f"c-{name}", name, args, timeout)), timeout)
 
     load("/article", tab=tt)
     blocks, err = call("browser_read", {"tab": tt, "what": "article"})

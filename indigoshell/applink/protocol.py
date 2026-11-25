@@ -26,11 +26,12 @@ App -> shell, any time after the announce
                 listens: then wherever the window manager puts it.
 
 Shell -> app
-    attached    {"type": "attached", "voices": {id: name}}
+    attached    {"type": "attached", "agent": {"name", "color"}}
                 The answer to the announce: the shell has the window. It
                 shows the window's bar while the window has focus, so the
-                app draws none of its own. `voices`: the agent's voices'
-                names, for an app's labels (core/voices.py).
+                app draws none of its own. `agent`: the agent's name and
+                colour, as the shell knows them (core/persona.py: the
+                hub's welcome names her), for an app's labels and marks.
     restarting  {"type": "restarting"}
                 Sent as the shell stops for a reload: it will be back in
                 a moment (a second or two), so an app can wait longer than

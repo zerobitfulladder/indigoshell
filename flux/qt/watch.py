@@ -18,18 +18,18 @@ agent's session there, or goes on with it (`begin`). While it drives:
   widget, not through the window). Modifier keys alone are swallowed
   and take nothing over: the window manager's own chords (Super+N)
   begin with one.
-- An OVERLAY sits over the page: a frame FRAME_PX wide in the voice's
-  colour along the page's edges, and a mark at its bottom right, the
-  voice's colour on the bar's background: "Lilac is driving · press a
-  key to take over". Plain widgets of the window, over the stack of
-  views, never in the page: a screenshot grabs the view alone, so it
+- An OVERLAY sits over the page: a frame FRAME_PX wide in the agent's
+  colour (indigoshell/core/persona.py) along the page's edges, and a
+  mark at its bottom right, her colour on the bar's background: "Lilac
+  is driving · press a key to take over". Plain widgets of the window,
+  over the stack of views, never in the page: a screenshot grabs the view alone, so it
   is in none (reader.grab). A click on the locked page anywhere but
   the mark flashes the mark (its colours swapped for FLASH_MS).
 - The page shows the lock in the shell's own look (effects.py, the
   user's design): it starts with the shell's panel glitch over the page;
-  while it holds, Indigo's tint, the panels' raster and scan, and the
-  glitch again now and then; it ends with the glitch played out over the
-  live page (`_show` decides, for every way a lock starts or ends). An
+  while it holds, the shell's violet tint, the panels' raster and scan,
+  and the glitch again now and then; it ends with the glitch played
+  out over the live page (`_show` decides, for every way a lock starts or ends). An
   action waits for a glitch in to end (`hold_s`), and no repeat starts
   while one is in flight, so nothing it changes pops in from under the
   glitch's still image. Made per window at its first lock; where it
@@ -68,8 +68,8 @@ user hands the tab back (`resume`: the shell's actions for the window,
 their last key press, click or wheel turn in that tab (the clock starts
 again with each).
 
-The shell is told through the window's state (protocol `agent`: voice
-and driving or paused, per tab), and the top bar marks the tab.
+The shell is told through the window's state (protocol `agent`:
+driving or paused, per tab), and the top bar marks the tab.
 
 The Watch never raises, focuses or moves a window, and never grabs
 anything: the lock is Qt's event delivery inside this process.
@@ -84,6 +84,7 @@ from PySide6.QtCore import QEvent, QEventLoop, QObject, QPoint, Qt, QTimer
 from PySide6.QtWidgets import QLabel, QWidget
 
 from flux import protocol
+from indigoshell.core import persona
 
 from . import act, effects, keys
 from .window import BACKGROUND, FONT
@@ -140,9 +141,8 @@ class Held:
 class Session:
     """The agent's hold on one tab: driving it, or paused by the user."""
 
-    def __init__(self, watch: "Watch", tab_id: int, voice: str) -> None:
+    def __init__(self, watch: "Watch", tab_id: int) -> None:
         self.tab = tab_id
-        self.voice = voice
         self.state = "driving"
         self.busy: set = set()          # the requests running on the tab
         self.acting: set = set()        # ... the acting ones among them (begin)
@@ -181,7 +181,7 @@ class Overlay(QObject):
         self.mark = QLabel(window)
         self.mark.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.mark.hide()
-        self.color = protocol.voice_color(None)
+        self.color = persona.color()
         self.fx = None                  # the window's page effects, kept over the page with it
         self.flashing = False
         self._flash = QTimer(self)
@@ -198,9 +198,10 @@ class Overlay(QObject):
             self.place()
         return False
 
-    def show_for(self, voice: str) -> None:
-        self.color = protocol.voice_color(voice)
-        self.mark.setText(MARK.format(name=protocol.voice_name(voice)))
+    def show(self) -> None:
+        """Over the page, in the agent's name and colour as they are now."""
+        self.color = persona.color()
+        self.mark.setText(MARK.format(name=persona.name()))
         self._paint(self.flashing)
         self.place()
         for w in self.widgets():
@@ -275,17 +276,17 @@ class Watch(QObject):
         return s.dialog if s is not None else None
 
     def about(self, tab_id: int) -> dict:
-        """TAB's agent, voice and dialog (protocol.py)."""
+        """TAB's agent and dialog (protocol.py)."""
         s = self.sessions.get(tab_id)
         if s is None:
-            return {"agent": None, "voice": None, "dialog": None}
-        return {"agent": s.state, "voice": s.voice,
+            return {"agent": None, "dialog": None}
+        return {"agent": s.state,
                 "dialog": s.dialog.info() if s.dialog is not None else None}
 
     def state_of(self, tab_id: int) -> dict | None:
         """The tab's entry in the shell's state."""
         s = self.sessions.get(tab_id)
-        return protocol.agent(s.voice, s.state) if s is not None else None
+        return protocol.agent(s.state) if s is not None else None
 
     def notes(self, tab_id: int) -> list[str]:
         """What happened on the tab since its notes were last taken."""
@@ -311,16 +312,13 @@ class Watch(QObject):
             window.refresh()
 
     # ── sessions ────────────────────────────────────────────────────────
-    def begin(self, job, window, tab, voice: str | None) -> None:
-        """An acting request on `tab`: the session starts, or goes on (in
-        the voice of the request, when it names one). control.py has
-        refused a paused tab already."""
+    def begin(self, job, window, tab) -> None:
+        """An acting request on `tab`: the session starts, or goes on.
+        control.py has refused a paused tab already."""
         s = self.sessions.get(tab.id)
         if s is None:
-            s = self.sessions[tab.id] = Session(self, tab.id, protocol.voice_id(voice))
-            log.info("agent: %s drives tab %d", protocol.voice_name(s.voice), tab.id)
-        elif voice is not None and protocol.voice_id(voice) != s.voice:
-            s.voice = protocol.voice_id(voice)
+            s = self.sessions[tab.id] = Session(self, tab.id)
+            log.info("agent: %s drives tab %d", persona.name(), tab.id)
         if job not in s.acting:
             s.acting.add(job)
             job.cleanups.append(partial(self._acted, tab.id, job))
@@ -421,7 +419,7 @@ class Watch(QObject):
         self._unguard(s)
         self._let_go(s, to_user=True)
         log.info("the user took over tab %d (%s); %s is paused there", tab.id, why,
-                 protocol.voice_name(s.voice))
+                 persona.name())
         self._refresh(window)
 
     def pause_over(self, tab_id: int) -> None:
@@ -441,7 +439,7 @@ class Watch(QObject):
             return False
         del self.sessions[tab.id]
         s.stop()
-        log.info("the user handed tab %d back to %s", tab.id, protocol.voice_name(s.voice))
+        log.info("the user handed tab %d back to %s", tab.id, persona.name())
         self._refresh(self._where(tab.id)[0])
         return True
 
@@ -505,7 +503,7 @@ class Watch(QObject):
         if overlay is None:
             overlay = self.overlays[window.id] = Overlay(window)
         overlay.fx = self._fx(window)
-        overlay.show_for(s.voice)       # places the effects too
+        overlay.show()                  # places the effects too
         self._effects(window, tab, tab)
 
     def _fx(self, window) -> "effects.PageFx | None":

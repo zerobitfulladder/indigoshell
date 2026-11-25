@@ -75,11 +75,9 @@ class Hands:
             log.warning("call %s is already running; the hub sent it twice",
                         call_id)
             return
-        voice = call.get("voice")
         task = asyncio.get_running_loop().create_task(self._run(
             Call(call_id, tool, args if isinstance(args, dict) else {},
-                 timeout, self.asker,
-                 voice=voice if isinstance(voice, str) and voice else None),
+                 timeout, self.asker),
             reply))
         self._calls[call_id] = task
         task.add_done_callback(lambda _t: self._calls.pop(call_id, None))

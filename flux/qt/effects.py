@@ -7,11 +7,13 @@ lock, watch.py), the page says so, in the shell's own look:
   shell's indigoshell/effects.py ScanLock, played with config_default's
   PANEL_SPAWN): bands of the page snap in out of order, torn sideways,
   their colours split.
-- While it holds: a faint tint in Indigo's colour, whichever voice acts
-  (the user's choice), the panels' raster over it, and the panels' scan
-  (widgets/holo.py): every few seconds a glowing band runs down the page,
-  tearing the rows under it. And the glitch again at random intervals
-  (REPEAT_S), never while one of the agent's actions is in flight there.
+- While it holds: a faint tint in the shell's violet
+  (theme.VIOLET_BRIGHT; the user's choice, under the frame and mark in
+  the agent's colour), the panels' raster over it, and the panels' scan
+  (widgets/holo.py): every few seconds a glowing band runs down the
+  page, tearing the rows under it. And the glitch again at random
+  intervals (REPEAT_S), never while one of the agent's actions is in
+  flight there.
 - The lock ends with the glitch played backwards over the live page; a
   glitch still playing in reverses from where it is (a take-over). A
   locked tab that closes or stops being shown simply vanishes.
@@ -114,7 +116,7 @@ BELOW = 2.5
 SCAN_BREATH_S = 2.0         # a page too tall for SCAN_EVERY_S: this long between passes
 # agent/ui/style.py: a plate is its base pulled PLATE_TINT toward its colour
 PLATE_TINT = 0.12
-TINT = "#b967ff"            # Indigo's colour (theme.VIOLET_BRIGHT), whoever drives
+TINT = "#b967ff"            # the shell's violet (theme.VIOLET_BRIGHT)
 RASTER = "#05d9e8"          # theme.POPUP_RASTER: the panels' raster
 BACKGROUND = "#050310"      # theme.BAR_BG, Flux's window background
 

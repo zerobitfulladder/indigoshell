@@ -46,9 +46,6 @@ class Call:
     args: dict
     timeout: float                  # what the hub gives the whole call
     asker: Asker | None = None
-    # Who is acting: the voice the hub's call names ("lilac", "indigo"),
-    # for marks in its colour; None when the hub doesn't say.
-    voice: str | None = None
     started: float = field(default_factory=time.monotonic)
 
     def left(self) -> float:

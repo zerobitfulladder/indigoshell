@@ -13,8 +13,8 @@ round a box's own outline: a tab behind that is `busy` runs a comet
 round its box; the current one's `progress` lights its outline round
 from the bottom-left corner, the rest of it dimmed. While the agent
 drives a tab (`agent`), its number, its corner brackets and its box's
-outline are drawn in the voice's colour; while the user has taken it
-over, in that colour dimmed a third of the way to the bar's background.
+outline are drawn in her colour (core/persona.py); while the user has
+taken it over, in that colour dimmed a third of the way to the bar's background.
 
 The mouse (the bar's window holds the press: Widget.press). A left or
 right press on a tab other than the current one sends `select`; a middle

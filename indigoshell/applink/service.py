@@ -102,7 +102,7 @@ from dataclasses import dataclass
 
 import xcffib.xproto as xp
 
-from ..core.voices import voice_names
+from ..core import persona
 from ..window import Placement, key_event
 from . import bar as B
 from . import protocol
@@ -299,7 +299,7 @@ class Link:
         self.window = AppWindow(self, wid, msg)
         log.info("%s window %s (0x%x) connected", app, window_id, wid)
         self.service.added(self.window)
-        self.send(protocol.message(protocol.ATTACHED, voices=voice_names()))
+        self.send(protocol.message(protocol.ATTACHED, agent=persona.look()))
 
     @property
     def pid(self) -> int | None:
