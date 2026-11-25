@@ -29,8 +29,8 @@ as on the hub.
      through browser_hands(profile="pi", where=..., unattended=True):
      tabs (no windows, then no X window); open; read (outline refs); act
      (click, type, fill) and the page changing; a screenshot drawn (the
-     page's colour in the PNG), its window saying its own state with no
-     shell; look (the screenshot, no image); a dialog outside the
+     page's colour in the PNG), its window showing no line of its own with
+     no shell (the page alone); look (the screenshot, no image); a dialog outside the
      agent's session answered at once (the page not stuck); one inside
      it held for browser_dialog; a permission request denied; borrow and
      return (the agent's window shown at once: no shell to wait for);
@@ -479,7 +479,7 @@ def test_unattended() -> None:
                                 "document.getElementById('name').value, "
                                 "document.getElementById('city').value]"})
         await call("browser_release", {"tab": tab})
-        # Past the link's fallback time: with no shell, the window says its state.
+        # Past the link's fallback time: no shell, and still no line (unattended).
         await asyncio.sleep(FALLBACK_MS / 1000 + 1.0)
         out["shot"] = await call("browser_screenshot", {"tab": tab})
         out["look"] = await call("browser_look", {"screenshot": True, "image": True})
@@ -603,8 +603,9 @@ def test_unattended() -> None:
     check("its log is browser-pi.log: started unattended, with profile pi",
           "profile pi, unattended, no window" in log and "permission denied (unattended" in log
           and "answered at once (unattended" in log, log[:200])
-    check("... no shell: the agent's window shown at once, each window saying its own state",
-          "no shell listens" in log and "the window shows its own state" in log
+    check("... no shell: the agent's window shown at once, and no line of its own (the page alone)",
+          "no shell listens" in log and "no shell shows the window's state" in log
+          and "unattended: the window shows no line of its own" in log
           and "connected to the shell" not in log)
 
 

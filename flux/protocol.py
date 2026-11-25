@@ -220,8 +220,8 @@ focus or changing the workspace; `open` and `tabs` work on any.
 **Unattended.** `--unattended` (flux/qt/__main__.py) runs a Flux nobody
 attends: the agent's own on a machine that lends it to the hub, shown
 on a screen nobody watches (a bare compositor, cage, with no shell:
-no top bar, so each window says its state in its own line, and the
-agent's own window shows where the compositor puts it). Requests work
+no top bar, and no line of the window's own either, so the page stands
+alone; the agent's own window shows where the compositor puts it). Requests work
 as on the user's screen; what would ask a person is answered at once: a
 permission request denied, a page's dialog outside the agent's session
 dismissed (an alert accepted; a confirm, a prompt and the question

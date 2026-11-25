@@ -9,7 +9,9 @@
 While a shell has the window (link.py), the window shows nothing of its
 own above the page: the top bar does it while the window has focus.
 When none has it (none for a few seconds), a plain line at the window's
-top says the same in text: the fallback line, `FallbackLine`.
+top says the same in text: the fallback line, `FallbackLine`. Not in an
+unattended browser: there the page stands alone (lilac's screen, the
+user's call).
 
 Main windows hold any number of tabs. A `single` window holds one page
 and takes no new tabs: the small floating window a page opens for a
@@ -165,7 +167,8 @@ anything else.
 Unattended (the browser's `unattended`, protocol.py "Unattended"):
 nobody attends the window. Its pages are muted, and what would ask a
 person is answered here at once: a permission request denied, no
-address dialog.
+address dialog. It shows no fallback line: with no shell the page
+stands alone.
 """
 
 import html
@@ -1459,10 +1462,13 @@ class Window(QWidget):
 
     def _place_line(self, *_) -> None:
         """The fallback line shown when no shell shows the window's state,
-        and never over a fullscreen page. Its coming and going moves the
+        never over a fullscreen page, and never in an unattended browser. Its coming and going moves the
         page, which is why the link waits a few seconds before it says
         no shell has the window."""
-        show = self.link.fallback and self.fullscreen_tab is None
+        if self.link.fallback and self.browser.unattended:
+            log.info("unattended: the window shows no line of its own")
+        show = (self.link.fallback and self.fullscreen_tab is None
+                and not self.browser.unattended)
         if show == self.line.isHidden():
             self.line.setVisible(show)
         self.refresh()

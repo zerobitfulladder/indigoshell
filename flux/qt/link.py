@@ -94,7 +94,7 @@ class ShellLink(QObject):
         self._active_sent: bool | None = None   # ... as this connection last said it
         self.app_chords = False             # the shell takes no keys: we catch our chords
         self.attached = False
-        self.fallback = False               # the window shows its own state
+        self.fallback = False               # no shell shows the window's state
         self.restarting = False             # the shell said it will be back
         self.sent_bars = 0                  # for the tests: bars actually written
         self._started = self._closing = False
@@ -307,6 +307,6 @@ class ShellLink(QObject):
     def _set_fallback(self, value: bool) -> None:
         if value != self.fallback:
             self.fallback = value
-            log.info("%s", "the window shows its own state (no shell shows it)" if value
+            log.info("%s", "no shell shows the window's state" if value
                      else "the shell shows the window's state")
             self.fallback_changed.emit(value)
