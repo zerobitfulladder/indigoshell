@@ -12,7 +12,11 @@ the two kept at each pixel: it lights the dark round the marks and
 between them, over a black ground too, and bleeds BLOOM.pad px past the
 icon's square on each side, but never brightens a mark past the tint.
 Added instead, it would push a light tint to white where the marks are
-(the agent's lilac reads as white then, not as hers).
+(the agent's lilac reads as white then, not as hers). Last, every pixel
+is put on the tint's own line (`_pure`): its colour the tint times one
+brightness, no channel past the tint's (the user's rule: the icon only
+ever cyan, or only her colour, never towards white), which also takes
+out what 8-bit rounding and the blur leave off it.
 
 Turned round only when the icon is drawn for a light ground. Favicons
 mostly are (a browser's light tab strip), but a page in the dark scheme
@@ -225,4 +229,24 @@ def _finish(px: bytearray, turned: bool, color: str, bloom: Bloom) -> Glow:
                    BlendMode=skia.BlendMode.kLighten)
     p.setAlphaf(bloom.gain)
     c.drawImage(light_img, pad, pad, skia.SamplingOptions(), p)
-    return Glow(surface.makeImageSnapshot().makeRasterImage(), pad)
+    return Glow(_pure(surface.makeImageSnapshot(), tint), pad)
+
+
+def _pure(image: skia.Image, tint: list[int]) -> skia.Image:
+    """`image` with each pixel the tint times one brightness: its
+    premultiplied colour's nearest point on the tint's line, at most the
+    tint at that pixel's alpha."""
+    side = image.width()
+    info = skia.ImageInfo.Make(side, side, skia.kRGBA_8888_ColorType, skia.kPremul_AlphaType)
+    px = bytearray(side * side * 4)
+    image.readPixels(info, px, side * 4)
+    tt = sum(t * t for t in tint) or 1
+    for i in range(0, len(px), 4):
+        a = px[i + 3]
+        if not a:
+            continue
+        k = min(a / 255, (px[i] * tint[0] + px[i + 1] * tint[1] + px[i + 2] * tint[2]) / tt)
+        for j in range(3):
+            px[i + j] = round(k * tint[j])
+    return skia.Image.frombytes(px, (side, side), skia.kRGBA_8888_ColorType,
+                                skia.kPremul_AlphaType)

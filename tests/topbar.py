@@ -702,17 +702,25 @@ def icon_png(kind: str) -> bytes:
     """A 32 x 32 test icon as an app sends it: "marks" a dark ring on
     nothing (dark marks with a hole: turned round, they glow), "tile" a
     white tile with a dark bar across it (a light ground: it goes black,
-    the bar glows)."""
+    the bar glows), "dark" its opposite (white on black), "colour" four
+    saturated quadrants."""
     import skia
     s = skia.Surface(32, 32)
     c = s.getCanvas()
     c.clear(skia.ColorTRANSPARENT)
     p = skia.Paint(AntiAlias=True)
-    if kind == "tile":
-        p.setColor(skia.ColorWHITE)
+    if kind in ("tile", "dark"):
+        ground, bar = ((skia.ColorWHITE, skia.ColorSetRGB(20, 20, 20)) if kind == "tile"
+                       else (skia.ColorBLACK, skia.ColorWHITE))
+        p.setColor(ground)
         c.drawRect(skia.Rect.MakeWH(32, 32), p)
-        p.setColor(skia.ColorSetRGB(20, 20, 20))
+        p.setColor(bar)
         c.drawRect(skia.Rect.MakeXYWH(4, 12, 24, 8), p)
+    elif kind == "colour":
+        for (x, y), rgb in zip(((0, 0), (16, 0), (0, 16), (16, 16)),
+                               ((230, 30, 40), (40, 200, 60), (30, 90, 240), (250, 200, 20))):
+            p.setColor(skia.ColorSetRGB(*rgb))
+            c.drawCircle(x + 8, y + 8, 7, p)
     else:
         p.setColor(skia.ColorSetRGB(24, 24, 28))
         p.setStyle(skia.Paint.kStroke_Style)
@@ -1104,6 +1112,28 @@ def test_content(scratch: Path) -> None:
           "made none; the image replaced under its id made one per colour shown (3); the same "
           "asked again is the same image", again == 0 and replaced == 3 and same,
           f"made {again} on repaints, {replaced} after the replacement")
+    def drift(g, color):
+        """How far a finished glow strays from its tint, premultiplied:
+        the worst channel off the nearest tint x brightness, and past the
+        tint at its alpha."""
+        import numpy as np
+        px = g.image.toarray(colorType=skia.kRGBA_8888_ColorType,
+                             alphaType=skia.kPremul_AlphaType).astype(float).reshape(-1, 4)
+        tint = np.array(hex_rgb(color), dtype=float)
+        k = px[:, :3] @ tint / (tint @ tint)
+        off = np.abs(px[:, :3] - k[:, None] * tint).max()
+        over = (px[:, :3] - tint[None, :] * px[:, 3:4] / 255).max()
+        return round(float(off), 2), round(float(over), 2)
+
+    pure = {(kind, name): drift(glow.of_image(glow.decode(icon_png(kind)), color), color)
+            for kind in ("dark", "tile", "colour")
+            for name, color in (("cyan", SPOT_FG), ("lilac", persona.color()))}
+    pure[("letter", "cyan")] = drift(glow.of_letter("w", SPOT_FG), SPOT_FG)
+    check("every pixel of a glow (bloom included) is the tint times one brightness, never past "
+          "the tint: white on black, black on white and a colourful icon, in cyan and in "
+          "Lilac's colour, and a letter (premultiplied, within a rounding step)",
+          all(off <= 1.0 and over <= 1.0 for off, over in pure.values()),
+          f"(off the line, past the tint) {pure}")
     reach = glow.BLOOM.pad + LIFT
     inside = all(tl.rect.contains(skia.Rect.MakeXYWH(
         t["spot_x"] + (t["spot_w"] - glow.ICON_PX) / 2 - glow.BLOOM.pad,
