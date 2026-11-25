@@ -117,8 +117,9 @@ def shell_side(path: str) -> None:
     from indigoshell import theme
     from indigoshell.applink.service import AppService
     from flux import protocol
-    from indigoshell.applink.flux import (NUMBER_CURRENT_FG, TAB_CURRENT_FG, TAB_FG, FluxWindow,
-                                          agent_color)
+    from indigoshell.applink.flux import FluxWindow
+    from indigoshell.applink.kinds.look import (NUMBER_CURRENT_FG, TAB_CURRENT_FG, TAB_FG,
+                                                agent_color)
     from indigoshell.widgets.base import Size
 
     given = json.loads(Path(path).read_text())
@@ -176,7 +177,7 @@ def shell_side(path: str) -> None:
     for name, agents in cases.items():
         j.on_message(state(agents))
         img = paint(j.content, W, H)
-        tabs = j.content.tabs.layout()
+        tabs = j.view.item("tabs").layout()
         row = []
         colours = {"lilac": lilac, "indigo": indigo, "paused": paused_lilac,
                    "strong": TAB_CURRENT_FG, "muted": TAB_FG, "cyan": NUMBER_CURRENT_FG}
@@ -194,7 +195,7 @@ def shell_side(path: str) -> None:
     old = {k: v for k, v in state(cases["driving"]).items() if k != "agent"}
     j.on_message(old)
     out["old_state"] = {"problems": protocol.state_problems(old),
-                        "agents": j.content.tabs.agents}
+                        "agents": j.view.item("tabs").agents}
     bad = state(cases["driving"])
     bad["agent"] = [{"voice": 3, "state": "flying"}]
     out["bad_state_problems"] = protocol.state_problems(bad)

@@ -3,9 +3,10 @@
     .venv/bin/python tests/flux_imports.py
 
   1. every module under flux/ (flux/qt too) imports of the shell only
-     its pure modules: indigoshell.core's naming, paths, log and hands,
-     applink.protocol, fuzzy and services.proc (read from the source,
-     so flux/qt is checked without loading PySide6);
+     its pure modules: indigoshell.core's naming, paths, log, hands and
+     voices, applink.protocol and applink.bar, fuzzy and services.proc
+     (read from the source, so flux/qt is checked without loading
+     PySide6);
   2. Flux's pure modules import with xcffib, skia, dbus_fast, psutil and
      PySide6 blocked (as on a machine with none of them), and load no
      other shell module than those;
@@ -22,13 +23,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 ALLOWED = {
     "indigoshell", "indigoshell.core", "indigoshell.core.naming", "indigoshell.core.paths",
-    "indigoshell.core.log", "indigoshell.core.hands", "indigoshell.applink",
-    "indigoshell.applink.protocol", "indigoshell.fuzzy", "indigoshell.services",
+    "indigoshell.core.log", "indigoshell.core.hands", "indigoshell.core.voices",
+    "indigoshell.applink",
+    "indigoshell.applink.protocol", "indigoshell.applink.bar", "indigoshell.fuzzy",
+    "indigoshell.services",
     "indigoshell.services.proc",
 }
 BLOCKED = ("xcffib", "skia", "dbus_fast", "psutil", "PySide6")
 PURE = ("flux", "flux.protocol", "flux.places", "flux.profiles", "flux.uploads",
-        "flux.desktop", "flux.control", "flux.hands")
+        "flux.desktop", "flux.control", "flux.hands", "flux.bar")
 
 failed = 0
 

@@ -1045,11 +1045,12 @@ def shell_side() -> None:
         j.content.attach(Host())
         j.on_message(state)
         img = paint(j.content, 900, theme.TOP_BAR_HEIGHT)
-        first = j.content.tabs.layout()[0]["x"]
+        first = j.view.item("tabs").layout()[0]["x"]
         lead = img[:, :int(first)]
         out[name] = {"agent": j.agent, "first_tab_x": first,
                      "lilac_before_tabs": int((np.abs(lead - lilac).max(-1) <= 10).sum()),
-                     "owner": j.content.owner.label if j.content.owner else None}
+                     "owner": j.view.item("owner").layout()[0]["text"]
+                     if j.view.item("owner") else None}
     j = FluxWindow(Line(service), 0x400003, protocol.announce(0x400003, False, "lilac"))
     service.place(j, {"type": "place"})
     out["no_display"] = j.link.out[-1] if j.link.out else None

@@ -85,6 +85,9 @@ class TextInput(Widget):
         self.text = ""
         self.caret = 0
         self.selected_all = False
+        # False hides the caret and stops its blinking: a field shown but
+        # not typed into (the top bar's find, stepping through matches).
+        self.caret_shown = True
         self._scroll_x = 0.0
         self._blink_age = 0.0        # seconds since the last edit or move
         self._blink_phase = 0.0
@@ -93,7 +96,7 @@ class TextInput(Widget):
     # ── state ───────────────────────────────────────────────────────────
     @property
     def animation_fps(self) -> int:
-        return BLINK_FPS if self._blink_age < self.blink_for else 0
+        return BLINK_FPS if self.caret_shown and self._blink_age < self.blink_for else 0
 
     def set_text(self, value: str, caret: int | None = None, *,
                  notify: bool = True) -> None:
@@ -255,7 +258,7 @@ class TextInput(Widget):
         elif self.placeholder:
             text.draw(canvas, self.placeholder, left + CARET_W * 3, baseline,
                       self.size, theme.color(self.placeholder_color))
-        if self._caret_on:
+        if self._caret_on and self.caret_shown:
             paint = skia.Paint(AntiAlias=False)
             paint.setColor(theme.color(self.caret_color))
             canvas.drawRect(skia.Rect.MakeXYWH(

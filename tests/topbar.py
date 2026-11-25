@@ -618,27 +618,67 @@ def flux_state(titles, current=0, *, host="127.0.0.1", secure=False, loading=Fal
                           bookmarked=bookmarked, find=find)
 
 
+def app_bar(titles, current=0, *, host="127.0.0.1", secure=False, progress=None,
+            busy=(), bookmarked=False, ids=None, can=("close", "move", "detach")) -> dict:
+    """A bar as an app with tabs and a host sends it (applink/bar.py's
+    builders): the tabs, a box each; the host after its marks."""
+    from indigoshell.applink import bar as B
+    ids = ids or [101 + i for i in range(len(titles))]
+    tabs = [B.tab(n, t, busy=i in busy or (progress is not None and i == current),
+                  progress=progress if i == current else None)
+            for i, (t, n) in enumerate(zip(titles, ids))]
+    spans = ([B.span(icon="bookmark")] if bookmarked else []) + (
+        [] if secure else [B.span(icon="unlocked", color="error")]) + [B.span(host)]
+    return B.bar([B.tabs("tabs", tabs, current=ids[current], can=can)],
+                 [B.text("host", spans=spans)])
+
+
+def host_layout(view) -> dict:
+    """The host item as drawn: its text, where, the marks before it."""
+    pieces = view.item("host").layout()
+    marks = [p for p in pieces if p["icon"]]
+    words = [p for p in pieces if not p["icon"]]
+    w = words[-1] if words else {"text": "", "x": 0.0, "w": 0.0}
+    book = next((p for p in marks if p["text"].startswith("\uf02e")), None)
+    lock = next((p for p in marks if p["text"].startswith("\uf09c")), None)
+    return {"text": w["text"], "x": w["x"], "w": w["w"], "mark_w": lock["w"] if lock else 0.0,
+            "secure": lock is None, "bookmarked": book is not None,
+            "bookmark_x": book["x"] if book else 0.0, "bookmark_w": book["w"] if book else 0.0}
+
+
 # ── 4. Flux's content ───────────────────────────────────────────────────
 
 def test_content(scratch: Path) -> None:
     import types
 
     from indigoshell import theme
-    from indigoshell.applink import flux as flux_mod
-    from indigoshell.applink.flux import (BRACKET_FG, COMET_FPS, FIND_COUNT_FG, FIND_QUERY_FG,
-                                          HOST_FG, INSECURE_FG, LOAD_FG, MOTION_FPS,
-                                          NO_MATCHES_FG, NUMBER_CURRENT_FG, NUMBER_FG, OUTLINE,
-                                          SLOT_GAP, SLOT_MIN, SLOT_W, SWITCH_S, TAB_CURRENT_FG, TAB_FG,
-                                          TAB_HOVER_FG, WIPE_S, FluxWindow, fit_slots)
-    from indigoshell.applink.service import AppService
-    from flux import protocol
+    from indigoshell.applink.kinds import tabs as tabs_mod
+    from indigoshell.applink.kinds.input import InputBox
+    from indigoshell.applink.kinds.look import (BRACKET_FG, COMET_FPS, COMET_S, LOAD_FG,
+                                                MOTION_FPS, NUMBER_CURRENT_FG, NUMBER_FG,
+                                                OUTLINE, SLIDE_S, SLOT_GAP, SLOT_MIN, SLOT_W,
+                                                SWITCH_S, TAB_CURRENT_FG, TAB_FG, TAB_HOVER_FG,
+                                                WIPE_S, ICONS, ROLE_COLORS)
+    from indigoshell.applink.kinds.tabs import fit_slots
+    from indigoshell.applink.view import BarView
 
-    section("4. Flux's content for the top bar, painted off screen: a box per tab")
-    service = AppService({"flux": FluxWindow}, path="/nonexistent")
+    HOST_FG, INSECURE_FG = theme.FG, theme.ERROR
+    FIND_QUERY_FG, FIND_COUNT_FG, NO_MATCHES_FG = theme.FG_STRONG, ROLE_COLORS["info"], theme.ERROR
+    section("4. an app's bar, painted off screen: its tabs, a box each, and its host")
     W, H = 1600, theme.TOP_BAR_HEIGHT
 
+    class App:
+        """An app window's section, as the shell keeps it: a BarView."""
+
+        def __init__(self) -> None:
+            self.events = []
+            self.view = self.content = BarView(emit=self.events.append)
+
+        def on_message(self, bar: dict) -> None:
+            self.view.set_bar(bar)
+
     def flux():
-        j = FluxWindow(Line(service), 0x400001, {"single": False})
+        j = App()
         host = Host()
         j.content.attach(host)
         return j, host
@@ -652,8 +692,8 @@ def test_content(scratch: Path) -> None:
         return img[top:bottom, int(x):int(x) + 1]
 
     j, host = flux()
-    tl = j.content.tabs
-    j.on_message(flux_state(["Alpha", "Beta", "Gamma"]))
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma"]))
+    tl = j.view.item("tabs")
     img = paint(j.content, W, H)
     save(scratch / "content-tabs.png", img)
     tabs = tl.layout()
@@ -685,7 +725,7 @@ def test_content(scratch: Path) -> None:
           and share_of(gap, hex_rgb(theme.BAR_BG), 25) > 0.9
           and count_color(img[H - 3:], OUTLINE, 30) == 0,
           f"edges {edges}, dim red {dim}, top {top_}")
-    h = j.content.host.layout()
+    h = host_layout(j.view)
     mark = count_color(in_rect(img, h["x"] - h["mark_w"], h["mark_w"] - 1, 0, 34), INSECURE_FG)
     hpx = count_color(in_rect(img, h["x"], h["w"], 0, 34), HOST_FG)
     check("the host at the right end, after the open padlock (plain http) in the error colour",
@@ -697,15 +737,15 @@ def test_content(scratch: Path) -> None:
           f"{bright} px")
 
     host.damaged.clear()
-    j.on_message(flux_state(["Alpha", "Beta", "Gamma"]))
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma"]))
     same = list(host.damaged)
-    j.on_message(flux_state(["Alpha", "Beta", "Gamma"], 1))
-    check("the same state again damages nothing; a change does", same == [] and host.damaged,
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma"], 1))
+    check("the same bar again damages nothing; a change does", same == [] and host.damaged,
           f"{len(same)} then {len(host.damaged)} damage(s)")
 
     titles = [f"A rather long page title number {i} about nothing in particular"
               for i in range(1, 13)]
-    j.on_message(flux_state(titles, 5))
+    j.on_message(app_bar(titles, 5))
     img = paint(j.content, 900, H)
     save(scratch / "content-many.png", img)
     tabs = tl.layout()
@@ -738,47 +778,63 @@ def test_content(scratch: Path) -> None:
           and count == (1600 + g) // (SLOT_MIN + g) and fits[3][0] == 0
           and fits[4][0] + fits[4][1] == 30 and fits[5] == (1, 1, 50), f"{fits}")
 
-    j.on_message(flux_state(["Alpha"], secure=True, host="example.org", bookmarked=True))
+    j.on_message(app_bar(["Alpha"], secure=True, host="example.org", bookmarked=True))
     img = paint(j.content, W, H)
-    h = j.content.host.layout()
+    h = host_layout(j.view)
     glyph = count_color(in_rect(img, h["bookmark_x"], h["bookmark_w"] - 1, 0, 34), HOST_FG)
     check("a bookmarked page over https: the bookmark glyph before the host, no padlock",
           h["bookmarked"] and h["bookmark_w"] > 0 and glyph > 15 and h["mark_w"] == 0
           and h["text"] == "example.org", f"glyph px {glyph}")
     save(scratch / "content-bookmarked.png", img)
 
-    def find_line(f):
-        j.on_message(flux_state(["Alpha", "Beta"], find=f))
-        img_ = paint(j.content, W, H)
-        return img_, {p["role"]: p for p in tl.layout()}
+    box = InputBox()
+    box.show({"icon": "search", "placeholder": "find"})
 
-    img, parts = find_line(protocol.find("cats", 3, 12, True))
+    def find_line(query, count, typing=True, color=FIND_COUNT_FG):
+        j.on_message(app_bar(["Alpha", "Beta"]))
+        box.field.set_text(query, notify=False)
+        box.set_stepping(not typing)
+        box.set_count((count, color) if count else None)
+        j.view.show_box(box)
+        img_ = paint(j.content, W, H)
+        return img_, {p["role"]: p for p in box.layout()}
+
+    img, parts = find_line("cats", "3/12")
     save(scratch / "content-find-typing.png", img)
     q, mark_, count_ = parts.get("query", {}), parts.get("mark", {}), parts.get("count", {})
-    end = count_.get("x", 0) + count_.get("w", 0) + 12
-    check("find while typing: one lit box in the tabs' place, the search mark in the "
-          "bracketed spot, `cats▏` strong, `3/12` small and cyan",
-          mark_.get("text") == flux_mod.SEARCH_MARK and q.get("text") == "cats▏"
+    caret_x = q.get("x", 0) + q.get("w", 0)
+    check("an input open (find, typing): one lit box the section's width in the items' place, "
+          "the search mark in the bracketed spot, `cats` strong with the caret after it, `3/12` "
+          "small and cyan at the box's right end; the host gone meanwhile",
+          mark_.get("text") == ICONS["search"] and q.get("text") == "cats" and q.get("caret")
           and count_.get("text") == "3/12"
           and count_color(in_rect(img, q["x"], q["w"]), FIND_QUERY_FG) > 20
+          and count_color(in_rect(img, caret_x, 3), FIND_QUERY_FG, 30) > 8
           and count_color(in_rect(img, count_["x"], count_["w"]), FIND_COUNT_FG, 30) > 10
+          and count_["x"] + count_["w"] > W - 20
           and count_color(rows_at(img, 1, 8, 34), OUTLINE, 30) >= 24
-          and count_color(rows_at(img, end - 1, 16, 34), OUTLINE, 30) >= 15
-          and count_color(img[8:34, int(end) + 4:], OUTLINE, 30) == 0,
+          and count_color(rows_at(img, W - 2, 16, 34), OUTLINE, 30) >= 15
+          and j.view.children() == (box,),
           f"{[p['text'] for p in parts.values()]}")
-    img, parts = find_line(protocol.find("cats", 4, 12, False))
-    check("find while stepping: no caret", parts.get("query", {}).get("text") == "cats"
+    img, parts = find_line("cats", "4/12", typing=False)
+    q = parts.get("query", {})
+    check("stepping: the text stays, no caret", q.get("text") == "cats" and not q.get("caret")
+          and count_color(in_rect(img, q["x"] + q["w"] + 1, 3), FIND_QUERY_FG, 30) == 0
           and parts.get("count", {}).get("text") == "4/12")
-    img, parts = find_line(protocol.find("zzz", 0, 0, True))
+    img, parts = find_line("zzz", "no matches", color=NO_MATCHES_FG)
     save(scratch / "content-no-matches.png", img)
     nm = parts.get("count", {})
-    check("no matches: said in the error colour", nm.get("text") == protocol.NO_MATCHES
+    check("no matches: said in the error colour", nm.get("text") == "no matches"
           and count_color(in_rect(img, nm["x"], nm["w"]), NO_MATCHES_FG) > 20,
           f"{nm.get('text')!r}")
-    img, parts = find_line(protocol.find("cats", None, None, True))
-    check("before the page has counted: no count", "count" not in parts)
+    img, parts = find_line("cats", None)
+    check("before the app has counted: no count", "count" not in parts)
+    j.view.show_box(None)
+    img = paint(j.content, W, H)
+    check("closed: the items back as they were", j.view.children()[0] is tl
+          and count_color(img, TAB_CURRENT_FG) > 20)
 
-    j.on_message(flux_state(["Alpha", "Beta"], loading=True, progress=40))
+    j.on_message(app_bar(["Alpha", "Beta"], progress=40))
     img = paint(j.content, W, H)
     save(scratch / "content-loading.png", img)
     x0, w0 = tl.layout()[0]["slot_x"], tl.layout()[0]["slot_w"]
@@ -786,40 +842,37 @@ def test_content(scratch: Path) -> None:
     right = count_color(rows_at(img, x0 + w0 - 1, 16, 34), LOAD_FG, 30)
     check("the current tab loading at 40%: its outline lit round from the bottom-left corner "
           "(its left edge bright), not yet down the right; no line of its own",
-          left >= 24 and right == 0 and tl.progress == 40 and j.content.progress == 40,
+          left >= 24 and right == 0 and tl.progress == 40,
           f"left edge {left}, right edge {right}")
-    j.on_message(flux_state(["Alpha", "Beta"], loading=False, progress=100))
+    j.on_message(app_bar(["Alpha", "Beta"]))
     img = paint(j.content, W, H)
     check("done: nothing bright left", count_color(img, LOAD_FG, 30) == 0)
 
     # The rule's comet under a tab behind that loads, at a moment of its run.
-    state = flux_state(["Alpha", "Beta"])
-    state["tabs"][1]["loading"] = True
-    j.on_message(state)
-    real = flux_mod.time
-    flux_mod.time = types.SimpleNamespace(monotonic=lambda: 1000 * flux_mod.COMET_S + 0.5
-                                          * flux_mod.COMET_S)
+    j.on_message(app_bar(["Alpha", "Beta"], busy=(1,)))
+    real = tabs_mod.time
+    tabs_mod.time = types.SimpleNamespace(monotonic=lambda: 1000 * COMET_S + 0.5 * COMET_S)
     try:
         img = paint(j.content, W, H)
     finally:
-        flux_mod.time = real
+        tabs_mod.time = real
     save(scratch / "content-comet.png", img)
     x1, w1 = tl.layout()[1]["slot_x"], tl.layout()[1]["slot_w"]
     comet = count_color(img[:, int(x1):int(x1 + w1)], LOAD_FG, 50)
     elsewhere = count_color(img[:, :int(x1) - 4], LOAD_FG, 50)
-    check("a tab behind loading: a comet going round its own box, and only there; the bar's "
-          "clock asked for it (COMET_FPS) only while it loads",
+    check("a tab behind busy: a comet going round its own box, and only there; the bar's "
+          "clock asked for it (COMET_FPS) only while it is busy",
           comet > 20 and elsewhere == 0 and tl.animation_fps == COMET_FPS,
           f"under it {comet}, elsewhere {elsewhere}")
-    j.on_message(flux_state(["Alpha", "Beta"]))
+    j.on_message(app_bar(["Alpha", "Beta"]))
     paint(j.content, W, H)
     idle = tl.animation_fps
 
     # Motion: a switch slides the raised part; a close wipes the tab out.
     import time as time_
-    j.on_message(flux_state(["Alpha", "Beta", "Gamma"], 0))
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma"], 0))
     paint(j.content, W, H)
-    j.on_message(flux_state(["Alpha", "Beta", "Gamma"], 2))
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma"], 2))
     due = tl.animation_fps
     paint(j.content, W, H, settle=False)
     start = tl._front.at(time_.monotonic())
@@ -830,20 +883,20 @@ def test_content(scratch: Path) -> None:
           due == moving == MOTION_FPS and start < 50 and later == 2 * tl.pitch and idle == 0,
           f"due {due}, moving {moving}, from {start:.0f} to {later:.0f}, idle {idle}")
     paint(j.content, W, H)
-    j.on_message(flux_state(["Alpha", "Gamma"], 0, ids=[101, 103]))
+    j.on_message(app_bar(["Alpha", "Gamma"], 0, ids=[101, 103]))
     paint(j.content, W, H, settle=False)
     leaving = [(i, t) for _s, i, t, _x in tl._leaving]
     gamma = tl._glides[103]
     now = time_.monotonic()
     held = gamma.at(now + WIPE_S * 0.5)
-    after = gamma.at(now + WIPE_S + flux_mod.SLIDE_S)
+    after = gamma.at(now + WIPE_S + SLIDE_S)
     check("a tab closed: it wipes out from its place (WIPE_S), and only then the ones after it "
           "slide over to close the gap", leaving == [(1, "Beta")] and held == 2 * tl.pitch
           and after == tl.pitch and tl.animation_fps == MOTION_FPS,
           f"leaving {leaving}, Gamma at {held:.0f} then {after:.0f}")
     paint(j.content, W, H)
 
-    j.on_message(flux_state(["Alpha", "Beta", "Gamma"], 0))
+    j.on_message(app_bar(["Alpha", "Beta", "Gamma"], 0))
     paint(j.content, W, H)
     tl.set_hovered(True)
     tl.motion(tl.layout()[2]["slot_x"] + 60, 20)
@@ -927,19 +980,18 @@ def test_mouse(scratch: Path) -> None:
 
     import skia
 
-    from flux import protocol
     from indigoshell import theme
     from indigoshell.applink.context import AppContext
-    from indigoshell.applink.flux import (DRAG_START_PX, OUTLINE, SLOT_GAP, SLOT_W,
-                                          TAB_CURRENT_FG, TAB_HOVER_FG, TEAR_FG, TEAR_OUT_PX,
-                                          FluxWindow, landing, slot_at)
-    from indigoshell.applink.service import AppService
+    from indigoshell.applink.kinds.look import (OUTLINE, SLOT_GAP, SLOT_W, TAB_CURRENT_FG,
+                                                TAB_HOVER_FG, TEAR_FG)
+    from indigoshell.applink.kinds.tabs import DRAG_START_PX, TEAR_OUT_PX, landing, slot_at
+    from indigoshell.applink.view import BarView
     from indigoshell.widgets.base import Size, Widget
     from indigoshell.widgets.layout import Align, Row
     from indigoshell.window import Window, WindowSpec
 
-    section("4b. the mouse on Flux's tabs: the bar's window driven with synthetic X events "
-            "(no X: the keyboard grabs counted, never made)")
+    section("4b. the mouse on an app's tabs: the bar's window driven with synthetic X events "
+            "(no X: the keyboard grabs counted, never made); events by id")
     W, H = 1600, theme.TOP_BAR_HEIGHT
     pitch = SLOT_W + SLOT_GAP
     check("slots by x: each gap goes with the slot before it, nothing past the last; a dragged "
@@ -951,8 +1003,12 @@ def test_mouse(scratch: Path) -> None:
                                               2 * pitch - 120, 2000, -50)]
           == [0, 0, 1, 1, 2, 2, 0])
 
-    service = AppService({"flux": FluxWindow}, path="/nonexistent")
-    j = FluxWindow(Line(service), 0x400001, {"single": False})
+    import types
+    sent: list = []
+    service = types.SimpleNamespace(focused=None, context=None, follow=lambda cb: None,
+                                    unfollow=lambda cb: None)
+    j = types.SimpleNamespace(view=BarView(emit=sent.append))
+    j.content = j.view
     service.focused = j
     # The bar's own widgets beside it, as they click today: one with a
     # handler, one that reads the position (as the workspaces do), one
@@ -999,15 +1055,12 @@ def test_mouse(scratch: Path) -> None:
         row.arrange(skia.Rect.MakeWH(W, H))
 
     def state(titles, current=0, ids=None):
-        ids = ids or [101 + i for i in range(len(titles))]
-        tabs = [protocol.tab(t, "x.org", False, id_=n) for t, n in zip(titles, ids)]
-        return protocol.state(tabs, current, 100, True, url="https://x.org/", bookmarked=False,
-                              find=None)
+        return app_bar(titles, current, host="x.org", secure=True, ids=ids)
 
+    j.on_message = j.view.set_bar
     j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
     lay_out()
-    tl = j.content.tabs
-    sent = j.link.out
+    tl = j.view.item("tabs")
 
     def send(kind, x, y, detail=0):
         win._on_event(x_event(kind, win.wid, int(x), int(y), detail))
@@ -1031,9 +1084,10 @@ def test_mouse(scratch: Path) -> None:
     send("release", mid(2), 20, 3)
     send("press", mid(0), 20, 1)            # the current one: nothing to switch to
     send("release", mid(0), 20, 1)
-    check("a left and a right click switch to the tab, named by its id (no keyboard taken, open "
+    check("a left and a right click select the tab, named by its id (no keyboard taken, open "
           "panels dismissed as a press on the bar always did); the current one sends nothing",
-          since(n) == [{"type": "tab", "tab": 102}, {"type": "tab", "tab": 103}]
+          since(n) == [{"type": "select", "item": "tabs", "tab": 102},
+                       {"type": "select", "item": "tabs", "tab": 103}]
           and display.grabs == 0 and win.holding is None and len(dismissed) == 3,
           f"{since(n)}")
 
@@ -1045,7 +1099,7 @@ def test_mouse(scratch: Path) -> None:
     send("press", mid(3), 20, 2)
     send("release", mid(3), H + 30, 2)
     check("a middle click closes the tab under it, let go over the same tab; let go over "
-          "another, or off the bar, nothing", since(n) == [{"type": "close", "tab": 104}],
+          "another, or off the bar, nothing", since(n) == [{"type": "close", "item": "tabs", "tab": 104}],
           f"{since(n)}")
 
     n = len(sent)
@@ -1065,12 +1119,13 @@ def test_mouse(scratch: Path) -> None:
     send("release", mid(2) + 10, 22, 1)
     check("a press moved less than the threshold is still a click; past it the tab lifts (the "
           "keyboard taken once, for Escape), follows the pointer, the others close up, a marker "
-          "between two boxes where it lands; let go: `move` to that place, the keyboard given "
-          "back",
+          "between two boxes where it lands; let go: `move` before the tab it lands before, the "
+          "keyboard given back",
           still and lifted is not None and lifted["to"] == 0 and display.grabs == 1
           and over["to"] == 2 and placed == {1: 0, 2: pitch, 3: 2 * pitch}
           and mark > 4 and lift_px > 20
-          and since(n) == [{"type": "move", "tab": 101, "to": 2}] and display.held == 0
+          and since(n) == [{"type": "move", "item": "tabs", "tab": 101, "before": 104}]
+          and display.held == 0
           and win.holding is None, f"{over}, {placed}, marker px {mark}, {since(n)}")
 
     j.on_message(state(["Beta", "Gamma", "Alpha", "Delta"], 2, [102, 103, 101, 104]))
@@ -1085,10 +1140,12 @@ def test_mouse(scratch: Path) -> None:
     send("press", mid(3), 20, 1)
     send("motion", mid(3) + 40, 20)
     send("release", mid(3) + 40, 20, 1)     # dropped where it was
-    check("dragged back to the front: `move` to 0; a press barely moved: only the switch; "
-          "dropped where it was: nothing more", since(n) == [
-              {"type": "move", "tab": 101, "to": 0}, {"type": "tab", "tab": 103},
-              {"type": "tab", "tab": 104}] and display.held == 0, f"{since(n)}")
+    check("dragged back to the front: `move` before the first; a press barely moved: only the "
+          "select; dropped where it was: nothing more", since(n) == [
+              {"type": "move", "item": "tabs", "tab": 101, "before": 102},
+              {"type": "select", "item": "tabs", "tab": 103},
+              {"type": "select", "item": "tabs", "tab": 104}] and display.held == 0,
+          f"{since(n)}")
 
     j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
     lay_out()
@@ -1102,24 +1159,22 @@ def test_mouse(scratch: Path) -> None:
     img = paint_window(win, W, H)
     save(scratch / "mouse-tear-out.png", img)
     cue = count_color(img[:, int(far["x"] + SLOT_W):int(far["x"] + SLOT_W) + 120], TEAR_FG, 30)
-    win.x, win.y = 100, 7
     send("release", mid(1) + 20, H + TEAR_OUT_PX + 5, 1)
-    win.x = win.y = 0
     check("dragged below the bar: within TEAR_OUT_PX still a move; past it the others close up, "
-          "no marker, NEW WINDOW by the lifted tab; let go: `detach`, with where "
-          "(root coordinates, a hint)", near["out"] is False and far["out"] is True
+          "no marker, NEW WINDOW by the lifted tab; let go: `detach` (no coordinates: where it "
+          "goes is the window manager's)", near["out"] is False and far["out"] is True
           and others == [0, pitch, 2 * pitch] and cue > 10
-          and since(n) == [{"type": "tab", "tab": 102},
-                           {"type": "detach", "tab": 102, "x": int(100 + mid(1) + 20),
-                            "y": 7 + H + TEAR_OUT_PX + 5}] and display.held == 0,
-          f"{since(n)}, new-window mark px {cue}")
+          and since(n) == [{"type": "select", "item": "tabs", "tab": 102},
+                           {"type": "detach", "item": "tabs", "tab": 102}]
+          and display.held == 0, f"{since(n)}, new-window mark px {cue}")
 
     n = len(sent)
     send("press", mid(1), 20, 1)
     send("motion", mid(1) + 20, H + 20)
     send("release", mid(1) + 20, H + 20, 1)
     check("let go between the bar and the tear-out line: a move (here, to where it was: "
-          "nothing)", since(n) == [{"type": "tab", "tab": 102}] and display.held == 0)
+          "nothing)", since(n) == [{"type": "select", "item": "tabs", "tab": 102}]
+          and display.held == 0)
 
     j.on_message(state(["Solo"]))
     lay_out()
@@ -1157,7 +1212,8 @@ def test_mouse(scratch: Path) -> None:
     send("release", mid(1) + 10, 20, 1)
     display.refuse = False
     check("the keyboard refused: the drag works without Escape, nothing to give back",
-          since(n) == [{"type": "move", "tab": 101, "to": 1}] and display.ungrabs == display.grabs)
+          since(n) == [{"type": "move", "item": "tabs", "tab": 101, "before": 103}]
+          and display.ungrabs == display.grabs)
 
     # Every way out of a hold gives the keyboard back.
     j.on_message(state(["Alpha", "Beta", "Gamma", "Delta"]))
@@ -1181,7 +1237,7 @@ def test_mouse(scratch: Path) -> None:
     began = lift_at(0)
     ctx = row.children()[0]
     ctx._on_focus(None)
-    outs["the Flux window gone (its content taken off the bar)"] = began and display.held == 0 \
+    outs["the app window gone (its content taken off the bar)"] = began and display.held == 0 \
         and win.holding is None and tl.window is None
     send("motion", mid(1), 20)
     send("release", mid(1), 20, 1)
@@ -1397,7 +1453,8 @@ async def test_service(scratch: Path) -> None:
     from indigoshell.applink.service import AppService, AppWindow
     from indigoshell.backend.x11 import Display
     from flux import protocol
-    from indigoshell.applink.flux import FluxWindow, TAB_CURRENT_FG
+    from indigoshell.applink.flux import FluxWindow
+    from indigoshell.applink.kinds.look import TAB_CURRENT_FG
 
     section("5. the app service: announces both ways, focus, losses, key grabs going and coming")
     rec = Records("indigoshell.applink.service", "indigoshell.applink.flux")
@@ -1470,7 +1527,7 @@ async def test_service(scratch: Path) -> None:
 
         service.set_active(B)
         img = paint(ctx, 1600, theme.TOP_BAR_HEIGHT)
-        texts = [t["text"] for t in wb.content.tabs.layout()]
+        texts = [t["text"] for t in wb.view.item("tabs").layout()]
         check("focus on the other Flux window: its tabs; the first's content let go (no window)",
               ctx.shown is wb.content and texts == ["1 Gamma"]
               and all(w_.window is None for w_ in wa.content.walk())
@@ -1510,7 +1567,7 @@ async def test_service(scratch: Path) -> None:
         check("... and back (a new connection, as after its X window was replaced): shown again, "
               "its keys grabbed again",
               wa2 is not None and wa2 is not wa and ctx.shown is wa2.content
-              and wa2.content.tabs.titles == ["Alpha again"]
+              and wa2.view.item("tabs").titles == ["Alpha again"]
               and held_by_another(xw.conn, A, L, CTRL))
         a3 = await app(protocol.announce(A, False), flux_state(["Alpha third"]))
         await a3.answer()
@@ -1556,7 +1613,7 @@ async def test_service(scratch: Path) -> None:
         check("announces that are no window (0, the root, not a number, too large, one of the "
               "shell's own) or name no kind: ignored, no answer; a state before the announce: "
               "ignored", bad == [None] * 8 and got_early == ATTACHED
-              and not any(w_.content and w_.content.tabs.titles == ["Early"]
+              and not any(w_.view.item("tabs") is not None and w_.view.item("tabs").titles == ["Early"]
                           for w_ in service.windows if isinstance(w_, FluxWindow)),
               f"{bad}")
 
@@ -1953,7 +2010,8 @@ def test_spec(scratch: Path) -> None:
     from indigoshell.applink.context import AppContext
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Monitor
-    from indigoshell.applink.flux import FluxWindow, TAB_CURRENT_FG
+    from indigoshell.applink.flux import FluxWindow
+    from indigoshell.applink.kinds.look import TAB_CURRENT_FG
     from indigoshell.core.paths import config_dir
     from indigoshell.widgets.label import Label
     from indigoshell.window import Anchor, Layer, Window
@@ -2046,8 +2104,8 @@ def test_spec(scratch: Path) -> None:
     img = rgb_of(surface.makeImageSnapshot())
     save(scratch / "topbar-whole.png", img)
     ctx, label, chip = list(spec.content.children())
-    h = jw.content.host.layout()
-    first_slot = jw.content.tabs.layout()[0]
+    h = host_layout(jw.view)
+    first_slot = jw.view.item("tabs").layout()[0]
     sx, sw = int(first_slot["slot_x"]), int(first_slot["slot_w"])
     rule_row = img[-1:]
     check("the whole bar off screen: Flux's tabs from the left, a box each, the current one's "
@@ -2208,7 +2266,9 @@ async def on_screen(scratch: Path) -> None:
     from indigoshell.applink.service import AppService
     from indigoshell.backend import gl
     from indigoshell.backend.x11 import Display
-    from indigoshell.applink.flux import HOST_FG, INSECURE_FG, FluxWindow, TAB_CURRENT_FG, TAB_FG
+    from indigoshell.applink.flux import FluxWindow
+    from indigoshell.applink.kinds.look import TAB_CURRENT_FG, TAB_FG
+    HOST_FG, INSECURE_FG = theme.FG, theme.ERROR
 
     section("8. on screen: the real service and the real browser")
     rec = Records("indigoshell.applink.service", "indigoshell.applink.flux",
@@ -2322,12 +2382,12 @@ async def on_screen(scratch: Path) -> None:
         service.set_active(top)
         img = paint(ctx, 1600, theme.TOP_BAR_HEIGHT)
         save(scratch / "context-real-browser.png", img)
-        tabs = jw.content.tabs.layout()
+        tabs = jw.view.item("tabs").layout()
         strong = [count_color(img[:, int(t["x"]):int(t["x"] + t["w"]) + 1], TAB_CURRENT_FG)
                   for t in tabs]
         muted = [count_color(img[:, int(t["x"]):int(t["x"] + t["w"]) + 1], TAB_FG)
                  for t in tabs]
-        h = jw.content.host.layout()
+        h = host_layout(jw.view)
         mark = count_color(img[:, int(h["x"] - h["mark_w"]):int(h["x"])], INSECURE_FG)
         hpx = count_color(img[:, int(h["x"]):int(h["x"] + h["w"]) + 1], HOST_FG)
         check("focus on it: the context area draws the browser's state (tab 1 strong, 2 and 3 "
@@ -2340,7 +2400,7 @@ async def on_screen(scratch: Path) -> None:
         jw.command("tab", tab=ids[1])
         moved = await until(lambda: jw.state["current"] == 1, 5)
         check("a command to it ({type: tab, tab: the second tab's id}): the browser switches, the "
-              "state follows", bool(moved) and jw.content.tabs.current == 1)
+              "state follows", bool(moved) and jw.view.item("tabs").current == 1)
         jw.command("tab", tab=ids[0])
         await until(lambda: jw.state["current"] == 0, 5)
         service.set_active(0)

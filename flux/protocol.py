@@ -595,6 +595,8 @@ from indigoshell.applink.protocol import (  # noqa: F401  (part of this module's
 from flux import profiles
 from indigoshell.core.naming import APP, env
 from indigoshell.core.paths import runtime_dir
+from indigoshell.core.voices import (  # noqa: F401  (Flux's names for them)
+    DEFAULT_VOICE, VOICES, voice_color, voice_id, voice_name)
 
 KIND = "flux"                  # the app kind Flux announces
 
@@ -900,36 +902,6 @@ KEY_NAMES = ("Enter", "Escape", "Tab", "Backspace", "Delete", "Space", "Insert",
              "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End",
              "PageUp", "PageDown", *(f"F{n}" for n in range(1, 13)))
 KEY_MODIFIERS = ("ctrl", "shift", "alt", "meta")
-
-# The hub's voices (its welcome names them): name and colour. A voice
-# this table does not know is drawn in the first one's colour.
-VOICES = {"lilac": ("Lilac", "#c8a2c8"), "indigo": ("Indigo", "#b967ff")}
-DEFAULT_VOICE = "lilac"
-
-
-def voice_id(voice) -> str:
-    """The voice as the state carries it: its id, lowercase; the default
-    voice's for none."""
-    if isinstance(voice, str) and voice.strip():
-        return voice.strip().lower()[:32]
-    return DEFAULT_VOICE
-
-
-def voice_name(voice) -> str:
-    """"Lilac"; a voice not in VOICES by its own id, capitalized, when
-    that is a plain word, else the default voice's name."""
-    vid = voice_id(voice)
-    if vid in VOICES:
-        return VOICES[vid][0]
-    if vid.replace("-", "").replace("_", "").isalnum() and len(vid) <= 24:
-        return vid.capitalize()
-    return VOICES[DEFAULT_VOICE][0]
-
-
-def voice_color(voice) -> str:
-    """"#c8a2c8"; the default voice's for one VOICES does not know."""
-    return VOICES.get(voice_id(voice), VOICES[DEFAULT_VOICE])[1]
-
 
 def took_over(tab: int) -> str:
     return TOOK_OVER.format(tab=tab)
