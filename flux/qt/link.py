@@ -1,9 +1,13 @@
 """A browser window's line to the shell.
 
-The window says it is a Flux window, which X window, and whether it is
-a single one (protocol.py), then pushes its state whenever it changes.
-The shell answers that it has the window (`attached`) and may send
-commands, handed on as the `command` signal.
+The window says it is a Flux window, its own id for it and its X window
+(`announce`, the app bar protocol: indigoshell/applink/PROTOCOL.md),
+then sends its section of the top bar whole whenever it differs from
+the last (`push`, a `bar`), and whatever else it has to say (`send`:
+an `answer`, an `open`). The shell answers that it has the window
+(`attached`, with the voices' names) and sends the bar's events (a tab
+clicked, an input's query, a submit, a pick, `closed`, `fallback`),
+handed on as the `event` signal.
 
 Who shows the window's state. The shell does, in its top bar, while the
 window has focus and the shell has said `attached`; with no shell the
@@ -15,15 +19,17 @@ said it is restarting gets RESTART_MS instead, should its start be slow.
 Either side may start first or restart at any time. With no shell
 listening this tries again every half second, quietly, until the
 fallback shows, and every couple of seconds after; when a shell appears
-it is told everything again from the start.
+it is told everything again from the start: the announce, then the bar
+whole, without waiting for `attached`.
 
 Placing (the agent's window, and a popup of it: window.py). Before the
 window is first shown its link starts on its own, and `place` asks the
 shell to put the window on a workspace (applink `place`, sent right
-after the announce, on whichever connection comes first); `placed`
-carries the answer, a workspace index or None. The window waits for it
-at most applink's PLACE_WAIT_S and then shows anyway: no shell, a shell
-restarting, or one too old to answer.
+after the announce, on whichever connection comes first; `with` names
+another window of Flux's by its id); `placed` carries the answer, a
+workspace index or None. The window waits for it at most applink's
+PLACE_WAIT_S and then shows anyway: no shell, a shell restarting, or one
+too old to answer.
 
 Off (`off`: a headless browser, protocol.py "Headless"): no line at all.
 It never connects, never says the window's state itself (`fallback`
@@ -36,6 +42,7 @@ import logging
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QLocalSocket
 
+from indigoshell.applink import bar as B
 from indigoshell.applink import protocol as link_protocol
 from flux import protocol
 
@@ -50,25 +57,24 @@ RESTART_MS = 10000              # ... after it said it is restarting
 class ShellLink(QObject):
     attached_changed = Signal(bool)
     fallback_changed = Signal(bool)
-    command = Signal(dict)
+    event = Signal(dict)        # the bar's events, from the shell
     down = Signal()             # a connection attempt failed, or the line dropped
     placed = Signal(object)     # the answer to `place`: a workspace index, or None
 
-    def __init__(self, wid_of, single: bool, parent=None, agent: str | None = None,
-                 off: bool = False) -> None:
+    def __init__(self, wid_of, window_id: int, parent=None, off: bool = False) -> None:
         super().__init__(parent)
         self.off = off              # headless: no line to a shell, ever
         self.wid_of = wid_of        # asked at connect time, once the window exists
-        self.single = single
-        self.agent = agent          # the voice whose own window this is (its announce says)
+        self.window_id = window_id  # Flux's own id for the window (control.py's)
         self._place: dict | None = None     # a `place` not yet answered
         self.wid: int | None = None         # the X window last announced
-        self.state: dict | None = None      # the latest state, sent or not
+        self.bar: dict | None = None        # the latest bar, sent or not
         self._sent: dict | None = None      # what this connection last carried
+        self.voices: dict[str, str] = {}    # the voices' names, as the shell said them
         self.attached = False
         self.fallback = False               # the window shows its own state
         self.restarting = False             # the shell said it will be back
-        self.sent_states = 0                # for the tests: states actually written
+        self.sent_bars = 0                  # for the tests: bars actually written
         self._started = self._closing = False
         self._moving = False                # dropping the line to announce a new window
         self.sock = QLocalSocket(self)
@@ -97,11 +103,11 @@ class ShellLink(QObject):
         self.away.stop()
         self.sock.abort()
 
-    def push(self, state: dict) -> None:
-        """The window's state now; sent only if it differs from the last."""
-        self.state = state
-        if self.connected() and state != self._sent:
-            self._send_state()
+    def push(self, bar: dict) -> None:
+        """The window's bar now; sent only if it differs from the last."""
+        self.bar = bar
+        if self.connected() and bar != self._sent:
+            self._send_bar()
 
     def follow(self, wid: int) -> None:
         """The window's X window is `wid` now. If the shell was told
@@ -118,16 +124,17 @@ class ShellLink(QObject):
         self._connect()
 
     def send(self, msg: dict) -> None:
-        """A one-off message (a download's progress, a launcher wanted)."""
+        """A one-off message (an answer, an input to open)."""
         self._send(msg)
 
-    def place(self, with_wid: int | None = None) -> None:
+    def place(self, with_window: int | None = None) -> None:
         """Ask the shell to put the window, not yet shown, on a workspace
-        (`with_wid`'s, else an empty one): `placed` answers. Starts the
-        line when it has not started (the window is not shown yet)."""
+        (the one Flux's window `with_window` is on, else an empty one):
+        `placed` answers. Starts the line when it has not started (the
+        window is not shown yet)."""
         if self.off:
             return
-        self._place = link_protocol.place(with_wid)
+        self._place = link_protocol.place(with_window)
         if self.connected():
             self._send(self._place)
         else:
@@ -171,16 +178,16 @@ class ShellLink(QObject):
         log.debug("connected to the shell")
         self._sent = None
         self.wid = int(self.wid_of())
-        self._send(protocol.announce(self.wid, self.single, self.agent))
+        self._send(B.announce(protocol.KIND, self.window_id, self.wid))
         if self._place is not None:
             self._send(self._place)
-        if self.state is not None:
-            self._send_state()
+        if self.bar is not None:
+            self._send_bar()
 
-    def _send_state(self) -> None:
-        self._sent = self.state
-        self.sent_states += 1
-        self._send(self.state)
+    def _send_bar(self) -> None:
+        self._sent = self.bar
+        self.sent_bars += 1
+        self._send(self.bar)
 
     def _on_ready_read(self) -> None:
         while self.sock.canReadLine():
@@ -190,6 +197,10 @@ class ShellLink(QObject):
                 continue
             kind = msg[protocol.TYPE]
             if kind == protocol.ATTACHED:
+                voices = msg.get("voices")
+                if isinstance(voices, dict):
+                    self.voices = {k: v for k, v in voices.items()
+                                   if isinstance(k, str) and isinstance(v, str)}
                 self._set_attached(True)
             elif kind == protocol.RESTARTING:
                 log.info("the shell is restarting; waiting up to %d s for it",
@@ -202,8 +213,8 @@ class ShellLink(QObject):
                     if desktop is None:
                         log.info("the shell did not place the window: %s", msg.get("why") or "")
                     self.placed.emit(desktop if protocol.is_id(desktop) else None)
-            elif kind in protocol.COMMANDS:
-                self.command.emit(msg)
+            elif kind in B.EVENTS:
+                self.event.emit(msg)
             else:
                 log.debug("message from the shell not understood: %r", kind)
 

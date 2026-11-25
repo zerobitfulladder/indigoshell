@@ -300,10 +300,14 @@ def test_pure(files: dict) -> None:
           and plain.value_for("bank.example") is None and none_.value_for("a.org") is None
           and not w2 and not w3 and not w4, f"{wrong} {warnings} {w4}")
 
-    ann = protocol.announce(0x400001, False, "Lilac")
-    check("the announce names the agent's voice for its own window, nothing for the user's",
-          ann.get("agent") == "lilac" and "agent" not in protocol.announce(0x400001, False),
-          f"{ann}")
+    from flux import bar as fb
+    st = fb.state([fb.tab("A", "a.org", False, id_=1)], 0, 100, True, url="https://a.org/",
+                  bookmarked=False)
+    hers, users = fb.bar_of(st, agent="Lilac"), fb.bar_of(st)
+    check("the agent's own window's bar starts with her name in her voice's colour; the user's "
+          "with the tabs", hers["start"][0] == {"kind": "text", "id": "owner", "text": "Lilac",
+                                               "color": "voice:lilac"}
+          and users["start"][0]["kind"] == "tabs", f"{hers['start'][0]}")
     check("place / placed on the apps' line", link.place() == {"type": "place"}
           and link.place(5) == {"type": "place", "with": 5}
           and link.placed(6) == {"type": "placed", "desktop": 6}
@@ -408,7 +412,8 @@ class FakeShell:
 
     def of(self, wid: int) -> list[dict]:
         """What the connection that announced `wid` sent, in order."""
-        conns = {n for n, _, m in self.msgs if m.get("type") == "announce" and m.get("wid") == wid}
+        conns = {n for n, _, m in self.msgs if m.get("type") == "announce"
+                 and (m.get("handle") or {}).get("x11") == wid}
         return [m for n, _, m in self.msgs if n in conns]
 
     def close(self):
@@ -600,10 +605,12 @@ def test_in_process(files: dict) -> None:
     said = shell.of(hid)
     announce = next((m for m in said if m.get("type") == "announce"), {})
     kinds = [m["type"] for m in said if m.get("type") in ("announce", "place")]
-    check("open in the agent's window: a window of its own, made for Lilac, announced as hers, "
-          "`place` asked right after the announce",
-          her is not None and her.agent == "lilac" and announce.get("agent") == "lilac"
-          and announce.get("single") is False and kinds[:2] == ["announce", "place"]
+    bar = next((m for m in said if m.get("type") == "bar"), {})
+    check("open in the agent's window: a window of its own, made for Lilac, announced (Flux, "
+          "its id), `place` asked right after the announce; its bar starts with her name",
+          her is not None and her.agent == "lilac" and announce.get("app") == "flux"
+          and announce.get("window") == her.id and kinds[:2] == ["announce", "place"]
+          and (bar.get("start") or [{}])[0].get("text") == "Lilac"
           and mine is not None and mine.window == her.id, f"{kinds} {announce}")
     check("... not shown until the shell answered (a moment late on purpose), then shown, "
           f"placed on workspace {PLACED_ON}", not shown_early and her.isVisible()
@@ -644,7 +651,7 @@ def test_in_process(files: dict) -> None:
              "cookie: document.cookie})")
     before = json.loads(js(form.tab, STATE))
     page_before = next(t.page for t in user.tabs if t.id == form.tab)
-    states_before = len([m for m in shell.of(int(user.winId())) if m.get("type") == "state"])
+    states_before = len([m for m in shell.of(int(user.winId())) if m.get("type") == "bar"])
     done, err = J(flux.borrow(form.tab, voice="lilac"))
     after = json.loads(js(form.tab, STATE) or "{}")
     moved = window_of(form.tab)
@@ -657,13 +664,14 @@ def test_in_process(files: dict) -> None:
           "(the same page object, in a new view)", before == after and before["scroll"] == 1234
           and her.current_tab().page is page_before, f"{before} -> {after}")
     QTest.qWait(100)
-    last_state = [m for m in shell.of(int(user.winId())) if m.get("type") == "state"][-1]
-    check("... gone from the user's window and from the state the shell gets; the user's window "
+    last_bar = [m for m in shell.of(int(user.winId())) if m.get("type") == "bar"][-1]
+    last_tabs = last_bar["start"][-1]["tabs"]
+    check("... gone from the user's window and from the bar the shell gets; the user's window "
           "still shows the tab it showed", titles(user) == ["Other"]
           and user.current_tab().id == other.tab
-          and [t["title"] for t in last_state["tabs"]] == ["Other"]
-          and len([m for m in shell.of(int(user.winId())) if m.get("type") == "state"])
-          > states_before, f"{titles(user)} {last_state['tabs']}")
+          and [t["title"] for t in last_tabs] == ["Other"]
+          and len([m for m in shell.of(int(user.winId())) if m.get("type") == "bar"])
+          > states_before, f"{titles(user)} {last_tabs}")
     press = refs_of(form.tab)['button "Press"']
     acted, err = J(flux.click(form.tab, press, voice="lilac"))
     overlay = browser.watch.overlays.get(her.id)
@@ -993,9 +1001,9 @@ def shell_side() -> None:
     import skia
 
     from indigoshell import theme
-    from indigoshell.applink.service import AppService, pick_desktop
-    from flux import protocol
-    from indigoshell.applink.flux import FluxWindow
+    from indigoshell.applink import bar as B
+    from indigoshell.applink.service import AppService, AppWindow, pick_desktop
+    from flux import bar as fb, protocol
     from indigoshell.widgets.base import Size
 
     out = {}
@@ -1035,23 +1043,22 @@ def shell_side() -> None:
             colorType=skia.kRGBA_8888_ColorType, alphaType=skia.kUnpremul_AlphaType
         )[..., :3].astype("int16")
 
-    service = AppService({"flux": FluxWindow}, path="/nonexistent")
+    service = AppService(path="/nonexistent")
     lilac = np.array([int(protocol.voice_color("lilac")[i:i + 2], 16) for i in (1, 3, 5)])
-    state = protocol.state([protocol.tab("Alpha", "x.org", False, id_=1)], 0, 100, True,
-                           url="https://x.org/", bookmarked=False, find=None)
-    for name, ann in (("hers", protocol.announce(0x400001, False, "lilac")),
-                      ("users", protocol.announce(0x400002, False))):
-        j = FluxWindow(Line(service), ann["wid"], ann)
+    state = fb.state([fb.tab("Alpha", "x.org", False, id_=1)], 0, 100, True,
+                     url="https://x.org/", bookmarked=False)
+    for name, wid, agent in (("hers", 0x400001, "lilac"), ("users", 0x400002, None)):
+        j = AppWindow(Line(service), wid, B.announce("flux", wid, wid))
         j.content.attach(Host())
-        j.on_message(state)
+        j.on_message(fb.bar_of(state, agent=agent))
         img = paint(j.content, 900, theme.TOP_BAR_HEIGHT)
         first = j.view.item("tabs").layout()[0]["x"]
         lead = img[:, :int(first)]
-        out[name] = {"agent": j.agent, "first_tab_x": first,
+        out[name] = {"first_tab_x": first,
                      "lilac_before_tabs": int((np.abs(lead - lilac).max(-1) <= 10).sum()),
                      "owner": j.view.item("owner").layout()[0]["text"]
                      if j.view.item("owner") else None}
-    j = FluxWindow(Line(service), 0x400003, protocol.announce(0x400003, False, "lilac"))
+    j = AppWindow(Line(service), 0x400003, B.announce("flux", 3, 0x400003))
     service.place(j, {"type": "place"})
     out["no_display"] = j.link.out[-1] if j.link.out else None
     print(json.dumps(out))
@@ -1078,7 +1085,7 @@ def test_shell_side() -> None:
           and r["no workspaces"][0] is None, f"{r['none empty']} {r['all shown']}")
     check("the top bar for the agent's own window: \"Lilac\" first, in Lilac's colour, the tabs "
           "after it; the user's window as ever",
-          out["hers"]["agent"] == "lilac" and out["hers"]["owner"] == "Lilac"
+          out["hers"]["owner"] == "Lilac"
           and out["hers"]["lilac_before_tabs"] > 30 and out["users"]["owner"] is None
           and out["users"]["lilac_before_tabs"] == 0
           and out["hers"]["first_tab_x"] > out["users"]["first_tab_x"] + 20,
@@ -1154,6 +1161,7 @@ def placement_child(sock: str) -> None:
 
     import xcffib.xproto as xp
 
+    from indigoshell.applink import bar as B
     from indigoshell.applink import protocol as link
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
@@ -1180,7 +1188,7 @@ def placement_child(sock: str) -> None:
 
     async def ask(wid: int, near: int | None = None) -> dict:
         reader, writer = await asyncio.open_unix_connection(sock)
-        writer.write(link.encode(link.announce("probe", wid)) + link.encode(link.place(near)))
+        writer.write(link.encode(B.announce("probe", wid, wid)) + link.encode(link.place(near)))
         await writer.drain()
         answer = {}
         while True:
@@ -1193,7 +1201,7 @@ def placement_child(sock: str) -> None:
         return answer
 
     async def main():
-        service = AppService({}, path=sock, display=Display())
+        service = AppService(path=sock, display=Display())
         service.start()
         await asyncio.sleep(0.2)
         wid = make()
@@ -1245,16 +1253,16 @@ def serve_apps(sock: str) -> None:
     until stdin closes; a JSON line for each window placed."""
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
-    from indigoshell.applink.flux import FluxWindow
 
     async def main():
-        service = AppService({"flux": FluxWindow}, path=sock, display=Display())
+        service = AppService(path=sock, display=Display())
         place = service.place
 
         def placing(window, msg):
             place(window, msg)
             print(json.dumps({"wid": window.wid, "placed": window.placed,
-                              "agent": getattr(window, "agent", None)}), flush=True)
+                              "owner": ((window.bar or {}).get("start") or [{}])[0].get("text")}),
+                  flush=True)
         service.place = placing
         service.start()
         print(json.dumps({"ready": True}), flush=True)
@@ -1371,8 +1379,8 @@ def _agent_window_on_screen(service) -> None:
     placed = next((x for x in lines if x.get("wid") == wid), None)
     print(f"  the user's (workspace, active window): before {before}, after {after}; "
           f"trace {desk.trace}", flush=True)
-    check("the app service placed her window (announced as Lilac's) on an empty workspace "
-          "before it mapped", placed is not None and placed["agent"] == "lilac"
+    check("the app service placed her window (her name first in its bar) on an empty "
+          "workspace before it mapped", placed is not None and placed["owner"] == "Lilac"
           and placed["placed"] is not None and placed["placed"] != before[0]
           and her.placed_on == placed["placed"], f"{placed} {lines}")
     check("never mapped, never active, never the shown workspace while it lived",

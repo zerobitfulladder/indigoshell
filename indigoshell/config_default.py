@@ -16,7 +16,6 @@ from .agent.ui.status import AgentChip
 from .applink.context import AppContext
 from .applink.drop import DROP_WINDOW, DropList
 from .applink.service import AppService
-from .applink.flux import FluxWindow
 from .widgets.clock import Clock
 from .widgets.fastfetch import Fastfetch
 from .widgets.hardware_panel import HardwarePanel
@@ -122,10 +121,11 @@ PANEL_SPAWN = ScanLock(duration=0.22, band_px=36.0, tear_px=29.0, split_px=17.0,
 # notification rather than once for the stack. APPS is the
 # socket the shell's own apps connect to, one line per window, and knows
 # which of their windows has focus (applink/): today Flux, the browser
-# (`indigoshell browser`), whose windows the top bar shows
-# (applink/flux.py) and whose Ctrl+L, Ctrl+T, Ctrl+M open the
-# launcher. Another app kind is one more entry in `kinds`.
-APPS = AppService(kinds={"flux": FluxWindow})
+# (`indigoshell browser`), whose windows send the top bar their section
+# (their tabs, the page's host) and whose Ctrl+L, Ctrl+T, Ctrl+F and
+# Ctrl+M open inputs and menus in it. Nothing in it is any app's: an app
+# says what its section holds (applink/PROTOCOL.md).
+APPS = AppService()
 
 SERVICES = [
     NotificationManager(effects=(PANEL_SPAWN,), effect_scale=0.35, holo=True),

@@ -1,7 +1,13 @@
 """Flux's section of the shell's top bar: what a window's state becomes as
 a `bar` (indigoshell/applink/PROTOCOL.md; applink/bar.py's builders).
 
-Pure Python, as the rest of Flux's side of the line.
+Pure Python, as the rest of Flux's side of the line. A window's state
+(`state`, what qt/window.py's `state()` gives) is Flux's own snapshot of
+it: its tabs (`tab`: id, title, host, loading), the current one, its
+load, whether its page is secure, its address, whether it counts as a
+bookmark, Flux's own find line while one is open (`find`: only with no
+shell, or one that could not show its input), and the agent's hold on
+each tab. The window's line over the page (no shell) says the same.
 
     start   the agent's name in its voice's colour, for the agent's own
             window ("Lilac"); then the tabs, one look for every app: a
@@ -12,10 +18,12 @@ Pure Python, as the rest of Flux's side of the line.
             when it came over an insecure connection and a bookmark when
             the page counts as one
 
+            and, while Flux's own find is open, its line before the host
     inputs  `address` (Ctrl+L: the page's address, selected) and
             `new_tab` (Ctrl+T, empty), both answered from Flux's places
             (flux/addresses.py), a bookmark's row taken out with
-            Shift+Delete (`remove`)
+            Shift+Delete (`remove`); `find` (Ctrl+F, `steps`): the count
+            answered as the page counts, then n / N step
     menus   `actions` (Ctrl+M): first, for each tab the user took over
             from the agent, handing it back ("Let Lilac drive again");
             then Add bookmark and Remove bookmark for the page, the one
@@ -27,12 +35,11 @@ or menus: its keys stay its own.
 """
 
 from flux import places
+from flux.addresses import REMOVE, TYPED  # noqa: F401  (the address inputs' names)
 from indigoshell.applink import bar as B
 from indigoshell.core.voices import voice_id, voice_name
 
-ADDRESS, NEW_TAB, ACTIONS = "address", "new_tab", "actions"
-TYPED = "typed"                 # the row of what was typed, in an address answer
-REMOVE = "remove"               # the action taking a bookmark's row out
+ADDRESS, NEW_TAB, FIND, ACTIONS = "address", "new_tab", "find", "actions"
 ADD_ROW, REMOVE_ROW = "add", "remove"
 RESUME = "resume:"              # + a tab id: hand that tab back to the agent
 PLACEHOLDER = "address or search"
@@ -40,6 +47,44 @@ PLACEHOLDER = "address or search"
 TABS_ITEM = "tabs"
 HOST_ITEM = "host"
 OWNER_ITEM = "owner"
+FIND_ITEM = "find"
+
+FIND_LABEL = "find"
+FIND_CARET = "\u258f"           # ▏, after the query while it is typed (Flux's own line)
+NO_MATCHES = "no matches"
+
+
+# ── a window's state ────────────────────────────────────────────────────
+def tab(title: str, host: str, loading: bool, *, id_: int) -> dict:
+    return {"tab": int(id_), "title": title, "host": host, "loading": bool(loading)}
+
+
+def find(query: str, active: int | None, total: int | None, typing: bool) -> dict:
+    return {"query": query, "active": active, "total": total, "typing": bool(typing)}
+
+
+def find_count(f: dict) -> str:
+    """The count after a find's query: "3/12", "no matches", or nothing
+    before the page has counted."""
+    total, active = f.get("total"), f.get("active")
+    if total is None or not f.get("query"):
+        return ""
+    if total == 0:
+        return NO_MATCHES
+    return f"{active or 0}/{total}"
+
+
+def state(tabs: list[dict], current: int, progress: int, secure: bool, *, url: str,
+          bookmarked: bool, find: dict | None = None,
+          agent: list[dict | None] | None = None) -> dict:
+    """A window's state (the module docstring)."""
+    agents = list(agent) if agent is not None else [None] * len(tabs)
+    return {"tabs": tabs, "current": int(current), "progress": int(progress),
+            "secure": bool(secure), "url": url, "bookmarked": bool(bookmarked), "find": find,
+            "agent": agents}
+
+
+# ── its bar ─────────────────────────────────────────────────────────────
 
 
 def tabs_item(state: dict, *, single: bool) -> dict:
@@ -70,6 +115,20 @@ def host_item(state: dict) -> dict:
     return B.text(HOST_ITEM, spans=spans)
 
 
+def find_item(state: dict) -> dict | None:
+    """Flux's own find, while it is open (no shell showed its input):
+    its line as text before the host."""
+    f = state.get("find")
+    if not f:
+        return None
+    count = find_count(f)
+    spans = [B.span(icon="search"), B.span(f["query"] + (FIND_CARET if f.get("typing") else ""),
+                                           color="strong")]
+    if count:
+        spans.append(B.span("  " + count, color="error" if count == NO_MATCHES else "info"))
+    return B.text(FIND_ITEM, spans=spans)
+
+
 def inputs_of(state: dict) -> dict:
     url = state.get("url") or ""
     here = "" if url in ("", "about:blank") else url
@@ -77,7 +136,9 @@ def inputs_of(state: dict) -> dict:
     return {ADDRESS: B.input_(chords=["ctrl+l"], icon="search", placeholder=PLACEHOLDER,
                               text=here or None, select=bool(here), query=True, actions=remove),
             NEW_TAB: B.input_(chords=["ctrl+t"], icon="search", placeholder=PLACEHOLDER,
-                              query=True, actions=remove)}
+                              query=True, actions=remove),
+            FIND: B.input_(chords=["ctrl+f"], icon="search", placeholder=FIND_LABEL, query=True,
+                           steps=True)}
 
 
 def actions_rows(state: dict, names: dict | None = None) -> list[dict]:
@@ -115,7 +176,8 @@ def bar_of(state: dict, *, single: bool = False, agent: str | None = None,
         start.append(B.text(OWNER_ITEM, (names or {}).get(vid) or voice_name(vid),
                             color=f"voice:{vid}"))
     start.append(tabs_item(state, single=single))
+    end = [item for item in (find_item(state), host_item(state)) if item is not None]
     if single:
-        return B.bar(start, [host_item(state)])
-    return B.bar(start, [host_item(state)], inputs_of(state),
+        return B.bar(start, end)
+    return B.bar(start, end, inputs_of(state),
                  {ACTIONS: B.menu(actions_rows(state, names), chords=["ctrl+m"])})

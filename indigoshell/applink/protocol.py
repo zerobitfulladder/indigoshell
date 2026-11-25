@@ -1,4 +1,5 @@
-"""What every indigoshell app and the shell say to each other.
+"""The apps' line itself: where it is, how a message is written, and the
+messages every app window says to the shell however it fills its bar.
 
 Pure Python: imported by the apps (Qt processes) and by the daemon, so
 it imports neither toolkit.
@@ -7,34 +8,29 @@ One unix stream socket connection per app window, the shell listening
 at `socket_path()` (`<APP>-apps-<uid>.sock` in the runtime directory),
 the app connecting. One JSON object per line, both ways, each with its
 `type`: a side dispatches on it, ignores a type it does not know (with
-one debug line), and ignores keys it does not use. What a kind of app
-says after its announce is its own (Flux's: flux/protocol.py).
-
-App -> shell
-    announce    {"type": "announce", "app": <kind>, "wid": <X window>, ...}
-                First on every connection, before anything else. `app`
-                names the kind, whose class on the shell's side decides
-                how the top bar draws the window and which keys the shell
-                takes from it (applink/service.py); a kind may say more
-                here (Flux: flux/protocol.py).
+one debug line), and ignores keys it does not use. What goes on the line
+about the top bar (`announce`, `bar`, `answer`, `open`, the bar's
+events) is the app bar protocol: PROTOCOL.md beside this file, its
+vocabulary in bar.py. This module has the rest:
 
 App -> shell, any time after the announce
-    place       {"type": "place", "with"?: <X window>}
+    place       {"type": "place", "with"?: <the app's id for another of its windows>}
                 The window, made but not yet shown (mapped), wants a
                 workspace of the window manager's before it maps, so that
                 it never appears on the one the user is looking at: an
                 empty one no screen shows (applink/service.py has the
-                rule), or with `with` the one that other window is on (a
-                popup of a window placed so). The app maps the window once
-                `placed` answers, or after PLACE_WAIT_S with no answer (an
-                older shell that does not know `place`), or at once when
-                no shell listens: then wherever the window manager puts it.
+                rule), or with `with` the one that other window (of the
+                same app process) is on: a popup of a window placed so.
+                The app maps the window once `placed` answers, or after
+                PLACE_WAIT_S with no answer, or at once when no shell
+                listens: then wherever the window manager puts it.
 
 Shell -> app
-    attached    {"type": "attached"}
+    attached    {"type": "attached", "voices": {id: name}}
                 The answer to the announce: the shell has the window. It
-                shows the window's state in its top bar while the window
-                has focus, so the app draws none of its own.
+                shows the window's bar while the window has focus, so the
+                app draws none of its own. `voices`: the agent's voices'
+                names, for an app's labels (core/voices.py).
     restarting  {"type": "restarting"}
                 Sent as the shell stops for a reload: it will be back in
                 a moment (a second or two), so an app can wait longer than
@@ -55,8 +51,6 @@ from indigoshell.core.paths import runtime_dir
 SOCKET_ENV = env("APPS_SOCKET")
 
 TYPE = "type"
-APP_KEY = "app"
-WID = "wid"
 
 ANNOUNCE = "announce"
 ATTACHED = "attached"
@@ -92,18 +86,15 @@ def message(type_: str, **fields) -> dict:
     return {TYPE: type_, **fields}
 
 
-def announce(app: str, wid: int, **fields) -> dict:
-    return message(ANNOUNCE, **{APP_KEY: app, WID: int(wid)}, **fields)
-
-
 def valid_wid(wid) -> bool:
     """Whether an announced window id can be an X window at all (X
     resource ids are 29 bits)."""
     return isinstance(wid, int) and not isinstance(wid, bool) and 0 < wid < 1 << 29
 
 
-def place(with_wid: int | None = None) -> dict:
-    return message(PLACE, **({WITH: int(with_wid)} if with_wid else {}))
+def place(with_window=None) -> dict:
+    """`with_window`: the app's own id for the window to go beside."""
+    return message(PLACE, **({WITH: with_window} if with_window is not None else {}))
 
 
 def placed(desktop: int | None, why: str | None = None) -> dict:

@@ -1,112 +1,26 @@
-"""What Flux (the browser) and the shell say to each other.
+"""What Flux (the browser) says to the shell and to the agent.
 
-Pure Python: imported by the browser (Qt) and by the daemon's side of
-Flux (`applink/flux.py`, xcffib and skia), so it imports neither.
+Pure Python: imported by the browser (Qt) and by the agent's side
+(control.py, hands.py), so it imports no toolkit.
 
-The line itself is every indigoshell app's (applink/protocol.py): one
-unix socket connection per browser window, the shell listening, one
-JSON object per line both ways, each with its `type`; a type a side
-does not know is ignored. This module is what Flux says on it.
-
-Browser -> shell
-    announce   {"type": "announce", "app": "flux", "wid": <X window>, "single": bool,
-                "agent"?: <voice>}
-               First on every connection, then the current state.
-               `single`: a window of one page that takes no tabs (a page's
-               sign-in popup, the inspector). The shell takes KEYS from
-               Flux's other windows, the main ones; a single window keeps
-               them (its own handling, below). `agent`: the agent's own
-               window ("Alone", below), and whose: the top bar says so.
-               The agent's window, and a popup of it, also asks the shell
-               to `place` it before it is first shown (applink/protocol.py).
-    state      {"type": "state",
-                "tabs": [{"tab": id, "title": str, "host": str, "loading": bool},
-                         ...],
-                "current": <index into tabs>,
-                "progress": <0..100, the current tab's load>,
-                "secure": <bool, the current tab's connection>,
-                "url": str,                      the current tab's address
-                "bookmarked": bool,              ... and whether it counts as a
-                                                 bookmark: its address is one,
-                                                 or it was reached from one
-                                                 through redirects
-                "find": null | {"query": str, "active": int | null,
-                                "total": int | null, "typing": bool},
-                "agent": [null | {"voice": str, "state": "driving" | "paused"},
-                          ...]}                  one per tab, in its order
-               Always whole, every key there, and only when it differs
-               from the last one sent on this connection. A tab's `tab`
-               is its id (the agent's, below: its page's, never reused in
-               the browser's process), which the shell names it by in the
-               commands that act on one tab, so a tab opened or closed
-               between the user's click and the command changes nothing
-               of what the click meant. `find` is the
-               find-in-page line while it is open: `typing` while the
-               query is being typed (a caret is drawn), false while
-               stepping through the matches with n / N; `active`
-               (1-based) and `total` are null until the page has counted.
-               `agent`: the agent's hold on each tab (Watch, below): its
-               voice, and whether it drives the tab or the user took it
-               over. A shell from before it had `agent` ignores it; one
-               that has it takes a state without it as no hold anywhere.
-    download   {"type": "download", "name": str, "state": one of DOWNLOAD_STATES,
-                "percent": <0..100, or null when unknown>}
-    launcher   {"type": "launcher", "action": "address"}
-               Open the launcher for this window as for that action's key
-               (ACTIONS), with no key pressed: what a new window opened
-               with no address sends, once the shell has it.
-
-Shell -> browser
-    back, forward, reload
-               {"type": "back"} ...                the current tab
-    open       {"type": "open", "url": str}         a new tab in this window
-    tab        {"type": "tab", "tab": id}           switch to that tab
-    close      {"type": "close"}                    close the current tab
-               {"type": "close", "tab": id}         close that tab
-               As Ctrl+W: Ctrl+Shift+T brings it back.
-    move       {"type": "move", "tab": id, "to": int}
-               That tab to position `to` (0-based, in the window's tabs as
-               the shell showed them), as Alt+Shift+N moves the current
-               one; a position past the end is the end.
-    detach     {"type": "detach", "tab": id, "x"?: int, "y"?: int}
-               That tab, its page as it is (as `borrow` moves one: a
-               half-filled form, the scroll, the page's scripts), into a
-               new window of its own, shown and focused where the window
-               manager puts it; `x`, `y` (root coordinates, where the
-               user let go) a hint it may follow (qtile's tiling does
-               not). Not a window's last tab (there is nothing to tear it
-               from), nor a single window's.
-    The shell sends `tab`, `close`, `move` and `detach` for the mouse on
-    its top bar's tabs (applink/flux.py); a tab id the window no longer
-    holds is ignored, as is a command for a single window that only a
-    tabbed one takes (`move`, `detach`).
-    load       {"type": "load", "url": str, "where": "here" | "tab"}
-               in the current tab, or a new one at the end
-    bookmark   {"type": "bookmark", "op": "add" | "remove"}
-               the current page: "remove" takes out the bookmark it
-               counts as (the one it was reached from first, see
-               `bookmarked`)
-               {"type": "bookmark", "op": "add" | "remove", "url": str}
-               that address's bookmark instead (the address list's
-               Shift+Delete)
-    prompt     {"type": "prompt", "action": one of ACTIONS}
-               The shell took that action's key (or a `launcher`) but
-               cannot show its launcher: do what the browser does for the
-               key with no shell, its own dialog.
-    resume     {"type": "resume", "index": int}
-               The user hands that tab back to the agent after taking it
-               over (the window's actions, "Let Lilac drive again").
-
-The keys (KEYS). Ctrl+L (an address for this tab), Ctrl+T (an address
-for a new tab) and Ctrl+M (the window's actions) open the shell's
-launcher, dropped from the top bar over the window. The shell grabs them
-on every main window it is told of (applink/service.py): the X server
-then gives the press, and the keyboard with it, to the shell and not to
-the browser, so every key typed after the chord goes to the launcher's
-query in order and none reaches the page. With no shell, a key the
-shell could not grab, or a single window, they reach the browser: Ctrl+L
-and Ctrl+T ask with a Qt dialog of the browser's own, Ctrl+M does
-nothing.
+The shell. Flux is an indigoshell app: each window connects to the
+shell's app socket and speaks the app bar protocol
+(indigoshell/applink/PROTOCOL.md; its names and builders in
+indigoshell/applink/bar.py): it announces itself as a "flux" window,
+its own id for it and its X window (`announce`), then sends its section
+of the top bar whole whenever it changes (`bar`, made of the window's
+state by bar.py: its tabs, the page's host, the `address`, `new_tab`
+and `find` inputs, the `actions` menu), answers the queries of its
+inputs (`answer`: its places, addresses.py; find's count) and acts on
+the bar's events, which name its tabs by id. A main window's keys
+(Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M) are the chords of its inputs and menu,
+which the shell takes from it; a single window (a page's sign-in popup,
+the inspector) sends one tab and no inputs, so its keys stay its own.
+With no shell, or one that cannot show an input (`fallback`), those keys
+reach the window and it answers them itself: a dialog for an address,
+its own find over the page. The agent's own window ("Alone", below)
+asks the shell to `place` it before it is first shown, and its bar
+starts with the agent's name in its voice's colour.
 
 Single instance: the running browser also listens at
 `instance_socket_path()`, guarded by an flock on `instance_lock_path()`,
@@ -424,8 +338,9 @@ mark, ends the session at once and PAUSES the agent on the tab; the key
 reaches nothing. Every request on a paused tab, and every one that would
 change what its window shows (`switch` to another tab there, `open`
 there not in the background), fails with TOOK_OVER, "the user took over
-tab N". The pause ends when the user hands the tab back (`resume`, from
-the shell's actions for the window) or PAUSE_S after their last key,
+tab N". The pause ends when the user hands the tab back ("Let Lilac
+drive again" in the window's actions on the shell's top bar) or PAUSE_S
+after their last key,
 click or wheel turn in that tab. Other clicks on the locked page are
 swallowed, and the mark flashes.
 
@@ -452,7 +367,7 @@ looking and their view never moves; with no shell (or one too old to
 answer within applink's PLACE_WAIT_S) it shows where the window manager
 puts it. Flux never raises it or gives it focus. Its title is "<Voice>
 · Flux" and its page's, its WM_WINDOW_ROLE AGENT_ROLE, its class Flux's
-own; its announce names the voice (`agent`). The showing rule, the
+own; its bar starts with the voice's name in its colour. The showing rule, the
 Watch's lock and take-over hold in it as in any window. A popup a page
 in it opens goes to the same workspace, and the tabs such a popup asks
 for to the agent's window.
@@ -588,17 +503,14 @@ fails the same. No host is "never" unless the user writes it.
 import os
 import re
 
-from indigoshell.applink import protocol as _link
 from indigoshell.applink.protocol import (  # noqa: F401  (part of this module's API)
-    ANNOUNCE, ATTACHED, RESTARTING, SOCKET_ENV, TYPE, WID, decode, encode, message,
-    socket_path)
+    ANNOUNCE, ATTACHED, RESTARTING, SOCKET_ENV, TYPE, decode, encode, message, socket_path)
 from flux import profiles
 from indigoshell.core.naming import APP, env
 from indigoshell.core.paths import runtime_dir
 from indigoshell.core.voices import (  # noqa: F401  (Flux's names for them)
     DEFAULT_VOICE, VOICES, voice_color, voice_id, voice_name)
 
-KIND = "flux"                  # the app kind Flux announces
 
 # ── where ───────────────────────────────────────────────────────────────
 INSTANCE_SOCKET_ENV = env("BROWSER_SOCKET")
@@ -624,31 +536,8 @@ def control_socket_path(profile: str | None = None) -> str:
 
 
 # ── names ───────────────────────────────────────────────────────────────
-SINGLE = "single"
-STATE = "state"
-TABS = "tabs"
-CURRENT = "current"
-PROGRESS = "progress"
-SECURE = "secure"
-URL = "url"
-BOOKMARKED = "bookmarked"
-FIND = "find"
-TITLE = "title"
-HOST = "host"
-LOADING = "loading"
-DOWNLOAD = "download"
-DOWNLOAD_STATES = ("started", "progress", "done", "failed", "cancelled")
-LAUNCHER = "launcher"
-PROMPT = "prompt"
-
-# What the shell's launcher does for the browser, and the keys for it.
-ACTIONS = ("address", "new_tab", "actions")
-KEYS = {"ctrl+l": "address", "ctrl+t": "new_tab", "ctrl+m": "actions"}
-
-COMMANDS = ("back", "forward", "reload", "open", "tab", "close", "load", "bookmark",
-            PROMPT, "resume", "move", "detach")
-TAB_ID = "tab"                  # a tab's id, in the state's tabs and the commands
-
+KIND = "flux"                   # the app Flux announces
+TAB_ID = "tab"                  # a tab's id, in the agent's results
 OPEN = "open"
 URLS = "urls"
 OK = "ok"
@@ -656,140 +545,11 @@ ERROR = "error"
 
 AGENT = "agent"
 AGENT_STATES = ("driving", "paused")
-RESUME = "resume"
-
-STATE_KEYS = (TABS, CURRENT, PROGRESS, SECURE, URL, BOOKMARKED, FIND)
-# In every state since the agent could act, but not required: a browser
-# from before it sends none (no hold on any tab).
-OPTIONAL_STATE_KEYS = (AGENT,)
-TAB_KEYS = (TAB_ID, TITLE, HOST, LOADING)
-FIND_KEYS = ("query", "active", "total", "typing")
-
-
-# ── messages ────────────────────────────────────────────────────────────
-def announce(wid: int, single: bool, agent: str | None = None) -> dict:
-    """`agent`: the voice whose own window this is (none for the
-    user's)."""
-    extra = {AGENT: voice_id(agent)} if agent else {}
-    return _link.announce(KIND, wid, **{SINGLE: bool(single)}, **extra)
-
-
-def tab(title: str, host: str, loading: bool, *, id_: int) -> dict:
-    return {TAB_ID: int(id_), TITLE: title, HOST: host, LOADING: bool(loading)}
-
-
-def find(query: str, active: int | None, total: int | None, typing: bool) -> dict:
-    return {"query": query, "active": active, "total": total, "typing": bool(typing)}
-
-
-FIND_LABEL = "find"
-FIND_CARET = "▏"           # ▏, after the query while it is typed
-NO_MATCHES = "no matches"
-
-
-def find_count(f: dict) -> str:
-    """The count after the query, as the top bar and the browser's own
-    line say it:
-    "3/12", "no matches", or nothing before the page has counted."""
-    total, active = f.get("total"), f.get("active")
-    if total is None or not f.get("query"):
-        return ""
-    if total == 0:
-        return NO_MATCHES
-    return f"{active or 0}/{total}"
 
 
 def agent(voice: str | None, state_: str) -> dict:
-    """A tab's entry in the state's `agent`."""
+    """A tab's agent hold, as the window's state and the bar carry it."""
     return {"voice": voice_id(voice), "state": state_}
-
-
-def state(tabs: list[dict], current: int, progress: int, secure: bool, *,
-          url: str, bookmarked: bool, find: dict | None,
-          agent: list[dict | None] | None = None) -> dict:
-    agents = list(agent) if agent is not None else [None] * len(tabs)
-    return message(STATE, **{TABS: tabs, CURRENT: int(current), PROGRESS: int(progress),
-                             SECURE: bool(secure), URL: url, BOOKMARKED: bool(bookmarked),
-                             FIND: find, AGENT: agents})
-
-
-def agents_of(msg: dict) -> list[dict | None]:
-    """A state's `agent`, one per tab; none held when it has none."""
-    value = msg.get(AGENT)
-    tabs = msg.get(TABS) or []
-    return list(value) if isinstance(value, list) and len(value) == len(tabs) \
-        else [None] * len(tabs)
-
-
-def _count(value) -> bool:
-    return value is None or (isinstance(value, int) and not isinstance(value, bool)
-                             and value >= 0)
-
-
-def state_problems(msg: dict) -> list[str]:
-    """What is wrong with a state message; empty when it is well formed."""
-    problems = []
-    missing = [k for k in STATE_KEYS if k not in msg]
-    if missing:
-        problems.append(f"missing {missing}")
-        return problems
-    tabs = msg[TABS]
-    if not isinstance(tabs, list) or not tabs:
-        problems.append("tabs is not a non-empty list")
-        return problems
-    for i, t in enumerate(tabs):
-        if not isinstance(t, dict) or set(t) != set(TAB_KEYS):
-            problems.append(f"tab {i} is {t!r}")
-        elif not (is_id(t[TAB_ID]) and isinstance(t[TITLE], str)
-                  and isinstance(t[HOST], str) and isinstance(t[LOADING], bool)):
-            problems.append(f"tab {i} field types: {t!r}")
-    ids = [t.get(TAB_ID) for t in tabs if isinstance(t, dict)]
-    if len(set(map(repr, ids))) != len(ids):
-        problems.append(f"tab ids repeat: {ids}")
-    current = msg[CURRENT]
-    if not isinstance(current, int) or not 0 <= current < len(tabs):
-        problems.append(f"current {current!r} outside 0..{len(tabs) - 1}")
-    progress = msg[PROGRESS]
-    if not isinstance(progress, int) or not 0 <= progress <= 100:
-        problems.append(f"progress {progress!r}")
-    if not isinstance(msg[SECURE], bool):
-        problems.append(f"secure {msg[SECURE]!r}")
-    if not isinstance(msg[URL], str):
-        problems.append(f"url {msg[URL]!r}")
-    if not isinstance(msg[BOOKMARKED], bool):
-        problems.append(f"bookmarked {msg[BOOKMARKED]!r}")
-    f = msg[FIND]
-    if f is not None:
-        if not isinstance(f, dict) or not all(k in f for k in FIND_KEYS):
-            problems.append(f"find {f!r}")
-        elif not (isinstance(f["query"], str) and _count(f["active"])
-                  and _count(f["total"]) and isinstance(f["typing"], bool)):
-            problems.append(f"find field types: {f!r}")
-    if AGENT in msg:
-        agents = msg[AGENT]
-        if not isinstance(agents, list) or len(agents) != len(tabs):
-            problems.append(f"agent is not a list of one per tab: {agents!r}")
-        else:
-            for i, a in enumerate(agents):
-                if a is not None and not (isinstance(a, dict) and isinstance(a.get("voice"), str)
-                                          and a.get("state") in AGENT_STATES):
-                    problems.append(f"agent {i} is {a!r}")
-    return problems
-
-
-def download(name: str, state_: str, percent: int | None) -> dict:
-    return message(DOWNLOAD, name=name, state=state_, percent=percent)
-
-
-def launcher(action: str) -> dict:
-    return message(LAUNCHER, action=action)
-
-
-def command(name: str, **args) -> dict:
-    """A message from the shell to the browser: one of COMMANDS."""
-    if name not in COMMANDS:
-        raise ValueError(f"not a browser command: {name!r}")
-    return message(name, **args)
 
 
 def open_urls(urls: list[str]) -> dict:

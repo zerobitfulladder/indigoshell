@@ -46,30 +46,46 @@ anyway (WinIdChange) the filter moves to the new one and the shell is
 told the new X window. The release of a key we took (a shortcut, a key
 typed into find) never reaches the page either.
 
-The mouse on the tabs. The shell's top bar draws the tabs, so clicks on
-them arrive as commands (protocol.py): `tab` (a left or right press),
-`close` (a middle click; the tab is remembered for Ctrl+Shift+T as on
-Ctrl+W), `move` (a tab dragged along the bar: Alt+Shift+N's move) and
-`detach` (one dragged off the bar: app.py `detach_tab`), each naming
-the tab by its id, which the state carries. A tab the agent holds gets
-what the same path does with no mouse: switching away from one it drives
-ends its session (the Watch, `shown`), closing ends it with the tab,
-moving it changes nothing of it, and one torn out takes its session
-along (as `borrow` does).
+The shell's top bar. While a shell has the window it shows the
+window's section of its top bar (link.py; bar.py makes it of `state()`:
+the tabs, the page's host, the inputs and the actions menu), and what
+the user does there comes back as the bar's events (`on_event`), naming
+the tabs by their ids: `select` (a left or right press), `close` (a
+middle click; the tab is remembered for Ctrl+Shift+T as on Ctrl+W),
+`move` (a tab dragged along the bar to before another: Alt+Shift+N's
+move) and `detach` (one dragged off the bar: app.py `detach_tab`). A tab
+the agent holds gets what the same path does with no mouse: switching
+away from one it drives ends its session (the Watch, `shown`), closing
+ends it with the tab, moving it changes nothing of it, and one torn out
+takes its session along (as `borrow` does).
 
-The launcher. On a main window the shell grabs Ctrl+L, Ctrl+T and
-Ctrl+M (protocol.py, KEYS): while a shell has the window they never get
-here, and the shell's launcher answers them; the tab Ctrl+T is for is
-made when the shell sends `load`. When they do get here (no shell, a
-key the shell could not grab, a single window), the window asks itself:
-Ctrl+L and Ctrl+T with a Qt dialog of its own, Ctrl+M not at all. So it
-does when the shell took the key but has no launcher to show
-(`prompt`). A new window opened with no address asks the shell for its
-launcher once the shell has the window (`launcher`), or asks itself
+The inputs. On a main window the shell takes Ctrl+L, Ctrl+T, Ctrl+F and
+Ctrl+M (the chords of the bar's `address`, `new_tab` and `find` inputs
+and its `actions` menu): while a shell has the window they never get
+here, and the shell's box and list answer them, asking the window: an
+address input's `query` is answered from Flux's places (addresses.py,
+one `Addresses` per open input), its `submit` loads the row or the text
+(here, or in a new tab for `new_tab`, made when the submit comes) and
+`act` takes a bookmark out; a `pick` in the actions adds or removes the
+page's bookmark or hands a tab back to the agent. When those keys do get
+here (no shell, a key the shell could not grab, a single window), or the
+shell cannot show an input (`fallback`), the window asks itself: Ctrl+L
+and Ctrl+T with a Qt dialog of its own, Ctrl+F its own find, Ctrl+M not
+at all. A new window opened with no address asks the shell to open its
+address input (`open`) once the shell has the window, or asks itself
 when no shell answers.
 
-Find in page, the browser's own (no shell, no keyboard grab: this
-window has the keyboard already). Two phases, vim's:
+Find in page, the shell's (its `find` input, vim's): each `query` is
+searched in the current page as it is typed and highlighted
+(smartcase), its count answered when the page has counted ("3/12", "no
+matches"); the first `submit` (Enter) turns the shell's box to stepping,
+and each one after it (n, N) is the next or previous match, its count
+answered again; `closed` ends it, the highlight gone and the match left
+selected (Enter, a click) or cleared too (Escape). The keys are the
+shell's throughout: the page never sees them.
+
+Find in page, the window's own (no shell, or `fallback`: this window has
+the keyboard). Two phases, the same:
 
     typing      Ctrl+F; the query, as typed, searched as it changes and
                 counted. The last query comes back, replaced whole by the
@@ -101,8 +117,8 @@ Watch first (watch.py): while the agent drives the tab the window shows,
 the user's input stops there, and a key or a click on the overlay's mark
 takes the tab over. The window tells the Watch which tab it shows
 (`select`), which closes (`close_tab`) and when it goes (`closeEvent`);
-the state says the agent's hold on each tab (protocol `agent`), and the
-shell's `resume` hands a paused tab back. A tab whose page is inside a
+the state says the agent's hold on each tab (`agent`), and the actions'
+"Let Lilac drive again" hands a paused tab back. A tab whose page is inside a
 dialog's call (a nested event loop, tabs.py) is deleted only once that
 call returned, out of the window meanwhile.
 
@@ -144,8 +160,10 @@ from PySide6.QtWebEngineCore import (QWebEngineNewWindowRequest, QWebEnginePage,
 from PySide6.QtWidgets import (QHBoxLayout, QInputDialog, QLabel, QMessageBox,
                                QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
+from indigoshell.applink import bar as B
 from indigoshell.applink.protocol import PLACE_WAIT_S
-from flux import places, protocol
+from flux import bar as flux_bar, places, protocol
+from flux.addresses import Addresses
 from indigoshell.core.naming import APP
 
 from . import keys
@@ -228,30 +246,30 @@ class FallbackLine(QWidget):
             self.tabs.setText("")
             self.host.setText("")
             return
-        tabs = state[protocol.TABS]
-        found = state.get(protocol.FIND)
+        tabs = state["tabs"]
+        found = state.get("find")
         if found is not None:
             self.tabs.setText(_find_html(found))
         else:
             cap = max(8, min(TITLE_CHARS, 160 // max(1, len(tabs))))
             items = []
             for i, t in enumerate(tabs):
-                title = t[protocol.TITLE]
+                title = t["title"]
                 title = title if len(title) <= cap else title[:cap - 1].rstrip() + "…"
-                color = STRONG if i == state[protocol.CURRENT] else MUTED
+                color = STRONG if i == state["current"] else MUTED
                 items.append(f'<span style="color:{color}">{i + 1} {html.escape(title)}</span>')
             self.tabs.setText("&nbsp;&nbsp;".join(items))
-        current = tabs[state[protocol.CURRENT]]
+        current = tabs[state["current"]]
         right = []
         if extra:
             right.append(f'<span style="color:{MUTED}">{html.escape(extra)}</span>')
-        if state.get(protocol.BOOKMARKED):
+        if state.get("bookmarked"):
             right.append(f'<span style="color:{HOST}">{BOOKMARK_MARK}</span>')
-        if not state[protocol.SECURE]:
+        if not state["secure"]:
             right.append(f'<span style="color:{WARN}">not secure</span>')
-        right.append(f'<span style="color:{HOST}">{html.escape(current[protocol.HOST])}</span>')
-        if current[protocol.LOADING]:
-            right.append(f'<span style="color:{MUTED}">{state[protocol.PROGRESS]}%</span>')
+        right.append(f'<span style="color:{HOST}">{html.escape(current["host"])}</span>')
+        if current["loading"]:
+            right.append(f'<span style="color:{MUTED}">{state["progress"]}%</span>')
         self.host.setText("&nbsp;".join(right))
 
     def text(self) -> str:
@@ -261,12 +279,12 @@ class FallbackLine(QWidget):
 
 def _find_html(f: dict) -> str:
     """`find  query▏  3/12`, as the top bar draws it."""
-    query = html.escape(f["query"]) + (protocol.FIND_CARET if f["typing"] else "")
-    count = protocol.find_count(f)
-    parts = [f'<span style="color:{MUTED}">{protocol.FIND_LABEL}</span>',
+    query = html.escape(f["query"]) + (flux_bar.FIND_CARET if f["typing"] else "")
+    count = flux_bar.find_count(f)
+    parts = [f'<span style="color:{MUTED}">{flux_bar.FIND_LABEL}</span>',
              f'<span style="color:{STRONG}">{query}</span>']
     if count:
-        color = WARN if count == protocol.NO_MATCHES else MUTED
+        color = WARN if count == flux_bar.NO_MATCHES else MUTED
         parts.append(f'<span style="color:{color}">{html.escape(count)}</span>')
     return "&nbsp;&nbsp;".join(parts)
 
@@ -340,6 +358,11 @@ class Window(QWidget):
         self.find_tab: Tab | None = None
         self._find_enter = False                # Enter waits for the count
         self._find_seq = 0                      # the search whose count is wanted
+        # The shell's find (its `find` input): the query seq whose count is
+        # wanted, the tab it searches, whether Enter has turned it to
+        # stepping, the last count. And an open address input's places.
+        self.shell_find: dict | None = None
+        self.addresses: dict[str, Addresses] = {}
 
         self.line = FallbackLine()
         self.line.hide()
@@ -352,12 +375,12 @@ class Window(QWidget):
 
         # The shell shows the tabs and host in its top bar when one has
         # this window; the line says them when none does.
-        self.link = ShellLink(self.winId, single, self, agent=agent, off=browser.headless)
+        self.link = ShellLink(self.winId, self.id, self, off=browser.headless)
         self.link.attached_changed.connect(self.refresh)
         self.link.attached_changed.connect(self._on_attached)
         self.link.down.connect(self._on_shell_down)
         self.link.fallback_changed.connect(self._place_line)
-        self.link.command.connect(self.on_command)
+        self.link.event.connect(self.on_event)
 
         self._refresh = QTimer(self)
         self._refresh.setSingleShot(True)
@@ -387,9 +410,8 @@ class Window(QWidget):
         self._place_timer.setInterval(int(PLACE_WAIT_S * 1000))
         self._place_timer.timeout.connect(partial(self._on_placed, None))
         self._place_timer.start()
-        near_wid = (int(near.winId()) if near is not None and shiboken6.isValid(near)
-                    and near.testAttribute(Qt.WidgetAttribute.WA_WState_Created) else None)
-        self.link.place(near_wid)
+        near_id = near.id if near is not None and shiboken6.isValid(near) else None
+        self.link.place(near_id)
 
     def _on_placed(self, desktop) -> None:
         if self.ready:
@@ -746,7 +768,7 @@ class Window(QWidget):
     def ask_myself(self, action: str) -> None:
         """What Ctrl+L (`address`), Ctrl+T (`new_tab`) and Ctrl+M
         (`actions`) do when they reach this window, and what the shell's
-        `prompt` asks for: a dialog of the window's own."""
+        `fallback` for those asks for: a dialog of the window's own."""
         if self.find_phase is not None:
             self.end_find(clear=False)
         if action == "address":
@@ -758,15 +780,15 @@ class Window(QWidget):
                 self.prompt_address("tab", "")
         else:
             log.info("the window's actions (Ctrl+M) have no list here but the shell's "
-                     "launcher; nothing done")
+                     "top bar; nothing done")
 
     def ask_address(self) -> None:
-        """An address for a new, blank window: the shell's launcher, as
-        for Ctrl+L, once the shell has the window; our own dialog when no
+        """An address for a new, blank window: the shell's address input,
+        as for Ctrl+L, once the shell has the window; our own dialog when no
         shell answers. The window has just been shown, so the line to the
         shell is usually still being made: what to do waits for it."""
         if self.link.attached:
-            self.link.send(protocol.launcher("address"))
+            self.link.send(B.open_input(flux_bar.ADDRESS))
         elif self.link.coming():
             self._address_wanted = True
         else:
@@ -775,7 +797,7 @@ class Window(QWidget):
     def _on_attached(self, attached: bool) -> None:
         if attached and self._address_wanted:
             self._address_wanted = False
-            self.link.send(protocol.launcher("address"))
+            self.link.send(B.open_input(flux_bar.ADDRESS))
 
     def _on_shell_down(self) -> None:
         if self._address_wanted:
@@ -815,8 +837,8 @@ class Window(QWidget):
             tab = self.current_tab()
         if tab is not None:
             if tab is self.find_tab:
-                # Find stays open under the shell's launcher (the keys
-                # went there, not here); a new page ends it.
+                # The window's own find (after a `fallback`) stays open
+                # under a dialog of its own; a new page ends it.
                 self.end_find(clear=False)
             tab.page.load(to_url(text))
             tab.view.setFocus()
@@ -939,7 +961,7 @@ class Window(QWidget):
         if self.find_phase is None:
             return None
         active, total = self.find_result if self.find_result else (None, None)
-        return protocol.find(self.find_query, active, total, self.find_phase == "typing")
+        return flux_bar.find(self.find_query, active, total, self.find_phase == "typing")
 
     # ── what pages ask for ──────────────────────────────────────────────
     def on_new_window(self, opener: Tab, request) -> None:
@@ -1036,85 +1058,175 @@ class Window(QWidget):
         tab.inspector.activateWindow()
 
     # ── the shell ───────────────────────────────────────────────────────
-    def on_command(self, msg: dict) -> None:
-        """A message from the shell (protocol.COMMANDS), by its type."""
-        cmd, tab = msg[protocol.TYPE], self.current_tab()
-        if cmd == protocol.PROMPT:
-            action = msg.get("action")
-            if action in protocol.ACTIONS:
-                log.info("the shell cannot show its launcher; asking ourselves")
-                self.ask_myself(action)
+    def on_event(self, msg: dict) -> None:
+        """An event of the bar's, from the shell (applink/PROTOCOL.md): the
+        mouse on the tabs, the inputs' queries and submits, a pick in the
+        actions, an input or menu closed, or one the shell cannot show."""
+        kind, name = msg.get("type"), msg.get("input")
+        if kind in (B.SELECT, B.CLOSE, B.MOVE, B.DETACH):
+            self.on_tab_event(kind, msg)
+        elif kind == B.QUERY and isinstance(msg.get("seq"), int):
+            text = str(msg.get("text") or "")
+            if name == flux_bar.FIND:
+                self.shell_find_query(msg["seq"], text)
+            elif name in (flux_bar.ADDRESS, flux_bar.NEW_TAB):
+                places_ = self.addresses.get(name)
+                if places_ is None:
+                    places_ = self.addresses[name] = Addresses()
+                self.link.send(places_.answer(name, msg["seq"], text))
+        elif kind == B.SUBMIT:
+            if name == flux_bar.FIND:
+                self.shell_find_step(bool(msg.get("shift")))
+            elif name in (flux_bar.ADDRESS, flux_bar.NEW_TAB):
+                url = Addresses.url_of(msg.get("row"), str(msg.get("text") or ""))
+                if url is not None:
+                    log.info("address picked: %s", url)
+                    self.load(url, "tab" if name == flux_bar.NEW_TAB else "here")
+        elif kind == B.ACT:
+            url = msg.get("row")
+            if msg.get("action") == flux_bar.REMOVE and isinstance(url, str) and url.strip():
+                self.bookmark("remove", url.strip())
+                places_ = self.addresses.get(name)
+                if places_ is not None:
+                    places_.remove(url)
+        elif kind == B.PICK and msg.get("menu") == flux_bar.ACTIONS:
+            self.on_action(msg.get("row"))
+        elif kind == B.CLOSED:
+            if name == flux_bar.FIND:
+                self.shell_find_end(clear=msg.get("by") == "escape")
+            elif name in self.addresses:
+                self.addresses.pop(name).close()
+        elif kind == B.FALLBACK:
+            what = name or msg.get("menu")
+            if what in (flux_bar.ADDRESS, flux_bar.NEW_TAB, flux_bar.ACTIONS):
+                log.info("the shell cannot show %s; asking ourselves", what)
+                self.ask_myself(what)
+            elif what == flux_bar.FIND:
+                log.info("the shell cannot show find; our own")
+                self.start_find()
             else:
-                log.debug("prompt for %r not understood", action)
-            return
-        if cmd == protocol.RESUME:
-            index = msg.get("index")
-            if isinstance(index, int) and 0 <= index < len(self.tabs):
-                if not self.browser.watch.resume(self.tabs[index]):
-                    log.debug("resume: tab %d is not paused", index)
-            else:
-                log.debug("resume for no tab: %s", msg)
-            return
-        if tab is None:
-            return
-        WA = QWebEnginePage.WebAction
-        if cmd in ("back", "forward", "reload"):
-            if cmd != "reload":
-                tab.note_input()
-            tab.page.triggerAction({"back": WA.Back, "forward": WA.Forward,
-                                    "reload": WA.Reload}[cmd])
-        elif cmd == "open" and isinstance(msg.get("url"), str):
-            self.tab_target().add_tab(to_url(msg["url"]))
-        elif cmd == "load" and isinstance(msg.get("url"), str) and msg["url"].strip():
-            self.load(msg["url"], "tab" if msg.get("where") == "tab" else "here")
-        elif cmd == "bookmark" and msg.get("op") in ("add", "remove"):
-            url = msg.get("url")
-            if url is None or (isinstance(url, str) and url.strip()):
-                self.bookmark(msg["op"], url.strip() if url else None)
-            else:
-                log.debug("bookmark command with a url that is no address: %s", msg)
-        elif cmd == "close" and protocol.TAB_ID not in msg:
-            self.close_tab(tab)
-        elif cmd in ("tab", "close", "move", "detach"):
-            self.on_tab_command(cmd, msg)
+                log.debug("a fallback for %r not understood", what)
         else:
-            log.debug("shell command not understood: %s", msg)
+            log.debug("shell event not understood: %s", msg)
 
-    def on_tab_command(self, cmd: str, msg: dict) -> None:
-        """`tab`, `close`, `move` or `detach` for one tab, named by its
+    def on_action(self, row) -> None:
+        """A row of the window's actions picked (bar.py `actions_rows`)."""
+        if row in (flux_bar.ADD_ROW, flux_bar.REMOVE_ROW):
+            self.bookmark("add" if row == flux_bar.ADD_ROW else "remove")
+        elif isinstance(row, str) and row.startswith(flux_bar.RESUME):
+            tab = next((t for t in self.tabs if str(t.id) == row[len(flux_bar.RESUME):]), None)
+            if tab is None or not self.browser.watch.resume(tab):
+                log.debug("resume: %s is no paused tab here", row)
+        else:
+            log.debug("an action that is none: %r", row)
+
+    def on_tab_event(self, kind: str, msg: dict) -> None:
+        """`select`, `close`, `move` or `detach` for one tab, named by its
         id (the mouse on the shell's top bar): the tab the user clicked,
         wherever it is in the list now; nothing when it is gone."""
         tab_id = msg.get(protocol.TAB_ID)
         target = next((t for t in self.tabs if t.id == tab_id), None) \
             if protocol.is_id(tab_id) else None
         if target is None:
-            log.debug("%s for a tab this window does not hold: %s", cmd, msg)
+            log.debug("%s for a tab this window does not hold: %s", kind, msg)
             return
-        if cmd == "tab":
+        if kind == B.SELECT:
             self.select(self.tabs.index(target))
-        elif cmd == "close":
+        elif kind == B.CLOSE:
             self.close_tab(target)
-        elif cmd == "move":
-            to = msg.get("to")
-            if self.single or not protocol.is_id(to) or to < 0:
-                log.debug("move not taken: %s", msg)
+        elif self.single:
+            log.debug("%s not taken by a single window: %s", kind, msg)
+        elif kind == B.MOVE:
+            before = msg.get("before")
+            others = [t for t in self.tabs if t is not target]
+            to = len(others) if before is None else next(
+                (i for i, t in enumerate(others) if t.id == before), None)
+            if to is None:
+                log.debug("move before a tab this window does not hold: %s", msg)
                 return
             self.move_tab(self.tabs.index(target), min(to, len(self.tabs) - 1))
         else:
-            x, y = msg.get("x"), msg.get("y")
-            at = (x, y) if protocol.is_id(x) and protocol.is_id(y) else None
-            self.browser.detach_tab(target, at=at)
+            self.browser.detach_tab(target)
+
+    # ── the shell's find (its `find` input) ─────────────────────────────
+    def shell_find_query(self, seq: int, text: str) -> None:
+        """Find `text` in the current page, as typed in the shell's box:
+        highlighted at once (smartcase), the count answered when the
+        page has counted. Every query is answered, even with no page to
+        search: the shell sends the next only then."""
+        tab = self.current_tab()
+        f = self.shell_find
+        if f is None or f["tab"] is not tab:
+            if f is not None and f["tab"] in self.tabs:
+                f["tab"].page.findText("")
+            f = self.shell_find = {"tab": tab, "seq": seq, "query": "", "stepping": False,
+                                   "count": None}
+        f.update(seq=seq, query=text, stepping=False, count=None)
+        if tab is None or not text:
+            if tab is not None:
+                tab.page.findText("")
+            self.link.send(B.answer(flux_bar.FIND, seq))
+            return
+        self._shell_find(tab, seq, text)
+
+    def shell_find_step(self, backward: bool) -> None:
+        """Enter in the shell's find: the first turns it to stepping (no
+        move); after that, n and N: the next match, the one before."""
+        f = self.shell_find
+        if f is None or f["tab"] not in self.tabs or not f["query"]:
+            return
+        if not f["stepping"]:
+            f["stepping"] = True
+            return
+        self._shell_find(f["tab"], f["seq"], f["query"], backward=backward)
+
+    def _shell_find(self, tab: Tab, seq: int, query: str, backward: bool = False) -> None:
+        F = QWebEnginePage.FindFlag
+        flags = F(0)
+        if any(c.isupper() for c in query):
+            flags |= F.FindCaseSensitively
+        if backward:
+            flags |= F.FindBackward
+        tab.page.findText(query, flags, partial(self._shell_found, tab, seq))
+
+    def _shell_found(self, tab: Tab, seq: int, result) -> None:
+        f = self.shell_find
+        if f is None or f["tab"] is not tab or f["seq"] != seq:
+            return
+        active, total = result.activeMatch(), result.numberOfMatches()
+        f["count"] = (active, total)
+        count = flux_bar.find_count(flux_bar.find(f["query"], active, total, True))
+        self.link.send(B.answer(flux_bar.FIND, seq, count=B.count(
+            count, "error" if count == flux_bar.NO_MATCHES else None) if count else None))
+
+    def shell_find_end(self, *, clear: bool) -> None:
+        """The shell's find closed: the highlight goes; the match left
+        selected (Enter, a click) or cleared too (Escape)."""
+        f, self.shell_find = self.shell_find, None
+        tab = f["tab"] if f is not None else None
+        if tab is not None and tab in self.tabs:
+            tab.page.findText("")
+            if clear:
+                tab.page.runJavaScript("window.getSelection().removeAllRanges()",
+                                       QWebEngineScript.ScriptWorldId.ApplicationWorld)
 
     def state(self) -> dict | None:
+        """The window as it is now (bar.py `state`): what its bar and its
+        own line say."""
         tab = self.current_tab()
         if tab is None:
             return None
-        return protocol.state([t.describe() for t in self.tabs], self.current,
+        return flux_bar.state([t.describe() for t in self.tabs], self.current,
                               tab.progress if tab.loading else 100, tab.secure(),
                               url=tab.url().toString(),
                               bookmarked=self.page_bookmark(tab) is not None,
                               find=self._find_state(),
                               agent=[self.browser.watch.state_of(t.id) for t in self.tabs])
+
+    def bar(self, state: dict) -> dict:
+        """Its section of the shell's top bar (bar.py)."""
+        return flux_bar.bar_of(state, single=self.single, agent=self.agent,
+                               names=self.link.voices)
 
     def refresh(self, *_) -> None:
         """The shell, the line and the title, once per turn of the event
@@ -1131,7 +1243,7 @@ class Window(QWidget):
         if self.agent:
             title = protocol.agent_title(self.agent) + (f" · {title}" if title else "")
         self.setWindowTitle(title or NAME)
-        self.link.push(state)
+        self.link.push(self.bar(state))
         self.line.show_state(state if self.link.fallback else None, self.download)
 
     def _place_line(self, *_) -> None:
@@ -1171,6 +1283,9 @@ class Window(QWidget):
         if self.prompt is not None and shiboken6.isValid(self.prompt):
             self.prompt.close()
         self._address_wanted = False
+        for places_ in self.addresses.values():
+            places_.close()
+        self.addresses.clear()
         self.link.close()
         self.browser.forget(self)
         super().closeEvent(event)

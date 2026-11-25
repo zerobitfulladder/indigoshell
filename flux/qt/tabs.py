@@ -79,7 +79,7 @@ from PySide6.QtWebEngineCore import (QWebEngineLoadingInfo, QWebEngineNavigation
                                      QWebEnginePage)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from flux import places, protocol
+from flux import bar as flux_bar, places, protocol
 
 log = logging.getLogger(__name__)
 js_log = logging.getLogger(__name__.rsplit(".", 1)[0] + ".js")
@@ -275,7 +275,7 @@ class Tab(QObject):
         return not protocol.insecure_scheme(self.url().scheme())
 
     def describe(self) -> dict:
-        return protocol.tab(self.title(), self.host(), self.loading, id_=self.id)
+        return flux_bar.tab(self.title(), self.host(), self.loading, id_=self.id)
 
     # ── the agent's loads ───────────────────────────────────────────────
     @property

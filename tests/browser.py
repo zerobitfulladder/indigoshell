@@ -239,6 +239,26 @@ def requests_to(path_prefix: str) -> list[dict]:
 
 # ── a stand-in for the shell: just the socket ──────────────────────────
 
+def x11_of(announce: dict):
+    return (announce.get("handle") or {}).get("x11")
+
+
+def bar_state(bar: dict) -> dict:
+    """A bar read back as what it says of the window."""
+    tabs = next((i for i in bar.get("start", []) if i.get("kind") == "tabs"), {})
+    ids = [t["id"] for t in tabs.get("tabs", [])]
+    host = next((i for i in bar.get("end", []) if i.get("id") == "host"), {})
+    icons = [sp.get("icon") for sp in host.get("spans", [])]
+    find = next((i for i in bar.get("end", []) if i.get("id") == "find"), None)
+    return {"tabs": [{"tab": t["id"], "title": t["title"], "loading": bool(t.get("busy"))}
+                     for t in tabs.get("tabs", [])],
+            "current": ids.index(tabs["current"]) if tabs.get("current") in ids else -1,
+            "url": (bar.get("inputs", {}).get("address") or {}).get("text", ""),
+            "bookmarked": "bookmark" in icons, "secure": "unlocked" not in icons,
+            "find": find, "agent": [t.get("agent") for t in tabs.get("tabs", [])]}
+
+
+
 class FakeShell:
     """Listens where the shell would, answers {"type": "attached"} to
     every announce, and keeps every message per connection with the time
@@ -249,8 +269,14 @@ class FakeShell:
         def __init__(self, sock):
             self.sock, self.msgs, self.times, self.open = sock, [], [], True
 
+        def bars(self):
+            return self.of("bar")
+
         def states(self):
-            return self.of("state")
+            """What each bar sent says of the window, read back (the tabs by
+            id, the current one's index, the address input's text, the
+            host's marks, Flux's own find line)."""
+            return [bar_state(b) for b in self.bars()]
 
         def of(self, type_):
             return [m for m in self.msgs if m.get("type") == type_]
@@ -297,7 +323,7 @@ class FakeShell:
         """The open connection a browser window announced itself on."""
         wid = int(window.winId())
         return next((c for c in reversed(self.conns) if c.open and c.msgs
-                     and c.msgs[0].get("wid") == wid), None)
+                     and x11_of(c.msgs[0]) == wid), None)
 
     def drop(self, conn) -> None:
         try:
@@ -389,48 +415,19 @@ def test_pure() -> None:
             pass
     check("sites.json rules: a wrong shape is refused as a whole", not bad, str(bad or ""))
 
-    good = protocol.state([protocol.tab("A", "a.org", False, id_=1)], 0, 100, True,
-                          url="https://a.org/", bookmarked=True,
-                          find=protocol.find("q", None, None, True))
-    plain = protocol.state([protocol.tab("A", "a.org", False, id_=1)], 0, 100, True, url="",
-                           bookmarked=False, find=None)
-    two = protocol.state([protocol.tab("A", "a.org", False, id_=1),
-                          protocol.tab("B", "b.org", False, id_=2)], 0, 100, True, url="",
-                         bookmarked=False, find=None)
-    broken = [dict(good, current=3), dict(good, progress=101),
-              dict(good, tabs=[{"title": "A"}]), dict(good, tabs=[]),
-              {"type": "state", "tabs": good["tabs"], "current": 0, "progress": 100,
-               "secure": True},
-              dict(good, bookmarked="yes"), dict(good, find={"query": 1}),
-              dict(good, find=protocol.find("q", -1, 3, False)), dict(good, url=5),
-              dict(good, tabs=[{"title": "A", "host": "a.org", "loading": False}]),
-              dict(good, tabs=[dict(good["tabs"][0], tab=True)]),
-              dict(two, tabs=[two["tabs"][0], dict(two["tabs"][1], tab=1)])]
-    check("state check: the documented shape, every key there (find null or an object), "
-          "unknown keys ignored; malformed or partial ones refused",
-          good["type"] == "state" and protocol.state_problems(good) == []
-          and protocol.state_problems(plain) == [] and protocol.state_problems(two) == []
-          and good["tabs"][0] == {"tab": 1, "title": "A", "host": "a.org", "loading": False}
-          and protocol.state_problems({**good, "future": 1}) == []
-          and all(protocol.state_problems(b) for b in broken),
-          f"{[protocol.state_problems(b) for b in broken if not protocol.state_problems(b)]}")
+    from flux import bar as fb
+    from indigoshell.applink import bar as B
     lines = [b'{"type": "attached"}', b'{"attached": true}', b"[1]", b"nope", b'{"type": 4}']
     check("every message has its type: one without, or with one that is no string, is no "
-          "message; the announce, a download, a launcher, a command, the instance's open",
+          "message; the announce (the app, its id for the window, its X window), an `open` of "
+          "an input, the instance's open",
           [protocol.decode(x) for x in lines] == [{"type": "attached"}, None, None, None, None]
-          and protocol.announce(7, False) == {"type": "announce", "app": "flux", "wid": 7,
-                                              "single": False}
-          and protocol.download("f", "done", 100) == {"type": "download", "name": "f",
-                                                      "state": "done", "percent": 100}
-          and protocol.launcher("address") == {"type": "launcher", "action": "address"}
-          and protocol.command("load", url="u", where="tab") == {"type": "load", "url": "u",
-                                                                 "where": "tab"}
-          and protocol.command("move", tab=3, to=0) == {"type": "move", "tab": 3, "to": 0}
-          and protocol.command("detach", tab=3, x=1, y=2) == {"type": "detach", "tab": 3,
-                                                              "x": 1, "y": 2}
+          and B.announce("flux", 3, 7) == {"type": "announce", "app": "flux", "window": 3,
+                                           "handle": {"x11": 7}}
+          and B.open_input("address") == {"type": "open", "input": "address"}
           and protocol.open_urls(["u"]) == {"type": "open", "urls": ["u"]})
     check("the find line's count: n/total, no matches, nothing before the count",
-          [protocol.find_count(protocol.find(q, a, t, True)) for q, a, t in
+          [fb.find_count(fb.find(q, a, t, True)) for q, a, t in
            (("x", 3, 12), ("x", 0, 0), ("", 0, 0), ("x", None, None))]
           == ["3/12", "no matches", "", ""])
 
@@ -844,17 +841,22 @@ def test_in_process() -> None:
     conn = shell.conns[0] if shell.conns else None
     wait(lambda: conn and conn.states())
     first = conn.msgs[0] if conn and conn.msgs else {}
-    check("announce first: {type: announce, app: flux, wid, single: false} (a main window)",
-          first == {"type": "announce", "app": "flux", "wid": int(w.winId()), "single": False},
-          f"{first}")
+    check("announce first: {type: announce, app: flux, window: its id, handle: {x11}}",
+          first == {"type": "announce", "app": "flux", "window": w.id,
+                    "handle": {"x11": int(w.winId())}}, f"{first}")
+    from flux import bar as fb
+    from indigoshell.applink import bar as B
+    bars = conn.bars() if conn else []
     states = conn.states() if conn else []
-    check("then the state, in the documented shape, every key there",
-          bool(states) and protocol.state_problems(states[-1]) == []
-          and set(states[-1]) == {"type", *protocol.STATE_KEYS, *protocol.OPTIONAL_STATE_KEYS}
+    check("then its bar, good by the vocabulary's check: the tabs by id, the host after the "
+          "open padlock (plain http), the address input holding the page's address; a main "
+          "window's chords (Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M)",
+          bool(bars) and B.bar_problems(bars[-1]) == []
           and states[-1]["agent"] == [None, None, None]
           and [t["title"] for t in states[-1]["tabs"]] == ["Alpha", "Beta", "Gamma"]
           and states[-1]["current"] == 0 and states[-1]["secure"] is False
-          and states[-1]["url"] == url("/page/Alpha"),
+          and states[-1]["url"] == url("/page/Alpha")
+          and set(B.chords(bars[-1])) == {"ctrl+l", "ctrl+t", "ctrl+f", "ctrl+m"},
           f"{states[-1] if states else None}")
     mark = len(logs.records)
     press(w, K.Key_M, M.ControlModifier)
@@ -866,9 +868,9 @@ def test_in_process() -> None:
     said = [m for m in logs.messages(logging.INFO, mark) if "Ctrl+M" in m]
     check("Ctrl+M and Ctrl+L reaching the window with a shell there (one that could not grab "
           "them): Ctrl+M one line in the log, Ctrl+L the window's own dialog holding the "
-          "address; nothing but states said to the shell",
+          "address; nothing but bars said to the shell",
           len(said) == 1 and asked and value == url("/page/Alpha")
-          and all(m["type"] == "state" for m in conn.msgs[1:]), f"{said} {value!r}")
+          and all(m["type"] == "bar" for m in conn.msgs[1:]), f"{said} {value!r}")
     count = len(conn.states())
     for _ in range(5):
         w.refresh()
@@ -881,32 +883,29 @@ def test_in_process() -> None:
     new = conn.states()[count:]
     check("only on change: refreshes with nothing new send nothing; a switch sends one",
           unchanged and len(new) == 1 and new[0]["current"] == 2, f"{len(new)} new: {new}")
-    every = conn.states()
+    every = conn.bars()
     dupes = sum(a == b for a, b in zip(every, every[1:]))
-    bad = [p for s in every for p in protocol.state_problems(s)]
-    check("every state on this connection well formed, none repeated",
-          not bad and dupes == 0, f"{len(every)} states, problems {bad[:3]}, repeats {dupes}")
-    conn.send({"type": "tab", "tab": w.tabs[0].id})
+    bad = [p for s in every for p in B.bar_problems(s)]
+    check("every bar on this connection well formed, none repeated",
+          not bad and dupes == 0, f"{len(every)} bars, problems {bad[:3]}, repeats {dupes}")
+    conn.send({"type": "select", "item": "tabs", "tab": w.tabs[0].id})
     wait(lambda: w.current == 0)
-    conn.send({"type": "open", "url": url("/page/Opened")})
-    wait(lambda: len(w.tabs) == 4)
+    w.add_tab(QUrl(url("/page/Opened")))
     opened = len(w.tabs) == 4 and loaded(w.tabs[3], "Opened") and w.current == 3
-    conn.send({"type": "back"})
-    QTest.qWait(200)
-    conn.send({"type": "close"})
+    conn.send({"type": "close", "item": "tabs", "tab": w.tabs[3].id})
     wait(lambda: len(w.tabs) == 3)
-    check("commands from the shell: tab, open, close", opened and len(w.tabs) == 3
-          and titles(w) == ["Alpha", "Beta", "Gamma"], f"{titles(w)}")
+    check("the bar's events from the shell: select, close (the tab named by its id)",
+          opened and len(w.tabs) == 3 and titles(w) == ["Alpha", "Beta", "Gamma"], f"{titles(w)}")
     w.select(0)
 
     # The mouse on the top bar's tabs: commands naming a tab by its id.
     ids = [t.id for t in w.tabs]
     wait(lambda: conn.states() and conn.states()[-1]["current"] == 0)
     said = [t.get("tab") for t in conn.states()[-1]["tabs"]]
-    check("the state names each tab by its id (its page's, as the agent's requests do)",
+    check("the bar names each tab by its id (its page's, as the agent's requests do)",
           said == ids and len(set(ids)) == 3, f"{said} vs {ids}")
     beta = w.tabs[1]
-    conn.send({"type": "close", "tab": beta.id})
+    conn.send({"type": "close", "item": "tabs", "tab": beta.id})
     closed_ok = wait(lambda: len(w.tabs) == 2) and beta not in w.tabs
     press(w, K.Key_T, M.ControlModifier | M.ShiftModifier)
     back = w.tabs[1] if len(w.tabs) == 3 else None
@@ -916,23 +915,23 @@ def test_in_process() -> None:
           f"{titles(w)}, current {w.current}")
     w.select(0)
     alpha, gamma = w.tabs[0], w.tabs[2]
-    conn.send({"type": "move", "tab": alpha.id, "to": 2})
+    conn.send({"type": "move", "item": "tabs", "tab": alpha.id, "before": None})
     moved = wait(lambda: w.tabs[2] is alpha)
-    conn.send({"type": "move", "tab": gamma.id, "to": 99})
+    conn.send({"type": "move", "item": "tabs", "tab": gamma.id, "before": None})
     QTest.qWait(100)
     end = w.tabs[-1] is gamma
-    conn.send({"type": "move", "tab": beta.id, "to": 0})      # closed: no such tab now
-    conn.send({"type": "move", "tab": alpha.id, "to": "first"})
-    conn.send({"type": "tab", "tab": beta.id})
-    conn.send({"type": "close", "tab": beta.id})
+    conn.send({"type": "move", "item": "tabs", "tab": beta.id, "before": back.id})   # closed
+    conn.send({"type": "move", "item": "tabs", "tab": alpha.id, "before": beta.id})  # likewise
+    conn.send({"type": "move", "item": "tabs", "tab": alpha.id, "before": "first"})
+    conn.send({"type": "select", "item": "tabs", "tab": beta.id})
+    conn.send({"type": "close", "item": "tabs", "tab": beta.id})
     QTest.qWait(150)
     stale = titles(w) == ["Beta", "Alpha", "Gamma"] and len(w.tabs) == 3
-    conn.send({"type": "move", "tab": alpha.id, "to": 0})
-    conn.send({"type": "move", "tab": back.id, "to": 1})
+    conn.send({"type": "move", "item": "tabs", "tab": alpha.id, "before": back.id})
     wait(lambda: titles(w) == ["Alpha", "Beta", "Gamma"])
-    check("`move` (a drag along the bar): that tab to that place, the current one kept in "
-          "front; past the end is the end; a tab no longer there, or a place that is no number: "
-          "nothing", moved and end and stale and w.current_tab() is alpha
+    check("`move` (a drag along the bar): that tab before that one, the current one kept in "
+          "front; before none, the end; a tab no longer there, before one no longer there, or "
+          "one that is no tab: nothing", moved and end and stale and w.current_tab() is alpha
           and titles(w) == ["Alpha", "Beta", "Gamma"], f"{titles(w)}")
 
     torn = w.tabs[1]
@@ -940,7 +939,7 @@ def test_in_process() -> None:
     js(torn.page, "document.body.insertAdjacentHTML('beforeend', '<input id=f>');"
                   "document.getElementById('f').value = 'typed by hand'; window.mark = 42;")
     before = list(browser.windows)
-    conn.send({"type": "detach", "tab": torn.id, "x": 40, "y": 60})
+    conn.send({"type": "detach", "item": "tabs", "tab": torn.id})
     wait(lambda: len(browser.windows) == len(before) + 1)
     fresh = next((x for x in browser.windows if x not in before), None)
     value = js(torn.page, "JSON.stringify([document.getElementById('f').value, window.mark])") \
@@ -959,7 +958,7 @@ def test_in_process() -> None:
                and len(browser.windows) == len(before) + 2)
     single.close()
     if fresh is not None:
-        fresh.on_command({"type": "detach", "tab": torn.id})
+        fresh.on_event({"type": "detach", "item": "tabs", "tab": torn.id})
         QTest.qWait(50)
         refused = refused and fresh.tabs == [torn]
         browser.move_tab(torn, w, at=1)         # home again; the empty window closes
@@ -987,16 +986,16 @@ def test_in_process() -> None:
     wait(lambda: not w.isFullScreen(), 2)
     QTest.qWait(100)
     off = (w.isFullScreen(), w.line.isVisible())
-    said = [m for m in conn.msgs[since:] if m["type"] != "state"]
+    said = [m for m in conn.msgs[since:] if m["type"] != "bar"]
     check("fullscreen: no line over the page (the shell shows the state), none after; nothing "
-          "but states said to the shell", on == (True, False) and off == (False, False)
+          "but bars said to the shell", on == (True, False) and off == (False, False)
           and not said, f"{on} {off} {said}")
     old_wid, old_handle, before = int(w.winId()), w.windowHandle(), len(shell.conns)
     w.destroy()
     w.create()
     w.show()
     told = wait(lambda: len(shell.conns) > before and shell.conns[-1].msgs
-                and shell.conns[-1].msgs[0].get("wid") == int(w.winId()), 3)
+                and x11_of(shell.conns[-1].msgs[0]) == int(w.winId()), 3)
     press(w, K.Key_2, M.AltModifier)
     key_ok = w.current == 1
     press(w, K.Key_1, M.AltModifier)
@@ -1012,16 +1011,17 @@ def test_in_process() -> None:
     before = len(shell.conns)
     press(w, K.Key_F12)
     inspector = w.current_tab().inspector
-    told = wait(lambda: any(c.msgs and c.msgs[0].get("single") is True
-                            for c in shell.conns[before:]), 5)
-    said = next((c.msgs[0] for c in shell.conns[before:] if c.msgs
-                 and c.msgs[0].get("single") is True), {})
     wid = int(inspector.winId()) if inspector is not None else None
+    told = wait(lambda: any(c.msgs and x11_of(c.msgs[0]) == wid and c.bars()
+                            for c in shell.conns[before:]), 5)
+    said = next((c.bars()[-1] for c in shell.conns[before:] if c.msgs
+                 and x11_of(c.msgs[0]) == wid and c.bars()), {})
     if inspector is not None:
         inspector.close()
-    check("the inspector (a single window) announces itself {single: true}: the shell leaves "
-          "its keys to it", told and said == {"type": "announce", "app": "flux", "wid": wid,
-                                               "single": True}, f"{said}")
+    check("the inspector (a single window) sends a bar of one tab that can do nothing, and no "
+          "inputs or menus: the shell leaves its keys to it", told
+          and said.get("inputs") == {} and said.get("menus") == {}
+          and said["start"][0]["can"] == [], f"{said}")
 
     # ── identity ────────────────────────────────────────────────────────
     print("  identity per site (127.0.0.1 and localhost are the same server):")
@@ -1127,28 +1127,24 @@ def test_in_process() -> None:
     since = len(conn.msgs)
     tab.page.load(QUrl(url("/download")))
     target = DOWNLOADS / "blob.bin"
-    done = wait(lambda: any(m["type"] == "download" and m["state"] == "done"
-                            for m in conn.msgs[since:]), 10)
-    notes = [m for m in conn.msgs[since:] if m["type"] == "download"]
-    check("a download lands in the download directory; the shell hears started and done, as "
-          "{type: download, name, state, percent}",
-          done and target.exists() and target.read_bytes() == BLOB
-          and notes[0]["state"] == "started" and notes[-1]["state"] == "done"
-          and set(notes[-1]) == {"type", "name", "state", "percent"}
-          and notes[-1]["name"] == "blob.bin",
-          f"{[n_['state'] for n_ in notes]}, {target.stat().st_size if target.exists() else 'no file'}")
+    done = wait(lambda: target.exists() and target.read_bytes() == BLOB
+                and not w.download, 10)
+    notes = [m for m in conn.msgs[since:] if m["type"] not in ("bar",)]
+    check("a download lands in the download directory; nothing of it said to the shell (the "
+          "window's own line notes it while it runs)", done and notes == [],
+          f"{notes[:2]}, {target.stat().st_size if target.exists() else 'no file'}")
 
     # ── the launcher's answers, find, bookmarks ─────────────────────────
-    print("  what the shell's launcher sends (it took the keys: tests/topbar.py and "
+    print("  what the shell's inputs send (it took the keys: tests/topbar.py and "
           "tests/browser_launcher.py):")
     w.select(0)
     tab = w.tabs[0]
     navigate(tab, lambda: tab.page.load(QUrl(url("/text"))), title="Text")
     wait(lambda: conn.states() and conn.states()[-1].get("url") == url("/text"))
     st = conn.states()[-1] if conn.states() else {}
-    check("the state carries the address, bookmarked and find",
+    check("the bar carries the address (its input's text), no bookmark mark, no find line",
           st.get("url") == url("/text") and st.get("bookmarked") is False
-          and st.get("find") is None and protocol.state_problems(st) == [], f"{sorted(st)}")
+          and st.get("find") is None and B.bar_problems(conn.bars()[-1]) == [], f"{st}")
 
     def page_keys():
         return json.loads(js(tab.page, "JSON.stringify(window.keys)") or "null")
@@ -1162,9 +1158,10 @@ def test_in_process() -> None:
         js(tab.page, "window.keys = []")
 
     tabs_before = len(w.tabs)
-    here = navigate(tab, lambda: conn.send({"type": "load", "url": url("/page/Here"),
-                                            "where": "here"}), title="Here")
-    check("{type: load, where: here}: in the current tab, no new tab",
+    here = navigate(tab, lambda: conn.send({"type": "submit", "input": "address",
+                                            "text": url("/page/Here"), "row": None,
+                                            "shift": False}), title="Here")
+    check("{type: submit, input: address} (the text, no row): in the current tab, no new tab",
           here and w.tabs[0] is tab and len(w.tabs) == tabs_before)
 
     timing = {}
@@ -1179,13 +1176,15 @@ def test_in_process() -> None:
     w.add_tab = timed_add
     sent_epoch = time.time() * 1000
     t_sent = time.perf_counter()
-    conn.send({"type": "load", "url": url("/painted"), "where": "tab"})
+    conn.send({"type": "submit", "input": "new_tab", "text": "x", "row": url("/painted"),
+               "shift": False})
     made = wait(lambda: len(w.tabs) == tabs_before + 1 and "loaded" in timing, 10)
     w.add_tab = real_add
     new = w.tabs[-1]
     painted = wait(lambda: js(new.page, "window.painted || 0"), 5)
     painted_at = js(new.page, "window.painted || 0") or 0
-    check("{type: load, where: tab}: a new tab, at the end, in front",
+    check("{type: submit, input: new_tab} (a row: its address): a new tab, at the end, in "
+          "front",
           made and w.current == len(w.tabs) - 1 and new.page.title() == "Painted")
     if made and painted:
         print(f"  (timing) picked -> tab made {(timing['made'] - t_sent) * 1000:.1f} ms (the tab "
@@ -1195,25 +1194,26 @@ def test_in_process() -> None:
     w.close_tab(new)
     w.select(0)
 
-    # The shell took the key but has no launcher: the window asks itself.
+    # The shell took the key but cannot show the input: the window asks itself.
     asked = {}
     for action in ("new_tab", "address"):
-        conn.send({"type": "prompt", "action": action})
+        conn.send({"type": "fallback", "input": action})
         shown = wait(lambda: prompt_up(w), 3)
         asked[action] = (w.prompt.windowTitle(), w.prompt.textValue()) if shown else None
         if shown:
             w.prompt.reject()
         QTest.qWait(50)
     mark = len(logs.records)
-    conn.send({"type": "prompt", "action": "actions"})
-    conn.send({"type": "prompt", "action": "nonsense"})
+    conn.send({"type": "fallback", "menu": "actions"})
+    conn.send({"type": "fallback", "input": "nonsense"})
     conn.send({"type": "from-the-future", "x": 1})
     QTest.qWait(200)
     said = [m for m in logs.messages(0, mark)
             if "Ctrl+M" in m or "not understood" in m]
-    check("{type: prompt}: the window's own answer, as for the key: new_tab the dialog empty, "
-          "address the dialog holding the address, actions a line in the log; nothing made; a "
-          "prompt for no action and a type it does not know ignored with a debug line each",
+    check("{type: fallback}: the window's own answer, as for the key: new_tab the dialog "
+          "empty, address the dialog holding the address, actions a line in the log; nothing "
+          "made; a fallback for no input of its and a type it does not know ignored with a "
+          "debug line each",
           asked == {"new_tab": ("New tab", ""), "address": ("Open", url("/page/Here"))}
           and len(w.tabs) == tabs_before and len(said) == 3, f"{asked} {said}")
 
@@ -1222,10 +1222,11 @@ def test_in_process() -> None:
     press(w, K.Key_F, M.ControlModifier)
     type_text(w, "her")
     opened = wait(lambda: w.find_phase == "typing", 2)
-    navigate(tab, lambda: conn.send({"type": "load", "url": url("/text"), "where": "here"}),
+    navigate(tab, lambda: conn.send({"type": "submit", "input": "address",
+                                     "text": url("/text"), "row": None, "shift": False}),
              title="Text")
-    check("find open when the shell loads an address into its tab (the launcher had the keys "
-          "meanwhile): the new page ends it", opened and w.find_phase is None
+    check("the window's own find open when the shell loads an address into its tab: the new "
+          "page ends it", opened and w.find_phase is None
           and wait(lambda: conn.states()[-1].get("find") is None, 2))
 
     # A key's release goes where its press went.
@@ -1239,13 +1240,77 @@ def test_in_process() -> None:
           "page's; one whose press the window never saw (the launcher's last key, let go after "
           "it closed) the page's", taken is True and ours is True and stray is False)
 
+    # ── the shell's inputs, answered ────────────────────────────────────
+    navigate(tab, lambda: tab.page.load(QUrl(url("/text"))), title="Text")
+    since = len(conn.msgs)
+    conn.send({"type": "query", "input": "address", "seq": 1, "text": "here"})
+    got = wait(lambda: any(m["type"] == "answer" for m in conn.msgs[since:]), 3)
+    ans = next((m for m in conn.msgs[since:] if m["type"] == "answer"), {})
+    check("an address input's query: answered from Flux's places (the typed row first, a page "
+          "visited before among the rows), the seq kept, good by the vocabulary's check",
+          got and ans.get("input") == "address" and ans.get("seq") == 1
+          and ans["rows"][0]["id"] == "typed"
+          and any(r["id"] == url("/page/Here") for r in ans["rows"])
+          and B.answer_problems(ans) == [], f"{[r['id'] for r in ans.get('rows', [])]}")
+    conn.send({"type": "closed", "input": "address", "by": "escape"})
+
+    def answered(seq):
+        return [m for m in conn.msgs[since:] if m["type"] == "answer"
+                and m.get("input") == "find" and m.get("seq") == seq]
+
+    def selection_now():
+        return js(tab.page, "window.getSelection().toString()")
+
+    since = len(conn.msgs)
+    conn.send({"type": "query", "input": "find", "seq": 2, "text": "bravo"})
+    counted = wait(lambda: answered(2), 3)
+    first = answered(2)[-1].get("count") if counted else None
+    conn.send({"type": "submit", "input": "find", "text": "bravo", "row": None, "shift": False})
+    QTest.qWait(250)
+    still = len(answered(2)) == 1
+    conn.send({"type": "submit", "input": "find", "text": "bravo", "row": None, "shift": False})
+    nxt = wait(lambda: len(answered(2)) == 2, 3)
+    conn.send({"type": "submit", "input": "find", "text": "bravo", "row": None, "shift": True})
+    prev = wait(lambda: len(answered(2)) == 3, 3)
+    counts = [m.get("count", {}).get("text") for m in answered(2)]
+    check("the shell's find: a query searched and counted as typed (3 of Bravo bravo BRAVO), "
+          "answered with a count only; the first Enter (submit) turns it to stepping and moves "
+          "nothing; then n and N (submits, shift false / true) step, the count answered again "
+          "for the same seq; Flux's own find untouched",
+          first == {"text": "1/3"} and still and nxt and prev
+          and counts == ["1/3", "2/3", "1/3"] and w.find_phase is None, f"{counts}")
+    conn.send({"type": "query", "input": "find", "seq": 3, "text": "Bravo"})
+    smart = wait(lambda: answered(3), 3) and answered(3)[-1].get("count") == {"text": "1/1"}
+    conn.send({"type": "query", "input": "find", "seq": 4, "text": "zzz"})
+    none = wait(lambda: answered(4), 3) and answered(4)[-1].get("count") == {
+        "text": "no matches", "color": "error"}
+    conn.send({"type": "query", "input": "find", "seq": 5, "text": ""})
+    empty = wait(lambda: answered(5), 3) and "count" not in answered(5)[-1]
+    check("... smartcase (an uppercase letter: 1 match); no matches said in `error`; nothing "
+          "typed: an answer with no count (every query is answered)", smart and none and empty,
+          f"{answered(3)[-1:]} {answered(4)[-1:]} {answered(5)[-1:]}")
+    conn.send({"type": "query", "input": "find", "seq": 6, "text": "bravo"})
+    wait(lambda: answered(6), 3)
+    for _ in range(2):
+        conn.send({"type": "submit", "input": "find", "text": "bravo", "row": None,
+                   "shift": False})
+    wait(lambda: len(answered(6)) == 2, 3)
+    conn.send({"type": "closed", "input": "find", "by": "enter"})
+    kept_sel = wait(lambda: (selection_now() or "").lower() == "bravo", 3)
+    conn.send({"type": "query", "input": "find", "seq": 7, "text": "bravo"})
+    wait(lambda: answered(7), 3)
+    conn.send({"type": "closed", "input": "find", "by": "escape"})
+    cleared = wait(lambda: selection_now() == "", 3)
+    check("closed by Enter: the find ends, the match left selected; by Escape: the highlight "
+          "and the selection gone", kept_sel and cleared and w.shell_find is None,
+          f"{selection_now()!r}")
+
     # ── find in page ────────────────────────────────────────────────────
     navigate(tab, lambda: tab.page.load(QUrl(url("/text"))), title="Text")
     clear_keys()
 
     def find_state():
-        states_ = conn.states()
-        return states_[-1].get("find") if states_ else "no state"
+        return w._find_state()
 
     def wait_find(**want):
         return wait(lambda: isinstance(find_state(), dict)
@@ -1314,7 +1379,7 @@ def test_in_process() -> None:
         press(w, K.Key_Backspace)
     type_text(w, "zzz")
     none = wait_find(query="zzz", total=0)
-    count_text = protocol.find_count(find_state()) if none else None
+    count_text = fb.find_count(find_state()) if none else None
     press(w, K.Key_Return)
     check("no matches: the count says so; Enter ends find",
           none and count_text == "no matches" and wait(lambda: find_state() is None, 2))
@@ -1362,19 +1427,19 @@ def test_in_process() -> None:
         states_ = conn.states()
         return states_[-1].get("bookmarked") if states_ else None
 
-    conn.send({"type": "bookmark", "op": "add"})
+    conn.send({"type": "pick", "menu": "actions", "row": "add"})
     added = wait(lambda: bookmarked() is True and marks.exists(), 3)
     data = json.loads(marks.read_text()) if marks.exists() else None
-    check("{cmd: bookmark, op: add}: bookmarks.json gets {name: the title, url, added}; "
-          "the state says bookmarked",
+    check("{type: pick, menu: actions, row: add}: bookmarks.json gets {name: the title, url, "
+          "added}; the bar says bookmarked (the mark before the host)",
           added and len(data) == 1 and data[0]["name"] == "Here"
           and data[0]["url"] == url("/page/Here") and isinstance(data[0]["added"], int),
           f"{data}")
     ino = marks.stat().st_ino
-    conn.send({"type": "bookmark", "op": "remove"})
+    conn.send({"type": "pick", "menu": "actions", "row": "remove"})
     removed = wait(lambda: bookmarked() is False, 3)
     leftovers = [p.name for p in marks.parent.iterdir() if p.name.startswith(".bookmarks-")]
-    check("op: remove: out of the file and the state; the file replaced whole (new inode, "
+    check("row remove: out of the file and the bar; the file replaced whole (new inode, "
           "no temporary left)", removed and json.loads(marks.read_text()) == []
           and marks.stat().st_ino != ino and not leftovers, f"{leftovers}")
 
@@ -1392,7 +1457,7 @@ def test_in_process() -> None:
     hand_edit("[{ not json")
     complained = wait(lambda: any("bookmarks.json" in m
                                   for m in logs.messages(logging.WARNING, warned)), 3)
-    conn.send({"type": "bookmark", "op": "remove"})
+    conn.send({"type": "pick", "menu": "actions", "row": "remove"})
     QTest.qWait(300)
     check("a malformed file: a warning, the bookmarks before it kept, and not written over",
           complained and bookmarked() is True and marks.read_text() == "[{ not json")
@@ -1441,8 +1506,9 @@ def test_in_process() -> None:
         this tab. Then until the shell has the landing page's state."""
         seen_nav.clear()
         seen_loads.clear()
-        done = navigate(tab, lambda: conn.send({"type": "load", "url": mark["url"],
-                                                "where": "here"}), title=land)
+        done = navigate(tab, lambda: conn.send({"type": "submit", "input": "address",
+                                                "text": "", "row": mark["url"],
+                                                "shift": False}), title=land)
         return done and wait(lambda: state_now().get("url") == tab.url().toString(), 3)
 
     def counts(mark) -> bool:
@@ -1452,7 +1518,7 @@ def test_in_process() -> None:
                 and places.page_key(tab.came_from or "") == places.page_key(mark["url"]))
 
     def remove_current():
-        conn.send({"type": "bookmark", "op": "remove"})       # Ctrl+M's Remove bookmark
+        conn.send({"type": "pick", "menu": "actions", "row": "remove"})   # Ctrl+M's Remove
 
     def click_away():
         QTest.qWait(300)                    # laid out before the click
@@ -1495,8 +1561,9 @@ def test_in_process() -> None:
                   away and back and after_link == (False, None) and after_back == (False, None),
                   f"after the link {after_link}, back {after_back}")
             open_mark(mark, land)
-            typed = navigate(tab, lambda: conn.send({"type": "load", "url": url("/page/Here"),
-                                                     "where": "here"}), title="Here")
+            typed = navigate(tab, lambda: conn.send({"type": "submit", "input": "address",
+                                                     "text": url("/page/Here"), "row": None,
+                                                     "shift": False}), title="Here")
             check("... and a new address", typed and wait(lambda: state_now().get("bookmarked")
                                                          is False, 2) and tab.came_from is None)
             open_mark(mark, land)
@@ -1534,8 +1601,9 @@ def test_in_process() -> None:
 
     # A click on the page before it moves on by itself: the user's doing.
     touched = imported[5]
-    first = navigate(tab, lambda: conn.send({"type": "load", "url": touched["url"],
-                                             "where": "here"}), title="Later")
+    first = navigate(tab, lambda: conn.send({"type": "submit", "input": "address",
+                                             "text": "", "row": touched["url"],
+                                             "shift": False}), title="Later")
     click = (first and wait(lambda: state_now().get("url") == tab.url().toString(), 2)
              and state_now().get("bookmarked") is True)
     QTest.mouseClick(w.windowHandle(), Qt.MouseButton.LeftButton, M.NoModifier,
@@ -1547,19 +1615,17 @@ def test_in_process() -> None:
 
     # The address list's Shift+Delete: a named address, whatever is shown.
     shown_url = tab.url().toString()
-    conn.send({"type": "bookmark", "op": "remove", "url": url("/page/Keep")})
+    conn.send({"type": "act", "input": "address", "action": "remove", "row": url("/page/Keep"),
+               "text": "keep"})
     left.remove(imported[6])
     named = wait(lambda: file_holds(left), 3)
-    conn.send({"type": "bookmark", "op": "add", "url": url("/page/Unseen")})
-    added_named = wait(lambda: any(e["url"] == url("/page/Unseen")
-                                   for e in json.loads(marks.read_text())), 3)
-    entry = next((e for e in json.loads(marks.read_text()) if e["url"] == url("/page/Unseen")), {})
-    conn.send({"type": "bookmark", "op": "remove", "url": url("/page/Unseen")})
-    named_gone = wait(lambda: file_holds(left), 3)
-    check("{cmd: bookmark, op: remove, url}: that address's bookmark, not the page shown's; "
-          "add with a url names it by its address when no tab shows it",
-          named and added_named and entry.get("name") == url("/page/Unseen") and named_gone
-          and tab.url().toString() == shown_url, f"{json.loads(marks.read_text())}")
+    conn.send({"type": "act", "input": "address", "action": "nonsense", "row": url("/hop1/B"),
+               "text": ""})
+    QTest.qWait(200)
+    check("{type: act, action: remove, row: an address} (Shift+Delete on a bookmark's row): "
+          "that address's bookmark, not the page shown's; an action it does not know: nothing",
+          named and file_holds(left) and tab.url().toString() == shown_url,
+          f"{json.loads(marks.read_text())}")
     tab.page.navigationRequested.disconnect(on_nav)
     tab.page.loadingChanged.disconnect(on_loading)
     hand_edit("[]")
@@ -1660,9 +1726,9 @@ def test_in_process() -> None:
     print("  URLs handed over by a second invocation (a thread here):")
     w2 = browser.open_urls([])          # a second window, blank, wanting an address
     wanted = wait(lambda: shell.conn_of(w2) is not None
-                  and {"type": "launcher", "action": "address"} in shell.conn_of(w2).msgs, 5)
+                  and {"type": "open", "input": "address"} in shell.conn_of(w2).msgs, 5)
     check("a new window with no address, a shell there: once the shell has the window, "
-          "{type: launcher, action: address} (its launcher, as for Ctrl+L); no dialog of its "
+          "{type: open, input: address} (its address input, as for Ctrl+L); no dialog of its "
           "own", wanted and not prompt_up(w2))
 
     def use(window) -> bool:
@@ -1876,7 +1942,8 @@ def test_processes() -> None:
     state3 = SCRATCH / "state-3"
     proc, shell, up, out = run_until_shown(state3, "Console", "--log-level", "debug")
     if up:
-        shell.conns[0].send({"type": "close"})
+        only = shell.conns[0].states()[-1]["tabs"][0]["tab"]
+        shell.conns[0].send({"type": "close", "item": "tabs", "tab": only})
     code = ended(proc)
     logged = read_log(state3)
     check("its last tab closed (the shell's close): exits 0, and the log says the window went "

@@ -10,9 +10,10 @@ of any app's bar, and what they read and open.
 1. places (flux/places.py): what a typed line means, the history
    writer's rules and its pruning, the bookmarks file (atomic writes,
    hand edits, a broken file).
-2. The address mode (services/addresses.py) on a scratch history and
-   bookmarks: the rows and their order for typed addresses, searches,
-   bookmark and host prefixes, history; Shift+Return; removing a
+2. Flux's answers to its address inputs (flux/addresses.py, pure) on a
+   scratch history and bookmarks: the rows and their order for typed
+   addresses, searches, bookmark and host prefixes, history; what a
+   submit names (Shift+Return: the text); an answer's shape; removing a
    bookmark's row; and what a search costs with 5,000 and 10,000 pages
    of history.
 3. An input of an app's bar (applink/prompt.py) and its list, driven
@@ -27,20 +28,18 @@ of any app's bar, and what they read and open.
 4. Menus: the same list, a submenu beside its row (Right, Return, Left
    back), filtered by typing (the filter line), a dimmed row refused,
    `pick`, Escape. 3b. MOD+D's launcher, the apps as before.
-5. The shell's side of Flux (applink/flux.py, `FluxWindow`) with the
-   keyboard grab and the drop-down window replaced by recorders: the
-   chords a main window's bar gives the shell and a single one's does
-   not; Ctrl+L, Ctrl+T, Ctrl+M as the service hands them over (the
-   keyboard held first, the input in the section, the keys typed after
-   the press, the chord again while it is open), load here / in a tab,
-   the actions and the bookmark commands, Shift+Delete's remove with a
-   url, focus lost, no top bar (fallback: prompt), a `launcher`
-   message, messages it does not know, a closed browser window.
+5. What Flux sends the shell (flux/bar.py, pure): a window's state as
+   its bar: the tabs by id with the load and the agent's hold, the host
+   with its marks, the inputs (Ctrl+L, Ctrl+T, Ctrl+F) and the actions
+   (Ctrl+M: the bookmark actions, "Let Lilac drive again"), a blank
+   page, a single window's, the agent's own window's, Flux's own find,
+   the size of a 30-tab bar.
 6. Placement (window.py): centred under a rect, clamped to the monitor
    holding it, forgotten when the window parks; outside clicks.
 7. On screen: the real drop-down window spec, opened by the real
-   Daemon.open through the real AppService for a stand-in browser window
-   (unmapped) under a stand-in top bar in the screen's bottom-right
+   Daemon.open through the real AppService for a stand-in browser (an
+   unmapped window, announced, its bar sent and its queries answered
+   over the socket as Flux does) under a stand-in top bar in the screen's bottom-right
    corner (no window with a strut is ever made here), on a Ctrl+L press
    delivered to the service's handler as the X server would report it
    once the key grab fired (nothing is typed into the display; the
@@ -57,7 +56,6 @@ bookmarks: every XDG directory and socket is a scratch one.
 
 import argparse
 import asyncio
-import dataclasses
 import json
 import os
 import shutil
@@ -218,9 +216,10 @@ def _history(db: Path, rows) -> None:
 
 def test_addresses() -> None:
     from flux import places
-    from indigoshell.services.addresses import BOOKMARK, HISTORY, AddressMode
+    from flux.addresses import BOOKMARK, HISTORY, TYPED, Addresses
 
-    section("2. the address mode: rows, order, preselection, cost")
+    section("2. Flux's answers to its address inputs (flux/addresses.py, pure): rows, order, "
+            "preselection, cost")
     db = SCRATCH / "addr" / "h.sqlite"
     marks = SCRATCH / "addr" / "bookmarks.json"
     _history(db, [("https://www.youtube.com/watch?v=1", "Cats - YouTube", 5, 600),
@@ -233,18 +232,18 @@ def test_addresses() -> None:
                                   "added": 1},
                                  {"name": "Hacker News", "url": "https://news.ycombinator.com",
                                   "added": 2}]))
-    picked = []
 
-    def mode(text=""):
-        return AddressMode(text=text, on_load=picked.append, history=db, bookmarks=marks,
-                           now=NOW)
+    def mode():
+        return Addresses(history=db, bookmarks=marks, now=NOW)
 
     m = mode()
 
     def rows(q):
-        entries, start = m.search(q)
-        return [(e.key or ("B" if e.glyph == BOOKMARK else "H" if e.glyph == HISTORY else "?"),
-                 e.title, e.value) for e in entries], start
+        found, start = m.search(q)
+        return [(r.get("tag") or ("B" if r.get("icon") == BOOKMARK else
+                                  "H" if r.get("icon") == HISTORY else "?"),
+                 r["title"], r["id"] if not r.get("tag") else Addresses.url_of(r["id"], q))
+                for r in found], start
 
     r, s = rows("")
     check("nothing typed: no typed row; bookmarks and history, most frecent first; first selected",
@@ -275,48 +274,39 @@ def test_addresses() -> None:
     check("'10.0': OPEN the address; the router's page below (no host-prefix jump for an IP"
           " typed in part, it is an address already)", r[0][0] == "OPEN"
           and any(t == "Router" for _, t, _ in r), f"{r} start {s}")
-    entries, start = m.search("yo")
-    m.pick(entries[start], "yo")
-    m.pick(None, "yo")
-    m.pick(entries[0], "yo")
-    check("pick: the row's address; Shift+Return (no row) and the typed row: the typed text",
-          picked == ["https://www.youtube.com/", places.SEARCH + "yo", places.SEARCH + "yo"],
+    found, start = m.search("yo")
+    picked = [Addresses.url_of(found[start]["id"], "yo"), Addresses.url_of(None, "yo"),
+              Addresses.url_of(TYPED, "yo"), Addresses.url_of(None, "   ")]
+    check("what a submit names: the row's address; Shift+Return (no row) and the typed row: the "
+          "typed text; nothing typed: nothing",
+          picked == ["https://www.youtube.com/", places.SEARCH + "yo", places.SEARCH + "yo", None],
           f"{picked}")
-    check("the count: listed / everything (bookmarks + history pages)",
-          m.count(entries) == f"{len(entries) - 1}/8", m.count(entries))
+    a = m.answer("address", 3, "yo")
+    check("an answer: the input, the seq, the rows, the selected row's id, the total "
+          "(bookmarks + history pages); a bookmark's rows allow `remove`, no other's",
+          a["type"] == "answer" and a["input"] == "address" and a["seq"] == 3
+          and a["selected"] == "https://www.youtube.com/" and a["total"] == 8
+          and all((r.get("actions") == ["remove"]) == (r.get("icon") == BOOKMARK)
+                  for r in a["rows"]), f"{a['total']} {a['selected']}")
+    from indigoshell.applink import bar as B
+    check("... in the vocabulary's shape", B.answer_problems(a) == [], f"{B.answer_problems(a)}")
     m.close()
 
-    # Shift+Delete's side of the mode: a bookmark row goes, nothing else does.
-    removed = []
-    m = AddressMode(on_load=picked.append, on_remove=lambda u: removed.append(u) or True,
-                    history=db, bookmarks=marks, now=NOW)
-    entries, _ = m.search("hack")
-    mark_row = next(e for e in entries if e.glyph == BOOKMARK)
-    typed_row = entries[0]
-    history_row = next((e for e in m.search("cats")[0] if e.glyph == HISTORY), None)
-    refused = [m.remove(typed_row), m.remove(history_row)]
-    done = m.remove(mark_row)
+    # Shift+Delete's side: a bookmark's row goes from this open's list.
+    m = mode()
+    hist = next(r["id"] for r in m.search("cats")[0] if r.get("icon") == HISTORY)
+    refused = [m.remove(TYPED), m.remove(hist)]
+    done = m.remove("https://news.ycombinator.com")
     after, _ = m.search("hack")
-    rows_after = [(e.glyph == BOOKMARK, e.title) for e in after if not e.key]
-    check("remove: a bookmark's row is taken out (on_remove gets its address as the file has "
-          "it); the typed row and a history row are refused",
-          refused == [False, False] and done and removed == ["https://news.ycombinator.com"]
-          and m.count(after) == f"{len(after) - 1}/7", f"{removed} {m.count(after)}")
+    rows_after = [(r.get("icon") == BOOKMARK, r["title"]) for r in after if not r.get("tag")]
+    check("remove: a bookmark is taken out of the open's rows (the window writes the file); the "
+          "typed row and a history row are none to take out",
+          refused == [False, False] and done and m.total == 7, f"{refused} {done} {m.total}")
     check("... its page, in the history too, comes back as a history row; the file is not "
-          "the mode's to write", (False, "Hacker News") in rows_after
+          "this module's to write", (False, "Hacker News") in rows_after
           and not any(b for b, _ in rows_after)
           and len(json.loads(marks.read_text())) == 2, f"{rows_after}")
-    gone = AddressMode(on_load=picked.append, on_remove=lambda u: False, history=db,
-                       bookmarks=marks, now=NOW)
-    entries, start = gone.search("arch")
-    none = AddressMode(on_load=picked.append, history=db, bookmarks=marks, now=NOW)
-    entries2, start2 = none.search("arch")
-    check("refused when the browser that asked is gone (on_remove False) or cannot take it "
-          "(no on_remove): the row stays",
-          gone.remove(entries[start]) is False and none.remove(entries2[start2]) is False
-          and any(e.title == "Arch Wiki" for e in gone.search("arch")[0]))
-    for mode_ in (m, gone, none):
-        mode_.close()
+    m.close()
 
     # What a keystroke costs: thousands of pages, queries of 1 to 5 characters.
     big = SCRATCH / "addr" / "big.sqlite"
@@ -336,7 +326,7 @@ def test_addresses() -> None:
     for n in (5_000, 10_000):
         target = SCRATCH / "addr" / f"big-{n}.sqlite"
         _history(target, rows_[:n])
-        big_mode = AddressMode(on_load=picked.append, history=target, bookmarks=marks, now=NOW)
+        big_mode = Addresses(history=target, bookmarks=marks, now=NOW)
         times = []
         for query in ("", "y", "yo", "you", "yout", "youtu", "g", "gi", "git", "gith",
                       "w", "we", "wea", "weat", "şe", "şek", "zzzz"):
@@ -797,180 +787,82 @@ def test_apps_launcher() -> None:
     render(L, "apps")
 
 
-# ── 5. the shell's side of Flux ─────────────────────────────────────────
+# ── 5. Flux's bar ───────────────────────────────────────────────────────
 
-class Line:
-    """What a FluxWindow has of its connection: the service, and a send
-    that keeps what was sent."""
+def test_flux_bar() -> None:
+    from flux import bar as fb
+    from indigoshell.applink import bar as B
 
-    def __init__(self, service):
-        self.service = service
-        self.out = []
-
-    def send(self, msg):
-        self.out.append(msg)
-
-
-def stand_in_bar(width=1800, left=12, bottom=42):
-    """The top bar as the service sees it (its context area's window and
-    rect): no window of it is made here."""
-    import skia
-    window = types.SimpleNamespace(wid=1, x=0, y=0, width=2560, height=bottom,
-                                   content_root=(0, 0, 2560, bottom))
-    return types.SimpleNamespace(window=window, rect=skia.Rect.MakeXYWH(left, 0, width, bottom))
-
-
-def test_flux_flow() -> None:
-    from indigoshell.applink.service import AppService
-    from flux import protocol
-    from indigoshell.applink.flux import FluxWindow
-
-    section("5. the shell's side of Flux: its keys open its inputs and menu in the bar (the "
-            "keyboard grab and the drop-down window replaced by recorders)")
-    service = AppService({"flux": FluxWindow}, path="/nonexistent")   # no X here: no display
-    held, drops = [], []
-    service.hold_keyboard = lambda w: held.append(("hold", w.wid)) or True
-    service.release_keyboard = lambda: held.append("release")
-    service.show_drop = lambda prompt, place: drops.append(("show", prompt.name, place,
-                                                            [r["id"] for r in prompt.list_rows()]))
-    service.hide_drop = lambda: drops.append(("hide",))
-    service.context = stand_in_bar()
-
-    def flux(wid, single=False):
-        line = Line(service)
-        w = FluxWindow(line, wid, protocol.announce(wid, single))
-        service.windows.append(w)
-        return w, line
-
-    def page(url, bookmarked=False):
-        return protocol.state([protocol.tab("Cats", "x.org", False, id_=1)], 0, 100, True, url=url,
-                              bookmarked=bookmarked, find=None)
-
-    ctrl = {c: key(ord(c), ctrl=True) for c in "ltm"}
-    s, line = flux(0x400001)
-    s.on_message(page("https://x.org/cats"))
-    service.focused = s
-    single, _ = flux(0x400005, True)
-    single.on_message(page("https://x.org/popup"))
-    check("a main window's bar takes Ctrl+L, Ctrl+T and Ctrl+M (its inputs and menu); a single "
-          "one's (a popup, the inspector) none",
-          s.keys == {"ctrl+l": ("input", "address"), "ctrl+t": ("input", "new_tab"),
-                     "ctrl+m": ("menu", "actions")} and single.keys == {}, f"{s.keys}")
-    s.on_key("ctrl+l", ctrl["l"])
-    p = service.prompt
-    check("Ctrl+L, handed over by the service: the keyboard held first, then the address input "
-          "open in the window's section (its box in the view), the page's address in it, "
-          "selected; its first answer (the stand-in's) drops the list from the bar's bottom "
-          "edge, the section's width",
-          held == [("hold", 0x400001)] and p is not None and p.name == "address"
-          and s.view.box is p.box and p.box.field.text == "https://x.org/cats"
-          and p.box.field.selected_all and drops and drops[-1][0] == "show"
-          and drops[-1][2] == (12, 42, 1800), f"{held} {drops[-1:]}")
-    for ev in typed("example.org"):
-        s.on_typed(ev)
-    check("keys typed after the press, before anything else: into the box, in order",
-          p.box.field.text == "example.org" and p.rows and p.rows[0]["tag"] == "OPEN",
-          p.box.field.text)
-    s.on_key("ctrl+l", ctrl["l"])
-    check("Ctrl+L again while it is open: a key for it (the text selected whole), not a second "
-          "input", service.prompt is p and p.box.field.selected_all and held == [("hold",
-                                                                                   0x400001)])
-    p.select(0)
-    s.on_typed(key(RETURN))
-    check("Return on the typed row: {type: load, where: here}; the input closed, the box gone, "
-          "the list hidden, the keyboard given back",
-          line.out[-1] == {"type": "load", "url": "http://example.org", "where": "here"}
-          and service.prompt is None and s.view.box is None and drops[-1] == ("hide",)
-          and held[-1] == "release", f"{line.out[-1]}")
-    n = len(line.out)
-    s.on_typed(key(ord("z"), "z"))
-    check("a key after it closed: dropped", len(line.out) == n)
-    s.on_key("ctrl+t", ctrl["t"])
-    for ev in typed("yo"):
-        s.on_typed(ev)
-    s.on_typed(key(RETURN, shift=True))
-    check("Ctrl+T: an empty box; Shift+Return takes the text: a search, loaded in a new tab",
-          line.out[-1]["type"] == "load" and line.out[-1]["where"] == "tab"
-          and line.out[-1]["url"].endswith("q=yo"), f"{line.out[-1]}")
-    s.on_key("ctrl+m", ctrl["m"])
-    m = service.prompt
-    rows = [(r["title"], r.get("enabled", True)) for r in m.list_rows()]
-    check("Ctrl+M: the actions menu dropped at the section's left edge (no item opens it): Add "
-          "bookmark (applies) and Remove bookmark (dimmed), Add selected; no box",
-          m.what == "menu" and rows == [("Add bookmark", True), ("Remove bookmark", False)]
-          and m.level.selected == 0 and s.view.box is None and drops[-1][2][0] == 12, f"{rows}")
-    m.select(1)
-    s.on_typed(key(RETURN))
-    refused = m.open
-    m.select(0)
-    s.on_typed(key(RETURN))
-    check("the dimmed one refused (the flash); the other sends {type: bookmark, op: add} and "
-          "closes", refused and not m.open and line.out[-1] == {"type": "bookmark", "op": "add"})
-    s.on_message(page("https://x.org/cats", bookmarked=True))
-    s.on_key("ctrl+m", ctrl["m"])
-    m = service.prompt
-    check("on a bookmarked page Remove applies and is selected",
-          m.level.selected == 1 and [r.get("enabled", True) for r in m.list_rows()]
-          == [False, True])
-    s.on_typed(key(ESC))
-    s.on_message(page("about:blank"))
-    s.on_key("ctrl+l", ctrl["l"])
-    check("Ctrl+L on a blank page: an empty box", service.prompt.box.field.text == ""
-          and not service.prompt.box.field.selected_all)
-    service.set_active(0x777)
-    check("focus elsewhere: it closes (closed by focus), the keyboard given back",
-          service.prompt is None and held[-1] == "release")
-
-    service.context = None
-    n = len(held)
-    s.on_key("ctrl+t", ctrl["t"])
-    check("no top bar to show it in: the keyboard held, then given back; the browser told to ask "
-          "itself ({type: prompt, action: new_tab})", held[n:] == [("hold", 0x400001), "release"]
-          and line.out[-1] == {"type": "prompt", "action": "new_tab"}, f"{line.out[-1]}")
-    n = len(held)
-    s.on_message(protocol.launcher("address"))
-    check("{type: launcher, action: address} (a new window, no key) with no top bar: "
-          "{type: prompt, action: address}", line.out[-1] == {"type": "prompt",
-                                                               "action": "address"})
-    service.context = stand_in_bar()
-    service.focused = s
-    s.on_message(page("https://x.org/cats"))
-    s.on_message(protocol.launcher("address"))
-    check("... and with one: the address input open with no key pressed, the keyboard taken for "
-          "it", service.prompt is not None and service.prompt.name == "address"
-          and held[-1] == ("hold", 0x400001))
-    service.prompt.close("escape")
-
-    # Shift+Delete on a bookmark's row: that row's address.
-    browser_marks = Path(os.environ["XDG_CONFIG_HOME"]) / APP / "browser" / "bookmarks.json"
-    browser_marks.parent.mkdir(parents=True, exist_ok=True)
-    browser_marks.write_text(json.dumps([{"name": "Shop", "url": "https://shop.example/cart",
-                                          "added": 1, "folder": "Imported"}]))
-    s.on_key("ctrl+t", ctrl["t"])
-    p = service.prompt
-    shop = next((i for i, r in enumerate(p.rows) if r["id"] == "https://shop.example/cart"), None)
-    p.select(shop if shop is not None else 0)
-    s.on_typed(key(DELETE, shift=True))
-    check("Shift+Delete on a bookmark: {type: bookmark, op: remove, url: the row's}; the row "
-          "gone from the list, the input still open",
-          shop is not None and line.out[-1] == {"type": "bookmark", "op": "remove",
-                                                "url": "https://shop.example/cart"}
-          and "https://shop.example/cart" not in [r["id"] for r in p.rows] and p.open,
-          f"{line.out[-1:]}")
-    browser_marks.unlink()
-    sent = len(line.out)
-    service.forget(None, s)
-    check("the browser window gone: its input closed with it, nothing sent to it",
-          service.prompt is None and not p.open and len(line.out) == sent)
-    s2, _ = flux(0x400002)
-    s2.on_message({**page("x"), "future": [1, 2]})
-    n = len(s2.view.items)
-    s2.on_message(protocol.launcher("nonsense"))
-    s2.on_message(protocol.message("from-the-future", x=1))
-    s2.on_message(protocol.message("state", tabs=[]))
-    check("a state with keys it does not know: shown; a launcher for no action, a type it does "
-          "not know, a malformed state: ignored", s2.state.get("url") == "x"
-          and "future" not in s2.state and len(s2.view.items) == n == 2)
+    section("5. what Flux sends the shell (flux/bar.py, pure): a window's state as its bar")
+    tabs = [fb.tab("Inbox", "mail.example", False, id_=40),
+            fb.tab("std - Rust", "doc.rust-lang.org", True, id_=41),
+            fb.tab("Weather", "example.org", False, id_=44)]
+    st = fb.state(tabs, 1, 62, False, url="http://doc.rust-lang.org/std/", bookmarked=True,
+                  agent=[None, None, {"voice": "lilac", "state": "driving"}])
+    bar = fb.bar_of(st)
+    t = bar["start"][0]
+    check("the tabs: one per page by its id, the current one's load as its progress, the agent's "
+          "hold; a main window's can be closed, moved and torn off",
+          t["kind"] == "tabs" and [x["id"] for x in t["tabs"]] == [40, 41, 44]
+          and t["current"] == 41 and t["tabs"][1]["progress"] == 62 and t["tabs"][1]["busy"]
+          and t["tabs"][2]["agent"] == {"voice": "lilac", "state": "driving"}
+          and t["can"] == ["close", "move", "detach"], f"{t}")
+    host = bar["end"][-1]
+    check("the host: a bookmark, an open padlock in `error` (plain http), the host",
+          host["spans"] == [{"icon": "bookmark"}, {"icon": "unlocked", "color": "error"},
+                            {"text": "doc.rust-lang.org"}], f"{host}")
+    inputs, menus = bar["inputs"], bar["menus"]
+    check("the inputs: Ctrl+L the address (selected, answered by query, a bookmark's row taken "
+          "out with Shift+Delete), Ctrl+T a new tab's, Ctrl+F find (steps); Ctrl+M the actions",
+          B.chords(bar) == {"ctrl+l": ("input", "address"), "ctrl+t": ("input", "new_tab"),
+                            "ctrl+f": ("input", "find"), "ctrl+m": ("menu", "actions")}
+          and inputs["address"]["text"] == "http://doc.rust-lang.org/std/"
+          and inputs["address"]["select"] and inputs["address"]["query"]
+          and inputs["address"]["actions"] == {"remove": {"chord": "shift+delete", "drops": True}}
+          and "text" not in inputs["new_tab"] and inputs["find"]["steps"]
+          and inputs["find"]["query"], f"{inputs}")
+    rows = menus["actions"]["rows"]
+    check("the actions for a bookmarked page: Add dimmed, Remove applies; the bar is good",
+          [(r["id"], r.get("enabled", True)) for r in rows] == [("add", False), ("remove", True)]
+          and rows[0]["detail"] == "doc.rust-lang.org" and B.bar_problems(bar) == [],
+          f"{rows} {B.bar_problems(bar)}")
+    st2 = dict(st, agent=[None, {"voice": "indigo", "state": "paused"}, None])
+    rows = fb.bar_of(st2, names={"indigo": "Indigo"})["menus"]["actions"]["rows"]
+    check("a tab the user took over: \"Let Indigo drive again\" first (the name the shell gave), "
+          "its id naming the tab, which and where in its detail",
+          rows[0] == {"id": "resume:41", "title": "Let Indigo drive again",
+                      "detail": "tab 2 · doc.rust-lang.org", "icon": "play"}, f"{rows[0]}")
+    blank = fb.bar_of(fb.state([fb.tab("", "", False, id_=1)], 0, 100, True, url="about:blank",
+                               bookmarked=False))
+    check("a blank page: the address input empty, nothing selected; neither bookmark action "
+          "applies", "text" not in blank["inputs"]["address"]
+          and not blank["inputs"]["address"].get("select")
+          and [r.get("enabled", True) for r in blank["menus"]["actions"]["rows"]] == [False, False])
+    single = fb.bar_of(st, single=True)
+    check("a single window (a popup, the inspector): its tabs can do nothing, no inputs, no menus "
+          "(its keys stay its own)", single["start"][0]["can"] == [] and single["inputs"] == {}
+          and single["menus"] == {} and B.chords(single) == {})
+    hers = fb.bar_of(st, agent="Lilac")
+    check("the agent's own window: its name first, in its voice's colour",
+          hers["start"][0] == {"kind": "text", "id": "owner", "text": "Lilac",
+                               "color": "voice:lilac"} and hers["start"][1]["kind"] == "tabs")
+    own = fb.bar_of(dict(st, find=fb.find("cats", 3, 12, True)))
+    item = own["end"][0]
+    check("Flux's own find open (no shell showed its input): its line before the host",
+          item["id"] == "find" and item["spans"][1]["text"] == "cats\u258f"
+          and item["spans"][2] == {"text": "  3/12", "color": "info"}
+          and B.bar_problems(own) == [], f"{item}")
+    check("the same state, the same bar (what the link compares before sending)",
+          fb.bar_of(st) == fb.bar_of(dict(st)))
+    many = fb.state([fb.tab(f"A page title of some length {i}", "example.org", False, id_=i)
+                     for i in range(30)], 3, 100, True, url="https://example.org/", bookmarked=False)
+    size = len(json.dumps(fb.bar_of(many)))
+    t0 = time.perf_counter()
+    for _ in range(100):
+        json.loads(json.dumps(fb.bar_of(many)))
+    took = (time.perf_counter() - t0) / 100 * 1e6
+    check("30 tabs: a few KB on the line", size < 6000, f"{size} bytes; {took:.0f} us to make, "
+          "write and read one")
 
 
 # ── 6. placement ────────────────────────────────────────────────────────
@@ -1069,13 +961,14 @@ async def on_screen() -> None:
     import xcffib.xproto as xp
 
     from indigoshell import config_default, theme
+    from indigoshell.applink import bar as B
     from indigoshell.applink.drop import DROP_WINDOW
-    from indigoshell.applink.flux import FluxWindow
+    from indigoshell.applink.prompt import Prompt
     from indigoshell.applink.service import AppService
     from indigoshell.backend.x11 import Display
     from indigoshell.core import daemon as daemon_mod
     from indigoshell.window import Window
-    from flux import protocol
+    from flux import bar as fb
 
     section("7. on screen: the drop-down under a stand-in top bar, for a stand-in browser")
     real = next(s_ for s_ in config_default.WINDOWS if s_.name == DROP_WINDOW)
@@ -1110,7 +1003,7 @@ async def on_screen() -> None:
     d = daemon_mod.Daemon({"windows": [real]})
     d.display, d.loop = display, loop
     sock = os.path.join(runtime_dir(), f"{APP}-blt-{os.getpid()}-apps.sock")
-    service = AppService({"flux": FluxWindow}, path=sock, display=display)
+    service = AppService(path=sock, display=display)
     kb = []
     service.hold_keyboard = lambda w: kb.append(("hold", w.wid)) or True
     service.release_keyboard = lambda: kb.append("release")
@@ -1135,13 +1028,28 @@ async def on_screen() -> None:
                             xp.CW.BackPixel | xp.CW.OverrideRedirect, [0x00FF00, 1])
     other.core.GetInputFocus().reply()
     fake = None
-    real_answer = FluxWindow._answer
+    real_answer = Prompt.answer
+    answering = None
     try:
         fake = Fake(sock)
-        fake.send(protocol.announce(stand, False))
-        fake.send(protocol.state([protocol.tab("Stand-in", "example.org", False, id_=1)], 0, 100,
-                                 True, url="https://example.org/", bookmarked=False, find=None))
-        attached = await until(lambda: any(m.get("type") == "attached" for m in fake.read()), 5)
+        fake.send(B.announce("flux", 1, stand))
+        fake.send(fb.bar_of(fb.state([fb.tab("Stand-in", "example.org", False, id_=1)], 0, 100,
+                                     True, url="https://example.org/", bookmarked=False)))
+        said: list[dict] = []
+
+        async def answer_queries():
+            """The stand-in browser answers each query as Flux would: what
+            was typed, as the row to open."""
+            while True:
+                for m in fake.read():
+                    said.append(m)
+                    if m.get("type") == "query":
+                        fake.send(B.answer(m["input"], m["seq"], [
+                            B.row("typed", m["text"] or "nothing", tag="OPEN")], total=0))
+                await asyncio.sleep(0.002)
+
+        answering = asyncio.ensure_future(answer_queries())
+        attached = await until(lambda: any(m.get("type") == "attached" for m in said), 5)
         grabbed = await until(lambda: stand in service.grabs, 2)
         jw = service.window_for(stand)
         service.focused = jw
@@ -1166,13 +1074,12 @@ async def on_screen() -> None:
 
         jw.view.show_box = show_box
         answered_at = []
-        real_answer = FluxWindow._answer
 
-        def answer(self, event):
+        def answer(self, msg):
             answered_at.append(time.monotonic())
-            real_answer(self, event)
+            real_answer(self, msg)
 
-        FluxWindow._answer = answer
+        Prompt.answer = answer
 
         async def ctrl_l():
             presented.pop(DROP_WINDOW, None)
@@ -1227,7 +1134,9 @@ async def on_screen() -> None:
               warm is not None and warm < 50, f"{warm:.0f} ms")
     finally:
         Window.show = original
-        FluxWindow._answer = real_answer
+        Prompt.answer = real_answer
+        if answering is not None:
+            answering.cancel()
         if fake is not None:
             fake.close()
         service.stop()
@@ -1282,7 +1191,7 @@ def main() -> int:
         test_input()
         test_menus()
         test_apps_launcher()
-        test_flux_flow()
+        test_flux_bar()
         test_placement()
         if not args.off_screen:
             asyncio.run(on_screen())

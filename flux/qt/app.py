@@ -463,7 +463,6 @@ class Browser(QObject):
         if window is None:
             return
         name = request.downloadFileName()
-        window.link.send(protocol.download(name, state, percent))
         running = state in ("started", "progress")
         window.download = (f"↓ {name}" + (f" {percent}%" if percent else "")) if running else ""
         window.refresh()

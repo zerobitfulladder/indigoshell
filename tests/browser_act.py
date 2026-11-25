@@ -37,20 +37,21 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      key and its release reaching nothing) and by a click on the mark,
      the next request failing with the exact words, switch and open in
      that window refused, open in the background not; the hand-back
-     through the shell's actions (the real FluxWindow, in a child
-     process, given the state the stand-in shell got, its command sent
-     back to Flux); a pause ending by itself; a session ending when
+     through the window's actions in its bar (the shell's own window
+     for it, in a child process, given the bar the stand-in shell got,
+     its `pick` sent back to Flux); a pause ending by itself; a session ending when
      quiet (and not while a request runs), on release, on a switch, on
      the tab closing; the overlay: in the window's own pixels (frame and
      mark in the voice's colour), in no screenshot, gone with the
-     session; the state the shell gets; the log (a line per request,
+     session; the bar the shell gets; the log (a line per request,
      never what was typed); every acting hand run against it, in the
      call's voice.
   3. the shell's side (a child process, so skia and Qt stay apart): the
-     top bar's Flux renderer painted off screen, the tab the agent
-     drives with its number in the voice's colour, a paused one dimmed,
-     the titles untouched; the window's actions with "Let Lilac drive
-     again" only while a tab is paused, picking it sending `resume`.
+     top bar's tabs painted off screen from the bar Flux sends, the tab
+     the agent drives with its number in the voice's colour, a paused
+     one dimmed, the titles untouched; a malformed hold refusing the
+     bar; the window's actions with "Let Lilac drive again" only while
+     a tab is paused, picking it sending a `pick` naming the tab.
 
 --on-screen: the browser in this process on the real display, its
 window the floating, focus-refusing test kind (`--unattended`) in the
@@ -117,9 +118,11 @@ def shell_side(path: str) -> None:
     from indigoshell import theme
     from indigoshell.applink.service import AppService
     from flux import protocol
-    from indigoshell.applink.flux import FluxWindow
+    from indigoshell.applink import bar as B
     from indigoshell.applink.kinds.look import (NUMBER_CURRENT_FG, TAB_CURRENT_FG, TAB_FG,
                                                 agent_color)
+    from indigoshell.applink.service import AppWindow
+    from flux import bar as fb
     from indigoshell.widgets.base import Size
 
     given = json.loads(Path(path).read_text())
@@ -153,18 +156,19 @@ def shell_side(path: str) -> None:
         rgb = np.array([int(hex_[i:i + 2], 16) for i in (1, 3, 5)])
         return int((np.abs(region - rgb).max(axis=-1) <= tol).sum())
 
-    service = AppService({"flux": FluxWindow}, path="/nonexistent")
+    service = AppService(path="/nonexistent")
     out = {}
-    j = FluxWindow(Line(service), 0x400001, {"single": False})
+    j = AppWindow(Line(service), 0x400001, B.announce("flux", 1, 0x400001))
     host = Host()
     j.content.attach(host)
     W, H = 1200, theme.TOP_BAR_HEIGHT
 
     def state(agents, current=0):
-        tabs = [protocol.tab(t, "x.org", False, id_=n)
+        """The bar Flux sends for a window with these holds (flux/bar.py)."""
+        tabs = [fb.tab(t, "x.org", False, id_=n)
                 for n, t in enumerate(("Alpha", "Beta", "Gamma"), start=1)]
-        return protocol.state(tabs, current, 100, True, url="https://x.org/", bookmarked=False,
-                              find=None, agent=agents)
+        return fb.bar_of(fb.state(tabs, current, 100, True, url="https://x.org/",
+                                  bookmarked=False, agent=agents))
 
     lilac, indigo = protocol.voice_color("lilac"), protocol.voice_color("indigo")
     paused_lilac = agent_color(protocol.agent("lilac", "paused"))
@@ -191,20 +195,18 @@ def shell_side(path: str) -> None:
                         "title": max(ti, key=ti.get) if max(ti.values()) > 8 else None,
                         "counts": n})
         out[name] = row
-    # An old browser's state (no `agent`): taken as no hold anywhere.
-    old = {k: v for k, v in state(cases["driving"]).items() if k != "agent"}
-    j.on_message(old)
-    out["old_state"] = {"problems": protocol.state_problems(old),
-                        "agents": j.view.item("tabs").agents}
+    # A tab's hold that is none: the bar refused, the last good one kept.
     bad = state(cases["driving"])
-    bad["agent"] = [{"voice": 3, "state": "flying"}]
-    out["bad_state_problems"] = protocol.state_problems(bad)
+    bad["start"][0]["tabs"][1]["agent"] = {"voice": 3, "state": "flying"}
+    out["bad_problems"] = B.bar_problems(bad)
+    j.on_message(bad)
+    out["kept"] = j.view.item("tabs").agents
 
-    # The window's actions for the state the stand-in shell got from Flux:
-    # its bar's `actions` menu; a pick of the hand-back row.
+    # The window's actions in the bar the stand-in shell got from Flux:
+    # its `actions` menu; a pick of the hand-back row.
     from indigoshell.applink.prompt import StaticRows
 
-    j.on_message(given["state"])
+    j.on_message(given["bar"])
     rows, start = StaticRows(j.bar["menus"]["actions"]["rows"]).search("")
     out["rows"] = [[r["title"], r.get("enabled", True), r.get("detail")] for r in rows]
     out["start"] = start
@@ -342,8 +344,13 @@ class FakeShell:
         except (OSError, ValueError):
             pass
 
+    def bars(self) -> list[dict]:
+        return [m for m in self.msgs if m.get("type") == "bar"]
+
     def states(self) -> list[dict]:
-        return [m for m in self.msgs if m.get("type") == "state"]
+        """Each bar sent, as the tabs' holds it says (`agent`, one per tab)."""
+        return [{"agent": [t.get("agent") for t in b["start"][-1]["tabs"]]}
+                for b in self.bars()]
 
     def send(self, msg: dict) -> None:
         for c in self.conns:
@@ -431,19 +438,17 @@ def test_pure() -> None:
           protocol.took_over(7) == "the user took over tab 7"
           and protocol.FILE_FIELD.format(what="[3]") == "[3] is a file field: give it files "
                                                         "with upload")
-    tabs = [protocol.tab("A", "a.org", False, id_=1), protocol.tab("B", "b.org", False, id_=2)]
-    good = protocol.state(tabs, 0, 100, True, url="https://a.org/", bookmarked=False, find=None,
-                          agent=[protocol.agent("indigo", "paused"), None])
-    plain = protocol.state(tabs, 0, 100, True, url="https://a.org/", bookmarked=False, find=None)
-    old = {k: v for k, v in plain.items() if k != "agent"}
-    bad = dict(good, agent=[None])
-    check("the state's agent: one per tab, checked when there; a state without it (an older "
-          "browser) still good and read as no hold",
-          protocol.state_problems(good) == [] and plain["agent"] == [None, None]
-          and protocol.state_problems(old) == [] and protocol.agents_of(old) == [None, None]
-          and protocol.state_problems(bad) != []
-          and good["agent"][0] == {"voice": "indigo", "state": "paused"},
-          f"{protocol.state_problems(bad)}")
+    from flux import bar as fb
+    from indigoshell.applink import bar as B
+    tabs = [fb.tab("A", "a.org", False, id_=1), fb.tab("B", "b.org", False, id_=2)]
+    good = fb.bar_of(fb.state(tabs, 0, 100, True, url="https://a.org/", bookmarked=False,
+                              agent=[protocol.agent("indigo", "paused"), None]))
+    plain = fb.bar_of(fb.state(tabs, 0, 100, True, url="https://a.org/", bookmarked=False))
+    check("the bar's tabs carry the agent's hold, one per tab where there is one, by voice id; "
+          "both bars good", B.bar_problems(good) == [] == B.bar_problems(plain)
+          and good["start"][0]["tabs"][0]["agent"] == {"voice": "indigo", "state": "paused"}
+          and "agent" not in good["start"][0]["tabs"][1]
+          and all("agent" not in t for t in plain["start"][0]["tabs"]), f"{good['start'][0]}")
     keys = {s: act.parse_key(s) for s in ("Enter", "ctrl+a", "shift+Tab", "PageDown", "ğ", "F5")}
     errors = []
     for bad_key in ("", "hyper+a", "Enterr"):
@@ -1023,7 +1028,7 @@ def test_in_process() -> None:
           near(indigo_px, hex_rgb("#b967ff")) and overlay.mark.text().startswith("Indigo is "),
           f"{indigo_px}")
     states = [s for s in shell.states() if s.get("agent") and s["agent"][0]]
-    check("the state the shell gets: the tab driven, in the voice",
+    check("the bar the shell gets: the tab driven, in the voice",
           states and states[-1]["agent"][0] == {"voice": "indigo", "state": "driving"},
           f"{states[-1]['agent'] if states else None}")
 
@@ -1034,7 +1039,7 @@ def test_in_process() -> None:
     pump(200)
     check("an input method's text the agent did not send: the user's, taken over, not typed",
           watch.paused(T) and "zz" not in (js("document.getElementById('name').value") or ""))
-    w.on_command({"type": "resume", "index": w.tabs.index(w.current_tab())})
+    w.on_event({"type": "pick", "menu": "actions", "row": f"resume:{w.current_tab().id}"})
 
     # ── take-over by a key ──────────────────────────────────────────────
     J(flux.click(T, R['button "Press"'], voice="lilac"))
@@ -1049,7 +1054,7 @@ def test_in_process() -> None:
     windows_, _ = J(flux.tabs())
     paused_state = [s for s in shell.states() if s.get("agent") and s["agent"][0]][-1]
     check("take-over by a key: the key and its release reach nothing; the session paused; the "
-          "overlay gone; the shell told",
+          "overlay gone; the shell told (the tab's hold in the bar)",
           after_key == [] and watch.paused(T) and not overlay.shown()
           and paused_state["agent"][0] == {"voice": "lilac", "state": "paused"},
           f"{after_key} {paused_state['agent']}")
@@ -1072,19 +1077,21 @@ def test_in_process() -> None:
     check("the user's own clicks reach the page again while paused",
           len(events("click")) == 1 and events("click")[0]["trusted"])
 
-    # The hand-back: the state the shell got, the real FluxWindow's actions
-    # (a child process), the command it sends, given to Flux.
-    given = SCRATCH / "shell-state.json"
-    given.write_text(json.dumps({"state": shell.states()[-1]}))
+    # The hand-back: the bar the shell got, the shell's own window for it
+    # (a child process), the event it sends, given to Flux.
+    given = SCRATCH / "shell-bar.json"
+    given.write_text(json.dumps({"bar": shell.bars()[-1]}))
     proc = subprocess.run([PY, "-B", __file__, "--shell-side", str(given)], capture_output=True,
                           text=True, timeout=120, env=dict(os.environ, QT_QPA_PLATFORM="offscreen"))
     side = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else {}
     index = w.tabs.index(w.current_tab())
-    check("the shell's actions for that window begin with \"Let Lilac drive again\" (that tab, "
-          "its host), selected first; picking it sends {type: resume, index}",
+    check("the window's actions in its bar begin with \"Let Lilac drive again\" (that tab, "
+          "its host), selected first; picking it sends {type: pick, menu: actions, row: "
+          "resume:<the tab's id>}",
           side.get("rows", [[None]])[0][:2] == ["Let Lilac drive again", True]
           and side["rows"][0][2] == f"tab {index + 1} · 127.0.0.1" and side["start"] == 0
-          and side.get("command") == {"type": "resume", "index": index}
+          and side.get("command") == {"type": "pick", "menu": "actions",
+                                      "row": f"resume:{T}"}
           and "Let Lilac drive again" not in side.get("rows_unpaused", ["Let Lilac drive again"]),
           f"{proc.stderr.strip()[-300:] if proc.returncode else side.get('rows')}")
     if side.get("command"):
@@ -1104,7 +1111,7 @@ def test_in_process() -> None:
     check("take-over by a click on the mark: paused, the click and its release reaching nothing",
           watch.paused(T) and events() == [] and e_next == f"the user took over tab {T}",
           f"{events()[:3]} {e_next}")
-    w.on_command({"type": "resume", "index": index})
+    w.on_event({"type": "pick", "menu": "actions", "row": f"resume:{w.tabs[index].id}"})
 
     # A pause that ends by itself; its clock starts again with the user's input.
     watch.release()
@@ -1132,7 +1139,7 @@ def test_in_process() -> None:
     pump(300)
     check("a dialog held when the user takes over: theirs then (shown as without the agent)",
           users == [("confirm", "Really?")] and watch.paused(T), f"{users} {err}")
-    w.on_command({"type": "resume", "index": index})
+    w.on_event({"type": "pick", "menu": "actions", "row": f"resume:{w.tabs[index].id}"})
     users.clear()
     elsewhere.activateWindow()
     wait(lambda: QApplication.activeWindow() is elsewhere, 3)
@@ -1308,11 +1315,11 @@ def test_shell_side() -> None:
     """The top bar's mark, painted off screen by the shell's own renderer
     (the child process also drove the actions, above)."""
     section("3. the shell's side (a child process): the top bar's mark")
-    given = SCRATCH / "shell-state-pure.json"
-    from flux import protocol
-    given.write_text(json.dumps({"state": protocol.state(
-        [protocol.tab("A", "a.org", False, id_=1)], 0, 100, True, url="https://a.org/",
-        bookmarked=False, find=None)}))
+    given = SCRATCH / "shell-bar-pure.json"
+    from flux import bar as fb
+    given.write_text(json.dumps({"bar": fb.bar_of(fb.state(
+        [fb.tab("A", "a.org", False, id_=1)], 0, 100, True, url="https://a.org/",
+        bookmarked=False))}))
     proc = subprocess.run([PY, "-B", __file__, "--shell-side", str(given)], capture_output=True,
                           text=True, timeout=120)
     if proc.returncode != 0:
@@ -1334,9 +1341,10 @@ def test_shell_side() -> None:
           "from the muted tabs", seen("paused") == [("cyan", "strong"), ("paused", "muted"),
                                                     ("muted", "muted")],
           f"{seen('paused')} {out['paused'][1]['counts']}")
-    check("an older browser's state (no agent): good, no hold; a malformed agent refused",
-          out["old_state"] == {"problems": [], "agents": [None, None, None]}
-          and out["bad_state_problems"], f"{out['old_state']} {out['bad_state_problems']}")
+    check("a malformed hold (a voice that is no string, a state that is none): the bar "
+          "refused, the last good one kept", out["bad_problems"]
+          and out["kept"] == [None, {"voice": "lilac", "state": "paused"}, None],
+          f"{out['bad_problems']} {out['kept']}")
     check("no tab paused: no \"drive again\" action (only the bookmarks)",
           out["rows"] and all(not r[0].endswith("drive again") for r in out["rows"])
           and out["picked"] is None)
