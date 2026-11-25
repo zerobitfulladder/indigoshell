@@ -348,6 +348,9 @@ NIRI_MSG = {
         "Mode": {"mode": "Automatic"}}}},
     "action set-window-width --id 5 50%": {"Action": {"SetWindowWidth": {
         "id": 5, "change": {"SetProportion": 50.0}}}},
+    "action set-window-height --id 5 55%": {"Action": {"SetWindowHeight": {
+        "id": 5, "change": {"SetProportion": 55.0}}}},
+    "action reset-window-height --id 5": {"Action": {"ResetWindowHeight": {"id": 5}}},
     "action consume-or-expel-window-left --id 5": {"Action": {
         "ConsumeOrExpelWindowLeft": {"id": 5}}},
     "action switch-layout 1": {"Action": {"SwitchLayout": {"layout": {"Index": 1}}}},
@@ -779,6 +782,53 @@ def test_tiling_pure() -> None:
     check("the requests are niri msg's shapes",
           tiling.width_requests({1: [win(5, 1, col=1)], 2: [win(6, 1, col=2)]})[0]
           == NIRI_MSG["action set-window-width --id 5 50%"])
+
+    # grow: qtile's grow_left/right/up/down on Mod+Ctrl+H/L/K/J.
+    def sets(reqs):
+        out = []
+        for r in reqs:
+            (name, f), = r["Action"].items()
+            out.append((name, f["id"], (f.get("change") or {}).get("SetProportion")))
+        return out
+
+    def grow(wins, wid, direction):
+        return sets(tiling.grow_requests(wins, wid, direction))
+    two = [win(1, 1, col=1, size=(1268, 1340)), win(2, 1, col=2, size=(1268, 1340))]
+    right = [("SetWindowWidth", 1, 55.0), ("SetWindowWidth", 2, 45.0)]
+    left = [("SetWindowWidth", 1, 45.0), ("SetWindowWidth", 2, 55.0)]
+    check("grow right on the left column: the split moves right", grow(two, 1, "right") == right,
+          str(grow(two, 1, "right")))
+    check("... and on the right column too: right always moves it right",
+          grow(two, 2, "right") == right, str(grow(two, 2, "right")))
+    check("grow left on either column: the split moves left",
+          grow(two, 1, "left") == left and grow(two, 2, "left") == left)
+    off_grid = [win(1, 1, col=1, size=(1523, 1340)), win(2, 1, col=2, size=(1013, 1340))]
+    check("a split off the 5% steps lands on one",
+          grow(off_grid, 1, "right") == [("SetWindowWidth", 1, 65.0), ("SetWindowWidth", 2, 35.0)],
+          str(grow(off_grid, 1, "right")))
+    edge = [win(1, 1, col=1, size=(2700, 1340)), win(2, 1, col=2, size=(300, 1340))]
+    check("the split stops with 10% left", grow(edge, 1, "right") == [], str(grow(edge, 1, "right")))
+    three = [win(1, 1, col=1), win(2, 1, col=2), win(3, 1, col=3)]
+    got = grow(three, 2, "right")
+    check("three columns: only the focused one and its right neighbour change",
+          [(n, i, round(v, 2)) for n, i, v in got]
+          == [("SetWindowWidth", 2, 40.0), ("SetWindowWidth", 3, 26.67)], str(got))
+    check("a lone column, a floating window: nothing",
+          grow([win(1, 1, col=1)], 1, "left") == []
+          and grow([win(9, 1, floating_at=[0.0, 0.0])], 9, "right") == [])
+    stack = [win(6, 1, col=1, size=(1268, 666)), win(5, 1, col=1, row=2, size=(1268, 666)),
+             win(2, 1, col=2, size=(1268, 1340))]
+    check("grow down: the focused window taller, the others sharing the rest",
+          grow(stack, 5, "down") == [("ResetWindowHeight", 6, None), ("SetWindowHeight", 5, 55.0)],
+          str(grow(stack, 5, "down")))
+    check("grow up: shorter", grow(stack, 5, "up")[-1] == ("SetWindowHeight", 5, 45.0))
+    check("a window alone in its column: no height change",
+          grow(stack, 2, "down") == [] and grow(stack, 2, "up") == [])
+    reqs = tiling.grow_requests(stack, 5, "down")
+    check("... in niri msg's shapes",
+          reqs[-1] == NIRI_MSG["action set-window-height --id 5 55%"]
+          and reqs[0]["Action"].keys() == NIRI_MSG["action reset-window-height --id 5"]["Action"].keys(),
+          str(reqs))
 
 
 # ── 5. X11 + qtile, live and read-only ──────────────────────────────────
