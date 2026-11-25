@@ -47,7 +47,9 @@ last one closes, so the compositor returns the focus to the window that
 had it. While a region that closes on an outside click is open the
 canvas's input region is the whole canvas: a click outside every region
 closes it and is swallowed, as under X's pointer grab, and clicks on the
-other regions (the bars) reach them as X's owner_events did.
+other regions (the bars) reach them as X's owner_events did. With
+several open only the newest is told (the systray's menu, not the panel
+under it), as X's one grab per client went to the newest grabber.
 
 Blur replaces picom's. A `blur` region's plates (its content's
 `blur_shape()`, rasterised to whole pixels, so a 45° bevel is a stair of
@@ -368,9 +370,9 @@ class KeyboardRouter:
         self.takers: dict = {}          # token -> handler, oldest first
         self.available = False
         self.focused = False            # the compositor's keyboard focus is on the canvas
+        self.released_at = -1e9         # when the last taker let go (monotonic)
 
     @property
-        self.released_at = -1e9         # when the last taker let go (monotonic)
     def wanted(self) -> bool:
         return self.available and bool(self.takers)
 
@@ -386,10 +388,10 @@ class KeyboardRouter:
             return
         had = self.wanted
         del self.takers[token]
-        if self.wanted != had and self.on_change is not None:
-            self.on_change()
         if had and not self.wanted:
             self.released_at = time.monotonic()
+        if self.wanted != had and self.on_change is not None:
+            self.on_change()
 
     def holds(self, token) -> bool:
         return token in self.takers
@@ -703,16 +705,21 @@ class Scene:
             self._layout()
 
     def outside_click(self) -> bool:
-        """A click on no region: everyone catching them told. False
-        when nobody was (the click was not ours to take)."""
+        """A click on no region: the newest catcher told, as X's pointer
+        grab goes to the newest grabber only (one grab per client): the
+        systray's menu over its panel closes, the panel stays, and
+        catches the next one once the menu has let go. False when nobody
+        catches them (the click was not ours to take)."""
         if not self.catchers:
             return False
-        log.debug("an outside click: %d to close", len(self.catchers))
-        for callback in list(self.catchers.values()):
-            try:
-                callback()
-            except Exception:
-                log.exception("an outside click's handler failed")
+        token, callback = next(reversed(self.catchers.items()))
+        log.debug("an outside click: %s closes (%d catching)",
+                  getattr(getattr(token, "spec", None), "name", type(token).__name__),
+                  len(self.catchers))
+        try:
+            callback()
+        except Exception:
+            log.exception("an outside click's handler failed")
         return True
 
     def _keyboard_changed(self) -> None:
