@@ -111,7 +111,11 @@ class Systray(Widget):
         if not self._broker.items():
             return
         d.kinds[PANEL_WINDOW] = self._panel_spec()
-        d.open(PANEL_WINDOW)
+        from ..canvas import NotOnCanvas
+        try:
+            d.open(PANEL_WINDOW)
+        except NotOnCanvas as e:
+            log.info("%s", e)               # Wayland, until the canvas has panels
 
     def _panel_spec(self) -> WindowSpec:
         # No popup chrome — the beveled rows float directly on the

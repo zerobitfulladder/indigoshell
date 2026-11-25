@@ -29,6 +29,11 @@ dependencies = [
 # that same flag, and Flux has no fallback for it. Of the shell it
 # imports only modules that need none of the dependencies above
 # (tests/flux_imports.py checks), so it runs where they aren't installed.
+#
+# On Wayland (backend/wayland.py) the shell needs pywayland, from the
+# distro too (Arch: `python-pywayland`, with `wayland-protocols` and
+# `wlr-protocols` for the XML its bindings are generated from); X11 never
+# imports it.
 
 [project.scripts]
 indigoshell = "indigoshell.app:main"

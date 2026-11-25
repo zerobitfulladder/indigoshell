@@ -7,6 +7,10 @@ on a single asyncio loop, with no toolkit, no second main loop and no
 worker threads. Beside it in this checkout is Flux, the shell's own web
 browser, a process of its own on PySide6 and QtWebEngine.
 
+On a Wayland compositor with layer-shell (niri) the same process draws
+on one overlay canvas instead of X windows ([canvas.py](indigoshell/canvas.py));
+so far that canvas has the two bars, and the rest is X11 only.
+
 <p align="center">
   <img src="docs/media/hero.png" width="100%"
        alt="indigoshell on qtile: the bar playing a song with its lyrics, the hardware panel open, a music player floating top-left">
@@ -356,6 +360,9 @@ indigoshell/
   api.py            ─ open/close/toggle handlers for config files
   window.py         ─ WindowSpec + the live window: layers, anchors,
                       struts, grabs, frame clock, damage, effect chain
+  canvas.py         ─ Wayland: a WindowSpec as a region of the one overlay
+                      canvas; damage, z-order, input region, reservations,
+                      the pointer's routing (pure)
   theme.py          ─ palette, semantic tokens, per-widget presets
   shapes.py         ─ the beveled rectangle, as a skia.Path
   text.py           ─ font cache, measurement, tracked drawing
@@ -409,6 +416,12 @@ indigoshell/
   backend/
     x11.py          ─ the process's single xcffib connection + event pump
     gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback
+    wayland.py      ─ Wayland, when $WAYLAND_DISPLAY offers layer-shell: the
+                      canvas surface, the bars' reservations, the pointer,
+                      fullscreen windows; wl_shm when there is no EGL
+    egl_wayland.py  ─ EGL on the Wayland platform for the canvas
+    wlproto.py      ─ pywayland bindings generated at run time from the
+                      system's protocol XML, into the cache
   core/
     daemon.py       ─ the loop: windows, services, IPC, signals, reload
     ipc.py          ─ control socket (line-delimited JSON over AF_UNIX)
@@ -616,6 +629,7 @@ uses both to restore the output you chose last.
 |---|---|
 | `INDIGOSHELL_LOG_LEVEL` | default log level (`info`) |
 | `INDIGOSHELL_GPU=0` | force the CPU raster path |
+| `INDIGOSHELL_BACKEND` | `x11` or `wayland`: which display, instead of choosing by `$WAYLAND_DISPLAY` |
 | `INDIGOSHELL_DPI` | point-to-pixel scaling (default 96) |
 | `INDIGOSHELL_FORCE_COLOR` | keep ANSI colors when stderr isn't a tty |
 | `INDIGOSHELL_APPS_SOCKET` | where the shell listens for its apps (Flux) |
@@ -656,6 +670,7 @@ rather than failing:
 | ImageMagick `import` | the agent's screenshots |
 | `qtile` (`qtile cmd-obj`) | the agent's window and workspace hands; bringing what it opens forward |
 | `wl-copy`, `wl-paste` (wl-clipboard) | on niri, in place of `xclip` |
+| Python `pywayland`, `wayland-protocols`, `wlr-protocols` (the XML) | on niri: the canvas (distro packages, like aubio) |
 
 A Nerd Font is expected for the glyphs; `FiraCode Nerd Font Mono` is the
 theme default.
