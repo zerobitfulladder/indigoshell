@@ -36,6 +36,14 @@ Flags added to whatever the environment already has:
 - `--disable-smooth-scrolling`: wheel and keys scroll at once, without
   an animation (the user's choice; the profile's ScrollAnimatorEnabled
   is off too). A page's own CSS `scroll-behavior: smooth` still glides.
+- `--disable-blink-features=FedCm`: no FedCM (`IdentityCredential`,
+  `navigator.credentials.get({identity})`). QtWebEngine has the API but
+  none of Chrome's account chooser behind it, so every call fails
+  quietly. Google's "Sign in with Google" button uses FedCM wherever it
+  finds it, and its click then does nothing at all (Pinterest's
+  "Continue with Google"); without FedCM it falls back to its popup
+  window, which works. Qt merges this with its own
+  --disable-blink-features list.
 
 Hardware video decoding is deliberately not enabled: on NVIDIA it
 decodes, and the picture is black (Chromium's dmabuf frames have no way
@@ -68,6 +76,7 @@ WIDEVINE_ENV = env("BROWSER_WIDEVINE")
 WIDEVINE_SO = "libwidevinecdm.so"
 DARK = "--blink-settings=preferredColorScheme=0"
 NO_SMOOTH = "--disable-smooth-scrolling"
+NO_FEDCM = "--disable-blink-features=FedCm"
 NO_GPU = "--disable-gpu"
 
 
@@ -165,7 +174,7 @@ def chromium_flags(existing: str, widevine: Path | None, *, software: bool = Fal
     """`existing` with ours appended; a widevine path already there wins.
     `software`: Chromium without its GPU process too."""
     flags = existing.split()
-    for flag in (DARK, NO_SMOOTH, *((NO_GPU,) if software else ())):
+    for flag in (DARK, NO_SMOOTH, NO_FEDCM, *((NO_GPU,) if software else ())):
         if flag not in flags:
             flags.append(flag)
     if widevine is not None and not any(f.startswith("--widevine-path") for f in flags):
