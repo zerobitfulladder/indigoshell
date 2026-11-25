@@ -41,15 +41,17 @@ async def run(cmd: Sequence[str], timeout: float = 5.0) -> str:
 
 
 def fire(cmd: Sequence[str], *, detach: bool = False,
-         cwd: str | None = None) -> None:
+         cwd: str | None = None, env: dict[str, str] | None = None) -> None:
     """Run and forget. Deliberately not awaited — callers are click
-    handlers, which must not block the loop waiting on pactl."""
+    handlers, which must not block the loop waiting on pactl. `env`:
+    variables set over this process's environment."""
     async def _go():
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
-                start_new_session=detach, cwd=cwd)
+                start_new_session=detach, cwd=cwd,
+                env={**os.environ, **env} if env else None)
         except (OSError, FileNotFoundError):
             log.debug("cannot run %s", cmd, exc_info=True)
             return
@@ -78,7 +80,7 @@ def _unit_escape(name: str) -> str:
 
 
 def launch(cmd: Sequence[str], *, app_id: str = "",
-           cwd: str | None = None) -> None:
+           cwd: str | None = None, env: dict[str, str] | None = None) -> None:
     """Start an application that must outlive the shell.
 
     `fire(detach=True)` is not enough: the app would stay our child, and
@@ -92,13 +94,14 @@ def launch(cmd: Sequence[str], *, app_id: str = "",
     (`app-<launcher>-<id>-<random>.scope` in `app.slice`). It then shows
     up as itself in `systemctl --user status` and the journal, and an
     OOM kill or a resource limit hits the app, not the shell's session.
+    `env`: variables set over this process's environment for the app.
     """
     argv = list(cmd)
     if app_id and _user_manager():
         unit = f"app-{_unit_escape(APP)}-{_unit_escape(app_id)}-{os.urandom(4).hex()}"
         argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
                 "--slice=app.slice", f"--unit={unit}.scope", "--", *argv]
-    fire(["setsid", "--fork", "--", *argv], cwd=cwd)
+    fire(["setsid", "--fork", "--", *argv], cwd=cwd, env=env)
 
 
 class Subscription:

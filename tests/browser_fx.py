@@ -10,11 +10,6 @@ Off screen:
   1. the shaders: a fresh qsb build compared byte for byte with the
      committed .qsb files (skipped, saying so, where there is no qsb);
      their serialization format (9: what Qt 6.8 reads too).
-  2. headless (a child process, QT_QPA_PLATFORM=offscreen): an agent's
-     click locks the tab and the Watch's frame and mark show as ever,
-     no effects are made (PageFx never constructed), and why is said
-     once; with the platform check out of the way, the scene graph's
-     Software API refuses them too.
 
 On screen (this process, the real display; the test's own windows,
 560x380, floating, focus-refusing, in the bottom-right corner; their
@@ -54,7 +49,6 @@ import json
 import os
 import shutil
 import struct
-import subprocess
 import sys
 import tempfile
 import threading
@@ -224,18 +218,22 @@ class Log:
 
 
 def small_corner(browser_app) -> None:
-    """The test's windows: the unattended kind (floating, never focused),
-    but small, in the bottom-right corner."""
+    """The test's windows: floating (dialogs to the window manager), never
+    focused, small, in the bottom-right corner."""
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QGuiApplication
+    made = browser_app.Browser.new_window
 
-    def place(self, window, offset: int = 0) -> None:
+    def new_window(self, *, single: bool = False, dialog: bool = False, **kw):
+        offset = 40 * len(self.windows)
+        window = made(self, single=single, dialog=dialog or not single, **kw)
         window.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus)
         window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         area = QGuiApplication.primaryScreen().availableGeometry()
         window.resize(WIN_W, WIN_H)
         window.move(area.right() - WIN_W - 12 - offset, area.bottom() - WIN_H - 12 - offset)
-    browser_app.Browser._out_of_the_way = place
+        return window
+    browser_app.Browser.new_window = new_window
 
 
 def start_browser(unattended: bool):
@@ -287,70 +285,6 @@ def test_shaders() -> None:
         versions[name] = struct.unpack(">i", zlib.decompress(data[4:])[:4])[0]
     check("the .qsb files are serialization format 9 (QShader's in Qt 6.8 as in 6.12)",
           set(versions.values()) == {9}, f"{versions}")
-
-
-# ── 2. headless (a child process) ───────────────────────────────────────
-def headless_part() -> int:
-    """Run in a child with QT_QPA_PLATFORM=offscreen."""
-    from PySide6.QtTest import QTest
-
-    from flux.qt import effects
-    os.environ[env("BROWSER_SOCKET")] = SOCK["browser"]     # this process's own
-    os.environ[env("APPS_SOCKET")] = SOCK["apps"]
-    logs = Log("browser-headless.log")
-    made = []
-    real_init = effects.PageFx.__init__
-
-    def counted(self, *a, **k):
-        made.append(1)
-        real_init(self, *a, **k)
-    effects.PageFx.__init__ = counted
-    parts = start_browser(unattended=False)
-    app, profile, lock, browser, client, flux = parts
-    tab = client.run(flux.open(url("/white")))
-    client.run(flux.wait(tab.tab, timeout=15), 20)
-    w = browser.windows[0]
-    done = client.run(flux.click(tab.tab, x=300, y=200))
-    client.run(flux.release(tab.tab))
-    done = client.run(flux.click(tab.tab, x=300, y=200))     # a second lock
-    QTest.qWait(300)
-    overlay = browser.watch.overlays.get(w.id)
-    check("headless: the agent's click locks the tab, the Watch's frame and mark show",
-          done.get("agent") == "driving" and overlay is not None and overlay.shown(),
-          f"agent {done.get('agent')}")
-    check("... and no page effects were made (PageFx never constructed), why said once",
-          not made and not browser.watch.effects
-          and (effects.off_reason() or "").startswith("no display (offscreen)")
-          and logs.said("page effects are off") == 1,
-          f"made {len(made)}, off: {effects.off_reason()!r}, said "
-          f"{logs.said('page effects are off')}x over two locks")
-    effects._off = None
-    effects.HEADLESS = frozenset()
-    fx = effects.make(w)
-    check("with the platform check out of the way, the Software scene graph refuses them",
-          fx is None and "Software" in (effects.off_reason() or ""),
-          f"off: {effects.off_reason()!r}")
-    client.run(flux.release(tab.tab))
-    stop_browser(*parts)
-    for path in SOCK.values():
-        for leftover in (path, path + ".lock"):
-            if os.path.exists(leftover):
-                os.unlink(leftover)
-    return 0
-
-
-def test_headless() -> None:
-    section("2. headless (a child process, offscreen)")
-    out = subprocess.run([PY, __file__, "--headless-part", str(SCRATCH), str(PORT)],
-                         capture_output=True, text=True, timeout=120,
-                         env=dict(os.environ, QT_QPA_PLATFORM="offscreen"))
-    lines = [ln for ln in out.stdout.splitlines() if ln.startswith(("  ok", "  FAIL"))]
-    for line in lines:
-        print(line, flush=True)
-        if line.startswith("  FAIL"):
-            FAILED.append("headless: " + line[7:60])
-    check("the headless child ran to its end", out.returncode == 0 and len(lines) == 3,
-          f"exit {out.returncode}" + (f": {out.stderr[-400:]}" if out.returncode else ""))
 
 
 # ── on screen ───────────────────────────────────────────────────────────
@@ -829,16 +763,8 @@ def main() -> int:
     parser.add_argument("--off-screen", action="store_true",
                         help="only the parts that need no display")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
-    parser.add_argument("--headless-part", nargs=2, help=argparse.SUPPRESS)
     args = parser.parse_args()
     global PORT, SCRATCH
-    if args.headless_part:
-        SCRATCH, PORT = Path(args.headless_part[0]), int(args.headless_part[1])
-        try:
-            return headless_part()
-        except Exception:
-            print("  FAIL headless part aborted\n" + traceback.format_exc(), flush=True)
-            return 1
     SCRATCH = Path(tempfile.mkdtemp(prefix=f"{APP}-fx-test-"))
     os.environ.update({
         "XDG_DATA_HOME": str(SCRATCH / "data"),
@@ -864,7 +790,6 @@ def main() -> int:
     t0 = time.monotonic()
     try:
         test_shaders()
-        test_headless()
         if not args.off_screen:
             test_on_screen()
     except Exception:

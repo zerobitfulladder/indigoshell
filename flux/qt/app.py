@@ -42,13 +42,13 @@ folder, and recorded for the agent (`download_list`, newest first, the
 last protocol.DOWNLOADS_KEPT of this run) with the tab that started
 each.
 
-Headless (`headless`, protocol.py "Headless"; startup.py settled the
-platform): every window and page as on screen, drawn in memory, and
-what needs a screen or a person degrades (window.py, watch.py,
-control.py say how). The page effects are off, as with --software-gl.
+Unattended (`unattended`, protocol.py "Unattended"): a browser nobody
+attends, the agent's own on a machine that lends it (on a bare
+compositor's screen, cage): what would ask a person is answered at once
+(window.py, watch.py say how), and its pages are muted.
 
 The end: Ctrl+C or SIGTERM quits the event loop, and so does the last
-window closing (not headless: a service waits for its next window); the
+window closing (not unattended: a service waits for its next window); the
 log says which (logs.py) before every window (and so every page) is
 deleted, deferred deletions flushed, and only then the profile. The
 other order makes Qt warn that the profile was released under a live
@@ -142,13 +142,12 @@ class SignalWake:
 
 # ── the process-wide state ──────────────────────────────────────────────
 class Browser(QObject):
-    def __init__(self, profile, *, unattended: bool = False, headless: bool = False,
+    def __init__(self, profile, *, unattended: bool = False,
                  name: str | None = None, sites: Path | None = None) -> None:
         super().__init__()
         self.profile = profile                  # the QWebEngineProfile
         self.profile_name = name                # flux/profiles.py; None: the default one
-        self.unattended = unattended
-        self.headless = headless                # no screen (protocol.py, "Headless")
+        self.unattended = unattended            # nobody attends it (protocol.py, "Unattended")
         self.ended_by: str | None = None        # why it ends, when asked to (quit)
         self.identity = Identity(profile, sites)
         self.history = places.History(places.history_path(name))
@@ -183,10 +182,7 @@ class Browser(QObject):
     # ── windows ─────────────────────────────────────────────────────────
     def new_window(self, *, single: bool = False, dialog: bool = False, agent: bool = False,
                    opener: Window | None = None) -> Window:
-        window = Window(self, single=single, dialog=dialog or (self.unattended and not single),
-                        agent=agent, opener=opener)
-        if self.unattended:
-            self._out_of_the_way(window, offset=40 * len(self.windows))
+        window = Window(self, single=single, dialog=dialog, agent=agent, opener=opener)
         self.windows.insert(0, window)
         self._made.append(window)
         return window
@@ -276,15 +272,13 @@ class Browser(QObject):
                      "a single window's" if src.single else "its window's last tab")
             return None
         window = self.new_window()
-        if not self.unattended:
-            window.resize(src.size())
-            if at is not None:
-                window.move(*at)
+        window.resize(src.size())
+        if at is not None:
+            window.move(*at)
         self.move_tab(tab, window)
         window.show()
-        if not (self.unattended or self.headless):
-            window.raise_()
-            window.activateWindow()
+        window.raise_()
+        window.activateWindow()
         log.info("tab %d torn out of window %d into window %d", tab.id, src.id, window.id)
         return window
 
@@ -370,9 +364,8 @@ class Browser(QObject):
         for i, url in enumerate(urls):
             window.add_tab(to_url(url), background=i > 0)
         window.show()
-        if not (self.unattended or self.headless):  # refuses focus on purpose; no screen
-            window.raise_()
-            window.activateWindow()
+        window.raise_()
+        window.activateWindow()
         return window
 
     def open_popup(self, request, opener: Window | None = None) -> Window:
@@ -393,19 +386,6 @@ class Browser(QObject):
         else:
             window.show()
         return window
-
-    def _out_of_the_way(self, window: Window, offset: int = 0) -> None:
-        """An unattended run's window: floating in the bottom-right corner,
-        never taking the keyboard."""
-        window.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus)
-        window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        screen = QGuiApplication.primaryScreen()
-        if screen is None:
-            return
-        area = screen.availableGeometry()
-        window.resize(1000, 660)
-        window.move(area.right() - window.width() - 12 - offset,
-                    area.bottom() - window.height() - 12 - offset)
 
     # ── downloads ───────────────────────────────────────────────────────
     def on_download(self, request: QWebEngineDownloadRequest) -> None:
@@ -515,23 +495,23 @@ class Browser(QObject):
 
 
 def main(urls: list[str], *, unattended: bool = False, lock: int | None = None,
-         no_window: bool = False, headless: bool = False, software: bool = False,
+         no_window: bool = False, software: bool = False,
          profile: str | None = None) -> int:
     log.info("starting: pid %d, Qt %s%s%s%s%s", os.getpid(), qVersion(),
              f", profile {profile}" if profile else "",
-             ", headless" if headless else ", drawn in software" if software else "",
+             ", drawn in software" if software else "",
              ", unattended" if unattended else "",
              ", no window" if no_window and not urls else "")
-    widevine = startup.apply_flags(software=headless or software)
+    widevine = startup.apply_flags(software=software)
     app = make_application()
-    if headless:
-        app.setQuitOnLastWindowClosed(False)    # a service: SIGTERM ends it
-    if headless or software:
+    if unattended:
+        app.setQuitOnLastWindowClosed(False)    # a service: SIGTERM or `quit` ends it
+    if software:
         effects.turn_off("drawn in software", quiet=True)
     web_profile = make_profile(profile)
     log.info("profile in %s%s", web_profile.persistentStoragePath(),
              f"; Widevine {widevine}" if widevine else "")
-    browser = Browser(web_profile, unattended=unattended, headless=headless, name=profile)
+    browser = Browser(web_profile, unattended=unattended, name=profile)
     browser.listen()
     if urls or not no_window:
         browser.open_urls(urls)

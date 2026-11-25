@@ -4,7 +4,7 @@ The hub's agent is Lilac, and the hub names her once for every screen in
 its `welcome` (`agent: {name, color}`, lilac's PROTOCOL.md): every reply,
 notification and mark is drawn in that name and colour. Until a call to
 the hub has heard it, and in an app with no shell to ask (Flux on its
-own, headless on the hub), she is NAME in COLOR, the hub's own.
+own, unattended on the hub), she is NAME in COLOR, the hub's own.
 
 Pure Python, so that Flux imports it too. In the shell the call adopts
 what the hub's welcome says (agent/remote.py); the shell tells its apps

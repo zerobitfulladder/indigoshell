@@ -1,9 +1,9 @@
-"""The browser (flux/qt), unattended.
+"""The browser (flux/qt), with nobody at it.
 
     .venv/bin/python tests/browser.py              off screen, about a minute
     .venv/bin/python tests/browser.py --on-screen  the shell's app service and a real window, ~40 s
 
-Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
+Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. pure parts: the key table, sites.json rules, the messages (every
      one typed; the state check), Widevine found/copied in fake
      directories, Chromium's flags
@@ -49,8 +49,8 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      the terminal only when stderr is one, the rotation
 
 --on-screen runs the shell's own app service (indigoshell/applink) in
-this process and the browser with three tabs in its unattended corner
-window (floating, never takes focus), and reads the browser window's
+this process and the browser with three tabs in an unattended window
+(`--unattended`: nothing asks), and reads the browser window's
 own pixels (its composite pixmap: never the root, never the screen):
 the page from the window's top edge, its keys grabbed by the service,
 the top bar's content drawn from the browser's state, the line only
@@ -89,6 +89,12 @@ from urllib.parse import parse_qs, urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "tests"))
+
+import _cage                    # noqa: E402
+
+if "--on-screen" not in sys.argv[1:]:
+    _cage.inside()              # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
@@ -278,8 +284,10 @@ def requests_to(path_prefix: str) -> list[dict]:
 
 # ── a stand-in for the shell: just the socket ──────────────────────────
 
-def x11_of(announce: dict):
-    return (announce.get("handle") or {}).get("x11")
+def window_of(announce: dict):
+    """Flux's own id for the window a connection announced (on Wayland,
+    as in the hidden cage, there is no X window to know it by)."""
+    return announce.get("window")
 
 
 def bar_state(bar: dict) -> dict:
@@ -360,9 +368,8 @@ class FakeShell:
 
     def conn_of(self, window):
         """The open connection a browser window announced itself on."""
-        wid = int(window.winId())
         return next((c for c in reversed(self.conns) if c.open and c.msgs
-                     and x11_of(c.msgs[0]) == wid), None)
+                     and window_of(c.msgs[0]) == window.id), None)
 
     def drop(self, conn) -> None:
         try:
@@ -655,7 +662,7 @@ def test_site_zoom(browser, w, press, loaded, navigate, wait) -> None:
     check("a hand edit of zoom.json applies to the site's next page (localhost: 80)",
           edited and z(zl) == 0.8, f"{z(zl)}")
     w2.select(0)
-    w2.activateWindow()
+    _cage.focus(w2)
     press(w2, K.Key_0, ctrl)
     reset = (z(zc), z(alpha), kept())
     fresh = w2.add_tab(QUrl(url("/page/ZoomD")))
@@ -1128,9 +1135,9 @@ def test_in_process() -> None:
     popup = next((x for x in browser.windows if x is not w), None)
     ok = popup is not None and popup.single and bool(popup.windowFlags() & Qt.WindowType.Dialog) \
         and len(popup.tabs) == 1 and loaded(popup.tabs[0], "Pop")
-    check("a popup with a size: its own small floating window, one page",
-          ok and len(w.tabs) == 7 and (popup.width(), popup.height()) == (420, 300),
-          f"{popup and (popup.width(), popup.height())}")
+    check("a popup with a size: its own floating window (a dialog), one page (the size it "
+          "asked for is the compositor's to give: cage fills its screen)",
+          ok and len(w.tabs) == 7, f"{popup and (popup.width(), popup.height())}")
     if ok:
         js(popup.tabs[0].page, f"window.open('{url('/page/FromPopup')}')")
         wait(lambda: len(w.tabs) == 8)
@@ -1167,9 +1174,10 @@ def test_in_process() -> None:
     conn = shell.conns[0] if shell.conns else None
     wait(lambda: conn and conn.states())
     first = conn.msgs[0] if conn and conn.msgs else {}
-    check("announce first: {type: announce, app: flux, window: its id, handle: {x11}}",
-          first == {"type": "announce", "app": "flux", "window": w.id,
-                    "handle": {"x11": int(w.winId())}}, f"{first}")
+    check("announce first: {type: announce, app: flux, window: its id, handle: {}} (Wayland: "
+          "the connection is the window)",
+          first == {"type": "announce", "app": "flux", "window": w.id, "handle": {}},
+          f"{first}")
     from flux import bar as fb
     from indigoshell.applink import bar as B
     bars = conn.bars() if conn else []
@@ -1194,9 +1202,10 @@ def test_in_process() -> None:
     said = [m for m in logs.messages(logging.INFO, mark) if "Ctrl+M" in m]
     check("Ctrl+M and Ctrl+L reaching the window with a shell there (one that could not grab "
           "them): Ctrl+M one line in the log, Ctrl+L the window's own dialog holding the "
-          "address; nothing but bars said to the shell",
+          "address; nothing but bars (and whether it has the focus) said to the shell",
           len(said) == 1 and asked and value == url("/page/Alpha")
-          and all(m["type"] == "bar" for m in conn.msgs[1:]), f"{said} {value!r}")
+          and all(m["type"] in ("bar", "active") for m in conn.msgs[1:]),
+          f"{said} {value!r} {[m['type'] for m in conn.msgs[1:]]}")
     count = len(conn.states())
     for _ in range(5):
         w.refresh()
@@ -1307,29 +1316,32 @@ def test_in_process() -> None:
             return self.on
 
     since = len(conn.msgs)
+    # cage fills its screen with every window (Qt hears it as full screen
+    # either way): what Flux itself did is its `fullscreen_tab`.
     w.on_fullscreen(w.tabs[0], Fullscreen(True))
     wait(lambda: w.isFullScreen(), 2)
-    on = (w.isFullScreen(), w.line.isVisible())
+    on = (w.fullscreen_tab is w.tabs[0], w.line.isVisible())
     w.on_fullscreen(w.tabs[0], Fullscreen(False))
-    wait(lambda: not w.isFullScreen(), 2)
     QTest.qWait(100)
-    off = (w.isFullScreen(), w.line.isVisible())
-    said = [m for m in conn.msgs[since:] if m["type"] != "bar"]
+    off = (w.fullscreen_tab is not None, w.line.isVisible())
+    said = [m for m in conn.msgs[since:] if m["type"] not in ("bar", "active")]
     check("fullscreen: no line over the page (the shell shows the state), none after; nothing "
-          "but bars said to the shell", on == (True, False) and off == (False, False)
+          "but bars (and the focus) said to the shell", on == (True, False)
+          and off == (False, False)
           and not said, f"{on} {off} {said}")
     old_wid, old_handle, before = int(w.winId()), w.windowHandle(), len(shell.conns)
     w.destroy()
     w.create()
     w.show()
-    told = wait(lambda: len(shell.conns) > before and shell.conns[-1].msgs
-                and x11_of(shell.conns[-1].msgs[0]) == int(w.winId()), 3)
+    QTest.qWait(300)
+    kept = len(shell.conns) == before and w.link.attached
     press(w, K.Key_2, M.AltModifier)
     key_ok = w.current == 1
     press(w, K.Key_1, M.AltModifier)
-    check("Qt replacing the native window: keys taken on the new one, the shell told at once",
-          int(w.winId()) != old_wid and w.windowHandle() is not old_handle and told and key_ok,
-          f"0x{old_wid:x} -> 0x{int(w.winId()):x}, announced {told}, Alt+2 {key_ok}")
+    check("Qt replacing the native window: keys taken on the new one; on Wayland the "
+          "connection is the window, and it stays",
+          int(w.winId()) != old_wid and w.windowHandle() is not old_handle and kept and key_ok,
+          f"0x{old_wid:x} -> 0x{int(w.winId()):x}, line kept {kept}, Alt+2 {key_ok}")
     wait(lambda: w.link.attached, 2)
     shell.drop(shell.conn_of(w))
     dropped = wait(lambda: not w.link.attached, 3)
@@ -1339,11 +1351,11 @@ def test_in_process() -> None:
     before = len(shell.conns)
     press(w, K.Key_F12)
     inspector = w.current_tab().inspector
-    wid = int(inspector.winId()) if inspector is not None else None
-    told = wait(lambda: any(c.msgs and x11_of(c.msgs[0]) == wid and c.bars()
+    wid = inspector.id if inspector is not None else None
+    told = wait(lambda: any(c.msgs and window_of(c.msgs[0]) == wid and c.bars()
                             for c in shell.conns[before:]), 5)
     said = next((c.bars()[-1] for c in shell.conns[before:] if c.msgs
-                 and x11_of(c.msgs[0]) == wid and c.bars()), {})
+                 and window_of(c.msgs[0]) == wid and c.bars()), {})
     if inspector is not None:
         inspector.close()
     check("the inspector (a single window) sends a bar of one tab that can do nothing, and no "
@@ -1481,8 +1493,7 @@ def test_in_process() -> None:
         """And the window active again, as a person's focused Flux is: the
         dialogs above take the activation, and an inactive window here
         hands its keys to no widget."""
-        w.activateWindow()
-        wait(lambda: w.isActiveWindow(), 2)
+        _cage.focus(w)
         js(tab.page, "window.keys = []")
 
     tabs_before = len(w.tabs)
@@ -2072,7 +2083,7 @@ def test_in_process() -> None:
 
     def use(window) -> bool:
         """What a user does: activate it. The browser follows activation."""
-        window.activateWindow()
+        _cage.focus(window)
         return wait(lambda: browser.windows[0] is window, 3)
 
     check("activating a window makes it the most recently used",
@@ -2171,7 +2182,7 @@ def test_processes() -> None:
     section("3. python -m flux.qt, as processes")
     shell = FakeShell(SOCK["apps2"])
     state1 = SCRATCH / "state-1"
-    envs = dict(os.environ, QT_QPA_PLATFORM="offscreen", XDG_STATE_HOME=str(state1), **{
+    envs = dict(os.environ, XDG_STATE_HOME=str(state1), **{
         env("BROWSER_SOCKET"): SOCK["browser2"], env("APPS_SOCKET"): SOCK["apps2"]})
     log_path = SCRATCH / "browser-process-1.log"
     from flux import zoom
@@ -2389,7 +2400,7 @@ def test_log_file() -> None:
 
     def child(name, *args, stderr=subprocess.PIPE):
         state = SCRATCH / f"state-{name}"
-        envs = dict(os.environ, QT_QPA_PLATFORM="offscreen", XDG_STATE_HOME=str(state))
+        envs = dict(os.environ, XDG_STATE_HOME=str(state))
         proc = subprocess.run([PY, "-c", LOG_CHILD, *args], cwd=REPO, env=envs,
                               stdout=subprocess.DEVNULL, stderr=stderr, timeout=60)
         path = browser_log(state)
@@ -2412,8 +2423,7 @@ def test_log_file() -> None:
     seen = b""
     try:
         tty_proc = subprocess.Popen([PY, "-c", LOG_CHILD], cwd=REPO, stdout=subprocess.DEVNULL,
-                                    stderr=follower, env=dict(os.environ, XDG_STATE_HOME=str(state),
-                                                              QT_QPA_PLATFORM="offscreen"))
+                                    stderr=follower, env=dict(os.environ, XDG_STATE_HOME=str(state)))
         os.close(follower)
         follower = -1
         while True:
@@ -2478,7 +2488,6 @@ def main() -> int:
         if args.on_screen:
             test_on_screen()
         else:
-            os.environ["QT_QPA_PLATFORM"] = "offscreen"
             test_pure()
             test_in_process()
             test_processes()

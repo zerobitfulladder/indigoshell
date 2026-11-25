@@ -1,60 +1,63 @@
-"""Flux headless, its profiles, and its hands without the shell: what a
-Raspberry Pi with no display runs to lend the agent a browser of its own.
+"""Flux unattended, its profiles, and its hands without the shell: what
+the hub runs to lend the agent a browser of its own, shown on a bare
+cage (a kiosk Wayland compositor) with no shell.
 
-    .venv/bin/python tests/browser_headless.py      about a minute, nothing on screen
+    .venv/bin/python tests/browser_unattended.py    about a minute, in a hidden cage
 
-This process plays the Pi's device process: before anything of the
-shell's is imported, xcffib, skia, dbus_fast and psutil are blocked (None
-in sys.modules), and PySide6 is never imported here. The agent's Hand,
-HandError and Call come from agent/hands.py loaded by its path, as the
-Pi gets them once indigoshell.agent imports without the shell's toolkit
-(the package's __init__ pulls in skia). Every Flux runs as a process of
-its own (`main.py browser ...`) with no $DISPLAY and no $WAYLAND_DISPLAY,
-in scratch XDG directories, with sockets of the test's; a stand-in shell
-listens where the shell's apps connect, and counts them.
+The whole test runs as a hidden cage's client (tests/_cage.py:
+`WLR_BACKENDS=headless cage -- ...`), and so does every Flux it starts.
+This process plays the hub's process: before anything of the shell's is
+imported, xcffib, skia, dbus_fast and psutil are blocked (None in
+sys.modules), and PySide6 is never imported here. The agent's Hand,
+HandError and Call come from core/hands.py. Every Flux runs as a process
+of its own (`main.py browser ...`), in scratch XDG directories, with
+sockets of the test's; no shell listens where the shell's apps connect,
+as on the hub.
 
   1. pure: the default profile's places exactly as before (storage,
      cache, history, bookmarks, log, socket and lock); a named profile's
-     beside them; names refused; the start command (`--headless`, the
-     profile, this Python and the repository's main.py); no display
-     means headless; the upload check refuses every profile's cache; the
-     imports (none of the blocked modules, no PySide6, no indigoshell
-     .agent); the hands made of core's Hand, raising its HandError, the
-     same shapes as the laptop's, their headless words (no laptop, no
-     workspace, no X window), the laptop's words kept.
-  2. a headless Flux, `--headless --no-window --profile pi`, through
-     browser_hands(profile="pi", headless=True): tabs (headless, no
-     windows, then no X window and no focus); open; read (outline refs);
-     act (click, type, fill) and the page changing; a screenshot drawn
-     (the page's colour in the PNG) whose viewport never shrinks (no
-     fallback line, after more than the link's FALLBACK_MS); look
-     (headless words, the screenshot, no image under a pointer); a dialog
-     outside the agent's session answered at once (the page not stuck);
-     one inside it held for browser_dialog; a permission request denied;
-     borrow and return (the agent's window shown at once, no placing, no
-     workspace words); downloads (into the scratch Downloads, waited
-     for); the stand-in shell never connected to; its last tab closed and
-     Flux still there; its log in browser-pi.log; a quit request ends it
-     cleanly (answered first, then the process gone, its socket too).
-  3. two profiles side by side: the default profile's headless Flux and
-     pi's, each on its own socket, its own tabs, storage, cache, history
-     and log; `main.py browser --profile pi URL` handed to pi's, not the
-     default one's.
-  4. `ensure_running(profile="auto")` with no display and no systemd
-     (PATH holding only setsid): started detached with plain setsid
-     (its own session, not the test's child, in no app scope), headless,
-     this Python and main.py; connected; then ended with SIGTERM.
+     beside them; names refused; the start command (`--unattended`, the
+     profile, this Python and the repository's main.py); the upload
+     check refuses every profile's cache; the imports (none of the
+     blocked modules, no PySide6, no indigoshell.agent); the hands made
+     of core's Hand, raising its HandError, every one lent for a
+     profile, the same shapes as the laptop's, `where` at the front of
+     every description, the unattended note on the dialog hand only
+     when unattended; a `start_env` that fails: its error answered,
+     nothing started.
+  2. an unattended Flux, `--unattended --no-window --profile pi`,
+     through browser_hands(profile="pi", where=..., unattended=True):
+     tabs (no windows, then no X window); open; read (outline refs); act
+     (click, type, fill) and the page changing; a screenshot drawn (the
+     page's colour in the PNG), its window saying its own state with no
+     shell; look (the screenshot, no image); a dialog outside the
+     agent's session answered at once (the page not stuck); one inside
+     it held for browser_dialog; a permission request denied; borrow and
+     return (the agent's window shown at once: no shell to wait for);
+     downloads (into the scratch Downloads, waited for); release; its
+     last tab closed and Flux still there; its log in browser-pi.log; a
+     quit request ends it cleanly (answered first, then the process
+     gone, its socket too).
+  3. two profiles side by side: the default profile's unattended Flux
+     and pi's, each on its own socket, its own tabs, storage, cache,
+     history and log; `main.py browser --profile pi URL` handed to pi's,
+     not the default one's.
+  4. `ensure_running(profile="auto", unattended=True, env=...)` with no
+     systemd (PATH holding only setsid): started detached with plain
+     setsid (its own session, not the test's child, in no app scope),
+     `--unattended`, this Python and main.py, `env` in its environment;
+     connected; then ended with SIGTERM.
   5. the Qt 6.8 profile path (no QWebEngineProfileBuilder: a child with
      it hidden): the same storage, cache, storage name and policies as
      the builder's, and a cookie set in one run there in the next.
 
 Never touched: the user's profile, history, bookmarks, Downloads, browser
-and shell; no window is shown anywhere, no input reaches the display.
+and shell; no window shows on any screen, no input reaches one.
 """
 
 import sys
 
-# The Pi's device process has PySide6 and none of these: blocked before
+# The hub's process has none of these (and no PySide6): blocked before
 # anything of the shell's is imported.
 BLOCKED = ("xcffib", "skia", "dbus_fast", "psutil")
 for _name in BLOCKED:
@@ -68,7 +71,6 @@ import os                       # noqa: E402
 import re                       # noqa: E402
 import shutil                   # noqa: E402
 import signal                   # noqa: E402
-import socket                   # noqa: E402
 import subprocess               # noqa: E402
 import tempfile                 # noqa: E402
 import threading                # noqa: E402
@@ -80,6 +82,9 @@ from pathlib import Path        # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "tests"))
+
+import _cage                    # noqa: E402
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
@@ -87,11 +92,13 @@ from indigoshell.core.paths import runtime_dir        # noqa: E402
 PY = sys.executable
 FAILED: list[str] = []
 SCRATCH = Path("/nonexistent")          # made in main
-TAG = f"{APP}-hl-{os.getpid()}"
+TAG = f"{APP}-ua-{os.getpid()}"
 SOCK = {name: os.path.join(runtime_dir(), f"{TAG}-{name}.sock") for name in ("browser", "apps")}
 PORT = 0
-SHELL_SEEN: list[str] = []              # connections the stand-in shell took
 PROCS: list[subprocess.Popen] = []
+# What the hub says of its screen, at the front of every hand's words.
+WHERE = "This Flux shows on the hub's own screen, which nobody watches."
+LAPTOP = "This Flux shows on the laptop's screen, where the user works."
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -142,7 +149,7 @@ class Site(BaseHTTPRequestHandler):
         elif path == "/file.txt":
             body = b"the downloaded file\n" * 100
             self._send(200, body, "application/octet-stream",
-                       {"Content-Disposition": 'attachment; filename="flux-headless.txt"'})
+                       {"Content-Disposition": 'attachment; filename="flux-unattended.txt"'})
         elif path == "/setcookie":
             self._send(200, b"<!doctype html><title>Set</title><body>set", "text/html",
                        {"Set-Cookie": "signed=in-68; Max-Age=86400; Path=/"})
@@ -166,41 +173,6 @@ class Site(BaseHTTPRequestHandler):
             pass                        # a favicon Chromium stopped waiting for
 
 
-class StandInShell:
-    """Where the shell's apps connect (applink): it takes connections
-    and remembers them; a headless Flux must never come."""
-
-    def __init__(self, path: str) -> None:
-        if os.path.exists(path):
-            os.unlink(path)
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.bind(path)
-        self.sock.listen(8)
-        self.sock.settimeout(0.2)
-        self.running = True
-        threading.Thread(target=self._serve, daemon=True).start()
-
-    def _serve(self) -> None:
-        while self.running:
-            try:
-                conn, _ = self.sock.accept()
-            except (TimeoutError, socket.timeout):
-                continue
-            except OSError:
-                return
-            conn.settimeout(1.0)
-            try:
-                SHELL_SEEN.append(conn.recv(4096).decode(errors="replace"))
-            except OSError:
-                SHELL_SEEN.append("")
-            conn.close()
-
-    def close(self) -> None:
-        self.running = False
-        self.sock.close()
-
-
-# ── a PNG's pixels, without Qt ──────────────────────────────────────────
 def png_pixel(data: bytes, fx: float, fy: float) -> tuple:
     """The RGB of the pixel at (fx, fy), fractions of the width and
     height, of an 8-bit RGB or RGBA PNG."""
@@ -354,26 +326,25 @@ def test_pure() -> None:
     check("names that are no profile's refused", len(refused) == 7, f"{refused}")
     check("an empty name is the default", profiles.check("") is None and profiles.check(None) is None)
 
-    cmd = control.start_command("pi", headless=True)
+    cmd = control.start_command("pi", unattended=True)
     check("start command: this Python, the repository's main.py, `browser --no-window "
-          "--headless --profile pi`",
-          cmd == [PY, str(REPO / "main.py"), "browser", "--no-window", "--headless",
+          "--unattended --profile pi`",
+          cmd == [PY, str(REPO / "main.py"), "browser", "--no-window", "--unattended",
                   "--profile", "pi"], f"{cmd}")
     check("... and the default one as it was",
           control.start_command() == [PY, str(REPO / "main.py"), "browser", "--no-window"])
     other = "/usr/bin/python3"
-    pinned = control.start_command("pi", headless=True, python=other)
+    pinned = control.start_command("pi", unattended=True, python=other)
     check("start command with python=: that Python runs the repository's main.py",
-          pinned == [other, str(REPO / "main.py"), "browser", "--no-window", "--headless",
+          pinned == [other, str(REPO / "main.py"), "browser", "--no-window", "--unattended",
                      "--profile", "pi"], f"{pinned}")
     os.environ[control.PYTHON_ENV] = other
     try:
-        from_env = control.start_command("pi", headless=True)
+        from_env = control.start_command("pi", unattended=True)
     finally:
         del os.environ[control.PYTHON_ENV]
     check(f"... and from ${control.PYTHON_ENV}", from_env == pinned, f"{from_env}")
-    check("... unset again: this Python", control.start_command("pi", headless=True) == cmd)
-    check("no $DISPLAY nor $WAYLAND_DISPLAY: no display (headless)", control.no_display())
+    check("... unset again: this Python", control.start_command("pi", unattended=True) == cmd)
 
     cache = Path(profiles.cache_path("pi"))
     cache.mkdir(parents=True, exist_ok=True)
@@ -394,28 +365,52 @@ def test_pure() -> None:
           f"{[m for m in sys.modules if m.startswith(f'{APP}.agent')]}")
 
     ah = agent_hands()
-    hl = browser_hands_module.browser_hands("pi", headless=True)
-    check("hands: made of core's Hand", all(isinstance(h, ah.Hand) for h in hl) and len(hl) == 24,
-          f"{len(hl)}")
+    hl = browser_hands_module.browser_hands("pi", where=WHERE, unattended=True)
+    check("hands: made of core's Hand, every one lent for a profile",
+          all(isinstance(h, ah.Hand) for h in hl) and len(hl) == 24
+          and {"browser_release", "browser_borrow", "browser_return", "browser_look"}
+          <= {h.name for h in hl}, f"{len(hl)}")
     shapes = [(h.name, json.dumps(h.input, sort_keys=True), h.timeout) for h in hl]
     try:
-        laptop = browser_hands_module.browser_hands()
+        laptop = browser_hands_module.browser_hands(where=LAPTOP)
     except Exception as e:      # noqa: BLE001
         laptop = []
         print(f"    {e}")
     check("... the same shapes as the laptop's (names, schemas, times)",
           shapes == [(h.name, json.dumps(h.input, sort_keys=True), h.timeout) for h in laptop])
     words = {h.name: h.description for h in hl}
-    bad = {n: w for n, d in words.items()
-           for w in ("laptop", "workspace", "X window id", "under the mouse pointer",
-                     "The user watches you act") if w in d}
-    check("... headless words: no laptop, workspace, X window, pointer or watching", not bad,
-          f"{bad}")
-    check("... and they say headless", all("headless" in d for d in words.values()))
     lap = {h.name: h.description for h in laptop}
-    check("... the laptop's words as they were", bool(lap) and all(
-        "on the laptop" in d for d in lap.values()) and "windows and focus hands" in lap["browser_tabs"]
-        and "empty workspace" in lap["browser_borrow"])
+    check("... `where` at the front of every description",
+          all(d.startswith(WHERE + " ") for d in words.values())
+          and bool(lap) and all(d.startswith(LAPTOP + " ") for d in lap.values()))
+    check("... unattended: the dialog hand says a stray dialog is answered at once; the "
+          "laptop's does not",
+          "answered at once" in words["browser_dialog"]
+          and "answered at once" not in lap["browser_dialog"])
+    try:
+        browser_hands_module.browser_hands("pi")
+        no_where = "made"
+    except TypeError:
+        no_where = "refused"
+    check("... `where` is required", no_where == "refused", no_where)
+
+    def screen_down() -> dict:
+        raise RuntimeError("the hub's screen isn't up")
+    down = {h.name: h for h in browser_hands_module.browser_hands(
+        "nostart", where=WHERE, unattended=True, start_env=screen_down)}
+
+    async def open_down() -> str:
+        try:
+            await down["browser_open"].run(ah.Call("c0", "browser_open",
+                                                   {"url": "about:blank"}, 20.0))
+        except ah.HandError as e:
+            return f"HandError: {e}"
+        return "no error"
+    said = asyncio.run(open_down())
+    check("a start_env that fails: the hand answers its error, nothing started",
+          said.startswith("HandError: ") and "the hub's screen isn't up" in said
+          and not os.path.exists(protocol.control_socket_path("nostart"))
+          and not os.path.exists(protocol.instance_lock_path("nostart")), said)
 
     async def bad_tab():
         try:
@@ -433,21 +428,20 @@ def test_pure() -> None:
         if sys.modules[m]))
 
 
-# ── 2. a headless Flux through the hands ────────────────────────────────
-def test_headless() -> None:
-    section("2. a headless Flux (--headless --no-window --profile pi) through the hands")
+# ── 2. an unattended Flux through the hands ─────────────────────────────
+def test_unattended() -> None:
+    section("2. an unattended Flux (--unattended --no-window --profile pi) through the hands")
     from flux import control, protocol
     from flux import hands as bh
     # link.py's, read from its source: importing it would load PySide6 here.
     FALLBACK_MS = int(re.search(r"^FALLBACK_MS = (\d+)", (REPO / "flux/qt/link.py")
                                 .read_text(), re.M).group(1))
     ah = agent_hands()
-    seen_before = len(SHELL_SEEN)
-    proc = start_flux("--headless", "--no-window", "--profile", "pi")
+    proc = start_flux("--unattended", "--no-window", "--profile", "pi")
     if not check("it listens on pi's socket", wait_listening("pi")):
         stop(proc)
         return
-    hands = {h.name: h for h in bh.browser_hands("pi", headless=True)}
+    hands = {h.name: h for h in bh.browser_hands("pi", where=WHERE, unattended=True)}
 
     async def run() -> dict:
         out: dict = {}
@@ -485,7 +479,7 @@ def test_headless() -> None:
                                 "document.getElementById('name').value, "
                                 "document.getElementById('city').value]"})
         await call("browser_release", {"tab": tab})
-        # Past the link's fallback time: no line may have come over the page.
+        # Past the link's fallback time: with no shell, the window says its state.
         await asyncio.sleep(FALLBACK_MS / 1000 + 1.0)
         out["shot"] = await call("browser_screenshot", {"tab": tab})
         out["look"] = await call("browser_look", {"screenshot": True, "image": True})
@@ -538,12 +532,12 @@ def test_headless() -> None:
         print(traceback.format_exc())
         out = {}
     t0, t1 = out.get("tabs0", ("", [], "missing")), out.get("tabs1", ("", [], "missing"))
-    check("tabs before any window: headless, no windows",
-          "headless (no screen) with no windows" in t0[0], t0[0] or t0[2])
+    check("tabs before any window: running, no windows",
+          "Flux is running with no windows" in t0[0], t0[0] or t0[2])
     check("open: the page loaded", "\"Form\"" in out.get("open", ("",))[0],
           out.get("open", ("", [], ""))[0][:200])
-    check("tabs: headless, no X window, no focus",
-          "headless" in t1[0] and "X window" not in t1[0] and "focus" not in t1[0], t1[0][:300])
+    check("tabs: one window, no X window (Wayland)",
+          "1 window(s)" in t1[0] and "X window" not in t1[0], t1[0][:300])
     refs = out.get("refs", {})
     check("read: the outline's refs", len(refs) >= 6, f"{list(refs)[:8]}")
     values = out.get("values", ("", [], ""))[0]
@@ -552,12 +546,10 @@ def test_headless() -> None:
     text, images, err = out.get("shot", ("", [], "missing"))
     px = png_pixel(images[0], 0.5, 0.9) if images else ()
     check("screenshot: drawn, the page's colour", near(px, GREEN), f"{px} {err or ''}")
-    check(f"... its viewport still 1280x800 after {FALLBACK_MS / 1000 + 1:g} s (no fallback line)",
-          "viewport is 1280x800" in text, text[:200])
     text, images, err = out.get("look", ("", [], "missing"))
-    check("look: headless words, the screenshot, no image under a pointer",
-          "headless: no one looks at it" in text and len(images) == 1
-          and "No image in the selection." in text and "pointer" not in text, text[:300])
+    check("look: the window, the screenshot, no image",
+          "In Flux, the user's browser" in text and len(images) == 1
+          and "No image in the selection" in text, text[:300] + (err or ""))
     check("a page's alert outside a session: answered at once, the page went on",
           "after the alert" in out.get("alert_text", ("",))[0], out.get("alert_text", ("",))[0][:200])
     ask, answer = out.get("ask", ("", [], "")), out.get("answer", ("", [], ""))
@@ -567,23 +559,20 @@ def test_headless() -> None:
     check("the confirm answered yes, the permission request denied (no one to ask)",
           "notify denied" in said or "\"notify denied\"" in said, said[-120:])
     dl = out.get("dl_wait", ("", [], "missing"))
-    files = list((SCRATCH / "downloads").glob("flux-headless*.txt"))
+    files = list((SCRATCH / "downloads").glob("flux-unattended*.txt"))
     check("downloads: listed, waited for, in the scratch Downloads",
           "[done" in dl[0] and files and files[0].stat().st_size == 2000, f"{dl[0][:200]} {dl[2]}")
     borrow = out.get("borrow", ("", [], "missing"))
-    check("borrow: into the agent's window at once (no placing)",
+    check("borrow: into the agent's window at once (no shell to place it)",
           "Borrowed into your own window" in borrow[0] and out.get("borrow_s", 9) < 1.2,
           f"{out.get('borrow_s', 0):.2f} s {borrow[2] or ''}")
     t2 = out.get("tabs2", ("",))[0]
-    check("... tabs names it the agent's own, no workspace", "(your own window)" in t2
-          and "workspace" not in t2, t2[:400])
+    check("... tabs names it the agent's own", "(your own window" in t2, t2[:400])
     check("return: back to its window", "back to its window" in out.get("return", ("",))[0],
           out.get("return", ("", [], ""))[0][:200])
     check("the last tab closed: Flux still runs, with no windows",
           "with no windows" in out.get("tabs_end", ("",))[0] and proc.poll() is None,
           out.get("tabs_end", ("", [], ""))[0][:120])
-    check("the shell's app socket never connected to", len(SHELL_SEEN) == seen_before,
-          f"{SHELL_SEEN[seen_before:][:2]}")
     async def release_it() -> str:
         blocks = await hands["browser_release"].run(ah.Call("r1", "browser_release", {}, 10.0))
         return blocks[0]["text"]
@@ -611,18 +600,20 @@ def test_headless() -> None:
           and "ended cleanly" in log
           and not os.path.exists(protocol.control_socket_path("pi")),
           f"{said}; exit {code}")
-    check("its log is browser-pi.log: started headless, with profile pi",
-          "profile pi, headless, no window" in log and "permission denied (headless" in log
-          and "answered at once (headless" in log, log[:200])
-    check("... no line to the shell in it", "connected to the shell" not in log)
+    check("its log is browser-pi.log: started unattended, with profile pi",
+          "profile pi, unattended, no window" in log and "permission denied (unattended" in log
+          and "answered at once (unattended" in log, log[:200])
+    check("... no shell: the agent's window shown at once, each window saying its own state",
+          "no shell listens" in log and "the window shows its own state" in log
+          and "connected to the shell" not in log)
 
 
 # ── 3. two profiles side by side ────────────────────────────────────────
 def test_two_profiles() -> None:
     section("3. two profiles side by side: the default one and pi")
     from flux import control, places, profiles
-    default = start_flux("--headless", "--no-window")
-    pi = start_flux("--headless", "--no-window", "--profile", "pi")
+    default = start_flux("--unattended", "--no-window")
+    pi = start_flux("--unattended", "--no-window", "--profile", "pi")
     both = wait_listening(None) and wait_listening("pi")
     if not check("both listen, each on its own socket", both):
         stop(default)
@@ -678,9 +669,10 @@ def test_two_profiles() -> None:
           and "profile in " + profiles.storage_path("pi") in logs[1], "")
 
 
-# ── 4. ensure_running with no display and no systemd ────────────────────
+# ── 4. ensure_running unattended, with env, and no systemd ──────────────
 def test_ensure_running() -> None:
-    section("4. ensure_running(profile=\"auto\"): no display, no systemd, plain setsid")
+    section("4. ensure_running(profile=\"auto\", unattended=True, env=...): no systemd, "
+            "plain setsid")
     from flux import control, protocol
     bin_dir = SCRATCH / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -701,7 +693,9 @@ def test_ensure_running() -> None:
     async def run() -> dict:
         out = {}
         began = time.monotonic()
-        flux = await control.ensure_running(timeout=60, profile="auto")
+        flux = await control.ensure_running(
+            timeout=60, profile="auto", unattended=True,
+            env={"WAYLAND_DISPLAY": os.environ["WAYLAND_DISPLAY"], "FLUX_TEST_ENV": "given"})
         out["s"] = time.monotonic() - began
         out["tabs"] = await flux.request("tabs")
         await flux.close()
@@ -717,13 +711,16 @@ def test_ensure_running() -> None:
     cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[:-1] if pid else []
     stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split() if pid else []
     cgroup = Path(f"/proc/{pid}/cgroup").read_text() if pid else ""
-    check("started and connected, headless, its profile",
-          out.get("tabs", {}).get("headless") is True and out["tabs"].get("profile") == "auto",
+    environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0") if pid else []
+    check("started and connected, its profile",
+          out.get("tabs", {}).get("profile") == "auto",
           f"{out.get('error', '')} in {out.get('s', 0):.1f} s")
-    check("... this Python and the repository's main.py, `browser --no-window --headless "
+    check("... this Python and the repository's main.py, `browser --no-window --unattended "
           "--profile auto`",
           cmd == [PY.encode(), str(REPO / "main.py").encode(), b"browser", b"--no-window",
-                  b"--headless", b"--profile", b"auto"], f"{cmd}")
+                  b"--unattended", b"--profile", b"auto"], f"{cmd}")
+    check("... `env` over the caller's environment", b"FLUX_TEST_ENV=given" in environ
+          and b"FLUX_TEST_ENV=given" not in Path("/proc/self/environ").read_bytes().split(b"\0"))
     check("... detached with plain setsid: its own session, not the test's child, no scope "
           "of its own (the test's cgroup)",
           bool(stat) and int(stat[3]) == pid and int(stat[1]) != os.getpid()
@@ -776,8 +773,7 @@ def test_qt68() -> None:
 
     def child(*args: str) -> dict:
         r = subprocess.run([PY, "-B", "-c", QT68, str(REPO), *args], capture_output=True,
-                           text=True, timeout=90,
-                           env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
+                           text=True, timeout=90, env=dict(os.environ))
         try:
             return json.loads(r.stdout.strip().splitlines()[-1])
         except (ValueError, IndexError):
@@ -802,10 +798,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()
+    _cage.inside()                      # Flux out of sight: a hidden cage's clients
     global SCRATCH, PORT
-    SCRATCH = Path(tempfile.mkdtemp(prefix=f"{APP}-headless-test-"))
-    for var in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "QT_QPA_PLATFORM"):
-        os.environ.pop(var, None)       # the Pi has no screen
+    SCRATCH = Path(tempfile.mkdtemp(prefix=f"{APP}-unattended-test-"))
     os.environ.update({
         "XDG_DATA_HOME": str(SCRATCH / "data"),
         "XDG_CACHE_HOME": str(SCRATCH / "cache"),
@@ -822,14 +817,13 @@ def main() -> int:
     http = ThreadingHTTPServer(("127.0.0.1", 0), Site)
     threading.Thread(target=http.serve_forever, daemon=True).start()
     PORT = http.server_address[1]
-    shell = StandInShell(SOCK["apps"])
     print(f"scratch {SCRATCH}", flush=True)
     bookmarks = Path.home() / ".config" / APP / "browser" / "bookmarks.json"
     marks_before = bookmarks.read_bytes() if bookmarks.exists() else None
     t0 = time.monotonic()
     try:
         test_pure()
-        test_headless()
+        test_unattended()
         test_two_profiles()
         test_ensure_running()
         test_qt68()
@@ -840,7 +834,6 @@ def main() -> int:
         for proc in PROCS:
             if proc.poll() is None:
                 stop(proc)
-        shell.close()
         http.shutdown()
     marks_after = bookmarks.read_bytes() if bookmarks.exists() else None
     check("the user's bookmarks untouched", marks_before == marks_after)

@@ -2,10 +2,10 @@
 (flux/control.py) and the agent's hands (flux/hands.py).
 
     .venv/bin/python tests/browser_control.py              off screen, about a minute
-    .venv/bin/python tests/browser_control.py --on-screen  one floating test window,
+    .venv/bin/python tests/browser_control.py --on-screen  one test window,
                                                            a few seconds
 
-Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
+Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. pure parts: the messages; the client against a stand-in browser
      (results as Python values, Flux's errors, several requests in
      flight answered out of order, a request past its time and one whose
@@ -42,8 +42,8 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      to be the test's).
 
 --on-screen: the browser in this process on the real display, its
-window the floating, focus-refusing test kind in the bottom-right
-corner: screenshots after the page changed, shown, then with the window
+window an unattended one (`--unattended`: nothing asks, muted):
+screenshots after the page changed, shown, then with the window
 moved to an empty workspace (a _NET_WM_DESKTOP request for the test's
 own window only; the user's workspace is never switched) and back.
 
@@ -73,11 +73,19 @@ from urllib.parse import urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "tests"))
+
+import _cage                    # noqa: E402
+
+if "--on-screen" not in sys.argv[1:]:
+    _cage.inside()              # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
 
 PY = sys.executable
+# Where the hands say Flux shows (flux/hands.py `where`): the laptop's.
+SCREEN = "This Flux shows on the laptop's screen, where the user works."
 SCRATCH = Path(tempfile.mkdtemp(prefix=f"{APP}-control-test-"))
 TAG = f"{APP}-ct-{os.getpid()}"
 SOCK = {name: os.path.join(runtime_dir(), f"{TAG}-{name}.sock")
@@ -395,7 +403,7 @@ def test_pure() -> None:
           sent and sent[0] == {"type": "read", "id": sent[0]["id"], "tab": 5, "what": "text"},
           f"{sent}")
 
-    hands = browser_hands()
+    hands = browser_hands(where=SCREEN)
     names = [h.name for h in hands]
     want = ["browser_tabs", "browser_open", "browser_switch", "browser_close", "browser_go",
             "browser_wait", "browser_read", "browser_screenshot", "browser_look",
@@ -595,16 +603,15 @@ def test_in_process(on_screen: bool = False) -> None:
     w2.tabs[0].page.load(browser_app.QUrl(url("/page/Other")))
     w2.show()
     wait(lambda: w2.tabs[0].page.title() == "Other")
-    w1.activateWindow()
-    wait(lambda: QApplication.activeWindow() is w1, 3)
+    _cage.focus(w1)
     windows, _ = J(flux.tabs())
     ids = [(w.window, [t.tab for t in w.tabs]) for w in windows or []]
-    check("tabs: every window (most recently used first) and tab, the focused window, X "
-          "window ids, titles, addresses, which tab is current",
+    check("tabs: every window (most recently used first) and tab, the focused window, no X "
+          "window ids (Wayland), titles, addresses, which tab is current",
           windows and windows[0].window == w1.id and windows[0].focused
           and not windows[1].focused and windows[1].window == w2.id
           and [t.tab for t in windows[0].tabs] == [t1.tab, t2.tab, t3.tab]
-          and windows[0].xid == int(w1.internalWinId())
+          and windows[0].xid is None and windows[1].xid is None
           and windows[0].tabs[2].title == "Three" and windows[0].tabs[2].url == url("/page/Three")
           and [t.current for t in windows[0].tabs] == [False, True, False], f"{ids}")
     all_ids = [t.tab for w in windows for t in w.tabs]
@@ -626,15 +633,13 @@ def test_in_process(on_screen: bool = False) -> None:
     check("the id goes with the page: a page shown in another view keeps it", same)
 
     active_before = QApplication.activeWindow()
-    w2.activateWindow()
-    wait(lambda: QApplication.activeWindow() is w2, 3)
+    _cage.focus(w2)
     sw, err = J(flux.switch(t1.tab))
     QTest.qWait(200)
     check("switch: the tab current in its window; that window neither raised nor focused",
           sw is not None and sw.current and w1.current_tab().id == t1.tab
           and QApplication.activeWindow() is w2, f"{sw} {err}")
-    w1.activateWindow()
-    wait(lambda: QApplication.activeWindow() is w1, 3)
+    _cage.focus(w1)
 
     # ── showing ─────────────────────────────────────────────────────────
     refused = {}
@@ -886,8 +891,7 @@ def test_in_process(on_screen: bool = False) -> None:
     J(flux.go(t1.tab, url("/select")))
     loaded(t1.tab)
     QTest.qWait(200)
-    w1.activateWindow()
-    wait(lambda: QApplication.activeWindow() is w1, 3)
+    _cage.focus(w1)
     page1 = w1.current_tab().page
     state = ("JSON.stringify({sel: String(getSelection()), active: document.activeElement.tagName,"
              " y: scrollY, mutations: window.__mutations})")
@@ -898,7 +902,9 @@ def test_in_process(on_screen: bool = False) -> None:
           looked is not None and looked["window"] == w1.id and looked["tab"] == t1.tab
           and looked["focused"] and looked["unfocused_for"] is None
           and looked["selection"].strip().startswith("SELECTED-WORDS")
-          and looked["selection_in"] == "page" and looked["title"] == "Select", f"{err}")
+          and looked["selection_in"] == "page" and looked["title"] == "Select",
+          f"{err} {looked and {k: v for k, v in looked.items() if k not in ('screenshot', 'image')}}"
+          f" active {QApplication.activeWindow()}")
     im = decode_png(looked["image"]["png"]) if looked and looked.get("image") else None
     px = im.pixelColor(im.width() // 2, im.height() // 2) if im else None
     # Its own pixels: on screen Chromium draws it tinted, as selected.
@@ -923,19 +929,17 @@ def test_in_process(on_screen: bool = False) -> None:
     other = QWidget()
     other.resize(200, 100)
     other.show()
-    other.activateWindow()
-    wait(lambda: QApplication.activeWindow() is other, 3)
+    _cage.focus(other)
     QTest.qWait(300)
     last, err = J(flux.look())
     check("look with no browser window focused: the one focused last, and for how long it "
           "has not been", last is not None and last["window"] == w1.id and not last["focused"]
           and last["unfocused_for"] is not None and last["unfocused_for"] >= 0.2, f"{last} {err}")
     named, err = J(flux.look(xid=int(w2.internalWinId())))
-    check("look at a window named by its X window", named and named["window"] == w2.id
-          and named["title"] == "Other", f"{err}")
+    check("look at a window named by an X window: refused on Wayland, saying so",
+          named is None and err == "Flux is on Wayland: its windows have no X window", f"{err}")
     other.close()
-    w1.activateWindow()
-    wait(lambda: QApplication.activeWindow() is w1, 3)
+    _cage.focus(w1)
     for path, want, where in (("/field", "words", "field"), ("/framesel", "FRAME-WORDS", "frame")):
         J(flux.go(t1.tab, url(path)))
         loaded(t1.tab)
@@ -956,7 +960,7 @@ def test_in_process(on_screen: bool = False) -> None:
     loaded(t1.tab)
     QTest.qWait(300)
     view = w1.current_tab().view
-    QCursor.setPos(view.mapToGlobal(QPoint(160, 140)))
+    _cage.point_at(view.mapToGlobal(QPoint(160, 140)))
     QTest.qWait(100)
     pointed, err = J(flux.look(image=True))
     im = decode_png(pointed["image"]["png"]) if pointed and pointed.get("image") else None
@@ -966,7 +970,7 @@ def test_in_process(on_screen: bool = False) -> None:
           and pointed["image"]["under"] == "pointer" and pointed["image"]["url"] == url("/pic.png")
           and pointed["image"]["from"] == "page" and im.width() == 120,
           f"{about} {err} pointer {QCursor.pos()}")
-    QCursor.setPos(view.mapToGlobal(QPoint(460, 140)))
+    _cage.point_at(view.mapToGlobal(QPoint(460, 140)))
     away, err = J(flux.look(image=True))
     im = decode_png(away["image"]["png"]) if away and away.get("image") else None
     px = im.pixelColor(im.width() // 2, im.height() // 2) if im else None
@@ -976,7 +980,7 @@ def test_in_process(on_screen: bool = False) -> None:
           and abs(im.width() - 120) <= 2 and (px.red(), px.green(), px.blue()) == (255, 0, 0),
           f"{away and away.get('image') and {k: v for k, v in away['image'].items() if k != 'png'}}"
           f" {err}")
-    QCursor.setPos(view.mapToGlobal(QPoint(600, 500)))
+    _cage.point_at(view.mapToGlobal(QPoint(600, 500)))
     nothing, _ = J(flux.look(image=True))
     check("look image: none where the pointer is on no image", nothing and nothing["image"] is None)
 
@@ -1062,7 +1066,7 @@ def test_in_process(on_screen: bool = False) -> None:
     lines = [r.getMessage() for r in logs.records if r.name.endswith("qt.control")]
     # Acting: browser_act.py; alone, show, downloads, upload: browser_alone.py;
     # the agent's scripts: browser_read.py.
-    # quit would end this Flux: tests/browser_headless.py covers it.
+    # quit would end this Flux: tests/browser_unattended.py covers it.
     looking = (set(protocol.REQUESTS) - set(protocol.ACTS)
                - {"release", protocol.UPLOAD, protocol.JS, protocol.QUIT} - set(protocol.ALONE))
     kinds = {k for k in looking if any(m.startswith(f"agent: {k}") for m in lines)}
@@ -1074,7 +1078,7 @@ def test_in_process(on_screen: bool = False) -> None:
           f"missing {looking - kinds}; leaks {leaks[:3]}; e.g. {sample!r}")
 
     # ── the hands ───────────────────────────────────────────────────────
-    hands = {h.name: h for h in browser_hands()}
+    hands = {h.name: h for h in browser_hands(where=SCREEN)}
 
     def call(name, args, timeout=120.0):
         return J(hands[name].run(Call(f"c-{name}", name, args, timeout)), timeout)
@@ -1145,7 +1149,7 @@ def test_not_running() -> None:
     section("3. Flux not running: ensure_running, in the test's own namespace")
     state = SCRATCH / "state-started"
     os.environ.update({env("BROWSER_SOCKET"): SOCK["started"], env("APPS_SOCKET"): SOCK["apps2"],
-                       "XDG_STATE_HOME": str(state), "QT_QPA_PLATFORM": "offscreen"})
+                       "XDG_STATE_HOME": str(state)})
     lock_file = SOCK["started"] + ".lock"
 
     def pid_of() -> int | None:
@@ -1239,7 +1243,7 @@ def test_on_screen() -> None:
     from flux.qt import instance, startup
     from flux.qt.profile import make_profile
 
-    section("on screen: one floating test window, never focused")
+    section("on screen: one test window")
     Log()
     startup.apply_flags()
     app = browser_app.make_application()
@@ -1331,7 +1335,6 @@ def main() -> int:
         if args.on_screen:
             test_on_screen()
         else:
-            os.environ["QT_QPA_PLATFORM"] = "offscreen"
             test_pure()
             test_in_process()
             test_not_running()

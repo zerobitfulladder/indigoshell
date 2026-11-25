@@ -6,7 +6,7 @@ uploads, the sites kept from it, and the hands for them.
                                                          then one Flux window, each placed on
                                                          an empty workspace; a few seconds
 
-Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
+Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. pure parts: the refused upload places (flux/uploads.py) against a
      scratch home holding fake secrets (.ssh, .gnupg, keyrings, pass, rbw,
      Firefox's profiles, the shell's data and connections, key-like
@@ -23,8 +23,8 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      placed before it is
      shown and not shown until the answer, its title and role, shown
      without activating and never raised or activated by Flux (the
-     offscreen platform focuses whatever it shows: the window manager's
-     part is checked on screen); `open` with no window still the
+     hidden cage focuses whatever it shows: the window manager's part
+     is checked on screen); `open` with no window still the
      user's);
      borrow (a tab that is not showing: its typed form, scroll, script
      state and cookie kept, gone from the user's window and the bar
@@ -95,12 +95,20 @@ from urllib.parse import urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "tests"))
+
+import _cage                    # noqa: E402
+
+if "--on-screen" not in sys.argv[1:]:
+    _cage.inside()              # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
 
 PY = sys.executable
 FAILED: list[str] = []
+# Where the hands say Flux shows (flux/hands.py `where`): the laptop's.
+SCREEN = "This Flux shows on the laptop's screen, where the user works."
 SCRATCH = Path("/nonexistent")          # made in main (not in the children)
 HOME = Path("/nonexistent")             # the scratch home the upload check is pointed at
 TAG = f"{APP}-al-{os.getpid()}"
@@ -319,7 +327,7 @@ def test_pure(files: dict) -> None:
           and protocol.kept("bank.example") == "the user keeps bank.example to themselves"
           and protocol.agent_title() == "Lilac · Flux")
 
-    hands = {h.name: h for h in browser_hands()}
+    hands = {h.name: h for h in browser_hands(where=SCREEN)}
     new = ["browser_borrow", "browser_return", "browser_show", "browser_downloads",
            "browser_upload"]
     problems = []
@@ -412,10 +420,12 @@ class FakeShell:
         except (OSError, ValueError):
             pass
 
-    def of(self, wid: int) -> list[dict]:
-        """What the connection that announced `wid` sent, in order."""
+    def of(self, window: int) -> list[dict]:
+        """What the connection that announced Flux's window `window` (its
+        own id: on Wayland, as in the hidden cage, there is no X window)
+        sent, in order."""
         conns = {n for n, _, m in self.msgs if m.get("type") == "announce"
-                 and (m.get("handle") or {}).get("x11") == wid}
+                 and m.get("window") == window}
         return [m for n, _, m in self.msgs if n in conns]
 
     def close(self):
@@ -587,8 +597,7 @@ def test_in_process(files: dict) -> None:
     elsewhere = QWidget()
     elsewhere.resize(200, 100)
     elsewhere.show()
-    elsewhere.activateWindow()
-    wait(lambda: QApplication.activeWindow() is elsewhere, 3)
+    _cage.focus(elsewhere)
     wait(lambda: user.link.attached, 5)
     calls.clear()
 
@@ -603,7 +612,7 @@ def test_in_process(files: dict) -> None:
             shown_early = True
     mine = future.result() if future.done() else None
     her = next((w for w in browser.windows if w.agent), None)
-    hid = int(her.winId()) if her is not None else 0
+    hid = her.id if her is not None else 0
     said = shell.of(hid)
     announce = next((m for m in said if m.get("type") == "announce"), {})
     kinds = [m["type"] for m in said if m.get("type") in ("announce", "place")]
@@ -623,8 +632,8 @@ def test_in_process(files: dict) -> None:
           "Flux's", her.windowTitle() == "Lilac · Flux · Mine"
           and her.windowRole() == protocol.AGENT_ROLE
           and QApplication.applicationName() == f"{APP}-browser", f"{her.windowTitle()!r}")
-    # The offscreen platform gives every window it shows the focus, this one
-    # too; whether the window manager does is the on-screen part's check.
+    # The hidden cage gives every window it shows the focus, this one too;
+    # whether the window manager does is the on-screen part's check.
     check("... never raised or activated by Flux: shown without activating (its QWindow says so, "
           "which X11 hears as user time 0), no raise_ or activateWindow",
           not calls and her.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -653,7 +662,7 @@ def test_in_process(files: dict) -> None:
              "cookie: document.cookie})")
     before = json.loads(js(form.tab, STATE))
     page_before = next(t.page for t in user.tabs if t.id == form.tab)
-    states_before = len([m for m in shell.of(int(user.winId())) if m.get("type") == "bar"])
+    states_before = len([m for m in shell.of(user.id) if m.get("type") == "bar"])
     done, err = J(flux.borrow(form.tab))
     after = json.loads(js(form.tab, STATE) or "{}")
     moved = window_of(form.tab)
@@ -666,13 +675,13 @@ def test_in_process(files: dict) -> None:
           "(the same page object, in a new view)", before == after and before["scroll"] == 1234
           and her.current_tab().page is page_before, f"{before} -> {after}")
     QTest.qWait(100)
-    last_bar = [m for m in shell.of(int(user.winId())) if m.get("type") == "bar"][-1]
+    last_bar = [m for m in shell.of(user.id) if m.get("type") == "bar"][-1]
     last_tabs = last_bar["start"][-1]["tabs"]
     check("... gone from the user's window and from the bar the shell gets; the user's window "
           "still shows the tab it showed", titles(user) == ["Other"]
           and user.current_tab().id == other.tab
           and [t["title"] for t in last_tabs] == ["Other"]
-          and len([m for m in shell.of(int(user.winId())) if m.get("type") == "bar"])
+          and len([m for m in shell.of(user.id) if m.get("type") == "bar"])
           > states_before, f"{titles(user)} {last_tabs}")
     press = refs_of(form.tab)['button "Press"']
     acted, err = J(flux.click(form.tab, press))
@@ -931,7 +940,7 @@ def test_in_process(files: dict) -> None:
     shell.answer_place = True
 
     # ── the hands ───────────────────────────────────────────────────────
-    hands = {h.name: h for h in browser_hands()}
+    hands = {h.name: h for h in browser_hands(where=SCREEN)}
 
     def call(name, args, timeout=120.0):
         blocks, err = J(hands[name].run(Call(f"c-{name}", name, args, timeout)), timeout)
@@ -960,7 +969,7 @@ def test_in_process(files: dict) -> None:
     check("... and says what happened: whose window, where a tab came from and went, the files, "
           "the download's path",
           "in your own window" in texts["open"] and "Borrowed into your own window" in texts["borrow"]
-          and "(your own window, on a workspace of its own" in texts["tabs"]
+          and "(your own window" in texts["tabs"]
           and "borrowed from window" in texts["tabs"]
           and "upload-a.txt (5 bytes)" in texts["upload"]
           and "back to its window (as its current tab)" in texts["return"]
@@ -1460,7 +1469,6 @@ def main() -> int:
         if args.on_screen:
             test_on_screen()
         else:
-            os.environ["QT_QPA_PLATFORM"] = "offscreen"
             files = make_home()
             test_pure(files)
             test_in_process(files)

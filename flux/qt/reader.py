@@ -31,8 +31,8 @@ a password field in the clear (measured on 6.12). The selection is read
 in the world, where a password field's reads as bullets and is dropped.
 
 Pictures: `QWidget.grab()` of the tab's view, the frame last shown,
-which works off screen (QT_QPA_PLATFORM=offscreen) as on screen, and
-for a window on another workspace. Scaled so the long side is at most
+which works for a window nobody looks at (a hidden compositor's, in the
+tests) as on screen, and for a window on another workspace. Scaled so the long side is at most
 protocol.SHOT_MAX_SIDE, sent as PNG in base64.
 """
 

@@ -79,11 +79,6 @@ not smoothly), a fresh frame waited for, the view grabbed; the fixed and
 sticky hidden from the second tile on; scroll and sheets put back after,
 however the request ends.
 
-**Headless** (protocol.py "Headless"): no window has focus, none has an
-X window (`tabs` says `xid` null and `headless`), `look` looks at the
-window named or the most recently used, and its image is only ever the
-selection's: there is no mouse pointer to be under.
-
 Every request is logged at info: its type, the tab and the host, never
 what the page holds, never what the agent types or runs, never a file's
 name.
@@ -511,8 +506,6 @@ class Requests:
         raise RequestError(f"no window {wid}")
 
     def focused(self):
-        if self.browser.headless:
-            return None                 # Qt's offscreen platform "activates" what it shows
         active = QApplication.activeWindow()
         return active if active is not None and active in self.windows() else None
 
@@ -618,9 +611,9 @@ class Requests:
 
     # ── the requests ────────────────────────────────────────────────────
     def xid(self, window) -> int | None:
-        """The window's X window; None headless (offscreen numbers are no
-        window manager's) and on Wayland (Qt's numbers there are its own)."""
-        if self.browser.headless or QGuiApplication.platformName().startswith("wayland"):
+        """The window's X window; None on Wayland (Qt's numbers there are
+        its own)."""
+        if QGuiApplication.platformName().startswith("wayland"):
             return None
         return int(window.internalWinId()) or None
 
@@ -637,7 +630,7 @@ class Requests:
                         "single": w.single, "focused": w is focused, "agent": w.agent,
                         "tabs": [self.tab(w, t) for t in w.tabs]})
         return {"windows": out, "focused": focused.id if focused is not None else None,
-                "headless": self.browser.headless, "profile": self.browser.profile_name}
+                "profile": self.browser.profile_name}
 
     async def open(self, job: Job, msg: dict) -> dict:
         url = msg.get("url")
@@ -844,10 +837,7 @@ class Requests:
         focused = self.focused() is window
         out = {**self.tab(window, tab), "focused": focused,
                "unfocused_for": None if focused or window.unfocused_at is None
-               or self.browser.headless
                else round(time.monotonic() - window.unfocused_at, 3)}
-        if self.browser.headless:
-            out["headless"] = True
         log.info("agent: look at tab %d%s", tab.id, f" ({tab.host()})" if tab.host() else "")
         # A page waiting on a dialog held for the agent answers no script.
         blocked = self.watch.dialog_of(tab.id) is not None
@@ -878,20 +868,12 @@ class Requests:
             return self.window(_int(msg, "window"))
         if msg.get("xid") is not None:
             xid = _int(msg, "xid")
-            if self.browser.headless:
-                raise RequestError("Flux is headless: its windows have no X window")
             if QGuiApplication.platformName().startswith("wayland"):
                 raise RequestError("Flux is on Wayland: its windows have no X window")
             for w in self.windows():
                 if int(w.internalWinId()) == xid:
                     return w
             raise RequestError(f"no browser window is X window {xid}")
-        if self.browser.headless:
-            # Nobody looks: the most recently used window is the one in sight.
-            windows = self.windows()
-            if not windows:
-                raise RequestError("Flux (headless) has no window open")
-            return windows[0]
         window = self.focused()
         if window is None:
             last = [w for w in self.windows() if w.unfocused_at is not None]
@@ -931,8 +913,6 @@ class Requests:
         them ("from": "page"), else the part of the grab it covers
         ("screen": a selected image is drawn tinted there)."""
         if chosen is None:
-            if self.browser.headless:
-                return None             # no mouse pointer for an image to be under
             view = tab.view
             at = view.mapFromGlobal(QCursor.pos())
             if not view.rect().contains(QPoint(at.x(), at.y())):

@@ -24,11 +24,11 @@ does), as `<the CLI> browser --no-window` (desktop.py's command: this
 Python and the repository's main.py, found at run time, unless the CLI
 on PATH is what runs): no window until a request opens one. A Flux that
 is starting meanwhile, the user's or another start's, is the one it then
-connects to. Where there is no display (no $DISPLAY, no
-$WAYLAND_DISPLAY) it starts it `--headless`, unless told otherwise. A
-caller whose own Python has no PySide6 (a hub's virtual environment)
-names one that has, `python=` or `$<APP>_BROWSER_PYTHON`
-(start_command). `quit()` ends the Flux it is connected to, for a
+connects to. `unattended` starts it `--unattended` (protocol.py,
+"Unattended"), and `env` sets variables over the caller's environment
+for it (the screen to show on: $WAYLAND_DISPLAY and the like). A caller
+whose own Python has no PySide6 (a hub's virtual environment) names one
+that has, `python=` or `$<APP>_BROWSER_PYTHON` (start_command). `quit()` ends the Flux it is connected to, for a
 process done with a Flux it started (protocol.py, "Quit").
 
 Profiles (profiles.py): every function that finds Flux takes `profile`,
@@ -58,7 +58,7 @@ profile, made again when it dropped.
 
 Pure means more than no Qt here: this module and hands.py import on a
 machine with PySide6 and none of the shell's own dependencies (xcffib,
-skia, dbus-fast, psutil), a Raspberry Pi lending Flux's hands.
+skia, dbus-fast, psutil), a hub lending Flux's hands.
 """
 
 import asyncio
@@ -117,7 +117,7 @@ class TabInfo:
 @dataclass(frozen=True)
 class WindowInfo:
     window: int
-    xid: int | None                     # None headless
+    xid: int | None                     # None on Wayland
     single: bool
     focused: bool
     tabs: tuple[TabInfo, ...]
@@ -385,17 +385,12 @@ async def connect(path: str | None = None, timeout: float = CONNECT_S, *,
     return Control(reader, writer)
 
 
-def no_display() -> bool:
-    """No screen to show a window on: Flux starts headless here."""
-    return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-
-
-def start_command(profile: str | None = None, headless: bool = False, *,
+def start_command(profile: str | None = None, *, unattended: bool = False,
                   python: str | None = None) -> list[str]:
-    """How `ensure_running` starts Flux, with no window; `headless`, and
+    """How `ensure_running` starts Flux, with no window; `unattended`, and
     `profile`'s. By default the launcher entry's command (desktop.py),
     which runs Flux with the caller's own Python. A caller whose Python
-    has no PySide6 (a hub's virtual environment on a Raspberry Pi) names
+    has no PySide6 (a hub's virtual environment) names
     one that has: `python`, or the environment's `<APP>_BROWSER_PYTHON`
     (PYTHON_ENV); then that Python runs the repository's main.py, or
     `-m flux` when Flux is not in a checkout."""
@@ -406,35 +401,34 @@ def start_command(profile: str | None = None, headless: bool = False, *,
         head = [python, main_py, "browser"] if main_py else [python, "-m", "flux"]
     else:
         head = [*desktop.exec_command(), "browser"]
-    return [*head, "--no-window", *(["--headless"] if headless else []),
+    return [*head, "--no-window", *(["--unattended"] if unattended else []),
             *(["--profile", profiles.check(profile)] if profile else [])]
 
 
-def _launch(profile: str | None = None, headless: bool = False, *,
-            python: str | None = None) -> None:
+def _launch(profile: str | None = None, *, unattended: bool = False,
+            python: str | None = None, env: dict[str, str] | None = None) -> None:
     from flux import desktop
     from indigoshell.services import proc
-    proc.launch(start_command(profile, headless, python=python),
-                app_id=desktop.DESKTOP_ID.removesuffix(".desktop"))
+    proc.launch(start_command(profile, unattended=unattended, python=python),
+                app_id=desktop.DESKTOP_ID.removesuffix(".desktop"), env=env)
 
 
 async def ensure_running(timeout: float = START_S, *, profile: str | None = None,
-                         headless: bool | None = None, python: str | None = None) -> Control:
+                         unattended: bool = False, python: str | None = None,
+                         env: dict[str, str] | None = None) -> Control:
     """A connection to `profile`'s Flux (None: the default one), started
-    first (with no window) when it is not running: `headless` when it
-    says so, or when it is None and there is no display. Its socket is
-    the profile's (from `<APP>_BROWSER_SOCKET` when set, which the
-    started browser inherits). `python`: the Python that runs it
-    (start_command)."""
+    first (with no window) when it is not running: `--unattended` with
+    `unattended`, with `env` over this process's environment (the screen
+    it shows on). Its socket is the profile's (from
+    `<APP>_BROWSER_SOCKET` when set, which the started browser
+    inherits). `python`: the Python that runs it (start_command)."""
     try:
         return await connect(profile=profile)
     except NotRunning:
         pass
-    if headless is None:
-        headless = no_display()
     log.info("Flux%s is not running; starting it%s", f" ({profile})" if profile else "",
-             " headless" if headless else "")
-    _launch(profile, headless, python=python)
+             " unattended" if unattended else "")
+    _launch(profile, unattended=unattended, python=python, env=env)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:
@@ -453,15 +447,16 @@ _shared: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict]" = \
 
 
 async def shared(*, start: bool = True, profile: str | None = None,
-                 headless: bool | None = None) -> Control:
+                 unattended: bool = False, env: dict[str, str] | None = None) -> Control:
     """One connection to `profile`'s Flux kept for this event loop's
-    requests; made again (and Flux started, with `start`: `headless` as
-    ensure_running takes it) when it dropped."""
+    requests; made again (and Flux started, with `start`: `unattended`
+    and `env` as ensure_running takes them) when it dropped."""
     loop = asyncio.get_running_loop()
     entry = _shared.setdefault(loop, {}).setdefault(profile, [asyncio.Lock(), None])
     async with entry[0]:
         if entry[1] is None or entry[1].closed:
-            entry[1] = await (ensure_running(profile=profile, headless=headless) if start
+            entry[1] = await (ensure_running(profile=profile, unattended=unattended, env=env)
+                              if start
                               else connect(profile=profile))
         return entry[1]
 
@@ -485,8 +480,7 @@ def look_blocks(result: dict) -> list[dict]:
     """A `look` result as content blocks: a text block (the window, the
     tab, the selection marked as the site's words), then the screenshot
     and the image when there are."""
-    focus = ("headless: no one looks at it; its most recently used window"
-             if result.get("headless") else "the window has focus" if result.get("focused") else
+    focus = ("the window has focus" if result.get("focused") else
              f"the window last had focus {result['unfocused_for']:.0f} s ago"
              if result.get("unfocused_for") is not None else "the window does not have focus")
     lines = [f"In Flux, the user's browser ({focus}): tab {result.get('tab')} of window "

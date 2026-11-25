@@ -9,7 +9,7 @@ Modules, in the order a start runs through them:
     logs       the log file (<state_dir>/browser.log), unhandled
                exceptions and crashes into it (pure Python)
     instance   that check: the lock, and the hand-off client
-    startup    the platform (--headless, --software-gl), Chromium's flags,
+    startup    the platform (Wayland's, --software-gl), Chromium's flags,
                Widevine found or copied (pure Python)
     app        the QApplication, the process-wide `Browser` (windows,
                most recently used, the control socket, downloads),

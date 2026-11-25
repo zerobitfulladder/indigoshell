@@ -2,7 +2,7 @@
 
     .venv/bin/python tests/browser_read.py          off screen, about a minute
 
-Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
+Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. pure parts: refs with frames ("f2:14" parsed, named, refused when
      no ref); the reads and requests; the hands: browser_js there,
      schemas valid JSON Schema (a frame ref and a number both a REF),
@@ -74,11 +74,18 @@ from urllib.parse import parse_qs, urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "tests"))
+
+import _cage                    # noqa: E402
+
+_cage.inside()                  # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
 
 FAILED: list[str] = []
+# Where the hands say Flux shows (flux/hands.py `where`): the laptop's.
+SCREEN = "This Flux shows on the laptop's screen, where the user works."
 SCRATCH = Path("/nonexistent")          # made in main
 TAG = f"{APP}-rd-{os.getpid()}"
 SOCK = {name: os.path.join(runtime_dir(), f"{TAG}-{name}.sock") for name in ("browser", "apps")}
@@ -384,7 +391,7 @@ def test_pure() -> None:
     check("reads and requests: article among the reads, js among the requests (acting)",
           "article" in protocol.READS and "js" in protocol.REQUESTS
           and protocol.SHOT_TILES_MAX == 6 and protocol.SHOT_MAX_SIDE == 1568)
-    hands = {h.name: h for h in browser_hands()}
+    hands = {h.name: h for h in browser_hands(where=SCREEN)}
     problems = []
     try:
         import jsonschema
@@ -941,7 +948,7 @@ return out;"""
                                                      for i in range(6)], f"{err}")
 
     # ── the hands ───────────────────────────────────────────────────────
-    hands = {h.name: h for h in browser_hands()}
+    hands = {h.name: h for h in browser_hands(where=SCREEN)}
 
     def call(name, args, timeout=120.0):
         return J(hands[name].run(Call(f"c-{name}", name, args, timeout)), timeout)
@@ -982,7 +989,6 @@ def main() -> int:
         env("BROWSER_SOCKET"): SOCK["browser"],
         env("APPS_SOCKET"): SOCK["apps"],
         env("BROWSER_WIDEVINE"): "off",
-        "QT_QPA_PLATFORM": "offscreen",
     })
     (SCRATCH / "config").mkdir(parents=True, exist_ok=True)
     http = ThreadingHTTPServer(("127.0.0.1", 0), Site)

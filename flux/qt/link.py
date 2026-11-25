@@ -41,14 +41,12 @@ shell to put the window on a workspace (applink `place`, sent right
 after the announce, on whichever connection comes first; `with` names
 another window of Flux's by its id); `placed` carries the answer, a
 workspace index or None. The window waits for it at most applink's
-PLACE_WAIT_S and then shows anyway: no shell, a shell restarting, or one
-too old to answer. On niri the shell answers at once and moves the
-window to that workspace once it maps.
-
-Off (`off`: a headless browser, protocol.py "Headless"): no line at all.
-It never connects, never says the window's state itself (`fallback`
-stays false: no line over the page, which would move it), and is never
-asked to place a window (window.py shows it at once).
+PLACE_WAIT_S and then shows anyway: a shell restarting, or one too old
+to answer. With no shell listening at all (a bare compositor, as cage
+on a machine that lends the agent its Flux) a connection that fails
+answers None at once: nothing waits for a shell that is not there. On
+niri the shell answers at once and moves the window to that workspace
+once it maps.
 """
 
 import logging
@@ -77,15 +75,13 @@ class ShellLink(QObject):
     down = Signal()             # a connection attempt failed, or the line dropped
     placed = Signal(object)     # the answer to `place`: a workspace index, or None
 
-    def __init__(self, wid_of, window_id: int, parent=None, off: bool = False) -> None:
+    def __init__(self, wid_of, window_id: int, parent=None) -> None:
         super().__init__(parent)
-        self.off = off              # headless: no line to a shell, ever
         self.wid_of = wid_of        # asked at connect time, once the window exists
         self.window_id = window_id  # Flux's own id for the window (control.py's)
         self._place: dict | None = None     # a `place` not yet answered
         self.wid: int | None = None         # the X window last announced
-        # The window's handle is its native window id (X11's, and the
-        # offscreen platform's numbers in the tests), but none on Wayland:
+        # The window's handle is its native window id (X11's), but none on Wayland:
         # there the connection itself is the window, and the window says
         # whether it has the focus (`active`; PROTOCOL.md "On Wayland").
         self.x11 = not QGuiApplication.platformName().startswith("wayland")
@@ -118,7 +114,7 @@ class ShellLink(QObject):
         self.away.timeout.connect(self._away_too_long)
 
     def start(self) -> None:
-        if not self._started and not self.off:
+        if not self._started:
             self._started = True
             self._update_fallback()
             self._connect()
@@ -173,8 +169,6 @@ class ShellLink(QObject):
         (the one Flux's window `with_window` is on, else an empty one):
         `placed` answers. Starts the line when it has not started (the
         window is not shown yet)."""
-        if self.off:
-            return
         self._place = link_protocol.place(with_window)
         if self.connected():
             self._send(self._place)
@@ -216,6 +210,12 @@ class ShellLink(QObject):
             self._set_attached(False)
             self._again()
             if not (self._closing or self._moving):
+                if self._place is not None:
+                    # Nobody listens: no shell to place the window.
+                    self._place = None
+                    log.info("no shell listens: the window shows where the compositor "
+                             "puts it")
+                    self.placed.emit(None)
                 self.down.emit()
 
     def _on_connected(self) -> None:

@@ -79,12 +79,10 @@ focus or changing the workspace; `open` and `tabs` work on any.
                                 "single": bool, "focused": bool,
                                 "tabs": [TAB, ...]}, ...],
                    "focused": <the focused window's id, or null>,
-                   "headless": bool, "profile": <its name, or null for
-                                                 the default one>}
+                   "profile": <its name, or null for the default one>}
                `single`: a page's popup or the inspector (one page, takes
                no tabs). `xid` is the window manager's id for the window
                on X11; null on Wayland, where a client has no such id.
-               `headless`: Flux runs with no screen ("Headless", below).
     open       {"url": str, "window"?: id | "agent", "background"?: bool}
                A new tab at the end of that window (a main one), or of
                the most recently used main window of the user's (one is
@@ -218,24 +216,21 @@ focus or changing the workspace; `open` and `tabs` work on any.
                read them ("page"; a cross-origin image without CORS it
                may not), else the part of the screen it covers ("screen";
                a selected image is drawn tinted there).
-               Headless, the window is the one named, else the most
-               recently used, never focused, and the result says
-               {"headless": true}; `xid` fails (no X window), and `image`
-               is only ever the selection's (no mouse pointer).
 
-**Headless.** `--headless` (flux/qt/__main__.py) runs Flux with no
-screen: Qt's offscreen platform, drawn in software. Its windows exist and
-render (screenshots, reads and acting work as on screen), but no one
-sees them: no line to the shell (no `announce`, no top bar, no fallback
-line, no placing; the agent's own window shows at once), no window has
-focus, no window has an X window (`xid` null), the page effects are
-never made, audio is muted, and what would ask the user is answered at
-once: a permission request denied, a page's dialog outside the agent's
-session dismissed (an alert accepted; a confirm, a prompt and the
-question before leaving a page answered no), a file chooser outside an
-upload given nothing, no address dialog, fullscreen refused. Its last
-window closing does not end it (a service's browser waits for the next
-`open`); SIGTERM does. `read` reads the page's frames too (iframes, frames, an
+**Unattended.** `--unattended` (flux/qt/__main__.py) runs a Flux nobody
+attends: the agent's own on a machine that lends it to the hub, shown
+on a screen nobody watches (a bare compositor, cage, with no shell:
+no top bar, so each window says its state in its own line, and the
+agent's own window shows where the compositor puts it). Requests work
+as on the user's screen; what would ask a person is answered at once: a
+permission request denied, a page's dialog outside the agent's session
+dismissed (an alert accepted; a confirm, a prompt and the question
+before leaving a page answered no), a file chooser outside an upload
+given nothing, no address dialog. Its pages are muted. Its last window
+closing does not end it (a service's browser waits for the next
+`open`); SIGTERM or `quit` does.
+
+**Frames.** `read` reads the page's frames too (iframes, frames, an
 <object>'s page; same-origin and cross-origin, nested), through Qt's
 QWebEngineFrame (6.8 on; with an older Qt, frames are not read): each
 in its own isolated world, as the page is. A frame's document is named
@@ -452,7 +447,7 @@ An acting request's answer lists the downloads it started, when it did
                Flux ends right after this answer, as on SIGTERM: its
                windows closed, the profile released, the socket gone; its
                log says "ending: a quit request". For a process that
-               started a Flux of its own (a hub's headless one) and is done
+               started a Flux of its own (a hub's unattended one) and is done
                with it. Not one of the agent's hands: the agent never
                closes the user's browser.
 

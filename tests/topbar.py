@@ -93,8 +93,8 @@
    directories and no bytecode written, and the top bar in what it
    exports.
 8. On screen: the real `AppService` on an X connection, loop and socket
-   of its own, and the real browser (`--unattended`: floating in the
-   corner, never focused) on sockets and XDG directories of its own.
+   of its own, and the real browser (`--unattended`: nothing asks,
+   muted) on sockets and XDG directories of its own.
    The browser announces its window, and the service grabs its bar's
    chords (another client's grab of them refused, so X itself says so);
    its bar reaches the service; the context area draws it; an event of

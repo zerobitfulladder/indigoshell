@@ -247,6 +247,9 @@ async def _about(_call: Call) -> list[dict]:
     return [text_block(about_text())]
 
 
+# Where the laptop's Flux shows, at the front of its hands' descriptions.
+LAPTOP_SCREEN = "This Flux shows on the laptop's screen, where the user works."
+
 ABOUT = Hand(
     name="about",
     description="This laptop: uptime, load, memory, battery.",
@@ -265,6 +268,6 @@ def laptop_hands() -> Hands:
         log.warning("Flux's hands aren't lent: %s", e)
         browser = []
     else:
-        browser = browser_hands()
+        browser = browser_hands(where=LAPTOP_SCREEN)
     return Hands([ABOUT, *desktop_hands(), *jobs.hands(), *browser],
                  watchers=[jobs])

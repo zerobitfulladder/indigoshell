@@ -13,23 +13,18 @@ The platform (`settle_platform`, from __main__'s flags):
   the shell then knows the window as a Wayland client (the app bar
   protocol's "On Wayland"); under Xwayland niri would know it only as
   Xwayland's. A platform the environment names stays.
-- `--headless`: no screen at all (a Raspberry Pi in a cupboard). Qt's
-  offscreen platform (`QT_QPA_PLATFORM=offscreen`, whatever the
-  environment said), Qt Quick's software scene graph and Chromium
-  without its GPU process, as below: windows exist and are drawn in
-  memory, and `QWidget.grab()` gives their pixels. Nothing in it needs
-  OpenGL, X or a GPU, so it starts the same on a machine that has none.
 - `--software-gl`: a window on a screen, drawn without the GPU: no
   OpenGL from the X server at all (`QT_XCB_GL_INTEGRATION=none`), Qt
   Quick's software scene graph (`QT_QUICK_BACKEND=software`) and
   Chromium's `--disable-gpu`. For a window shown over `ssh -X`, where
   the X server is another machine's and GLX either fails or is not
   offered. Qt finds by itself that MIT-SHM does not reach a remote X
-  server and does without it.
+  server and does without it. It leaves a variable the environment
+  already set as it is, and turns off the page effects (they need a GPU
+  scene graph).
 
-Either one leaves a variable the environment already set as it is,
-except the headless platform, and turns off the page effects (they
-need a GPU scene graph).
+Flux always runs on a screen: a bare compositor with nothing else on it
+(cage, as on a machine that lends the agent its Flux) is one too.
 
 Flags added to whatever the environment already has:
 
@@ -156,16 +151,13 @@ def resolve_widevine(own_dir: Path | None = None,
     return copied
 
 
-def settle_platform(*, headless: bool = False, software: bool = False) -> None:
+def settle_platform(*, software: bool = False) -> None:
     """The platform's variables: Wayland's on a Wayland session, and
-    those for `--headless` or `--software-gl` (the module docstring)."""
-    if headless:
-        os.environ["QT_QPA_PLATFORM"] = "offscreen"
-    elif os.environ.get("WAYLAND_DISPLAY"):
+    those for `--software-gl` (the module docstring)."""
+    if os.environ.get("WAYLAND_DISPLAY"):
         os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
-    if not headless and software:
+    if software:
         os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
-    if headless or software:
         os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 
@@ -183,8 +175,8 @@ def chromium_flags(existing: str, widevine: Path | None, *, software: bool = Fal
 
 def apply_flags(*, software: bool = False) -> Path | None:
     """Settle Widevine and write the flags into the environment (with
-    `software`, headless or --software-gl, no GPU). Returns the Widevine
-    module in use."""
+    `software`, --software-gl's, no GPU). Returns the Widevine module in
+    use."""
     existing = os.environ.get(FLAGS_ENV, "")
     widevine = None
     if "--widevine-path" not in existing:

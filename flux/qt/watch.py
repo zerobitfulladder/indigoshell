@@ -33,7 +33,7 @@ agent's session there, or goes on with it (`begin`). While it drives:
   action waits for a glitch in to end (`hold_s`), and no repeat starts
   while one is in flight, so nothing it changes pops in from under the
   glitch's still image. Made per window at its first lock; where it
-  cannot run (headless, no GPU scene graph, a file that fails to load)
+  cannot run (no GPU scene graph, a file that fails to load)
   the frame and the mark are all there is.
 - A dialog the page opens (alert, confirm, prompt, beforeunload) is
   held for the agent (`hold_dialog`): tabs.py's Page asks here before
@@ -46,8 +46,8 @@ agent's session there, or goes on with it (`begin`). While it drives:
   the paths an `upload` armed for that page, once (`arm_files`), and
   nothing otherwise while the agent drives the tab; outside a session it
   is the user's, Qt's own dialog.
-- Headless (protocol.py "Headless"), outside a session there is no user
-  to give either to: a dialog is answered at once (`UNSEEN`: an alert
+- Unattended (protocol.py "Unattended"), outside a session there is no
+  one to give either to: a dialog is answered at once (`UNSEEN`: an alert
   accepted, the question before leaving a page answered "leave", a
   confirm and a prompt answered no), and a file chooser gets nothing.
 
@@ -109,8 +109,8 @@ INPUT = frozenset({
 DOING = frozenset({T.KeyPress, T.MouseButtonPress, T.MouseButtonDblClick, T.Wheel,
                    T.InputMethod, T.TouchBegin})
 
-# Headless, a dialog outside the agent's session: answered at once, as
-# nobody could. Leaving is let through (a page that asks must not keep
+# Unattended, a dialog outside the agent's session: answered at once, as
+# nobody would. Leaving is let through (a page that asks must not keep
 # the agent from going on); what a page asks yes or no to is answered no.
 UNSEEN = {"alert": (True, ""), "beforeunload": (True, ""), "confirm": (False, ""),
           "prompt": (False, "")}
@@ -604,12 +604,12 @@ class Watch(QObject):
     def hold_dialog(self, page, kind: str, message: str, default: str) -> tuple | None:
         """The page's dialog, held for the agent while it drives the tab:
         (accepted, text) once answered; None when it is the user's (no
-        session, or given to them meanwhile). Headless, with no session,
+        session, or given to them meanwhile). Unattended, with no session,
         answered at once (UNSEEN)."""
         s = self.sessions.get(page.id)
         if s is None or s.state != "driving" or s.dialog is not None:
-            if self.browser.headless:
-                log.info("tab %d: %s %s dialog answered at once (headless, no one to ask)",
+            if self.browser.unattended:
+                log.info("tab %d: %s %s dialog answered at once (unattended, no one to ask)",
                          page.id, "an" if kind[0] in "aeiou" else "a", kind)
                 return UNSEEN.get(kind, (False, ""))
             return None
@@ -689,7 +689,7 @@ class Watch(QObject):
         otherwise (refused, said in the next answer; Chromium then empties
         the field, as it does for the user's Cancel: Qt names no files the
         field held to give back); None when it is the user's (Qt's own
-        dialog), and nothing headless, where there is no user to ask."""
+        dialog), and nothing unattended, where there is no one to ask."""
         paths = self._armed.pop(page.id, None)
         if paths is not None:
             if mode not in ("FileSelectOpen", "FileSelectOpenMultiple"):
@@ -707,8 +707,8 @@ class Watch(QObject):
             return []
         s = self.sessions.get(page.id)
         if s is None or s.state != "driving":
-            if self.browser.headless:
-                log.info("tab %d: a file chooser got nothing (headless, no one to ask)",
+            if self.browser.unattended:
+                log.info("tab %d: a file chooser got nothing (unattended, no one to ask)",
                          page.id)
                 return []
             return None

@@ -40,18 +40,20 @@ shell's names for its places, sockets and environment (indigoshell's
 `core.naming`): its data is under the shell's data dir, as before it
 had a package of its own.
 
-Headless (`--headless`, protocol.py "Headless"): Flux with no screen,
-for a machine with no display (a Raspberry Pi lending the agent its own
-Flux): drawn in memory, no line to the shell, nothing that asks the
-user; the control socket works as on screen.
+Flux always runs on a screen. Unattended (`--unattended`, protocol.py
+"Unattended"): the agent's own Flux on a machine that lends it (the
+hub's, shown on a bare compositor, cage, with no shell): what would ask
+a person is answered at once, its pages are muted, and it outlives its
+last window; the control socket works as anywhere.
 
 The agent's hands. Flux's single-instance socket is also its control
 socket (`protocol.py` has every request; `qt/control.py` Flux's side):
 the hub's agent lists, opens, switches, reads and screenshots tabs
 through it, with `control.py` as the client (pure asyncio; it starts
 Flux when none runs) and `hands.py` as the tools a machine lends
-(`browser_hands()`, or `browser_hands(profile=..., headless=True)` for a
-machine's own headless Flux), made of indigoshell/core/hands.py's
+(`browser_hands(where=...)`, or `browser_hands(profile=..., where=...,
+unattended=True, start_env=...)` for a machine's own unattended Flux),
+made of indigoshell/core/hands.py's
 `Hand`. `control.look()` is the call's: what the user is looking at in
 Flux, as content blocks. The agent also has a Flux window of its own,
 placed by the shell on a workspace the user is not looking at, where it

@@ -105,7 +105,7 @@ import importlib
 for m in {PURE!r}:
     importlib.import_module(m)
 from flux.hands import browser_hands
-hands = browser_hands()
+hands = browser_hands(where="This Flux shows on the laptop's screen.")
 print(len(hands))
 print(" ".join(sorted(m for m in sys.modules if m.split(".")[0] == "indigoshell")))
 """

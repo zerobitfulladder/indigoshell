@@ -44,9 +44,8 @@ the window's vsync'd swap, ~18 ms: the scan drops to ~25 fps for a pass
 over such a page.
 
 Where it cannot run, the Watch keeps its plain frame and mark and the
-reason is logged once (`make`): headless (an offscreen or minimal
-platform: never built), a scene graph that does not draw on the GPU
-(Software), the QML failing to load, or a shader failing to (seen after
+reason is logged once (`make`): a scene graph that does not draw on
+the GPU (Software), the QML failing to load, or a shader failing to (seen after
 the overlay's first frame: a ShaderEffect loads its shader then, and
 draws nothing when it cannot).
 
@@ -74,7 +73,7 @@ from pathlib import Path
 
 import shiboken6
 from PySide6.QtCore import QEvent, QLibraryInfo, QObject, QRect, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QVector4D
+from PySide6.QtGui import QColor, QImage, QVector4D
 from PySide6.QtQuick import QQuickImageProvider, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
@@ -124,7 +123,6 @@ BACKGROUND = "#050310"      # theme.BAR_BG, Flux's window background
 REPEAT_S = (5.0, 15.0)      # the glitch again, after a uniform pause in this range
 REGRAB_S = 0.1              # a page that keeps drawing: read back at most this often
 HOLD_MARGIN_S = 1 / 60      # an action waits for the glitch's last frame too
-HEADLESS = frozenset({"offscreen", "minimal", "minimalegl"})
 EVENTS_KEPT = 200
 
 _off: str | None = None     # why the effects do not run in this process
@@ -151,10 +149,6 @@ def make(window, acting=None) -> "PageFx | None":
     """The effects for `window`, or None where they cannot run (said once).
     `acting(tab_id)`: one of the agent's actions is in flight on the tab."""
     if _off is not None:
-        return None
-    platform = QGuiApplication.platformName()
-    if platform in HEADLESS:
-        turn_off(f"no display ({platform})", quiet=True)
         return None
     missing = [p.name for p in (QML, *(SHADERS / f"{s}.qsb" for s in SOURCES)) if not p.exists()]
     if missing:

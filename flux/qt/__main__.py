@@ -4,19 +4,19 @@ Opens the URLs as tabs of one window. With a browser already running,
 hands them over instead (each becomes a tab in its most recently used
 window; no URL asks it for a new window) and exits.
 
-    --unattended     a test window: floating in the bottom-right corner,
-                     never taking the keyboard, muted, every permission
-                     request denied
+    --unattended     nobody attends this browser (the agent's own, as on
+                     a machine that lends it to the hub): a page's dialog
+                     outside the agent's session is answered at once, a
+                     file chooser outside an upload gets nothing, every
+                     permission request is denied, pages are muted, no
+                     address dialog of its own, and its last window
+                     closing does not end it (SIGTERM or a `quit` request
+                     does). protocol.py, "Unattended".
     --no-window      with no URL, start with no window: the browser only
                      listens (its control socket), for the agent, whose
                      first request opens one (flux/control.py,
                      `ensure_running`). With a browser already running,
                      exit at once and hand it nothing.
-    --headless       no screen: Qt's offscreen platform, drawn in software
-                     (startup.py), no line to the shell, nothing that asks
-                     the user (protocol.py, "Headless"); its last window
-                     closing does not end it. With --no-window: a service
-                     for the agent, as on a Raspberry Pi with no display.
     --software-gl    a window drawn without the GPU, for a screen that is
                      another machine's (`ssh -X`): startup.py
     --profile NAME   a browser of the profile NAME, beside the default one:
@@ -79,13 +79,11 @@ def main(argv: list[str], prog: str | None = None) -> int:
                     "window).")
     parser.add_argument("url", nargs="*")
     parser.add_argument("--unattended", action="store_true",
-                        help="test window: corner, no focus, muted, permissions denied")
+                        help="nobody attends it: stray dialogs answered, permissions "
+                             "denied, muted, outlives its last window")
     parser.add_argument("--no-window", action="store_true",
                         help="with no URL, open no window: only listen (for the agent); "
                              "with a browser running, do nothing")
-    parser.add_argument("--headless", action="store_true",
-                        help="no screen: offscreen and in software, no shell, nothing asks "
-                             "the user; stays running with no window")
     parser.add_argument("--software-gl", action="store_true",
                         help="draw the windows without the GPU (a screen over ssh -X)")
     parser.add_argument("--profile", type=_profile, metavar="NAME",
@@ -120,10 +118,10 @@ def main(argv: list[str], prog: str | None = None) -> int:
                      f"{len(urls)} URL(s)" if urls else "a new window")
             return 0
 
-    startup.settle_platform(headless=args.headless, software=args.software_gl)
+    startup.settle_platform(software=args.software_gl)
     from . import app          # Qt and Chromium load here, and only here
     return app.main(urls, unattended=args.unattended, lock=lock, no_window=args.no_window,
-                    headless=args.headless, software=args.software_gl, profile=args.profile)
+                    software=args.software_gl, profile=args.profile)
 
 
 if __name__ == "__main__":

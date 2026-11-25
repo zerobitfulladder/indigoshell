@@ -35,8 +35,8 @@ shifted level; XKB's keycodes 10..19 are the top row's 1..9, 0 on every
 layout (evdev's KEY_1.. plus XKB's offset of 8), so the position decides
 when the symbol is not a digit. Qt's native scan code is that keycode on
 X11 and on Wayland alike (measured under niri: Alt+Shift+2 came as "@"
-with scan code 11), and none on a platform with no keyboard (offscreen:
-0), where the symbol alone decides.
+with scan code 11), and none on a key event made up in-process (a
+test's: 0), where the symbol alone decides.
 
 On Wayland the shell cannot take Ctrl+L, Ctrl+T, Ctrl+F and Ctrl+M: the
 window catches them itself while a shell has it and sends them to the

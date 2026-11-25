@@ -1,9 +1,9 @@
 """The agent acting in Flux: the acting requests, the Watch, the hands.
 
     .venv/bin/python tests/browser_act.py              off screen, about a minute
-    .venv/bin/python tests/browser_act.py --on-screen  one floating test window, a few seconds
+    .venv/bin/python tests/browser_act.py --on-screen  one test window, a few seconds
 
-Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
+Out of sight (a hidden cage's client: tests/_cage.py), nothing appears:
   1. pure parts: the agent's name and colour (core/persona.py: what it
      takes from the shell, what it refuses), the took-over words, the
      state's `agent` (checked when there, a state without it still
@@ -55,8 +55,8 @@ Off screen (QT_QPA_PLATFORM=offscreen), nothing appears:
      a tab is paused, picking it sending a `pick` naming the tab.
 
 --on-screen: the browser in this process on the real display, its
-window the floating, focus-refusing test kind (`--unattended`) in the
-bottom-right corner. The agent clicks in it (Qt events in this process,
+window an unattended one (`--unattended`: nothing asks, muted). The
+agent clicks in it (Qt events in this process,
 nothing injected into the display) and the overlay is read back from
 that window's own pixels (its composite pixmap; never the root, never
 the screen): the frame and the mark in her colour over the GPU-
@@ -87,6 +87,12 @@ from urllib.parse import urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "tests"))
+
+import _cage                    # noqa: E402
+
+if "--on-screen" not in sys.argv[1:]:
+    _cage.inside()              # out of sight: this test runs as a hidden cage's client
 
 from indigoshell.core.naming import APP, env          # noqa: E402  (pure)
 from indigoshell.core.paths import runtime_dir        # noqa: E402
@@ -237,6 +243,8 @@ def shell_side(path: str) -> None:
 
 
 # ── the rest runs with a browser ────────────────────────────────────────
+# Where the hands say Flux shows (flux/hands.py `where`): the laptop's.
+SCREEN = "This Flux shows on the laptop's screen, where the user works."
 SCRATCH = Path("/nonexistent")         # made in main (not in the shell-side child)
 TAG = f"{APP}-at-{os.getpid()}"
 SOCK = {name: os.path.join(runtime_dir(), f"{TAG}-{name}.sock") for name in ("browser", "apps")}
@@ -488,7 +496,7 @@ def test_pure() -> None:
           keys["Enter"][2] == "\r" and keys["ctrl+a"][2] == ""
           and (keys["ğ"][0], keys["ğ"][2]) == (0x11E, "ğ")
           and len(errors) == 3, f"{keys} {errors}")
-    hands = {h.name: h for h in browser_hands()}
+    hands = {h.name: h for h in browser_hands(where=SCREEN)}
     acting = ["browser_click", "browser_type", "browser_key", "browser_select", "browser_scroll",
               "browser_fill", "browser_hover", "browser_dialog", "browser_release"]
     problems = []
@@ -614,8 +622,7 @@ def test_in_process() -> None:
     elsewhere = QWidget()
     elsewhere.resize(200, 100)
     elsewhere.show()
-    elsewhere.activateWindow()
-    wait(lambda: QApplication.activeWindow() is elsewhere, 3)
+    _cage.focus(elsewhere)
     attached = wait(lambda: w.link.attached, 5)
 
     def js(code, timeout=5.0):
@@ -1079,8 +1086,7 @@ def test_in_process() -> None:
 
     # ── take-over by a key ──────────────────────────────────────────────
     J(flux.click(T, R['button "Press"']))
-    w.activateWindow()                  # keys come to the window that has the focus
-    wait(lambda: QApplication.activeWindow() is w, 3)
+    _cage.focus(w)
     clear_log()
     QTest.keyClick(w.windowHandle(), Qt.Key.Key_Q)
     pump(300)
@@ -1118,7 +1124,7 @@ def test_in_process() -> None:
     given = SCRATCH / "shell-bar.json"
     given.write_text(json.dumps({"bar": shell.bars()[-1]}))
     proc = subprocess.run([PY, "-B", __file__, "--shell-side", str(given)], capture_output=True,
-                          text=True, timeout=120, env=dict(os.environ, QT_QPA_PLATFORM="offscreen"))
+                          text=True, timeout=120, env=dict(os.environ))
     side = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else {}
     index = w.tabs.index(w.current_tab())
     check("the window's actions in its bar begin with \"Let Lilac drive again\" (that tab, "
@@ -1163,8 +1169,7 @@ def test_in_process() -> None:
     protocol.PAUSE_S = 120.0
     check("a pause ends by itself PAUSE_S (2 s here) after the user's last input in the tab: kept "
           "by a click at 1.2 s, over by 3.2 s", kept and ended)
-    elsewhere.activateWindow()
-    wait(lambda: QApplication.activeWindow() is elsewhere, 3)
+    _cage.focus(elsewhere)
 
     # The user's dialog after a take-over.
     J(flux.click(T, R['button "Press"']))
@@ -1177,8 +1182,7 @@ def test_in_process() -> None:
           users == [("confirm", "Really?")] and watch.paused(T), f"{users} {err}")
     w.on_event({"type": "pick", "menu": "actions", "row": f"resume:{w.tabs[index].id}"})
     users.clear()
-    elsewhere.activateWindow()
-    wait(lambda: QApplication.activeWindow() is elsewhere, 3)
+    _cage.focus(elsewhere)
 
     # ── the session's end ───────────────────────────────────────────────
     watch.release()
@@ -1271,7 +1275,7 @@ def test_in_process() -> None:
           f"missing {set((*protocol.ACTS, 'release')) - acts}; leaks {leaks[:2]}")
 
     # ── the hands ───────────────────────────────────────────────────────
-    hands = {h.name: h for h in browser_hands()}
+    hands = {h.name: h for h in browser_hands(where=SCREEN)}
     R = reload_act()
 
     def call(name, args, timeout=120.0):
@@ -1323,8 +1327,7 @@ def test_in_process() -> None:
     J(flux.wait(T, timeout=10), 15)
     R = refs_of(T)
     call("browser_click", {"tab": T, "ref": R['button "Press"']})
-    w.activateWindow()
-    wait(lambda: QApplication.activeWindow() is w, 3)
+    _cage.focus(w)
     QTest.keyClick(w.windowHandle(), Qt.Key.Key_Q)
     _, taken = call("browser_click", {"tab": T, "ref": R['button "Press"']})
     check("a hand on a tab the user took over: Flux's exact words as its error",
@@ -1452,7 +1455,7 @@ def test_on_screen() -> None:
     from flux.qt.profile import make_profile
     from indigoshell.core import persona
 
-    section("on screen: one floating test window, never focused")
+    section("on screen: one test window")
     Log()
     startup.apply_flags()
     app = browser_app.make_application()
@@ -1551,7 +1554,6 @@ def main() -> int:
         if args.on_screen:
             test_on_screen()
         else:
-            os.environ["QT_QPA_PLATFORM"] = "offscreen"
             test_pure()
             test_in_process()
             test_shell_side()

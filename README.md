@@ -353,8 +353,11 @@ the current one there, `Ctrl+W` closes a tab and `Ctrl+Shift+T` reopens
 the one closed last, `F12` opens the inspector.
 
 `--profile NAME` runs a Flux of its own beside the default one, with
-its own storage, history, bookmarks and socket; `--headless` runs one
-with no screen, for a machine with no display. Its single-instance
+its own storage, history, bookmarks and socket; `--unattended` runs one
+nobody attends (the agent's own on another machine, as on a bare
+[cage](https://github.com/cage-kiosk/cage) screen): stray dialogs and
+permission prompts answered at once, muted, outliving its last window.
+Its single-instance
 socket is also its control socket, which is how the agent drives it
 (above). Flux imports only the shell's pure modules
 ([`tests/flux_imports.py`](tests/flux_imports.py) checks it), so it
