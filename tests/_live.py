@@ -169,7 +169,7 @@ def status_spec(content) -> WindowSpec:
     return WindowSpec(
         name=STATUS_WINDOW, layer=Layer.OVERLAY,
         anchor=Anchor.TOP | Anchor.RIGHT, size=(1, 1),
-        margin=Insets(top=16, right=theme.BAR_MARGIN + 12),
+        margin=Insets(top=theme.TOP_BAR_HEIGHT + 16, right=theme.BAR_MARGIN + 12),
         override_redirect=True, focusable=False, keep_alive=True,
         background="#00000000", blur=True, effects=(PANEL_SPAWN,),
         effect_scale=0.35, content=content)

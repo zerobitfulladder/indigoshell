@@ -228,11 +228,12 @@ class TrayPanel(Column):
         win = self.window
         mon = d.display.primary_monitor()
         # The menu's top-right corner sits MENU_GAP left of the row's
-        # top-left, in root coordinates.
+        # top-left, in root coordinates; a tall one moves up, but never
+        # over the top bar.
         x = int(win.x + row.rect.left()) - self.MENU_GAP - w
         y = int(win.y + row.rect.top())
         x = max(mon.x, min(x, mon.x + mon.width - w))
-        y = max(mon.y, min(y, mon.y + mon.height - h))
+        y = max(mon.y + theme.TOP_BAR_HEIGHT, min(y, mon.y + mon.height - h))
         d.kinds[MENU_WINDOW] = WindowSpec(
             name=MENU_WINDOW,
             layer=Layer.OVERLAY,

@@ -447,17 +447,18 @@ def call(hub) -> tuple[WindowSpec, list]:
     the hub's line itself, and the router the top bar's agent chip reads
     (the chip shows the agent's work while the call is hung up, and
     blinks when it rings back; nothing opens in the corner)."""
-    # Top right, clear of the bar. Frosted rather than solid: translucent
-    # plates with `blur`, which has the compositor blur what is behind
-    # them and cuts the window to the plates' outline. Grabs the keyboard
-    # and pointer like the launcher; Escape, an outside click or the
+    # Top right, 16 px under the top bar: never over it, where it would
+    # cover the agent chip. Frosted rather than solid: translucent plates
+    # with `blur`, which has the compositor blur what is behind them and
+    # cuts the window to the plates' outline. Grabs the keyboard and
+    # pointer like the launcher; Escape, an outside click or the
     # keybinding again hangs up, and the work carries on.
     window = WindowSpec(
         name=CALL_WINDOW,
         layer=Layer.OVERLAY,
         anchor=Anchor.TOP | Anchor.RIGHT,
         size=(1, 1),                 # placeholder; content-sized
-        margin=Insets(top=16, right=theme.BAR_MARGIN + 12),
+        margin=Insets(top=theme.TOP_BAR_HEIGHT + 16, right=theme.BAR_MARGIN + 12),
         override_redirect=True,
         focusable=False,
         dismiss_on_outside_click=True,
