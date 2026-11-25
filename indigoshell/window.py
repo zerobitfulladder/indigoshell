@@ -234,7 +234,9 @@ class Window:
         self.gc: int | None = None
         self.x = self.y = 0
         self.width = self.height = 0
-        self.depth = display.screen.root_depth
+        # An X screen's; a canvas region (canvas.py) has no screen.
+        screen = getattr(display, "screen", None)
+        self.depth = screen.root_depth if screen is not None else 32
         self.surface: skia.Surface | None = None
         self.mapped = False
         self.content = spec.content
@@ -727,13 +729,11 @@ class Window:
             if self._phase == "enter":
                 self._frozen = self.surface.makeImageSnapshot()
 
-        self.display.conn.core.MapWindow(self.wid)
-        self.display.flush()
+        self._map()
         self.mapped = True
         if self._phase != "enter":
             self._set_blur(True)
-        if self.spec.keep_above:
-            self.display.keep_above(self.wid)
+        self._raise()
 
         # The spawn's own time starts with its first frame on the clock,
         # not here: this frame draws it at zero, which for the panels'
@@ -751,6 +751,23 @@ class Window:
         self._pace()
         if self._phase != "enter":
             self._notify_shown()
+
+    def _map(self) -> None:
+        """Put the window on screen (`show`); a canvas region adds
+        itself to the canvas instead (canvas.py)."""
+        self.display.conn.core.MapWindow(self.wid)
+        self.display.flush()
+
+    def _raise(self) -> None:
+        """Hold an override-redirect window on top, after `_map`."""
+        if self.spec.keep_above:
+            self.display.keep_above(self.wid)
+
+    def _unmap(self) -> None:
+        """Take the window off screen (`hide`)."""
+        self.display.keep_above(self.wid, False)
+        self.display.conn.core.UnmapWindow(self.wid)
+        self.display.flush()
 
     def _notify_shown(self) -> None:
         """Tell the content it is visible and idle — once per open."""
@@ -908,9 +925,7 @@ class Window:
         if self.wid is None or not self.mapped:
             return
         self._stop_clock()
-        self.display.keep_above(self.wid, False)
-        self.display.conn.core.UnmapWindow(self.wid)
-        self.display.flush()
+        self._unmap()
         self.mapped = False
 
     def relocate(self) -> None:
@@ -1164,14 +1179,7 @@ class Window:
 
         passes = [e for e in self.effects if e.active(self._appear)]
         if not passes:
-            if self.gl_surface is not None:
-                # Straight to the window's framebuffer, then swap.
-                canvas = self.gl_surface.skia_surface.getCanvas()
-                canvas.clear(skia.ColorSetARGB(0, 0, 0, 0))
-                canvas.drawImage(frame, 0, 0, self._sampling)
-                self.gl_surface.swap()
-            else:
-                self._present(frame.tobytes())
+            self._show_frame(frame)
             return
 
         # kDecal, not kClamp: effects that displace their sample (tear,
@@ -1228,7 +1236,21 @@ class Window:
         else:
             out = self._out_surface()
             out.getCanvas().drawPaint(paint)
+        self._show_out(out)
 
+    def _show_frame(self, frame: skia.Image) -> None:
+        """Put a frame no pass touched on screen (`redraw`)."""
+        if self.gl_surface is not None:
+            # Straight to the window's framebuffer, then swap.
+            canvas = self.gl_surface.skia_surface.getCanvas()
+            canvas.clear(skia.ColorSetARGB(0, 0, 0, 0))
+            canvas.drawImage(frame, 0, 0, self._sampling)
+            self.gl_surface.swap()
+        else:
+            self._present(frame.tobytes())
+
+    def _show_out(self, out: skia.Surface) -> None:
+        """Put the effect chain's output, `_out_surface()`, on screen."""
         if self.gl_surface is not None:
             # `out` is already the window's framebuffer — swap, don't
             # read back. This is the whole saving: no tobytes(), no
@@ -1682,17 +1704,7 @@ class Window:
         elif isinstance(ev, xp.ButtonReleaseEvent):
             self._on_release(ev)
         elif isinstance(ev, xp.MotionNotifyEvent):
-            # A drag owns the pointer until release: motion goes to the
-            # captured widget wherever the cursor is, and hover stops
-            # tracking, or dragging a slider past its own edge would
-            # both drop the drag and light up whatever is underneath.
-            if self._held is not None:
-                self._held_motion(ev.event_x, ev.event_y)
-            elif self._dragging is not None:
-                self._deliver_drag(ev.event_x, ev.event_y, commit=False)
-            else:
-                self._set_hover(self._pick(ev.event_x, ev.event_y))
-                self._hover_motion(ev.event_x, ev.event_y)
+            self._motion(ev.event_x, ev.event_y)
         elif (ev.response_type & 0x7F) == 3:
             # KeyRelease. Checked by opcode, ahead of the press branch:
             # xcffib gives releases the KeyPressEvent shape, and a grab
@@ -1702,6 +1714,20 @@ class Window:
             self._on_key(ev)
         elif isinstance(ev, xp.LeaveNotifyEvent):
             self._set_hover(None)
+
+    def _motion(self, x: float, y: float) -> None:
+        """The pointer moved to (x, y), window coordinates."""
+        # A drag owns the pointer until release: motion goes to the
+        # captured widget wherever the cursor is, and hover stops
+        # tracking, or dragging a slider past its own edge would
+        # both drop the drag and light up whatever is underneath.
+        if self._held is not None:
+            self._held_motion(x, y)
+        elif self._dragging is not None:
+            self._deliver_drag(x, y, commit=False)
+        else:
+            self._set_hover(self._pick(x, y))
+            self._hover_motion(x, y)
 
     def _key_event(self, ev) -> KeyEvent:
         return key_event(self.display, ev)
