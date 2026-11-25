@@ -777,14 +777,49 @@ class AppService:
         grab), its keys still reported on the app's window: until
         whatever answers the key takes the keyboard with a grab of its
         own (this connection has one keyboard grab; a new one replaces
-        it), or `release_keyboard`."""
+        it), or `release_keyboard`.
+
+        On the Wayland canvas the keyboard is the canvas's (canvas.py
+        KeyboardRouter): taken here, its keys come to `key_press` for
+        the open prompt."""
         d = self.display
-        return d is not None and d.grab_keyboard(window.wid)
+        if d is not None:
+            return d.grab_keyboard(window.wid)
+        scene = self._scene()
+        if scene is None or not scene.keyboard.available:
+            return False
+        scene.keyboard.take(self, self)
+        return True
 
     def release_keyboard(self) -> None:
         """Give the keyboard back: keys go to the focused window again."""
         if self.display is not None:
             self.display.ungrab_keyboard()
+            return
+        scene = self._scene()
+        if scene is not None:
+            scene.keyboard.give_back(self)
+
+    def key_press(self, key) -> None:
+        """A key on the Wayland canvas while the keyboard is ours: for
+        the open input or menu, as X's keys typed on the app's window
+        are (`AppWindow.on_typed`)."""
+        p = self.prompt
+        if p is not None and p.open:
+            p.key(key)
+
+    def key_release(self, key) -> None:
+        pass
+
+    @staticmethod
+    def _scene():
+        """The Wayland canvas's scene, or None (X, or no daemon)."""
+        try:
+            from ..core.daemon import get_daemon
+            daemon = get_daemon()
+        except RuntimeError:
+            return None
+        return getattr(getattr(daemon, "canvas", None), "scene", None)
 
     # ── focus ───────────────────────────────────────────────────────────
     def follow(self, callback) -> None:
@@ -1088,10 +1123,17 @@ class AppService:
     def _hold_pointer(self) -> None:
         """A press outside the bar and its list closes the prompt: the
         pointer held on the bar's window (owner_events: the bar and the
-        list still get theirs), presses anywhere else reported there."""
+        list still get theirs), presses anywhere else reported there.
+        On the Wayland canvas: its outside clicks caught (presses on any
+        region of it still reach that region)."""
         d, window = self.display, getattr(self.context, "window", None)
         wid = getattr(window, "wid", None)
-        if d is None or wid is None or self._pointer_on is not None:
+        if d is None:
+            scene = self._scene()
+            if scene is not None and wid is not None:
+                scene.catch_outside(self, self._outside_click)
+            return
+        if wid is None or self._pointer_on is not None:
             return
         if d.grab_pointer(wid):
             self._pointer_on = wid
@@ -1100,11 +1142,21 @@ class AppService:
             log.debug("the pointer is not to be had: a click elsewhere will not close it")
 
     def _release_pointer(self) -> None:
+        if self.display is None:
+            scene = self._scene()
+            if scene is not None:
+                scene.release_outside(self)
+            return
         wid, self._pointer_on = self._pointer_on, None
-        if wid is None or self.display is None:
+        if wid is None:
             return
         self.display.off(wid, self._on_bar_event)
         self.display.ungrab_pointer()
+
+    def _outside_click(self) -> None:
+        if self.prompt is not None:
+            log.debug("a click outside the bar and its list: the prompt closes")
+            self.prompt.close("click")
 
     def _on_bar_event(self, ev) -> None:
         if (ev.response_type & 0x7F) != _BUTTON_PRESS or self.prompt is None:

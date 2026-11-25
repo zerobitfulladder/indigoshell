@@ -15,6 +15,17 @@ damage. Without EGL it is drawn on the CPU into wl_shm buffers, three at
 most, each with its own record of what it missed. Frames are made when
 something changed and never otherwise: no frame callbacks, no timers.
 
+The keyboard: wl_keyboard's keymap and modifiers go to xkbcommon
+(wlkeys.py), its keys, as KeyEvents, to whoever took the canvas's
+keyboard (canvas.py KeyboardRouter), repeated by our own timer at the
+compositor's repeat_info. The canvas asks for the keyboard with
+layer-shell's keyboard_interactivity: `exclusive` while anyone holds it,
+`none` otherwise, so the compositor gives the focus back to the window
+that had it. (On niri, `on_demand` would focus the canvas only when it
+is clicked, and switching `exclusive` to `on_demand` once the focus came
+drops it at once: prototypes/wayland/README.md.) The change rides on the
+next commit, the frame that shows what took it.
+
 While a window is fullscreen (wlr-foreign-toplevel: `fullscreen` and
 `activated`; niri's IPC has no such flag) the canvas is taken away
 entirely, so the compositor can scan the window out directly, and it is
@@ -40,6 +51,7 @@ import skia
 
 from ..canvas import AxisSteps, DamageHistory, GpuScratch, Scene, button_of, rects
 from ..core.naming import APP, env
+from .wlkeys import Keys, Repeat
 from .x11 import DisplayError
 
 log = logging.getLogger(__name__)
@@ -53,6 +65,9 @@ REOPEN_S = (0.25, 0.5, 1.0, 2.0)      # after the canvas was closed under us
 STATE_ACTIVATED, STATE_FULLSCREEN = 2, 3
 # wp_cursor_shape_device_v1.shape.default
 CURSOR_DEFAULT = 1
+# wl_seat.capability, wl_keyboard.keymap_format.xkb_v1
+SEAT_POINTER, SEAT_KEYBOARD = 1, 2
+KEYMAP_XKB_V1 = 1
 
 
 class NoLayerShell(DisplayError):
@@ -409,6 +424,17 @@ class Canvas:
         self.toplevels: Toplevels | None = None
         self.pointer = self.cursor_device = None
         self.steps = AxisSteps()
+        self.keyboard = None            # wl_keyboard
+        try:
+            self.keys: Keys | None = Keys()
+        except ImportError:
+            log.warning("canvas: no python-xkbcommon; nothing on the canvas takes the "
+                        "keyboard")
+            self.keys = None
+        self.repeat = Repeat(loop, self._repeat_key)
+        self.scene.keyboard.available = self.keys is not None
+        self.scene.on_keyboard = self._keyboard_wanted
+        self._kb_sent = None            # the overlay's keyboard_interactivity, as last sent
         self.on_resize = None           # the daemon's screen-change hook
         self.fullscreen = False
         self._present_queued = False
@@ -486,6 +512,7 @@ class Canvas:
     def attach_loop(self, loop) -> None:
         self.loop = loop
         self.scene.loop = loop
+        self.repeat.loop = loop
 
     def on_readable(self) -> None:
         if self._closed:
@@ -586,6 +613,7 @@ class Canvas:
         self.layer.set_exclusive_zone(-1)
         self.layer.set_keyboard_interactivity(
             LS.ZwlrLayerSurfaceV1.keyboard_interactivity.none)
+        self._kb_sent = "none"          # the first frame's commit asks, if anyone holds it
         self.layer.dispatcher["configure"] = self._configure
         self.layer.dispatcher["closed"] = lambda *_: self.closed_under_us()
         self.configured = False
@@ -609,6 +637,8 @@ class Canvas:
                 pass
         self.layer = self.surface = None
         self.configured = self.has_buffer = False
+        self._kb_sent = None
+        self._keyboard_left()
         self.flush()
 
     def _configure(self, _layer, serial: int, w: int, h: int) -> None:
@@ -705,7 +735,9 @@ class Canvas:
 
     def apply_pending_state(self) -> None:
         """The canvas's double-buffered state that rides on the next
-        commit: its input region, what is drawn."""
+        commit: its input region (what is drawn, or all of it while
+        outside clicks are caught) and whether it asks for the
+        keyboard."""
         if not self.pending_state or self.surface is None:
             return
         self.pending_state = False
@@ -714,6 +746,20 @@ class Canvas:
             region.add(r.left(), r.top(), r.width(), r.height())
         self.surface.set_input_region(region)
         region.destroy()
+        want = "exclusive" if self.scene.keyboard.wanted and not self.scene.hidden else "none"
+        if want != self._kb_sent and self.layer is not None:
+            K = self.wl.wlr_layer_shell_unstable_v1.ZwlrLayerSurfaceV1.keyboard_interactivity
+            self.layer.set_keyboard_interactivity(getattr(K, want))
+            self._kb_sent = want
+            log.debug("canvas: keyboard_interactivity %s", want)
+
+    def _keyboard_wanted(self) -> None:
+        """Someone took the keyboard, or the last one gave it back: the
+        canvas asks for it, or lets it go, with the next commit."""
+        self.pending_state = True
+        if not self.scene.keyboard.wanted:
+            self.repeat.stop()
+        self.present_soon()
 
     def _layout_changed(self) -> None:
         self.pending_state = True
@@ -753,7 +799,10 @@ class Canvas:
 
     # ── the pointer ─────────────────────────────────────────────────────
     def _seat_caps(self, _seat, caps: int) -> None:
-        has = bool(caps & 1)
+        self._pointer_caps(bool(caps & SEAT_POINTER))
+        self._keyboard_caps(bool(caps & SEAT_KEYBOARD))
+
+    def _pointer_caps(self, has: bool) -> None:
         if has and self.pointer is None:
             self.pointer = self.seat.get_pointer()
             p = self.pointer.dispatcher
@@ -800,11 +849,88 @@ class Canvas:
     def _axis_discrete(self, _p, axis, discrete) -> None:
         self.scene.pointer.scroll(self.steps.discrete(axis, discrete))
 
+    # ── the keyboard ────────────────────────────────────────────────────
+    def _keyboard_caps(self, has: bool) -> None:
+        if has and self.keyboard is None and self.keys is not None:
+            self.keyboard = self.seat.get_keyboard()
+            k = self.keyboard.dispatcher
+            k["keymap"] = self._keymap
+            k["enter"] = self._kb_enter
+            k["leave"] = lambda _k, _serial, _surface: self._keyboard_left()
+            k["key"] = self._key
+            k["modifiers"] = self._modifiers
+            k["repeat_info"] = lambda _k, rate, delay: self.repeat.info(rate, delay)
+        elif not has and self.keyboard is not None:
+            self._keyboard_left()
+            try:
+                self.keyboard.release()
+            except Exception:
+                pass
+            self.keyboard = None
+
+    def _keymap(self, _k, fmt: int, fd: int, size: int) -> None:
+        try:
+            if fmt != KEYMAP_XKB_V1 or size <= 0:
+                log.warning("keyboard: a keymap in format %d; keys unread", fmt)
+                return
+            with mmap.mmap(fd, size, mmap.MAP_PRIVATE, mmap.PROT_READ) as m:
+                text = bytes(m[:size])
+        except (OSError, ValueError) as e:
+            log.warning("keyboard: the keymap could not be read (%s)", e)
+            return
+        finally:
+            os.close(fd)
+        first = not self.keys.ready
+        if self.keys.load(text):
+            km = self.keys.keymap
+            names = [km.layout_get_name(i) or "?" for i in range(km.num_layouts())]
+            (log.info if first else log.debug)("keyboard: keymap with %s",
+                                               ", ".join(names) or "no layout")
+
+    def _kb_enter(self, _k, _serial, surface, _keys) -> None:
+        if not _same(surface, self.surface):
+            return
+        self.scene.keyboard.focused = True
+        log.debug("keyboard: focus on the canvas")
+
+    def _keyboard_left(self) -> None:
+        self.repeat.stop()
+        if self.scene.keyboard.focused:
+            self.scene.keyboard.focused = False
+            log.debug("keyboard: focus left the canvas")
+
+    def _modifiers(self, _k, _serial, depressed, latched, locked, group) -> None:
+        self.keys.modifiers(depressed, latched, locked, group)
+
+    def _key(self, _k, _serial, _time, key: int, state: int) -> None:
+        if not self.scene.keyboard.focused:
+            return
+        ev = self.keys.event(key)
+        if ev is None:
+            return
+        if state == 1:
+            self.repeat.press(key, self.keys.repeats(key))
+            self.scene.keyboard.press(ev)
+        else:
+            self.repeat.release(key)
+            self.scene.keyboard.release(ev)
+        self.flush()
+
+    def _repeat_key(self, key: int) -> None:
+        if not self.scene.keyboard.focused or not self.scene.keyboard.wanted:
+            self.repeat.stop()
+            return
+        ev = self.keys.event(key)
+        if ev is not None:
+            self.scene.keyboard.press(ev)
+            self.flush()
+
     # ── shutdown ────────────────────────────────────────────────────────
     def close(self) -> None:
         if self._closed:
             return
         log.info("canvas: %s", self.scene.stats.summary())
+        self.repeat.stop()
         if self._reopen is not None:
             self._reopen.cancel()
             self._reopen = None

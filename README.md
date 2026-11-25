@@ -8,8 +8,11 @@ worker threads. Beside it in this checkout is Flux, the shell's own web
 browser, a process of its own on PySide6 and QtWebEngine.
 
 On a Wayland compositor with layer-shell (niri) the same process draws
-on one overlay canvas instead of X windows ([canvas.py](indigoshell/canvas.py));
-so far that canvas has the two bars, and the rest is X11 only.
+on one overlay canvas instead of X windows ([canvas.py](indigoshell/canvas.py)):
+the two bars, the panels, the chord menu, the launcher, the top bar's
+drop-down and the toasts so far, with the keyboard taken through
+layer-shell while one of them needs it; the call and the systray's panel
+are X11 only yet.
 
 <p align="center">
   <img src="docs/media/hero.png" width="100%"
@@ -362,7 +365,8 @@ indigoshell/
                       struts, grabs, frame clock, damage, effect chain
   canvas.py         ─ Wayland: a WindowSpec as a region of the one overlay
                       canvas; damage, z-order, input region, reservations,
-                      the pointer's routing (pure)
+                      the pointer's and keyboard's routing, outside clicks
+                      (pure)
   theme.py          ─ palette, semantic tokens, per-widget presets
   shapes.py         ─ the beveled rectangle, as a skia.Path
   text.py           ─ font cache, measurement, tracked drawing
@@ -418,7 +422,10 @@ indigoshell/
     gl.py           ─ EGL/GL surfaces for Skia, with a raster fallback
     wayland.py      ─ Wayland, when $WAYLAND_DISPLAY offers layer-shell: the
                       canvas surface, the bars' reservations, the pointer,
-                      fullscreen windows; wl_shm when there is no EGL
+                      the keyboard (keyboard_interactivity), fullscreen
+                      windows; wl_shm when there is no EGL
+    wlkeys.py       ─ wl_keyboard's keys as KeyEvents (xkbcommon), our
+                      own key repeat
     egl_wayland.py  ─ EGL on the Wayland platform for the canvas
     wlproto.py      ─ pywayland bindings generated at run time from the
                       system's protocol XML, into the cache
@@ -671,6 +678,7 @@ rather than failing:
 | `qtile` (`qtile cmd-obj`) | the agent's window and workspace hands; bringing what it opens forward |
 | `wl-copy`, `wl-paste` (wl-clipboard) | on niri, in place of `xclip` |
 | Python `pywayland`, `wayland-protocols`, `wlr-protocols` (the XML) | on niri: the canvas (distro packages, like aubio) |
+| Python `xkbcommon` (python-xkbcommon) | on niri: the keyboard on the canvas; without it nothing there takes the keyboard |
 
 A Nerd Font is expected for the glyphs; `FiraCode Nerd Font Mono` is the
 theme default.

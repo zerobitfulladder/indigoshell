@@ -409,7 +409,7 @@ class Daemon:
             from ..canvas import NotOnCanvas
             log.debug("%s is not on the Wayland canvas yet; not opened", name)
             raise NotOnCanvas(f"{name} is not on the Wayland canvas yet "
-                              "(it draws only the bars so far)")
+                              "(not the call or the systray's so far)")
         win = self._parked.pop(name, None)
         if win is not None and win.spec is spec:
             win.placement = placement

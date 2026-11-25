@@ -26,16 +26,27 @@ anywhere else reaches the windows below.
     PointerRouter  wl_pointer's events to the region under the pointer,
                    with X's implicit grab: from a press until every
                    button is up, motion and the release go to the region
-                   the press went to, wherever the pointer is.
+                   the press went to, wherever the pointer is. A press on
+                   no region while something catches outside clicks is
+                   that click: they are told, and it goes nowhere.
+    KeyboardRouter wl_keyboard's keys (backend/wlkeys.py makes them
+                   KeyEvents) to whoever took the keyboard last: a region
+                   that grabs it (`grab_keyboard`), a press held for
+                   Escape (`hold_keyboard`), the top bar's open input.
 
-Phase 1 puts only the bars on the canvas (`on_canvas`); every other kind
-is refused at open (`NotOnCanvas`) and named once at start. Phase 2's
-panels, launcher, call, toasts and the drop-down are regions like these:
-the canvas already z-orders by layer, composes regions with bleed and
-effects, and keeps the input region equal to what is drawn; they add an
-outside-click rule (a click outside an open drop-down closes it and is
-swallowed: the input region becomes the whole canvas while one is open)
-and the keyboard (layer-shell keyboard_interactivity).
+The kinds on the canvas (`on_canvas`): the bars, the panels, the chord
+menu, the launcher, the top bar's drop-down and the toasts. The rest
+(the call with its blur, the systray's panel and menu) is refused at
+open (`NotOnCanvas`) and named once at start.
+
+Keyboard and outside clicks replace X's grabs. While a region that takes
+the keyboard is open the canvas asks for it (layer-shell
+keyboard_interactivity `exclusive`), and gives it back (`none`) when the
+last one closes, so the compositor returns the focus to the window that
+had it. While a region that closes on an outside click is open the
+canvas's input region is the whole canvas: a click outside every region
+closes it and is swallowed, as under X's pointer grab, and clicks on the
+other regions (the bars) reach them as X's owner_events did.
 """
 
 import itertools
@@ -83,10 +94,22 @@ def edge_of(anchor: Anchor) -> str | None:
     return None
 
 
+# The kinds the canvas draws besides the bars, by name: config_default's
+# panels, menu.py's MENU_WINDOW, launcher.py's LAUNCHER_WINDOW and
+# drop.py's DROP_WINDOW (tests/wayland.py checks the names), and the
+# toasts by notification.py's prefix. Not yet: the call (its blur needs
+# ext-background-effect) and the systray's panel and menu (they place
+# themselves by X's monitor).
+CANVAS_KINDS = frozenset({"system", "hardware", "network", "menu", "launcher", "dropdown"})
+TOAST_PREFIX = "notif-"
+
+
 def on_canvas(spec: WindowSpec) -> bool:
-    """Whether the canvas draws this kind yet. Phase 1: the bars, the
-    kinds that reserve one edge of the screen."""
-    return spec.exclusive and edge_of(spec.anchor) is not None
+    """Whether the canvas draws this kind: the bars (the kinds that
+    reserve one edge of the screen) and CANVAS_KINDS."""
+    if spec.exclusive and edge_of(spec.anchor) is not None:
+        return True
+    return spec.name in CANVAS_KINDS or spec.name.startswith(TOAST_PREFIX)
 
 
 def reserved(edge: str, content: tuple[int, int, int, int],
@@ -246,13 +269,20 @@ class PointerRouter:
             return
         x, y = self.xy
         if pressed:
-            target = self.grab or self.scene.region_at(x, y)
-            if target is None:
-                return
             if not self.buttons:
+                target = self.scene.region_at(x, y)
+                if target is None:
+                    # On no region: an outside click when something
+                    # catches them (the input region is the whole canvas
+                    # then). Swallowed, its release with it.
+                    if self.scene.outside_click():
+                        self.buttons.add(button)
+                    return
                 self.grab = target
             self.buttons.add(button)
-            target.pointer_button(button, True, *self._local(target, x, y))
+            target = self.grab
+            if target is not None:      # None: an outside click's, swallowed
+                target.pointer_button(button, True, *self._local(target, x, y))
             return
         if button not in self.buttons:
             return
@@ -270,8 +300,13 @@ class PointerRouter:
         if self.xy is None or not buttons:
             return
         x, y = self.xy
+        if self.buttons and self.grab is None:
+            return                      # in an outside click's press: swallowed
         target = self.grab or self.scene.region_at(x, y)
         if target is None:
+            # The wheel is buttons 4-7, so under X's grab it closed an
+            # open panel as a click does.
+            self.scene.outside_click()
             return
         for b in buttons:
             target.pointer_button(b, True, *self._local(target, x, y))
@@ -289,6 +324,65 @@ class PointerRouter:
         """The canvas went away (a fullscreen window): nothing is under
         the pointer, and a press in progress is lost."""
         self.leave()
+
+
+class KeyboardRouter:
+    """Who has the canvas's keyboard: the takers, each a token and a
+    handler with `key_press(KeyEvent)` and `key_release(KeyEvent)`; the
+    one that took it last gets the keys. Taking it again moves a taker
+    to the top. The canvas asks the compositor for the keyboard while
+    there is a taker (`wanted`) and the backend can read keys
+    (`available`: a keymap library; without one asking would only take
+    the keys away from the windows)."""
+
+    def __init__(self, on_change=None) -> None:
+        self.on_change = on_change
+        self.takers: dict = {}          # token -> handler, oldest first
+        self.available = False
+        self.focused = False            # the compositor's keyboard focus is on the canvas
+
+    @property
+    def wanted(self) -> bool:
+        return self.available and bool(self.takers)
+
+    def take(self, token, handler) -> None:
+        had = self.wanted
+        self.takers.pop(token, None)
+        self.takers[token] = handler
+        if self.wanted != had and self.on_change is not None:
+            self.on_change()
+
+    def give_back(self, token) -> None:
+        if token not in self.takers:
+            return
+        had = self.wanted
+        del self.takers[token]
+        if self.wanted != had and self.on_change is not None:
+            self.on_change()
+
+    def holds(self, token) -> bool:
+        return token in self.takers
+
+    def target(self):
+        return next(reversed(self.takers.values()), None)
+
+    def press(self, key) -> bool:
+        """A key went down on the canvas: to the newest taker. False
+        when nobody has the keyboard (the key is dropped)."""
+        return self._deliver("key_press", key)
+
+    def release(self, key) -> bool:
+        return self._deliver("key_release", key)
+
+    def _deliver(self, what: str, key) -> bool:
+        handler = self.target()
+        if handler is None:
+            return False
+        try:
+            getattr(handler, what)(key)
+        except Exception:
+            log.exception("a key for %s failed", type(handler).__name__)
+        return True
 
 
 class GpuScratch:
@@ -321,11 +415,17 @@ class Scene:
         self.damage = skia.Region()
         self.hidden = False
         self.pointer = PointerRouter(self)
+        self.keyboard = KeyboardRouter(self._keyboard_changed)
+        # Who closes on a click outside every region (X's pointer grab):
+        # token -> callable, oldest first.
+        self.catchers: dict = {}
         self.gpu: GpuScratch | None = None      # a Region's `gl`; None: raster
         # The backend's: a present is due; the input region or the
-        # reservations changed; send what is queued.
+        # reservations changed; the keyboard is wanted or not any more;
+        # send what is queued.
         self.on_damage = None
         self.on_layout = None
+        self.on_keyboard = None
         self.on_flush = None
         self._ids = itertools.count(1)
         self._order = itertools.count()
@@ -440,13 +540,47 @@ class Scene:
                 return region
         return None
 
+    # ── outside clicks and the keyboard ─────────────────────────────────
+    def catch_outside(self, token, callback) -> None:
+        """Call `callback()` for a click outside every region, until
+        `release_outside(token)`; the input region is the whole canvas
+        meanwhile, so that click comes here and goes no further."""
+        had = bool(self.catchers)
+        self.catchers.pop(token, None)
+        self.catchers[token] = callback
+        if not had:
+            self._layout()
+
+    def release_outside(self, token) -> None:
+        if self.catchers.pop(token, None) is not None and not self.catchers:
+            self._layout()
+
+    def outside_click(self) -> bool:
+        """A click on no region: everyone catching them told. False
+        when nobody was (the click was not ours to take)."""
+        if not self.catchers:
+            return False
+        log.debug("an outside click: %d to close", len(self.catchers))
+        for callback in list(self.catchers.values()):
+            try:
+                callback()
+            except Exception:
+                log.exception("an outside click's handler failed")
+        return True
+
+    def _keyboard_changed(self) -> None:
+        if self.on_keyboard is not None:
+            self.on_keyboard()
+
     # ── what the compositor needs ───────────────────────────────────────
     def input_rects(self) -> list[skia.IRect]:
         """Where the canvas takes the pointer: what its regions draw,
         their content boxes (a bleed margin is only room for an effect
-        to draw in)."""
+        to draw in); all of it while outside clicks are caught."""
         if self.hidden:
             return []
+        if self.catchers:
+            return [self.bounds]        # outside clicks are ours (catch_outside)
         region = skia.Region()
         for r in self.regions:
             region.op(r.input_box(), skia.Region.kUnion_Op)
@@ -659,6 +793,8 @@ class Region(Window):
         if self.wid is None:
             return
         self._end_hold(cancel=True)
+        self._ungrab("pointer")
+        self._ungrab("keyboard")
         self._stop_clock()
         self.scene.remove(self)
         self.surface = self._frozen = self._out = None
@@ -740,14 +876,50 @@ class Region(Window):
             log.info(message, *args)
 
     def _set_bounding_shape(self) -> None:
-        pass                    # phase 2: ext-background-effect's blur region
+        pass                    # phase 2b: ext-background-effect's blur region
 
     def _set_blur(self, on: bool) -> None:
         pass
 
+    # ── grabs: the canvas's keyboard and its outside clicks ─────────────
     def _grab(self, what: str, since: float | None = None) -> None:
+        """X's grabs, on the canvas: the keyboard taken (the canvas asks
+        the compositor for it while anyone holds it), or the outside
+        clicks caught (the input region the whole canvas meanwhile).
+        Neither can be refused by another client, so there is nothing
+        to try again."""
         self._grab_retry.pop(what, None)
-        self._say_once(what, "%s: no %s grab on the canvas yet", self.spec.name, what)
+        if self.wid is None or not self.mapped or self._dismissing():
+            return
+        if what == "pointer":
+            self.scene.catch_outside(self, self._outside_click)
+            self._grabbed = True
+        else:
+            if not self.scene.keyboard.available:
+                self._say_once("keyboard", "%s: no keymap library (python-xkbcommon); "
+                               "no keyboard on the canvas", self.spec.name)
+                return
+            self.scene.keyboard.take(self, self)
+            self._kb_grabbed = True
+        log.debug("%s took the %s", self.spec.name,
+                  "outside clicks" if what == "pointer" else "keyboard")
+
+    def _ungrab(self, what: str) -> None:
+        retry = self._grab_retry.pop(what, None)
+        if retry is not None:
+            retry.cancel()
+        if what == "pointer":
+            if self._grabbed:
+                self._grabbed = False
+                self.scene.release_outside(self)
+        elif self._kb_grabbed:
+            self._kb_grabbed = False
+            self.scene.keyboard.give_back(self)
+
+    def _outside_click(self) -> None:
+        if self._phase not in ("exit", "gone") and self.mapped:
+            log.debug("%s dismissed by outside click", self.spec.name)
+            self._request_close()
 
     def _watch_hold(self) -> None:
         # Wayland's implicit grab brings the release to the canvas, or a
@@ -756,9 +928,36 @@ class Region(Window):
         pass
 
     def hold_keyboard(self, widget) -> bool:
-        # Phase 2: keyboard_interactivity for the hold. Without it the
-        # hold goes on without Escape, as when X refuses the keyboard.
-        return False
+        """The keyboard for a held press (Escape cancels it), taken on
+        top of whoever has it and given back when the hold ends."""
+        if widget is not self._held or self.wid is None:
+            return False
+        if self._held_keys:
+            return True
+        if not self.scene.keyboard.available:
+            return False
+        self.scene.keyboard.take(("hold", self), self)
+        self._held_keys = True
+        return True
+
+    def _end_hold(self, *, cancel: bool = False):
+        held_keys, self._held_keys = self._held_keys, False   # not X's ungrab
+        widget = super()._end_hold(cancel=cancel)
+        if held_keys:
+            self.scene.keyboard.give_back(("hold", self))
+        return widget
+
+    # ── the keyboard, from KeyboardRouter ───────────────────────────────
+    def _key_event(self, ev):
+        return ev                       # a KeyEvent already (backend/wlkeys.py)
+
+    def key_press(self, key) -> None:
+        if not self._suspended:
+            self._on_key(key)
+
+    def key_release(self, key) -> None:
+        if not self._suspended:
+            self._on_key_release(key)
 
     # ── the pointer, from PointerRouter ─────────────────────────────────
     def pointer_motion(self, x: float, y: float) -> None:
