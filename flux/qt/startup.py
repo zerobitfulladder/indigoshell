@@ -7,6 +7,12 @@ first web engine object is made, so all of this runs first.
 
 The platform (`settle_platform`, from __main__'s flags):
 
+- On a Wayland session ($WAYLAND_DISPLAY set, as niri sets it for what
+  it starts) Qt's Wayland platform, xcb only if that fails
+  (`QT_QPA_PLATFORM=wayland;xcb`), whatever $XDG_SESSION_TYPE says:
+  the shell then knows the window as a Wayland client (the app bar
+  protocol's "On Wayland"); under Xwayland niri would know it only as
+  Xwayland's. A platform the environment names stays.
 - `--headless`: no screen at all (a Raspberry Pi in a cupboard). Qt's
   offscreen platform (`QT_QPA_PLATFORM=offscreen`, whatever the
   environment said), Qt Quick's software scene graph and Chromium
@@ -151,11 +157,13 @@ def resolve_widevine(own_dir: Path | None = None,
 
 
 def settle_platform(*, headless: bool = False, software: bool = False) -> None:
-    """The platform's variables for `--headless` or `--software-gl` (the
-    module docstring); nothing for neither."""
+    """The platform's variables: Wayland's on a Wayland session, and
+    those for `--headless` or `--software-gl` (the module docstring)."""
     if headless:
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-    elif software:
+    elif os.environ.get("WAYLAND_DISPLAY"):
+        os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+    if not headless and software:
         os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
     if headless or software:
         os.environ.setdefault("QT_QUICK_BACKEND", "software")

@@ -75,7 +75,8 @@ focus or changing the workspace; `open` and `tabs` work on any.
                    "headless": bool, "profile": <its name, or null for
                                                  the default one>}
                `single`: a page's popup or the inspector (one page, takes
-               no tabs). `xid` is the window manager's id for the window.
+               no tabs). `xid` is the window manager's id for the window
+               on X11; null on Wayland, where a client has no such id.
                `headless`: Flux runs with no screen ("Headless", below).
     open       {"url": str, "window"?: id | "agent", "background"?: bool,
                 "voice"?: str}
@@ -363,10 +364,12 @@ their sight only when they go and look. `open` with "window": "agent"
 and `borrow` make it when there is none, one per voice. Before it is
 first shown Flux asks the shell to put it on an empty workspace no
 screen shows (applink `place`), so it never appears where the user is
-looking and their view never moves; with no shell (or one too old to
-answer within applink's PLACE_WAIT_S) it shows where the window manager
-puts it. Flux never raises it or gives it focus. Its title is "<Voice>
-· Flux" and its page's, its WM_WINDOW_ROLE AGENT_ROLE, its class Flux's
+looking and their view never moves (on niri, where nothing can be
+placed before it maps, the shell moves it there as niri lists it, and
+docs/niri.kdl's window rule keeps it from taking the focus meanwhile);
+with no shell (or one too old to answer within applink's PLACE_WAIT_S)
+it shows where the window manager puts it. Flux never raises it or
+gives it focus. Its title is "<Voice> · Flux" and its page's, its WM_WINDOW_ROLE AGENT_ROLE, its class Flux's
 own; its bar starts with the voice's name in its colour. The showing rule, the
 Watch's lock and take-over hold in it as in any window. A popup a page
 in it opens goes to the same workspace, and the tabs such a popup asks

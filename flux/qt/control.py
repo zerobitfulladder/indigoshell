@@ -105,7 +105,7 @@ from urllib.parse import urlsplit
 
 import shiboken6
 from PySide6.QtCore import QObject, QPoint, QPointF, Qt, QTimer, QUrl
-from PySide6.QtGui import QCursor
+from PySide6.QtGui import QCursor, QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWebEngineCore import QWebEnginePage
@@ -624,8 +624,10 @@ class Requests:
     # ── the requests ────────────────────────────────────────────────────
     def xid(self, window) -> int | None:
         """The window's X window; None headless (offscreen numbers are no
-        window manager's)."""
-        return None if self.browser.headless else int(window.internalWinId()) or None
+        window manager's) and on Wayland (Qt's numbers there are its own)."""
+        if self.browser.headless or QGuiApplication.platformName().startswith("wayland"):
+            return None
+        return int(window.internalWinId()) or None
 
     async def quit(self, job: Job, msg: dict) -> dict:
         """Flux ends right after this answer (protocol.py, "Quit")."""

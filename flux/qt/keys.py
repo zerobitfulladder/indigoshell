@@ -29,9 +29,16 @@ inside has focus.
 
 Digits are found by key position as well as by symbol. Alt+Shift+1
 reaches Qt as "!" on a US layout, and on AZERTY the digits are the
-shifted level; X's keycodes 10..19 are the top row's 1..9, 0 on every
-layout (evdev's KEY_1.. plus X's offset of 8), so the position decides
-when the symbol is not a digit.
+shifted level; XKB's keycodes 10..19 are the top row's 1..9, 0 on every
+layout (evdev's KEY_1.. plus XKB's offset of 8), so the position decides
+when the symbol is not a digit. Qt's native scan code is that keycode on
+X11 and on Wayland alike (measured under niri: Alt+Shift+2 came as "@"
+with scan code 11), and none on a platform with no keyboard (offscreen:
+0), where the symbol alone decides.
+
+On Wayland the shell cannot take Ctrl+L, Ctrl+T, Ctrl+F and Ctrl+M: the
+window catches them itself while a shell has it and sends them to the
+shell (window.py, "Keys"), so they reach this table only with no shell.
 """
 
 from PySide6.QtCore import Qt
@@ -82,6 +89,13 @@ def _mods(modifiers) -> M:
 def command_held(modifiers) -> bool:
     """Ctrl, Alt or Meta: a shortcut, not typing."""
     return bool(M(modifiers) & COMMAND_MODIFIERS)
+
+
+def top_row_digit(scancode: int) -> int | None:
+    """The digit of a top-row key by its XKB keycode (0 for none)."""
+    if scancode in _TOP_ROW:
+        return _TOP_ROW[scancode]
+    return 0 if scancode == _ZERO else None
 
 
 def action_for(key: int, modifiers, scancode: int = 0):

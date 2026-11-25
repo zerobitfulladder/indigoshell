@@ -164,6 +164,15 @@ class Browser(QObject):
         self.download_list: list[dict] = []         # the agent's view, newest first
         self._requests: list[QWebEngineDownloadRequest] = []
         profile.downloadRequested.connect(self.on_download)
+        # Which window has the focus, for the shell (window.py `report_active`).
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.focusWindowChanged.connect(self._focus_moved)
+
+    def _focus_moved(self, _window) -> None:
+        for window in list(self.windows):
+            if shiboken6.isValid(window):
+                window.report_active()
 
     def listen(self, path: str | None = None) -> None:
         """The control socket: hand-offs and the agent's requests (the

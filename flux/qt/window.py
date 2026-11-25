@@ -24,12 +24,15 @@ from, and further ones from the same tab after those, in the order they
 were opened, until another tab is picked. Ctrl+T and handed-over URLs
 go to the end.
 
-One X window per browser window, from the first show to the end. Qt
-makes a top-level's native window GPU-composed (RHI) only when a child
+One native window per browser window, from the first show to the end.
+Qt makes a top-level's native window GPU-composed (RHI) only when a child
 that renders into a texture is in it at the moment the native window is
 made; one arriving later makes Qt destroy the native window and make
 another (the window manager sees a window close and another open, and
-the shell has to be told the new one). A web view's own widget (a QQuickWidget)
+the shell has to be told the new one). On Wayland just the same: niri
+saw the toplevel closed and a new one opened, with a new id, when a
+QQuickWidget came into a plain window (and not with one in it from the
+start). A web view's own widget (a QQuickWidget)
 appears only once its page starts loading, after a window is often
 shown, so every window holds a hidden QQuickWidget from its
 construction (`_gpu`): the native window is made GPU-composed at once,
@@ -45,6 +48,19 @@ inside, the page included, sees them; if Qt replaces that QWindow
 anyway (WinIdChange) the filter moves to the new one and the shell is
 told the new X window. The release of a key we took (a shortcut, a key
 typed into find) never reaches the page either.
+
+On Wayland the shell cannot take the bar's chords from the window
+(`attached` says `chords: "app"`: link.py `app_chords`), so the window
+catches them first, before the Watch and the page: a press of one of
+its bar's chords sends `open` with that chord (PROTOCOL.md section 4),
+and every key the window gets after it, until its keyboard is gone to
+the shell (the focus leaves the window), goes to the shell as `keys`,
+none to the page, their releases swallowed; `last` ends it, sent when
+the focus goes, or when the shell says the input `closed` or sends
+`fallback` (then the window does without, as with no shell). Whether
+the window has the focus (it, or a dialog or popup of it) is said to the
+shell as it changes (`report_active`): that is how the shell knows
+which Flux window is focused there.
 
 The shell's top bar. While a shell has the window it shows the
 window's section of its top bar (link.py; bar.py makes it of `state()`:
@@ -154,10 +170,11 @@ from functools import partial
 
 import shiboken6
 from PySide6.QtCore import QByteArray, QDataStream, QEvent, QIODevice, QObject, Qt, QTimer, QUrl
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWebEngineCore import (QWebEngineNewWindowRequest, QWebEnginePage,
                                      QWebEngineScript)
-from PySide6.QtWidgets import (QHBoxLayout, QInputDialog, QLabel, QMessageBox,
+from PySide6.QtWidgets import (QApplication, QHBoxLayout, QInputDialog, QLabel, QMessageBox,
                                QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from indigoshell.applink import bar as B
@@ -308,9 +325,65 @@ def _after_dialog(tab: Tab) -> None:
 
 
 def _key_id(event) -> int:
-    """What ties a release to its press: the X keycode, or the key code
-    where the platform has none (offscreen)."""
+    """What ties a release to its press: the XKB keycode (X11's and
+    Wayland's alike), or the key code where the platform has none
+    (offscreen)."""
     return event.nativeScanCode() or int(event.key())
+
+
+# X keysyms of the keys an input cares about, for a platform whose key
+# events carry none (offscreen): Return, Enter, Escape, BackSpace, Tab,
+# Delete, the arrows, Home, End, PageUp, PageDown.
+_KEYSYMS = {Qt.Key.Key_Return: 0xFF0D, Qt.Key.Key_Enter: 0xFF8D, Qt.Key.Key_Escape: 0xFF1B,
+            Qt.Key.Key_Backspace: 0xFF08, Qt.Key.Key_Tab: 0xFF09, Qt.Key.Key_Backtab: 0xFE20,
+            Qt.Key.Key_Delete: 0xFFFF, Qt.Key.Key_Left: 0xFF51, Qt.Key.Key_Up: 0xFF52,
+            Qt.Key.Key_Right: 0xFF53, Qt.Key.Key_Down: 0xFF54, Qt.Key.Key_Home: 0xFF50,
+            Qt.Key.Key_End: 0xFF57, Qt.Key.Key_PageUp: 0xFF55, Qt.Key.Key_PageDown: 0xFF56}
+
+
+def _mods_of(event) -> list[str]:
+    M = Qt.KeyboardModifier
+    m = event.modifiers()
+    return [name for name, flag in (("ctrl", M.ControlModifier), ("shift", M.ShiftModifier),
+                                    ("alt", M.AltModifier), ("super", M.MetaModifier))
+            if m & flag]
+
+
+def key_of(event) -> dict | None:
+    """A key press as the protocol's KEY (PROTOCOL.md section 3): its
+    keysym (Qt's native one, X11's and Wayland's: the layout applied),
+    the text it types, the modifiers. None for a key that only modifies."""
+    if event.key() in keys.MODIFIER_KEYS:
+        return None
+    mods = _mods_of(event)
+    keysym = event.nativeVirtualKey()
+    text = event.text()
+    if not keysym:
+        keysym = _KEYSYMS.get(event.key(), 0)
+        if not keysym and text:
+            keysym = ord(text[0]) if ord(text[0]) < 0x100 else 0x01000000 + ord(text[0])
+    if not keysym:
+        return None
+    if set(mods) & {"ctrl", "alt", "super"} or not text.isprintable():
+        text = ""
+    return B.key(keysym, text, mods)
+
+
+def chord_of(event) -> tuple[frozenset, str] | None:
+    """A key press as a chord's (modifiers, key) for B.parse_chord's:
+    a letter by its key, a digit by its key or its place on the top row
+    (keys.py)."""
+    key = event.key()
+    if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+        name = chr(key).lower()
+    elif Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+        name = chr(key)
+    else:
+        digit = keys.top_row_digit(event.nativeScanCode())
+        if digit is None:
+            return None
+        name = str(digit)
+    return frozenset(_mods_of(event)), name
 
 
 class Window(QWidget):
@@ -336,6 +409,9 @@ class Window(QWidget):
         self._related: tuple[Tab, int] | None = None
         self._key_window = None         # the QWindow our key filter sits on
         self._held_keys: set[int] = set()       # pressed, taken by us
+        # Wayland: the input or menu whose chord we caught, ("input" |
+        # "menu", id), while the keys typed after it go to the shell.
+        self.forwarding: tuple[str, object] | None = None
         self._address_wanted = False    # a new window's address, until the shell says
         self.agent = agent              # the voice whose own window this is (None: the user's)
         self.opener = opener            # a popup's: the window whose page opened it
@@ -649,8 +725,34 @@ class Window(QWidget):
         # Its bar before the line starts: the shell gets it right after the
         # announce, ahead of anything that names it (a new window's `open`).
         self._refresh_now()
+        self.report_active()
         self.link.start()
         self._follow_native()
+
+    def has_focus(self) -> bool:
+        """The window, or a dialog or popup of it, has the keyboard focus."""
+        handle = self.windowHandle()
+        focus = QGuiApplication.focusWindow()
+        while focus is not None and handle is not None:
+            if focus is handle:
+                return True
+            focus = focus.transientParent()
+        active = QApplication.activeWindow()
+        while active is not None:
+            if active is self:
+                return True
+            active = active.parentWidget()
+        return False
+
+    def report_active(self) -> None:
+        """Whether it has the focus, for the shell (link.py `set_active`);
+        a forwarding of keys ends with the focus (the shell has it)."""
+        if not shiboken6.isValid(self):
+            return
+        focused = self.has_focus()
+        if not focused and self.forwarding is not None:
+            self.end_forwarding("the window lost the keyboard")
+        self.link.set_active(focused)
 
     def event(self, event) -> bool:
         # Qt can replace a window's native window and its QWindow (it did
@@ -674,10 +776,17 @@ class Window(QWidget):
             self._key_window = handle
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        kind = event.type()
+        if kind == QEvent.Type.KeyPress and self.link.app_chords and self.link.attached:
+            # The shell's chords and what follows them come first (Wayland).
+            if self._forward_key(event) or self._catch_chord(event):
+                self._held_keys.add(_key_id(event))
+                return True
+        elif kind == QEvent.Type.FocusOut and self.forwarding is not None:
+            self.end_forwarding("the window lost the keyboard")
         taken = self.browser.watch.window_event(self, event)
         if taken is not None:
             return taken                # the agent drives the tab shown (watch.py)
-        kind = event.type()
         if kind == QEvent.Type.KeyPress:
             taken = self._key_press(event)
             kid = _key_id(event)
@@ -699,6 +808,49 @@ class Window(QWidget):
             if self.find_phase is not None:
                 self.end_find(clear=False)  # and the press goes on to the page
         return False
+
+    def _catch_chord(self, event) -> bool:
+        """A press of one of the bar's chords: `open` it in the shell,
+        then forward what follows (the module docstring, "Keys")."""
+        bar = self.link.bar or {}
+        pressed = chord_of(event)
+        if pressed is None:
+            return False
+        for chord, (what, name) in B.chords(bar).items():
+            if B.parse_chord(chord, grab=True) == pressed:
+                break
+        else:
+            return False
+        log.debug("chord %s caught: the shell opens %s %r", chord, what, name)
+        if self.find_phase is not None:
+            self.end_find(clear=False)
+        self.forwarding = (what, name)
+        self._refresh_now()                 # the bar first: the open names its input
+        self.link.send(B.open_input(name, chord) if what == "input"
+                       else B.open_menu(name, chord))
+        return True
+
+    def _forward_key(self, event) -> bool:
+        """A key after a caught chord, before the shell has the keyboard:
+        the shell's (`keys`), never the page's."""
+        if self.forwarding is None:
+            return False
+        if not self.link.connected():
+            self.end_forwarding("the line to the shell dropped", send=False)
+            return False
+        key = key_of(event)
+        if key is not None:
+            self.link.send(B.keys([key]))
+        return True
+
+    def end_forwarding(self, why: str, *, send: bool = True) -> None:
+        """Keys go where they go again; the shell told it is all (`last`)."""
+        if self.forwarding is None:
+            return
+        log.debug("forwarding keys to the shell ends: %s", why)
+        self.forwarding = None
+        if send:
+            self.link.send(B.keys([], last=True))
 
     def swallow_release(self, event) -> None:
         """A key press taken elsewhere (the Watch's take-over): its
@@ -1101,12 +1253,16 @@ class Window(QWidget):
         elif kind == B.PICK and msg.get("menu") == flux_bar.ACTIONS:
             self.on_action(msg.get("row"))
         elif kind == B.CLOSED:
+            if self.forwarding is not None and self.forwarding[1] in (name, msg.get("menu")):
+                self.end_forwarding("the shell closed it")
             if name == flux_bar.FIND:
                 self.shell_find_end(clear=msg.get("by") == "escape")
             elif name in self.addresses:
                 self.addresses.pop(name).close()
         elif kind == B.FALLBACK:
             what = name or msg.get("menu")
+            if self.forwarding is not None and self.forwarding[1] == what:
+                self.end_forwarding("the shell cannot show it")
             if what in (flux_bar.ADDRESS, flux_bar.NEW_TAB, flux_bar.ACTIONS):
                 log.info("the shell cannot show %s; asking ourselves", what)
                 self.ask_myself(what)

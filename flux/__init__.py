@@ -3,8 +3,9 @@ in this checkout, on PySide6 and QtWebEngine (Chromium).
 
     python -m flux [url ...]          (or `indigoshell browser [url ...]`)
 
-It owns its top-level X windows: one window holds many pages (tabs),
-each page from the window's top edge. It is a single instance per
+It owns its top-level windows (X11's, or Wayland's under niri, where Qt
+runs on its Wayland platform: qt/startup.py): one window holds many
+pages (tabs), each page from the window's top edge. It is a single instance per
 profile: a second invocation hands its URLs to the running one.
 `desktop.py` installs its desktop entry, Flux (`python -m flux
 --install`), which the launcher finds.
@@ -12,12 +13,15 @@ profile: a second invocation hands its URLs to the running one.
 The shell integrates it, as it will its other apps: Flux is an
 indigoshell app (indigoshell/applink/PROTOCOL.md, the app bar protocol).
 Each window connects to the shell's app socket, announces itself (the
-app, its own id, its X window) and sends its section of the shell's top
+app, its own id, its X window; on Wayland no handle, and it says
+whether it has the focus) and sends its section of the shell's top
 bar whole whenever it changes: `bar.py` makes it of the window's state
 (its tabs, the page's host, the `address`, `new_tab` and `find` inputs,
 the `actions` menu). The shell draws it with its own look, takes the
 inputs' and menu's chords (Ctrl+L, Ctrl+T, Ctrl+F, Ctrl+M) from the
-window, and sends back what the user does, by id: a tab selected,
+window (on Wayland the window catches them and hands them over, with
+what is typed before the shell has the keyboard), and sends back what
+the user does, by id: a tab selected,
 closed, moved or torn out, an input's query (answered from Flux's places
 by `addresses.py`, or with find's count), a submit, a pick, an input
 closed. Nothing of Flux's is in the shell. Either side can start, stop
