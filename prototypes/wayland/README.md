@@ -1,5 +1,9 @@
 # One canvas on niri (wlr-layer-shell prototype)
 
+The shell itself now does this: indigoshell/canvas.py and
+indigoshell/backend/wayland.py (tests/wayland.py runs it in a nested
+niri). This prototype stays as the record of the proof.
+
 Checks the Wayland layout for indigoshell. The shell draws everything
 (both bars, dropdowns, panels) on one overlay surface above the windows.
 Two invisible surfaces reserve the bars' strips, so niri tiles windows
